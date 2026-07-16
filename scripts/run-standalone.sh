@@ -22,7 +22,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ISSUES_PORT="${ISSUES_PORT:-8080}"
+LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 
 # Plain strings, not an array: macOS still ships bash 3.2, where expanding an
 # empty array under `set -u` is a fatal error.
@@ -48,7 +48,7 @@ else
   "$SCRIPT_DIR/container-up.sh"
 fi
 
-target_url="http://localhost:$ISSUES_PORT/"
+target_url="http://localhost:$LUNICLE_PORT/"
 
 cat <<EOF
 

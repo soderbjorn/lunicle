@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Stop and remove the local issue-tracker container started by
+# Stop and remove the local Lunicle container started by
 # ./scripts/container-up.sh. Safe to run when nothing is up.
 #
 #   ./scripts/container-down.sh
 #
 set -euo pipefail
 
-NAME="lunamux-issues-local"
+NAME="lunicle-local"
 
 if ! docker info > /dev/null 2>&1; then
   # Nothing can be running if the daemon isn't. Not an error — "down" is the

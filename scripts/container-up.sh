@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build and run the issue tracker as a Docker container, locally — the same
+# Build and run Lunicle as a Docker container, locally — the same
 # image Railway will build and run, with the same entrypoint. Nothing is
 # deployed and nothing outside Docker is touched.
 #
@@ -17,7 +17,7 @@
 # To stop: ./scripts/container-down.sh
 #
 # Env:
-#   ISSUES_PORT       host port to publish (default: 8080)
+#   LUNICLE_PORT       host port to publish (default: 8080)
 #   SITE_PORT         the local site's port, used for the framing policy below
 #                     (default: 8000)
 #   FRAME_ANCESTORS   override the framing policy outright
@@ -31,9 +31,9 @@
 #
 set -euo pipefail
 
-IMAGE="lunamux-issues:local"
-NAME="lunamux-issues-local"
-ISSUES_PORT="${ISSUES_PORT:-8080}"
+IMAGE="lunicle:local"
+NAME="lunicle-local"
+LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 SITE_PORT="${SITE_PORT:-8000}"
 FRAME_ANCESTORS="${FRAME_ANCESTORS:-http://localhost:$SITE_PORT https://lunamux.dev}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -72,12 +72,12 @@ fi
 # connection to that port, so an open browser tab pointing at localhost:8080 —
 # or Docker's own backend proxy — counted as "the port is taken" and this
 # refused to start for no reason. Only a listener actually holds the port.
-if lsof -ti ":$ISSUES_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
+if lsof -ti ":$LUNICLE_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
   if [[ -z "$(docker ps -q --filter "name=^${NAME}$")" ]]; then
-    echo "error: something is already using port $ISSUES_PORT, and it isn't this container." >&2
+    echo "error: something is already using port $LUNICLE_PORT, and it isn't this container." >&2
     echo "       A dev-local.sh server, perhaps? Stop it with:" >&2
-    echo "         pkill -f 'issues.webDist=$REPO_ROOT/web/build'" >&2
-    echo "       …or re-run with ISSUES_PORT=<other port>." >&2
+    echo "         pkill -f 'lunicle.webDist=$REPO_ROOT/web/build'" >&2
+    echo "       …or re-run with LUNICLE_PORT=<other port>." >&2
     exit 1
   fi
 fi
@@ -108,15 +108,15 @@ echo "    frame-ancestors: $FRAME_ANCESTORS"
 # PORT is how Railway tells the server where to listen, so pass it the same way
 # here: this exercises the real mechanism rather than the 8080 fallback.
 docker run -d --name "$NAME" \
-  -e PORT="$ISSUES_PORT" \
+  -e PORT="$LUNICLE_PORT" \
   -e FRAME_ANCESTORS="$FRAME_ANCESTORS" \
-  -p "$ISSUES_PORT:$ISSUES_PORT" \
+  -p "$LUNICLE_PORT:$LUNICLE_PORT" \
   "$IMAGE" > /dev/null
 
 echo "==> Waiting for it to answer…"
 ready=0
 for _ in $(seq 1 60); do
-  if curl -sf -o /dev/null "http://localhost:$ISSUES_PORT/api/counter"; then ready=1; break; fi
+  if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/counter"; then ready=1; break; fi
   if [[ -z "$(docker ps -q --filter "name=^${NAME}$")" ]]; then
     echo "error: the container exited. Its logs:" >&2
     docker logs "$NAME" 2>&1 | tail -20 >&2
@@ -125,11 +125,11 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 if [[ "$ready" -ne 1 ]]; then
-  echo "error: the container never answered on port $ISSUES_PORT. Its logs:" >&2
+  echo "error: the container never answered on port $LUNICLE_PORT. Its logs:" >&2
   docker logs "$NAME" 2>&1 | tail -20 >&2
   exit 1
 fi
 
 cat <<EOF
-==> Container up on http://localhost:$ISSUES_PORT/ (logs: docker logs -f $NAME)
+==> Container up on http://localhost:$LUNICLE_PORT/ (logs: docker logs -f $NAME)
 EOF

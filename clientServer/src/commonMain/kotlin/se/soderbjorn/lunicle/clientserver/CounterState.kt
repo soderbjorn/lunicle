@@ -7,9 +7,9 @@
  * HTTP → JVM server and back). It is set dressing; the infrastructure it
  * exercises is the point. See docs/stages.html.
  *
- * @see IssuesApi
+ * @see LunicleApi
  */
-package se.soderbjorn.issues.clientserver
+package se.soderbjorn.lunicle.clientserver
 
 import kotlinx.serialization.Serializable
 

@@ -1,5 +1,5 @@
 /**
- * The typed HTTP client every platform talks to the Issues server through.
+ * The typed HTTP client every platform talks to the Lunicle server through.
  *
  * Constructed once by the app bootstrap (for Stage 1: the browser bundle's
  * `main()`) and handed to the backing view model, which is the only caller.
@@ -10,7 +10,7 @@
  * @see CounterState
  * @see ApiRoutes
  */
-package se.soderbjorn.issues.clientserver
+package se.soderbjorn.lunicle.clientserver
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -21,7 +21,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 
 /**
- * Build the [HttpClient] backing an [IssuesApi].
+ * Build the [HttpClient] backing an [LunicleApi].
  *
  * No engine is named: each target has exactly one engine on its classpath (JS
  * for the browser bundle, CIO for the JVM), so Ktor resolves it via the
@@ -37,7 +37,7 @@ fun createHttpClient(): HttpClient = HttpClient {
 }
 
 /**
- * Typed access to the Issues server's counter endpoints.
+ * Typed access to the Lunicle server's counter endpoints.
  *
  * @param baseUrl prefix for every request. Defaults to `""` — a relative URL —
  *   which is correct for the browser bundle: the server that serves the bundle
@@ -47,7 +47,7 @@ fun createHttpClient(): HttpClient = HttpClient {
  *   absolute URL from a JVM caller or a test.
  * @param httpClient the transport; defaults to a fresh [createHttpClient].
  */
-class IssuesApi(
+class LunicleApi(
     private val baseUrl: String = "",
     private val httpClient: HttpClient = createHttpClient(),
 ) {

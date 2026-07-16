@@ -1,4 +1,4 @@
-rootProject.name = "LunamuxIssues"
+rootProject.name = "Lunicle"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {

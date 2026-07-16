@@ -11,13 +11,13 @@
  * @see CounterBackingViewModel
  * @see main
  */
-package se.soderbjorn.issues
+package se.soderbjorn.lunicle
 
 import kotlinx.browser.document
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLParagraphElement
-import se.soderbjorn.issues.client.viewmodel.CounterBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.CounterBackingViewModel
 
 /**
  * Renders the counter panel into a host element and updates it on each state
@@ -45,7 +45,7 @@ class CounterView(
 
         val eyebrow = document.createElement("p") as HTMLParagraphElement
         eyebrow.className = "counter-eyebrow"
-        eyebrow.textContent = "Lunamux / Issues"
+        eyebrow.textContent = "Lunamux / Lunicle"
 
         valueElement = document.createElement("p") as HTMLParagraphElement
         valueElement.className = "counter-value"

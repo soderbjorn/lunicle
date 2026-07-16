@@ -1,5 +1,5 @@
 /**
- * Ktor server entry point and module wiring for the Lunamux issue tracker.
+ * Ktor server entry point and module wiring for Lunicle, the Lunamux issue tracker.
  *
  *  - [main] reads the deployment's port and starts Netty.
  *  - [Application.module] installs plugins, sets the framing headers, mounts
@@ -11,7 +11,7 @@
  * @see counterRoutes
  * @see frameAncestors
  */
-package se.soderbjorn.issues
+package se.soderbjorn.lunicle
 
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -41,7 +41,7 @@ private fun resolvePort(): Int =
  * ever embed the tracker.
  *
  * Two overrides, in priority order:
- *  1. The `issues.frameAncestors` system property, which `:server:run` always
+ *  1. The `lunicle.frameAncestors` system property, which `:server:run` always
  *     sets (see `server/build.gradle.kts`). It exists because the environment
  *     variable below is not a good fit under Gradle: a `JavaExec` task inherits
  *     the long-lived Gradle **daemon's** environment rather than the invoking
@@ -57,7 +57,7 @@ private fun resolveFrameAncestors(): String =
     // Blank is treated as absent throughout: an empty override is a
     // misconfiguration, and silently emitting `frame-ancestors 'self'` would
     // break the embed in a way that looks like a code bug.
-    System.getProperty("issues.frameAncestors")?.takeIf { it.isNotBlank() }
+    System.getProperty("lunicle.frameAncestors")?.takeIf { it.isNotBlank() }
         ?: System.getenv("FRAME_ANCESTORS")?.takeIf { it.isNotBlank() }
         ?: "https://lunamux.dev"
 
@@ -90,7 +90,7 @@ internal fun frameAncestors(ancestors: String): String =
 fun main() {
     val port = resolvePort()
     val logger = LoggerFactory.getLogger("Application")
-    logger.info("Starting Lunamux Issues on port $port; frame-ancestors=${resolveFrameAncestors()}")
+    logger.info("Starting Lunicle on port $port; frame-ancestors=${resolveFrameAncestors()}")
     embeddedServer(
         factory = Netty,
         port = port,
@@ -106,7 +106,7 @@ fun main() {
  * the counter routes plus the static web bundle.
  *
  * Static serving has two flows, matching Lunamux's server:
- *  - Dev (`-Dissues.webDist=…`, set by `:server:run`): serve the bundle from
+ *  - Dev (`-Dlunicle.webDist=…`, set by `:server:run`): serve the bundle from
  *    disk so a web edit needs no re-jar.
  *  - Packaged (no property): serve it from `/web` inside the jar, staged there
  *    by the `copyWebDistToResources` task.
@@ -118,7 +118,7 @@ fun Application.module() {
         header(CONTENT_SECURITY_POLICY, frameAncestors(resolveFrameAncestors()))
     }
 
-    val webDistPath = System.getProperty("issues.webDist")
+    val webDistPath = System.getProperty("lunicle.webDist")
 
     routing {
         counterRoutes()

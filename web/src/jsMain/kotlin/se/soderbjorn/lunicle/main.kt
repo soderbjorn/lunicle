@@ -1,5 +1,5 @@
 /**
- * Entry point for the Lunamux Issues Kotlin/JS web frontend.
+ * Entry point for the Lunicle Kotlin/JS web frontend.
  *
  * Bootstraps the app: constructs the [CounterBackingViewModel], mounts the
  * [CounterView] into `#app`, and pumps the view model's single state flow into
@@ -9,7 +9,7 @@
  * @see CounterView
  * @see CounterBackingViewModel
  */
-package se.soderbjorn.issues
+package se.soderbjorn.lunicle
 
 import kotlinx.browser.document
 import kotlinx.browser.window
@@ -19,7 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.issues.client.viewmodel.CounterBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.CounterBackingViewModel
 
 /**
  * Kotlin/JS main entry point. Defers [start] to `window.onload` so `#app` is
@@ -39,7 +39,7 @@ fun main() {
 private fun start() {
     val host = document.getElementById("app") as? HTMLElement
     if (host == null) {
-        println("Issues: #app missing; nothing to mount into")
+        println("Lunicle: #app missing; nothing to mount into")
         return
     }
 

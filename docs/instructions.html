@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lunamux Issues — Stage 1 instructions</title>
+<title>Lunicle — Stage 1 instructions</title>
 <style>
 :root{
   --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
@@ -97,7 +97,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
 <div class="wrap">
 
 <header class="top">
-  <p class="eyebrow">Lunamux / Issue tracker</p>
+  <p class="eyebrow">Lunamux / Lunicle</p>
   <h1>Stage 1 — <span class="glow">deploy</span> instructions</h1>
   <p class="lede">The steps that need your accounts: Railway, the domain, and the two repos.
   Everything that could be built and proven without them already has been — see
@@ -202,7 +202,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
       <strong>never off a query parameter</strong> — a visitor-supplied iframe URL on the live site
       would let any link frame arbitrary content inside lunamux.dev.</li>
   </ul>
-  <p>Override the paths and ports with <code>LUNAMUX_WEB</code>, <code>ISSUES_PORT</code>,
+  <p>Override the paths and ports with <code>LUNAMUX_WEB</code>, <code>LUNICLE_PORT</code>,
   <code>SITE_PORT</code> if the defaults don't fit.</p>
 
   <div class="warn">
@@ -247,7 +247,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
   <h2><span class="num">Step 2</span> Railway</h2>
 
   <ol>
-    <li>This repo already points at <code>github.com:soderbjorn/issue-tracker</code> (private).</li>
+    <li>This repo already points at <code>github.com:soderbjorn/lunicle</code> (private).</li>
     <li>Railway → <strong>New Project → Deploy from GitHub repo</strong> → pick it.</li>
     <li>Railway detects the <code>Dockerfile</code> at the repo root and uses it. No buildpack, no
       Nixpacks, no configuration — that is the whole point of shipping a Dockerfile.</li>
@@ -388,7 +388,7 @@ $ curl -sI https://issues.lunamux.dev/ | grep -i content-security</pre>
 
   <ul>
     <li><strong>Both repos are committed and pushed.</strong> This one to
-      <code>soderbjorn/issue-tracker</code> (private), and the tab edits to
+      <code>soderbjorn/lunicle</code> (private), and the tab edits to
       <code>soderbjorn/lunamux-web</code>. Note what the second one means: GitHub Pages serves that
       repo, so the Issues tab is <em>live</em> on lunamux.dev now — and because
       <code>issues.lunamux.dev</code> doesn't exist until Steps 2–4 are done, opening

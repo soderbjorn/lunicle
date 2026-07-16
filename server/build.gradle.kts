@@ -5,7 +5,7 @@ plugins {
     application
 }
 
-group = "se.soderbjorn.issues"
+group = "se.soderbjorn.lunicle"
 version = "1.0.0"
 
 kotlin {
@@ -27,7 +27,7 @@ val webDistTask = ":web:jsBrowserDistribution"
 val embeddedWebResourcesDir = layout.buildDirectory.dir("generated/web-resources")
 
 application {
-    mainClass.set("se.soderbjorn.issues.ApplicationKt")
+    mainClass.set("se.soderbjorn.lunicle.ApplicationKt")
 }
 
 // Stage the web bundle under build/generated/web-resources/web/ so it ends up
@@ -61,11 +61,11 @@ dependencies {
 }
 
 // `./gradlew :server:run` serves the bundle straight off disk (see the
-// `issues.webDist` branch in Application.kt) so a web edit needs only a
+// `lunicle.webDist` branch in Application.kt) so a web edit needs only a
 // `:web:jsBrowserDistribution`, not a re-jar.
 tasks.named<JavaExec>("run") {
     dependsOn(webDistTask)
-    systemProperty("issues.webDist", webDistDir.get().asFile.absolutePath)
+    systemProperty("lunicle.webDist", webDistDir.get().asFile.absolutePath)
 
     // Framing origin for local runs, passed as `-PframeAncestors=…` (see
     // scripts/dev-local.sh), defaulting to the production value.
@@ -82,5 +82,5 @@ tasks.named<JavaExec>("run") {
     // See resolveFrameAncestors() in Application.kt.
     val frameAncestors = providers.gradleProperty("frameAncestors")
         .getOrElse("https://lunamux.dev")
-    systemProperty("issues.frameAncestors", frameAncestors)
+    systemProperty("lunicle.frameAncestors", frameAncestors)
 }

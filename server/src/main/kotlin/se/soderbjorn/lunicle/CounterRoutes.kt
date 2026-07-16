@@ -6,17 +6,17 @@
  * stated exit criterion rather than a defect. Stage 2 moves it to SQLite on a
  * Railway volume and gives it an owner. See docs/stages.html.
  *
- * @see se.soderbjorn.issues.clientserver.CounterState
+ * @see se.soderbjorn.lunicle.clientserver.CounterState
  * @see Application.module
  */
-package se.soderbjorn.issues
+package se.soderbjorn.lunicle
 
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
-import se.soderbjorn.issues.clientserver.ApiRoutes
-import se.soderbjorn.issues.clientserver.CounterState
+import se.soderbjorn.lunicle.clientserver.ApiRoutes
+import se.soderbjorn.lunicle.clientserver.CounterState
 import java.util.concurrent.atomic.AtomicInteger
 
 /**

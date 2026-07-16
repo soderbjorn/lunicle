@@ -18,9 +18,9 @@
  * Debug logging follows the project `println("Tag: …")` convention so the
  * round-trips are visible in DevTools.
  *
- * @see se.soderbjorn.issues.clientserver.IssuesApi
+ * @see se.soderbjorn.lunicle.clientserver.LunicleApi
  */
-package se.soderbjorn.issues.client.viewmodel
+package se.soderbjorn.lunicle.client.viewmodel
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,18 +29,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import se.soderbjorn.issues.clientserver.IssuesApi
+import se.soderbjorn.lunicle.clientserver.LunicleApi
 
 /**
  * Owns the counter round-trips and exposes the result as a [StateFlow].
  *
- * @param api the server transport; defaults to a same-origin [IssuesApi], which
+ * @param api the server transport; defaults to a same-origin [LunicleApi], which
  *   is what the browser bundle wants.
  * @param scope coroutine scope the fetches run in; defaults to a
  *   [SupervisorJob] scope so one failed request never tears down the next.
  */
 class CounterBackingViewModel(
-    private val api: IssuesApi = IssuesApi(),
+    private val api: LunicleApi = LunicleApi(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     private val _stateFlow = MutableStateFlow(State())

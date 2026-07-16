@@ -34,7 +34,7 @@ kotlin {
         }
         jsMain.dependencies {
             // The engine is resolved from the classpath by the argument-less
-            // `HttpClient { … }` constructor in IssuesApi — exactly one engine
+            // `HttpClient { … }` constructor in LunicleApi — exactly one engine
             // per target, so there is nothing to disambiguate.
             implementation(libs.ktor.client.js)
         }

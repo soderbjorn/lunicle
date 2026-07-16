@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run the issue tracker locally — standalone, or embedded in a local copy of
+# Run Lunicle locally — standalone, or embedded in a local copy of
 # the real lunamux-web site. Neither mode deploys anything or touches Railway,
 # Cloudflare, or the live site. Both open the right URL in your browser once the
 # server is actually answering.
@@ -11,7 +11,7 @@
 # Flags/env:
 #   --no-open      don't launch a browser
 #   LUNAMUX_WEB    path to the lunamux-web checkout (default: ../lunamux-web)
-#   ISSUES_PORT    tracker port (default: 8080)
+#   LUNICLE_PORT    tracker port (default: 8080)
 #   SITE_PORT      local lunamux-web port (default: 8000)
 #
 # Why the embed mode works without a deploy:
@@ -35,7 +35,7 @@
 #
 set -euo pipefail
 
-ISSUES_PORT="${ISSUES_PORT:-8080}"
+LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 SITE_PORT="${SITE_PORT:-8000}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The lunamux-web checkout to serve. Override if yours lives elsewhere.
@@ -61,7 +61,7 @@ fi
 # contains this checkout's absolute path, and nothing else on the machine will
 # match it. Used to reap orphans (see below) without ever touching an unrelated
 # JVM or whatever else might hold the port.
-server_marker="issues.webDist=$REPO_ROOT/web/build"
+server_marker="lunicle.webDist=$REPO_ROOT/web/build"
 
 # Refuse to start on top of something already serving the port — do NOT just
 # adopt it. `:server:run` forks the server from the Gradle *daemon*, so an
@@ -70,13 +70,13 @@ server_marker="issues.webDist=$REPO_ROOT/web/build"
 # server was configured with (its framing policy, its counter, its code) while
 # looking perfectly healthy. That is a genuinely misleading failure — it cost
 # real time during this stage's development — so it is now loud.
-if curl -sf -o /dev/null "http://localhost:$ISSUES_PORT/api/counter" 2>/dev/null; then
-  echo "error: something is already serving http://localhost:$ISSUES_PORT/" >&2
+if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/counter" 2>/dev/null; then
+  echo "error: something is already serving http://localhost:$LUNICLE_PORT/" >&2
   if pgrep -f "$server_marker" > /dev/null 2>&1; then
     echo "       It looks like an orphaned tracker from an earlier run. Stop it with:" >&2
     echo "         pkill -f '$server_marker'" >&2
   else
-    echo "       Stop it, or re-run with ISSUES_PORT=<other port>." >&2
+    echo "       Stop it, or re-run with LUNICLE_PORT=<other port>." >&2
   fi
   exit 1
 fi
@@ -97,11 +97,11 @@ fi
 if [[ "$mode" == "embed" ]]; then
   frame_ancestors="http://localhost:$SITE_PORT"
   target_url="http://localhost:$SITE_PORT/?issues=1#/issues"
-  echo "==> Starting the tracker on :$ISSUES_PORT (frame-ancestors: $frame_ancestors)"
+  echo "==> Starting the tracker on :$LUNICLE_PORT (frame-ancestors: $frame_ancestors)"
 else
   frame_ancestors="https://lunamux.dev"
-  target_url="http://localhost:$ISSUES_PORT/"
-  echo "==> Starting the tracker on :$ISSUES_PORT (frame-ancestors: $frame_ancestors — as in production)"
+  target_url="http://localhost:$LUNICLE_PORT/"
+  echo "==> Starting the tracker on :$LUNICLE_PORT (frame-ancestors: $frame_ancestors — as in production)"
 fi
 
 "$REPO_ROOT/gradlew" -p "$REPO_ROOT" "-PframeAncestors=$frame_ancestors" :server:run &
@@ -140,7 +140,7 @@ trap cleanup EXIT INT TERM
 echo "==> Waiting for the tracker to answer (first run compiles the JS bundle — this is slow)…"
 ready=0
 for _ in $(seq 1 180); do
-  if curl -sf -o /dev/null "http://localhost:$ISSUES_PORT/api/counter"; then ready=1; break; fi
+  if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/counter"; then ready=1; break; fi
   if ! kill -0 "$gradle_pid" 2>/dev/null; then
     echo "error: the server exited before it answered; see the Gradle output above" >&2
     exit 1
@@ -148,7 +148,7 @@ for _ in $(seq 1 180); do
   sleep 1
 done
 if [[ "$ready" -ne 1 ]]; then
-  echo "error: the tracker never answered on :$ISSUES_PORT" >&2
+  echo "error: the tracker never answered on :$LUNICLE_PORT" >&2
   exit 1
 fi
 

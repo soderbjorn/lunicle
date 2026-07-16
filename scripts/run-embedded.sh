@@ -20,7 +20,7 @@
 # Env:
 #   LUNAMUX_WEB   path to the lunamux-web checkout (default: ../lunamux-web)
 #   SITE_PORT     port to serve the site on (default: 8000)
-#   ISSUES_PORT   port for the tracker (default: 8080)
+#   LUNICLE_PORT   port for the tracker (default: 8080)
 #
 # Two things make this work without deploying anything:
 #
@@ -28,7 +28,7 @@
 #     (plus lunamux.dev). Same Content-Security-Policy header and same browser
 #     enforcement as production — only the value differs. This is the single
 #     deliberate difference from the deployed configuration.
-#   * lunamux-web frames http://localhost:$ISSUES_PORT/ instead of
+#   * lunamux-web frames http://localhost:$LUNICLE_PORT/ instead of
 #     issues.lunamux.dev when the site is itself served from localhost (see
 #     SITE.issues.devIframeSrc in content.js). That keys off the site's own
 #     hostname, never off anything a visitor supplies.
@@ -42,7 +42,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SITE_PORT="${SITE_PORT:-8000}"
-ISSUES_PORT="${ISSUES_PORT:-8080}"
+LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 LUNAMUX_WEB="${LUNAMUX_WEB:-$REPO_ROOT/../lunamux-web}"
 
 build_flag=""
@@ -83,13 +83,13 @@ fi
 # to frame it. If it won't, the failure is a tab that renders, an iframe that
 # exists, and a blank rectangle explained only by a console message — the most
 # confusing shape this can take. One clear sentence beforehand is worth a lot.
-csp="$(curl -sI "http://localhost:$ISSUES_PORT/" | tr -d '\r' \
+csp="$(curl -sI "http://localhost:$LUNICLE_PORT/" | tr -d '\r' \
   | grep -i '^content-security-policy:' || true)"
 case "$csp" in
   *"http://localhost:$SITE_PORT"*)
     ;;
   *)
-    echo "error: the tracker on :$ISSUES_PORT won't allow this site to frame it." >&2
+    echo "error: the tracker on :$LUNICLE_PORT won't allow this site to frame it." >&2
     echo "       Its policy:  ${csp:-<no Content-Security-Policy header at all>}" >&2
     echo "       Expected it to permit http://localhost:$SITE_PORT." >&2
     echo "       Try:  ./scripts/container-down.sh && ./scripts/run-embedded.sh" >&2
