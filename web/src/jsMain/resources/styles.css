@@ -115,3 +115,63 @@ html { background: var(--bg); }
   margin: 12px 0 0;
   min-height: 1.6em;
 }
+
+/* ============================================================
+   Sign-in row — Stage 2.
+
+   Sits inside .counter, below the note, separated by a rule: the
+   identity belongs to the same card as the thing it owns, and a
+   second floating panel would imply the two are unrelated.
+   ============================================================ */
+
+.signin {
+  border-top: 1px solid var(--border);
+  margin: 24px 0 0;
+  padding: 20px 0 0;
+  /* Reserve the row's height before the first session fetch returns. The view
+     toggles visibility rather than display for the same reason: a card that
+     grows a centimetre once the server answers reads as a glitch. */
+  min-height: 76px;
+}
+
+.signin-greeting {
+  color: var(--head);
+  font-size: 13px;
+  margin: 0 0 14px;
+}
+
+.signin-btn {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--green-hi);
+  background: var(--panel-2);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  padding: 9px 16px;
+  margin: 0 4px;
+  cursor: pointer;
+  transition: background .15s, box-shadow .15s;
+}
+
+.signin-btn:hover:not(:disabled) {
+  background: #10203a;
+  box-shadow: 0 0 14px var(--glow);
+}
+
+.signin-btn:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+/* Sign out is not a call to action — it should be findable, not inviting. */
+.signin-btn-quiet {
+  color: var(--green-dim);
+  border-color: var(--border);
+}
+
+.signin-error {
+  color: var(--red);
+  font-size: 12px;
+  margin: 12px 0 0;
+  min-height: 1.6em;
+}

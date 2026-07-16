@@ -28,6 +28,14 @@ import se.soderbjorn.lunicle.client.viewmodel.CounterBackingViewModel
 class CounterView(
     private val viewModel: CounterBackingViewModel,
 ) {
+    /**
+     * The card itself, exposed so the bootstrap can mount the sign-in row
+     * inside it. Read-only to callers: this view still owns its own DOM, and
+     * handing out the element beats having main.kt find it by class name.
+     */
+    lateinit var panel: HTMLElement
+        private set
+
     private lateinit var valueElement: HTMLParagraphElement
     private lateinit var buttonElement: HTMLButtonElement
     private lateinit var errorElement: HTMLParagraphElement
@@ -40,7 +48,7 @@ class CounterView(
      * @param host the element to render into; its existing content is replaced.
      */
     fun mount(host: HTMLElement) {
-        val panel = document.createElement("section") as HTMLElement
+        panel = document.createElement("section") as HTMLElement
         panel.className = "counter"
 
         val eyebrow = document.createElement("p") as HTMLParagraphElement

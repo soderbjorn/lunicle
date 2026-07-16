@@ -41,4 +41,27 @@ object ApiRoutes {
 
     /** `POST` — increments the counter and returns the new [CounterState]. */
     const val COUNTER_INCREMENT: String = "/api/counter/increment"
+
+    /** `GET` — returns the caller's [SessionState]. Never 401s; signed out is a state, not an error. */
+    const val SESSION: String = "/api/session"
+
+    /** `POST` — exchanges a [GoogleCodeRequest] for a session. Returns the new [SessionState]. */
+    const val AUTH_GOOGLE: String = "/api/auth/google"
+
+    /** `POST` — drops the caller's session. Returns the signed-out [SessionState]. */
+    const val SIGN_OUT: String = "/api/auth/signout"
+
+    /**
+     * `GET` — where the GitHub popup is sent to begin. Not called by
+     * [LunicleApi]; the browser navigates a popup window here, because GitHub
+     * refuses to be framed and offers no JS SDK to hide the fact.
+     */
+    const val AUTH_GITHUB_START: String = "/auth/github/start"
+
+    /**
+     * `GET` — where GitHub returns the popup to. Registered as the OAuth app's
+     * Authorization callback URL, so this string is duplicated in GitHub's
+     * console and cannot be renamed unilaterally. See docs/oauth-instructions.html.
+     */
+    const val AUTH_GITHUB_CALLBACK: String = "/auth/github/callback"
 }

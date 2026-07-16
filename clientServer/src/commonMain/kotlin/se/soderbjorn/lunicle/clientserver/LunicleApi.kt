@@ -17,6 +17,9 @@ import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 
@@ -76,4 +79,42 @@ class LunicleApi(
      */
     suspend fun increment(): CounterState =
         httpClient.post(baseUrl + ApiRoutes.COUNTER_INCREMENT).body()
+
+    /**
+     * Who, if anyone, this browser is signed in as — and which providers this
+     * deployment can offer.
+     *
+     * Never throws for being signed out: that is a [SessionState] with a null
+     * user, not a failure. Only transport and parse failures throw.
+     *
+     * @return the caller's [SessionState].
+     */
+    suspend fun session(): SessionState =
+        httpClient.get(baseUrl + ApiRoutes.SESSION).body()
+
+    /**
+     * Trade a Google authorization code for a session.
+     *
+     * The code comes from the popup, which the *view* owns — Google's SDK is
+     * browser-only, so the platform opens the popup and hands the code here.
+     * That keeps this API and the view model free of anything Google-shaped.
+     *
+     * @param code the authorization code from `initCodeClient`'s callback.
+     * @return the now signed-in [SessionState].
+     * @throws Exception if the server rejects the code or cannot reach Google.
+     */
+    suspend fun signInWithGoogle(code: String): SessionState =
+        httpClient.post(baseUrl + ApiRoutes.AUTH_GOOGLE) {
+            contentType(ContentType.Application.Json)
+            setBody(GoogleCodeRequest(code))
+        }.body()
+
+    /**
+     * Drop this browser's session.
+     *
+     * @return the signed-out [SessionState].
+     * @throws Exception on any transport or parse failure.
+     */
+    suspend fun signOut(): SessionState =
+        httpClient.post(baseUrl + ApiRoutes.SIGN_OUT).body()
 }

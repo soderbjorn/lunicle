@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLElement
 import se.soderbjorn.lunicle.client.viewmodel.CounterBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
 
 /**
  * Kotlin/JS main entry point. Defers [start] to `window.onload` so `#app` is
@@ -43,14 +44,28 @@ private fun start() {
         return
     }
 
-    val viewModel = CounterBackingViewModel()
-    val view = CounterView(viewModel)
-    view.mount(host)
+    val counterViewModel = CounterBackingViewModel()
+    val counterView = CounterView(counterViewModel)
+    counterView.mount(host)
+
+    // Mounted into the counter's panel rather than beside it, so the sign-in row
+    // sits inside the same card. The panel is the view's, so ask for it rather
+    // than reaching into the DOM by class name from here.
+    val sessionViewModel = SessionBackingViewModel()
+    val signInView = SignInView(sessionViewModel)
+    signInView.mount(counterView.panel)
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    // Two collectors, not one: the two view models are independent and a
+    // combine() would couple every counter tick to a session re-render for no
+    // benefit.
     scope.launch {
-        viewModel.stateFlow.collect { state -> view.render(state) }
+        counterViewModel.stateFlow.collect { state -> counterView.render(state) }
+    }
+    scope.launch {
+        sessionViewModel.stateFlow.collect { state -> signInView.onState(state) }
     }
 
-    viewModel.start()
+    counterViewModel.start()
+    sessionViewModel.start()
 }

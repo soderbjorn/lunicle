@@ -126,9 +126,12 @@ fun Application.module() {
     }
 
     val webDistPath = System.getProperty("lunicle.webDist")
+    val oauthConfig = resolveOAuthConfig()
+    val sessions = SessionStore()
 
     routing {
         counterRoutes()
+        authRoutes(oauthConfig, sessions)
         if (webDistPath != null) {
             staticFiles("/", File(webDistPath)) {
                 default("index.html")

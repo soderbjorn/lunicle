@@ -47,6 +47,14 @@ tasks.named("processResources") {
 
 dependencies {
     implementation(projects.clientServer)
+    // The HTTP *client* engine, for calling Google and GitHub during sign-in.
+    // clientServer already pulls CIO in for its jvmMain, but as an
+    // `implementation` dependency — so it reaches this module's runtime
+    // classpath transitively and its compile classpath not at all. Depending on
+    // that would mean an unrelated edit in clientServer could turn the engine
+    // into a NoClassDefFoundError here, at runtime, during a sign-in. Naming it
+    // is a line of build script against a bad afternoon.
+    implementation(libs.ktor.client.cio)
     implementation(libs.ktor.serverCore)
     implementation(libs.ktor.serverNetty)
     implementation(libs.ktor.serverContentNegotiation)
