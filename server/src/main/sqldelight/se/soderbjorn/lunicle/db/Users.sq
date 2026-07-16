@@ -1,0 +1,66 @@
+-- Everyone who has ever signed in.
+--
+-- A row is created on first sign-in and then found again on every later one, so
+-- the identity here outlives any single session and any redeploy. That is what
+-- lets a counter belong to someone.
+
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- AuthProvider.name — GOOGLE or GITHUB. Stored as the enum's name rather
+    -- than its ordinal: an ordinal silently remaps if anyone ever reorders the
+    -- enum, and the failure would be users quietly resolving to the wrong
+    -- provider. The wire format already commits to these strings (see
+    -- AuthProvider's docs in SessionState.kt), so this costs nothing new.
+    provider TEXT NOT NULL,
+
+    -- The provider's own stable id for this account: Google's `sub`, GitHub's
+    -- numeric `id`. TEXT for both, because Google's is not a number and
+    -- GitHub's does not need to be one.
+    --
+    -- Deliberately NOT the email or the display name. Both are mutable — a user
+    -- can change either at any time — and matching on them would either create a
+    -- duplicate account on rename or, worse, hand one user another's row if an
+    -- address were ever recycled. `sub` and `id` are the only values the
+    -- providers promise not to reuse.
+    provider_id TEXT NOT NULL,
+
+    -- What to render. Refreshed on every sign-in, so a rename upstream follows
+    -- the user here rather than pinning them to whatever they were called the
+    -- first time.
+    display_name TEXT NOT NULL,
+
+    created_at INTEGER NOT NULL,
+
+    -- The identity, as far as this server is concerned. Scoped by provider, not
+    -- global: nothing stops Google and GitHub from handing out the same id
+    -- string, and they are different people when they do.
+    UNIQUE (provider, provider_id)
+);
+
+-- Find an existing identity. The hot path — this runs on every sign-in.
+findByProviderIdentity:
+SELECT id, provider, provider_id, display_name
+FROM users
+WHERE provider = ? AND provider_id = ?;
+
+findById:
+SELECT id, provider, provider_id, display_name
+FROM users
+WHERE id = ?;
+
+-- Create-or-refresh, in one statement.
+--
+-- The UPSERT matters: two sign-ins racing for the same new account would both
+-- see "no such user" on a find-then-insert and one would fail the UNIQUE
+-- constraint. ON CONFLICT makes the second a rename instead of an error, which
+-- is also exactly the behaviour we want for the display name on every ordinary
+-- repeat sign-in.
+--
+-- RETURNING avoids a second round-trip for the id, and works because the
+-- 3.38 dialect is declared in server/build.gradle.kts.
+upsert:
+INSERT INTO users (provider, provider_id, display_name, created_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (provider, provider_id) DO UPDATE SET display_name = excluded.display_name
+RETURNING id, provider, provider_id, display_name;

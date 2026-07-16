@@ -1,0 +1,47 @@
+-- Live sessions: the ids browsers carry in their cookie, and who each one is.
+--
+-- Persisted rather than held in memory, which is the change that makes a
+-- redeploy stop signing everyone out. The cost is that a session id is now
+-- written down: it is a bearer credential, so this table is as sensitive as the
+-- users table, and a row here is enough to be someone.
+
+CREATE TABLE sessions (
+    -- The cookie value itself: 32 random bytes, base64url. Not an autoincrement
+    -- id — a guessable session id is the whole attack. See SessionStore.
+    id TEXT PRIMARY KEY NOT NULL,
+
+    user_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+
+    -- ON DELETE CASCADE so deleting a user cannot leave a session pointing at
+    -- nobody. Enforced only because Database.kt sets `PRAGMA foreign_keys = ON`
+    -- — SQLite ignores foreign keys by default, which makes this line look like
+    -- it works when it doesn't.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Every authenticated request goes through this, so it is the single hottest
+-- query in the server.
+findUser:
+SELECT users.id, users.provider, users.provider_id, users.display_name
+FROM sessions
+JOIN users ON users.id = sessions.user_id
+WHERE sessions.id = ?;
+
+insert:
+INSERT INTO sessions (id, user_id, created_at)
+VALUES (?, ?, ?);
+
+-- Idempotent by construction: deleting an unknown id affects zero rows and is
+-- not an error. Signing out twice is not a failure.
+delete:
+DELETE FROM sessions WHERE id = ?;
+
+-- Drop sessions older than a cutoff. Called at startup rather than on a timer:
+-- without it this table only ever grows, since nothing else deletes a row for a
+-- user who simply closes the tab and never signs out.
+deleteOlderThan:
+DELETE FROM sessions WHERE created_at < ?;
+
+countAll:
+SELECT count(*) FROM sessions;

@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.kotlinJvm)
     alias(libs.plugins.kotlinSerialization)
     alias(libs.plugins.ktor)
+    alias(libs.plugins.sqldelight)
     application
 }
 
@@ -10,6 +11,52 @@ version = "1.0.0"
 
 kotlin {
     jvmToolchain(21)
+}
+
+// SQLDelight generates typed Kotlin from the .sq files in
+// src/main/sqldelight/. It lives in :server and nowhere else, on purpose: the
+// database is the *server's*. A client never opens it — it cannot, the file is
+// on Railway's volume — and reaches it only through LunicleApi over HTTP. So
+// this is a plain JVM use of a library that happens to also support
+// multiplatform, and the multiplatform half goes unused.
+sqldelight {
+    databases {
+        create("LunicleDatabase") {
+            packageName.set("se.soderbjorn.lunicle.db")
+
+            // The default dialect is SQLite 3.18, which predates both features
+            // the schema leans on: UPSERT (`ON CONFLICT DO UPDATE`, 3.24) and
+            // `RETURNING` (3.35). Without this the .sq files fail to compile,
+            // and the error names the syntax rather than the dialect, which
+            // sends you looking in the wrong file.
+            //
+            // Safe to declare because the engine underneath is whatever
+            // sqlite-jdbc bundles, which is far newer than 3.38 — the dialect
+            // only governs what SQLDelight's compiler will accept.
+            dialect(libs.sqldelight.sqlite338Dialect)
+
+            // Where the committed schema snapshots live — one `<version>.db`
+            // per released schema, checked in alongside the .sq files.
+            //
+            // Setting this is also what *registers* the
+            // `generateMainLunicleDatabaseSchema` task; without it the task
+            // does not exist and verifyMigrations below has nothing to verify
+            // against. That is a confusing failure to meet cold, because the
+            // error names the missing .db file rather than the missing setting.
+            schemaOutputDirectory.set(file("src/main/sqldelight/databases"))
+
+            // Fail the build if a .sq schema change lands without a matching
+            // .sqm migration. The volume is the point of this half of the
+            // stage: from the first deploy there is data on it that a careless
+            // schema edit would silently destroy, and this is the only thing
+            // that would notice.
+            //
+            // The workflow this imposes, for later: change a .sq, add a
+            // `<n>.sqm` describing how to get there from version n, then re-run
+            // `generateMainLunicleDatabaseSchema` to snapshot the new version.
+            verifyMigrations.set(true)
+        }
+    }
 }
 
 // The Kotlin/JS bundle the server serves. Production (minified, DCE'd) rather
@@ -61,6 +108,10 @@ dependencies {
     implementation(libs.ktor.serverDefaultHeaders)
     implementation(libs.ktor.serverCallLogging)
     implementation(libs.ktor.serializationKotlinxJson)
+    // SQLite, via SQLDelight's JDBC driver. Pulls org.xerial:sqlite-jdbc — and
+    // with it the SQLite engine as a bundled native library — in transitively.
+    // See the shadowJar note at the bottom of this file.
+    implementation(libs.sqldelight.sqliteDriver)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.logback)
@@ -91,6 +142,19 @@ tasks.named<JavaExec>("run") {
     val frameAncestors = providers.gradleProperty("frameAncestors")
         .getOrElse("https://lunamux.dev")
     systemProperty("lunicle.frameAncestors", frameAncestors)
+
+    // Where a local run keeps its SQLite file. Under build/ so that `./gradlew
+    // clean` discards it: a local database is scratch data, and the ability to
+    // throw it away and watch the schema get created from nothing is worth
+    // having — it is the one code path production runs exactly once, on a fresh
+    // volume, where getting it wrong is most expensive.
+    //
+    // Deliberately NOT the deployed default (/data/lunicle.db): a developer
+    // machine has no such directory, and silently creating one at the
+    // filesystem root would be rude. See resolveDatabasePath() in Database.kt.
+    val databasePath = providers.gradleProperty("databasePath")
+        .getOrElse(layout.buildDirectory.file("lunicle.db").get().asFile.absolutePath)
+    systemProperty("lunicle.databasePath", databasePath)
 
     // OAuth credentials, passed by scripts/dev-local.sh from a gitignored .env
     // (see .env.example). Same -P-not-environment reasoning as frameAncestors,
