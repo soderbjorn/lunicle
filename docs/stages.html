@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunamux Issues — Build stages</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.65 var(--mono);
+  padding:48px 24px 120px;
+}
+.wrap{max-width:920px;margin:0 auto}
+
+header.top{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+.eyebrow{color:var(--green-dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+h1{color:var(--head);font-size:30px;line-height:1.25;margin:0 0 14px;font-weight:600}
+h1 .glow{color:var(--green-hi);text-shadow:0 0 18px var(--glow)}
+.lede{color:var(--green-dim);margin:0;max-width:70ch}
+
+h2{
+  color:var(--head);font-size:19px;margin:0 0 6px;font-weight:600;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2 .num{
+  color:var(--green);font-size:12px;letter-spacing:.12em;
+  border:1px solid var(--border-hi);border-radius:3px;padding:3px 8px;
+  text-shadow:0 0 12px var(--glow);flex:none;
+}
+h3{color:var(--green-hi);font-size:14px;letter-spacing:.04em;margin:32px 0 10px;font-weight:600}
+p{margin:0 0 14px;max-width:74ch}
+small{color:var(--green-dim)}
+code{
+  background:var(--panel-2);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px;color:var(--green-hi);font-size:.9em;
+}
+strong{color:var(--head);font-weight:600}
+a{color:var(--green-hi)}
+
+section.stage{
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  padding:28px 30px;margin:0 0 26px;
+}
+.subtitle{color:var(--green-dim);margin:0 0 22px;font-size:13px}
+
+ul{margin:0 0 14px;padding-left:0;list-style:none}
+li{position:relative;padding-left:20px;margin-bottom:9px;max-width:74ch}
+li::before{content:"›";position:absolute;left:4px;color:var(--green);opacity:.75}
+li ul{margin-top:9px}
+
+pre{
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;
+  padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:13px;line-height:1.6;
+  color:var(--body);
+}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+.box{border-radius:5px;padding:16px 18px;margin:18px 0;border:1px solid var(--border)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;margin:0 0 8px;font-weight:600}
+.warn{background:rgba(254,188,46,.05);border-color:rgba(254,188,46,.35)}
+.warn .lbl{color:var(--yellow)}
+.stop{background:rgba(255,95,87,.05);border-color:rgba(255,95,87,.35)}
+.stop .lbl{color:var(--red)}
+.ok{background:rgba(40,200,64,.05);border-color:rgba(40,200,64,.3)}
+.ok .lbl{color:var(--traffic-g)}
+.note{background:var(--panel-2)}
+.note .lbl{color:var(--blue)}
+
+table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:13px}
+th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel-2);color:var(--green-hi);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+td.yes{color:var(--traffic-g)}
+td.no{color:var(--red)}
+
+.exit{border-top:1px dashed var(--green-dimmer);margin-top:26px;padding-top:20px}
+.exit .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--traffic-g);margin:0 0 10px;font-weight:600}
+
+.chg{background:var(--panel-2);border:1px solid var(--border);border-radius:6px;padding:22px 26px;margin-bottom:40px}
+.chg h3{margin-top:0}
+
+footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color:var(--green-dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Lunamux / Issue tracker</p>
+  <h1>Build <span class="glow">stages</span></h1>
+  <p class="lede">Two stages, each one deployable and each one proving infrastructure rather than
+  product. Revised from <code>stages.txt</code>.</p>
+</header>
+
+<div class="chg">
+  <h3>What changed from stages.txt</h3>
+  <ul>
+    <li><strong>Stages 2 and 3 merged.</strong> OAuth needs somewhere to put users; the database
+      needs a reason to exist. Splitting them meant Stage 2 would have had to invent a throwaway
+      session mechanism it then threw away in Stage 3.</li>
+    <li><strong>The iframe embed moves into Stage 1.</strong> Framing is where the unpleasant
+      surprises live, and it's the thing the whole design is premised on. Proving the deploy works
+      standalone proves the wrong thing.</li>
+    <li><strong>Multi-project support stays out entirely</strong> — your call, and I agree with the
+      reasoning. Nobody is using this and won't for a long time. See <em>Deliberately deferred</em>
+      at the bottom for the one place this leaves a mark.</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════════════ STAGE 1 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Stage 1</span> Walking skeleton, embedded</h2>
+  <p class="subtitle">A counter, in an iframe, on the real site, on the real domain, from a real
+  container. No auth, no persistence.</p>
+
+  <h3>Deliverables</h3>
+  <ul>
+    <li>Kotlin Multiplatform project: <code>:clientServer</code> (shared DTOs + HttpClient) →
+      <code>:client</code> (backing view model) → <code>:server</code> (Ktor, JVM) /
+      <code>:web</code> (Kotlin/JS IR). The server serves the JS bundle.</li>
+    <li>The web view is built with Kotlin DOM APIs — no Compose — styled to the Lunamux palette.</li>
+    <li>A <code>CounterBackingViewModel</code> holding the count in memory, exposing a single
+      <code>StateFlow&lt;State&gt;</code> for the whole view, with an <code>onIncrementTapped()</code>
+      intent. The view subscribes and re-renders the display.</li>
+    <li>Docker container, deployed to Railway.</li>
+    <li>Subdomain <code>issues.lunamux.dev</code>, Cloudflare DNS → Railway.</li>
+    <li><strong>A secret <code>Issues</code> tab on lunamux-web</strong> that embeds it — details
+      below.</li>
+    <li>An instructions HTML: domain config, Railway config, Docker deploy.</li>
+  </ul>
+
+  <div class="stop">
+    <p class="lbl">Do this before the first deploy, not after</p>
+    <p>Set the Railway <strong>hard</strong> usage limit (Workspace → Usage → Usage Limits). The
+    <em>soft</em> limit only emails you; the <strong>hard</strong> limit is the one that actually
+    takes workloads offline, which is the behaviour you asked for when you wrote <em>"I need to
+    ensure that I cannot get surprise bills due to unsurprising traffic."</em> Minimum is $10, set
+    per-workspace. It takes two minutes and it belongs in front of the first public URL, not behind
+    it.</p>
+  </div>
+
+  <h3>The secret Issues tab</h3>
+  <p>Good news: lunamux-web already does exactly this for the Demo page, so this is a copy of a
+  pattern that works rather than a new one. The demo iframe ships with a <code>data-src</code> and
+  only gets a real <code>src</code> the first time its page is shown, so visitors who never open it
+  never load the bundle. The Issues tab wants the same treatment.</p>
+
+  <p>Four small edits, gated on a query parameter:</p>
+
+<pre><span class="c">// content.js — nav is data, so the gate goes here.</span>
+<span class="c">// Only push the tab when ?issues=1 is present.</span>
+nav: [
+  { id: "about",    label: "About",    href: "#/" },
+  <span class="c">/* … */</span>
+  <span class="c">// appended at runtime by render.js when the param is set</span>
+]
+
+<span class="c">// render.js — mirror the demo page exactly</span>
+document.getElementById("page-issues").innerHTML =
+  '&lt;section class="issues"&gt;' +
+    '&lt;iframe id="issues-iframe" title="Lunamux issues" ' +
+      'data-src="https://issues.lunamux.dev/"&gt;&lt;/iframe&gt;' +
+  '&lt;/section&gt;';
+
+<span class="c">// script.js — register the page + lazy-load, like ensureDemoLoaded()</span>
+var pages = { <span class="c">/* … */</span> issues: document.getElementById("page-issues") };</pre>
+
+  <p>The gate itself is just <code>new URLSearchParams(location.search).has("issues")</code>,
+  checked before the nav is rendered. The URL you'd use is
+  <code>https://lunamux.dev/?issues=1#/issues</code> — note the param lives in the query string, before
+  the hash, so it survives the hash router untouched.</p>
+
+  <div class="warn">
+    <p class="lbl">"Secret" here means undiscoverable, not protected</p>
+    <p>lunamux-web is a static site. The tab, the parameter name and the
+    <code>issues.lunamux.dev</code> URL are all sitting in <code>content.js</code> for anyone who
+    opens view-source, and the server itself is publicly reachable regardless of what the marketing
+    site does or doesn't link to. That is completely fine for what you actually want here — no
+    links, nobody stumbles in — as long as you don't later mistake it for an access control. When
+    Stage 2 adds real users, the server enforces that itself. The query param never guards anything
+    but the tab's visibility.</p>
+  </div>
+
+  <h3>What Stage 1 is really testing</h3>
+  <p>The counter is set dressing. The questions being answered are: does Kotlin/JS produce a bundle
+  that actually runs when served from the JVM server; does the container build and boot on Railway;
+  does Cloudflare → Railway resolve with a working certificate; and <strong>does the whole thing
+  survive being put in an iframe on another origin</strong>. That last one is why the embed can't
+  wait.</p>
+
+  <p>Concretely, framing means the server must send
+  <code>Content-Security-Policy: frame-ancestors https://lunamux.dev</code>. That is the only
+  mechanism that works — <code>X-Frame-Options: ALLOW-FROM</code> is dead and no browser honours it.
+  Get it wrong and you get a blank rectangle with a console error, which is a five-minute fix in
+  Stage 1 and a confusing detour later.</p>
+
+  <div class="ok">
+    <p class="lbl">One quiet piece of luck</p>
+    <p><code>issues.lunamux.dev</code> and <code>lunamux.dev</code> share a registrable domain, so
+    the embed is <strong>same-site</strong>. Browsers key their third-party restrictions on site, not
+    origin, which means cookies just work in the iframe and you need none of the misery —
+    CHIPS, Storage Access API, partitioning — that a genuinely cross-site embed would force on you in
+    Stage 2. This is worth protecting: if the tracker ever moves to a different apex domain, that
+    decision quietly costs you the auth model.</p>
+  </div>
+
+  <div class="exit">
+    <p class="lbl">Exit criteria</p>
+    <p>Load <code>https://lunamux.dev/?issues=1#/issues</code> in Chrome <em>and</em> Safari. The
+    counter increments inside the iframe. Redeploy the container; the count resets to zero and that's
+    correct. The Railway hard limit is set. No console errors.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STAGE 2 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Stage 2</span> Identity and persistence</h2>
+  <p class="subtitle">Sign in with Google and GitHub. Real users in a real database. Still no
+  email, still no issues.</p>
+
+  <h3>Deliverables</h3>
+  <ul>
+    <li>OAuth sign-in with Google and GitHub. No custom email accounts, no mail transmission.</li>
+    <li>An embedded SQLite database on a Railway volume.</li>
+    <li>A <code>users</code> table (provider, provider id, display name) and a per-user persisted
+      counter — the counter is still the POC payload, it just belongs to someone now and survives
+      redeploys.</li>
+    <li>An instructions HTML: Google Cloud console and GitHub OAuth app configuration.</li>
+    <li>Instructions and/or scripts for creating the Railway volume.</li>
+  </ul>
+
+  <div class="stop">
+    <p class="lbl">The one that will bite: OAuth cannot be framed</p>
+    <p>Google's consent endpoint responds with <code>X-Frame-Options: DENY</code>. I verified this
+    directly:</p>
+<pre>$ curl -I "https://accounts.google.com/o/oauth2/v2/auth?client_id=…"
+HTTP/2 302
+<span class="k">x-frame-options: DENY</span>          ← the entire answer</pre>
+    <p>It is unframeable, permanently, by design, and there is no header you can set on your side to
+    change that. A full-page redirect flow inside the iframe is equally dead — it would try to
+    navigate the frame to Google, and Google refuses to be the thing in the frame.</p>
+    <p>The supported path is a <strong>popup</strong>: Google Identity Services'
+    <code>initCodeClient</code> with <code>ux_mode:'popup'</code>. Which in turn needs
+    <code>allow="identity-credentials-get"</code> on the iframe element in lunamux-web, and
+    <code>Cross-Origin-Opener-Policy: same-origin-allow-popups</code> on your server — without the
+    latter the popup opens and then can't talk back to the opener, which presents as a login that
+    silently does nothing.</p>
+    <p><strong>Test the sign-in through the iframe from the first commit of this stage.</strong>
+    Tested at <code>issues.lunamux.dev</code> directly it will pass, and that pass tells you nothing
+    about the configuration you're actually shipping.</p>
+  </div>
+
+  <h3>Database: SQLite on a volume</h3>
+  <p>Attach a Railway volume and put the database file on it. The container's own filesystem is a
+  writable layer that is discarded on every redeploy — this is precisely the concern you raised in
+  the plan, and the volume is the answer to it. The file lives at the mount path; the deploy replaces
+  everything around it and leaves it alone.</p>
+
+  <p>Open it with these pragmas and you can stop thinking about it:</p>
+<pre>journal_mode = WAL      <span class="c">-- concurrent readers alongside the writer</span>
+busy_timeout = 5000     <span class="c">-- wait rather than throw SQLITE_BUSY</span>
+synchronous  = NORMAL   <span class="c">-- correct and fast under WAL</span>
+foreign_keys = ON       <span class="c">-- off by default, which surprises everyone</span></pre>
+
+  <div class="note">
+    <p class="lbl">The implication worth naming out loud</p>
+    <p>A volume binds you to <strong>exactly one instance</strong>. Railway volumes attach to a
+    single service, and SQLite's locking is filesystem locks — which coordinate correctly between
+    threads on one machine and not at all between two. Two instances on one SQLite file over a
+    network filesystem is the classic silent-corruption recipe, not a "runs a bit slow" problem.</p>
+    <p>This is the right trade for now and for a long while — one container will serve your traffic
+    without noticing it — but it means <em>horizontal scaling is the thing you gave up</em>, and the
+    day you need it, the move is to Postgres rather than to more containers. §7 of the analysis
+    covers what that migration looks like. Knowing you chose this beats discovering it.</p>
+  </div>
+
+  <p>Backups are deliberately not in this stage. A <code>VACUUM INTO</code> on a schedule is the
+  cheap version when you want one; Litestream is the real answer and belongs with real data.</p>
+
+  <div class="exit">
+    <p class="lbl">Exit criteria</p>
+    <p>Sign in with Google <em>inside the iframe</em>, in Chrome and Safari. Sign in with GitHub the
+    same way. Increment the counter, redeploy the container, sign back in — <strong>the count is
+    still there</strong>. That last step is the whole stage in one action: it proves identity and
+    persistence together, which is exactly why they merged.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ DEFERRED ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Later</span> Deliberately deferred</h2>
+  <p class="subtitle">Named here so they're choices, not oversights.</p>
+
+  <table>
+    <tr><th>Deferred</th><th>Why it's safe to wait</th></tr>
+    <tr>
+      <td><strong>Multi-project support</strong></td>
+      <td>Nobody's using it and won't for a long time; the shape will have stabilised by then. The
+      only cost is that URLs minted now are single-project ones, so adding <code>/p/{slug}/</code>
+      later means either a redirect or accepting that Lunamux is the unprefixed default. Both are
+      fine. It's a real cost, just a small and well-understood one.</td>
+    </tr>
+    <tr>
+      <td><strong>Email — sending and receiving</strong></td>
+      <td>Entirely dependent on self-service accounts, which OAuth removes the need for. Resend +
+      Cloudflare Email Routing whenever it's wanted; §8 of the analysis has it costed and configured.</td>
+    </tr>
+    <tr>
+      <td><strong>Issues themselves</strong></td>
+      <td>Correct to be last. Once identity, persistence, framing and deploys are proven, issues are
+      just a schema and some views — the ordinary part of the work, and the part with no infrastructure
+      risk in it.</td>
+    </tr>
+    <tr>
+      <td><strong>Litestream / real backups</strong></td>
+      <td>There is no data worth protecting until there is. Worth wiring up before the first issue
+      you'd be upset to lose, and not before.</td>
+    </tr>
+    <tr>
+      <td><strong>Docker config surface, open-sourcing</strong></td>
+      <td>Configurability is shaped by what turns out to vary, which you'll know after running it
+      yourself for a while. Guessing now means guessing wrong.</td>
+    </tr>
+  </table>
+</section>
+
+<footer>
+  Revised from stages.txt · companion to analysis.html and answers.html · 2026-07-16
+</footer>
+
+</div>
+</body>
+</html>

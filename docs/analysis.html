@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue Tracker — Feasibility &amp; Infrastructure Analysis</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+  --maxw:1000px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font-family:var(--mono); font-size:15px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 0%, rgba(77,200,245,.07), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(77,200,245,.04), transparent 70%);
+}
+.wrap{position:relative; z-index:1; max-width:var(--maxw); margin:0 auto; padding:0 24px 120px}
+
+/* header */
+header{padding:64px 0 32px; border-bottom:1px solid var(--border); margin-bottom:40px}
+.eyebrow{color:var(--green-dim); font-size:12px; letter-spacing:.18em; text-transform:uppercase; margin:0 0 14px}
+h1{color:var(--head); font-size:30px; line-height:1.25; margin:0 0 16px; letter-spacing:-.01em}
+.sub{color:var(--green-dim); margin:0; font-size:14px}
+.dot{display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green-hi);
+  box-shadow:0 0 10px var(--glow); margin-right:9px; vertical-align:middle;
+  animation:dotGlow 2.2s ease-in-out infinite}
+@keyframes dotGlow{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* toc */
+.toc{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:22px 26px; margin:0 0 56px}
+.toc h2{font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--green-dim); margin:0 0 14px}
+.toc ol{margin:0; padding-left:22px; columns:2; column-gap:36px}
+.toc li{margin:0 0 7px; break-inside:avoid}
+.toc a{color:var(--green); text-decoration:none; font-size:13.5px}
+.toc a:hover{color:var(--green-hi); text-decoration:underline}
+@media(max-width:680px){.toc ol{columns:1}}
+
+/* sections */
+section{margin:0 0 64px; scroll-margin-top:24px}
+h2.sec{color:var(--head); font-size:21px; margin:0 0 6px; letter-spacing:-.01em; display:flex; gap:12px; align-items:baseline}
+h2.sec .num{color:var(--green-dimmer); font-size:14px; flex:none}
+.deck{color:var(--green-dim); font-size:13.5px; margin:0 0 24px; padding-left:34px; font-style:italic}
+h3{color:var(--green-hi); font-size:15.5px; margin:30px 0 10px; letter-spacing:.01em}
+h4{color:var(--head); font-size:14px; margin:22px 0 8px}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 14px; padding-left:22px}
+li{margin:0 0 7px}
+strong{color:var(--head); font-weight:600}
+em{color:var(--green); font-style:italic}
+a{color:var(--green)}
+code{background:var(--panel-2); border:1px solid var(--green-dimmer); border-radius:4px;
+  padding:1px 5px; font-size:12.5px; color:var(--green-hi); white-space:nowrap}
+pre{background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:16px 18px;
+  overflow-x:auto; margin:0 0 18px; font-size:12.5px; line-height:1.6}
+pre code{background:none; border:none; padding:0; white-space:pre; color:var(--body)}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+/* callouts */
+.box{border-left:3px solid; border-radius:0 8px 8px 0; padding:14px 18px; margin:0 0 18px; background:var(--panel)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; margin:0 0 6px}
+.rec{border-color:var(--traffic-g)} .rec .lbl{color:var(--traffic-g)}
+.warn{border-color:var(--yellow)} .warn .lbl{color:var(--yellow)}
+.danger{border-color:var(--red)} .danger .lbl{color:var(--red)}
+.info{border-color:var(--blue)} .info .lbl{color:var(--blue)}
+
+/* verdict strip */
+.verdict{display:flex; gap:14px; align-items:flex-start; background:var(--panel-2);
+  border:1px solid var(--border-hi); border-radius:8px; padding:14px 18px; margin:0 0 26px}
+.verdict .tag{flex:none; font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--bg); background:var(--green-hi); border-radius:4px; padding:3px 9px; font-weight:700; margin-top:2px}
+.verdict p{margin:0; color:var(--head); font-size:14px}
+
+/* tables */
+.tw{overflow-x:auto; margin:0 0 18px; border:1px solid var(--border); border-radius:8px}
+table{border-collapse:collapse; width:100%; font-size:13px; min-width:520px}
+th{background:var(--panel-2); color:var(--green-hi); text-align:left; padding:10px 14px;
+  font-weight:600; border-bottom:1px solid var(--border); font-size:12px;
+  letter-spacing:.06em; text-transform:uppercase; white-space:nowrap}
+td{padding:10px 14px; border-bottom:1px solid var(--green-dimmer); vertical-align:top}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(77,200,245,.03)}
+.yes{color:var(--traffic-g); font-weight:600}
+.no{color:var(--red); font-weight:600}
+.meh{color:var(--yellow); font-weight:600}
+td small{color:var(--green-dim); font-size:11.5px}
+
+/* footer */
+footer{border-top:1px solid var(--border); padding-top:26px; color:var(--green-dim); font-size:12.5px}
+footer a{color:var(--green-dim)}
+hr{border:none; border-top:1px solid var(--green-dimmer); margin:26px 0}
+.stack{background:var(--panel); border:1px solid var(--border-hi); border-radius:10px; padding:4px 24px 20px; margin:0 0 26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow"><span class="dot"></span>Lunamux · Infrastructure Analysis</p>
+  <h1>Issue Tracker: feasibility, architecture &amp; infrastructure</h1>
+  <p class="sub">Commentary and recommendations on each point in <code>plan.txt</code> — hosting, database, email, DNS, embedding, multi-tenancy, theming and packaging. Researched against current vendor documentation, July 2026.</p>
+</header>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#verdict">Verdict &amp; recommended stack</a></li>
+    <li><a href="#multi">Multi-project support</a></li>
+    <li><a href="#embed">Embedding &amp; the auth problem</a></li>
+    <li><a href="#arch">Kotlin Multiplatform architecture</a></li>
+    <li><a href="#hosting">Hosting &amp; surprise bills</a></li>
+    <li><a href="#db">Database: SQLite vs Postgres</a></li>
+    <li><a href="#scaling">Scaling &amp; instances</a></li>
+    <li><a href="#email">Email: sending &amp; receiving</a></li>
+    <li><a href="#dns">Domains &amp; DNS</a></li>
+    <li><a href="#theme">Theming</a></li>
+    <li><a href="#docker">Docker &amp; open source</a></li>
+    <li><a href="#cost">Cost model</a></li>
+    <li><a href="#order">Suggested order of work</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================ -->
+<section id="verdict">
+<h2 class="sec"><span class="num">01</span>Verdict &amp; recommended stack</h2>
+<p class="deck">The short version, before the reasoning.</p>
+
+<div class="verdict">
+  <span class="tag">Feasible</span>
+  <p>Every part of this plan works. Nothing here requires a compromise you'd regret. Two things are harder than they look — <strong>OAuth inside an iframe</strong>, and <strong>cookies once you embed on domains you don't own</strong> — and one thing is easier than you fear: <strong>surprise bills are genuinely preventable</strong> on Railway, unlike on most clouds.</p>
+</div>
+
+<div class="stack">
+<h3>Recommended stack</h3>
+<div class="tw">
+<table>
+<thead><tr><th>Concern</th><th>Recommendation</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Tenancy</td><td><strong>Multi-project, single-operator</strong> — one instance, projects declared in <code>projects.yaml</code></td><td>Software you ship, not a platform you run. Projects are config; accounts are public. See §2.</td></tr>
+<tr><td>Hosting</td><td><strong>Railway Hobby</strong>, $5/mo, hard usage limit set to $10</td><td>Only PaaS with a spend cap that actually <em>enforces</em>. See §5.</td></tr>
+<tr><td>Instances</td><td><strong>Exactly one.</strong> Vertical scaling only</td><td>SQLite forbids replicas and Railway enforces it independently. You won't need more. See §7.</td></tr>
+<tr><td>Database</td><td><strong>SQLite</strong> on a Railway volume at <code>/data/app.db</code></td><td>Your workload is 2–3 orders of magnitude inside SQLite's envelope, and it's the only choice that makes self-hosting a one-liner.</td></tr>
+<tr><td>Backups</td><td><strong>Litestream v0.5</strong> → Cloudflare R2, plus a nightly <code>VACUUM INTO</code> dump</td><td>~1 second RPO with real point-in-time recovery. Two independent failure domains.</td></tr>
+<tr><td>Data access</td><td><strong>SQLDelight 2.3.2</strong>, SQLite dialect only</td><td>You already use 2.0.2 in Lunamux. KMP-native. Build-time migration verification.</td></tr>
+<tr><td>Embedding</td><td><strong>iframe</strong> for lunamux.dev; <strong>per-project CNAME</strong> for other projects</td><td>The CNAME is what keeps cookies working off your own domain. See §3 — this is the crux.</td></tr>
+<tr><td>Google sign-in</td><td><code>initCodeClient</code>, <code>ux_mode:'popup'</code>, never redirect-in-frame</td><td>Google's consent screen sends <code>X-Frame-Options: DENY</code>. Popups are top-level windows, so they're unaffected.</td></tr>
+<tr><td>Outbound email</td><td><strong>Resend</strong> free tier, sending from <code>send.lunamux.dev</code></td><td>No credit card, no overage mechanism, 3 000/mo. Subdomain protects the root's reputation.</td></tr>
+<tr><td>Inbound email</td><td><strong>Cloudflare Email Routing</strong> → your soderbjorn.se Gmail</td><td>Free, unlimited, catch-all. Reply via Gmail "Send mail as" through Resend's SMTP.</td></tr>
+<tr><td>Web client</td><td><strong>Kotlin/JS (IR)</strong> + kotlinx-html, backing view models</td><td>Same shape as FramnaFolk and Lunamux's <code>web</code> module. Proven in your own code.</td></tr>
+<tr><td>Packaging</td><td>Multi-stage Gradle → <code>eclipse-temurin:21-jre-alpine</code>, multi-arch</td><td>Vaultwarden's model: SQLite default, one container, env-var config.</td></tr>
+</tbody>
+</table>
+</div>
+<p style="margin:0"><strong>All-in cost: about $5–6/month</strong>, with a hard ceiling of $15 (see §12). Everything else on this list has a free tier you will not outgrow.</p>
+</div>
+
+<h3>The three things worth changing your mind about</h3>
+<ol>
+<li><strong>Railway's hard limit is a kill switch, not a throttle.</strong> It answers your "no surprise bills" requirement exactly — but the way it protects you is by taking your site offline. That is the correct trade for a hobby project; just know that's what you bought.</li>
+<li><strong>Multi-project embedding breaks the cookie story.</strong> Embedding on <code>lunamux.dev</code> is same-site and trivially fine. Embedding on <em>someone else's</em> domain is cross-site, and Safari and Firefox block that by default today. The fix is per-project custom domains, and it's much easier to design in now than to retrofit. This is the single most consequential finding in this document — §3.</li>
+<li><strong>SQLite is the right call, and Postgres-as-an-option is a trap.</strong> Not for performance reasons — for maintenance ones. Supporting both means running your whole test suite against both, forever. §6.</li>
+</ol>
+</section>
+
+<!-- ============================================ -->
+<section id="multi">
+<h2 class="sec"><span class="num">02</span>Multi-project support</h2>
+<p class="deck">Your late addition, and it's load-bearing — it changes the answers in §3, §8 and §10.</p>
+
+<div class="verdict">
+  <span class="tag">The model</span>
+  <p><strong>Multi-project, single-operator.</strong> Each deployment has exactly one operator who owns every project on it — yours has your projects; anyone else deploys their own container for theirs. This is software you ship, not a platform you run, and that distinction removes a category of work.</p>
+</div>
+
+<p>Wanting one server to host issue tracking for several projects, each embeddable in that project's own website, is a reasonable and common shape. It's also the requirement that turns three "trivial" decisions into real ones. Worth designing for now even if Lunamux is the only project for a year, because two of the three are painful to retrofit.</p>
+
+<p><strong>Multi-project earns its keep immediately.</strong> Without it, every project you start needs its own container, volume, domain and Railway service — and Railway's $5 floor applies per service. With it, a new project is a five-line entry in a config file on infrastructure you already pay for. That's the feature paying for itself at project number two.</p>
+
+<h3>The data model is the easy part</h3>
+<p>A <code>project</code> table with a slug, and a membership table joining accounts to projects with a role. Issues belong to a project. Accounts are <strong>global</strong> — one account, one verified email, membership in many projects. Don't scope accounts per project; you'd be re-verifying the same human's email once per project, and email verification is your most abuse-prone endpoint (§8).</p>
+
+<pre><code><span class="c">-- the shape, roughly</span>
+account(id, email UNIQUE, email_verified_at, google_sub UNIQUE NULL, display_name)
+project(id, slug UNIQUE, name, theme_json, allowed_origins, created_by)
+membership(account_id, project_id, role)  <span class="c">-- owner | maintainer | reporter</span>
+issue(id, project_id, number, title, body, state, author_id, ...)
+</code></pre>
+
+<p>Give issues a <strong>per-project sequential <code>number</code></strong> alongside the global <code>id</code> — people expect <code>#42</code> to mean the 42nd issue in <em>their</em> project, not the 42nd row in your table. This is a small thing that is deeply annoying to add later, once URLs are public and bookmarked.</p>
+
+<h3>The three decisions it forces</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>Decision</th><th>Single-tenant answer</th><th>Multi-tenant answer</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Embedding origin</strong></td>
+  <td>One iframe on lunamux.dev. Same-site, cookies just work.</td>
+  <td>Each project's site is a <em>different</em> registrable domain → cross-site → cookies blocked by default in Safari and Firefox. <strong>See §3.</strong></td>
+</tr>
+<tr>
+  <td><strong>Sending domain</strong></td>
+  <td>All mail from <code>send.lunamux.dev</code>.</td>
+  <td><strong>Settled by the single-operator model:</strong> one sending identity per deployment, set by env var. Never per-project DKIM, per-project reputation, or per-project deliverability tickets. <strong>See §8.</strong></td>
+</tr>
+<tr>
+  <td><strong>Theming</strong></td>
+  <td>Hardcode the Lunamux palette.</td>
+  <td>Theme becomes per-project data. Cheap if it's CSS custom properties from day one, expensive if you hardcode colours first. <strong>See §10.</strong></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="box warn">
+<p class="lbl">Accounts are public. Projects are not.</p>
+<p>Easy to conflate, and the distinction is where your abuse surface lives. <strong>Project creation is operator-only</strong> — a config file, not a signup form. But <strong>account creation is public</strong>: anyone on the internet can register to file an issue against Lunamux, which is the entire point. So §8's abuse section applies at full strength — rate limit per target email address, Turnstile on the form, a hard daily send cap in code. "Only my projects" sounds like a private tool; it's really a public signup form attached to a private project list.</p>
+<p>What the single-operator model <em>does</em> remove: cross-tenant abuse liability, content moderation for strangers' projects, per-tenant support, and project scoping as a security boundary between mutually distrusting parties. Scoping is still a correctness concern — don't leak project A's issues into project B's view — but getting it wrong is a bug, not a breach.</p>
+</div>
+
+<h3>How projects get created: a config file, not an admin UI</h3>
+<p>Because projects are operator-controlled configuration rather than user data, <strong>you don't need an admin UI for v1</strong> — which deletes the single largest chunk of pre-launch work. Declare them in a file, mount it, upsert into the DB by slug at startup:</p>
+
+<pre><code><span class="c"># /config/projects.yaml — mounted, version-controlled, no UI needed</span>
+projects:
+  - slug: lunamux
+    name: Lunamux
+    allowed_origins:
+      - https://lunamux.dev
+    theme:
+      bg:        <span class="c">"#04090f"</span>
+      panel:     <span class="c">"#070f1a"</span>
+      accent:    <span class="c">"#4dc8f5"</span>
+      accent_hi: <span class="c">"#66d9ff"</span>
+      head:      <span class="c">"#eaf3fb"</span>
+</code></pre>
+
+<p>Version-controlled, reviewable, revertible. Self-hosters get a file they can read rather than six screens to click through, which is what keeps your README short. Theme and origin allowlist live together, which is exactly where §3 and §10 want them. And upsert-by-slug is idempotent, so restarts are free.</p>
+<p>This is a deliberate exception to the "env vars, not config files" rule in §11 — env vars are right for scalars like a database path or an API key, but a nested list of projects with themes and origin lists is not a scalar, and <code>PROJECTS=lunamux:Lunamux:#04090f,…</code> is clever for a week and miserable forever.</p>
+
+<h3>Embed URL shape</h3>
+<p>Put the project in the path, not a query parameter — it's cleaner to route, cache and reason about, and it makes the origin allowlist check a natural part of routing:</p>
+<pre><code>https://issues.lunamux.dev/embed/lunamux         <span class="c">← project slug in path</span>
+https://issues.lunamux.dev/embed/lunamux/42      <span class="c">← deep link to issue #42</span>
+</code></pre>
+<p>Store an <code>allowed_origins</code> list per project and use it to generate the <code>frame-ancestors</code> CSP header per request. That way project A's tracker can't be framed by project B's site, and you get a real answer to "who is allowed to embed this" instead of a wildcard.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="embed">
+<h2 class="sec"><span class="num">03</span>Embedding &amp; the auth problem</h2>
+<p class="deck">The hardest section, and the one where the multi-project requirement bites. Read this one properly.</p>
+
+<div class="verdict">
+  <span class="tag">Crux</span>
+  <p>Embedding an authenticated app in an iframe is fine <em>when the embedding site and the app share a registrable domain</em>, and genuinely difficult when they don't. Your plan does both.</p>
+</div>
+
+<h3>Same-site vs same-origin — the distinction everything hinges on</h3>
+<p>Browsers apply third-party restrictions based on the <strong>site</strong> (the registrable domain, eTLD+1), not the <strong>origin</strong> (scheme + host + port). So:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Parent page</th><th>Framed app</th><th>Same-origin?</th><th>Same-site?</th><th>Do cookies work?</th></tr></thead>
+<tbody>
+<tr><td><code>lunamux.dev</code></td><td><code>issues.lunamux.dev</code></td><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes — everywhere, by default</td></tr>
+<tr><td><code>someproject.com</code></td><td><code>issues.lunamux.dev</code></td><td class="no">No</td><td class="no">No</td><td class="no">No — blocked in Safari &amp; Firefox</td></tr>
+<tr><td><code>someproject.com</code></td><td><code>issues.someproject.com</code></td><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes — everywhere</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Row one is your Lunamux tab, and it's the happy path: WebKit's own tracking-prevention policy states that <code>site.example</code>, <code>www.site.example</code> and <code>s.u.b.site.example</code> are all the same party, so ITP doesn't engage. Firefox's Total Cookie Protection partitions by top-level site, which here is <code>lunamux.dev</code> either way. A plain <code>SameSite=Lax; Secure; HttpOnly</code> cookie works in every browser, including Safari, with no special handling.</p>
+
+<p>Row two is what multi-project gives you by default, and it's the bad one. Safari has blocked third-party cookies outright since 2020. Firefox partitions them, so a session set in one context isn't visible in another. Chrome still permits them (see below) but blocks them in Incognito.</p>
+
+<p><strong>Row three is the fix, and it's cheap:</strong> each project points a CNAME at your server. <code>issues.someproject.com</code> → your Railway app. Now the frame is same-site with its parent, and the whole problem evaporates — no CHIPS, no Storage Access API, no partitioned-cookie edge cases, no per-browser testing matrix. It costs one DNS record per project, plus TLS provisioning that Railway does for free.</p>
+
+<p><strong>And per the single-operator model in §2, you own every domain involved</strong> — so this is a record in a zone you already administer, not a coordination problem with a third party. The same holds for self-hosters, who own their own projects' domains. What looked like a defensive design is really just the obvious one.</p>
+
+<p><small>For reference, only two of your projects have sites deployed today: <code>lunamux-web</code> → <code>lunamux.dev</code> and <code>termtastic-web</code> → <code>termtastic.soderbjorn.se</code>. So future projects will land either on their own domain or on a <code>soderbjorn.se</code> subdomain. If most end up as <code>soderbjorn.se</code> subdomains, hosting the tracker at <code>issues.soderbjorn.se</code> would make those same-site for free, with only lunamux.dev needing its own CNAME — but the uniform per-project CNAME works everywhere for one record either way, so I wouldn't optimise for it.</small></p>
+
+<div class="box rec">
+<p class="lbl">Recommendation</p>
+<p><strong>Make a per-project custom domain the supported way to embed.</strong> Iframe <code>issues.lunamux.dev</code> on lunamux.dev today because it's free and it works; but design the server so a project's embed host is a per-project setting from the start — it's already in <code>projects.yaml</code> next to <code>allowed_origins</code> (§2). Retrofitting this after you've shipped cross-site cookie workarounds means throwing the workarounds away — and the workarounds are the expensive part.</p>
+</div>
+
+<h4>If you must support cross-site embedding anyway</h4>
+<p>The escape hatch is <strong>CHIPS</strong> — <code>Set-Cookie: session=…; SameSite=None; Secure; Partitioned</code>. The cookie is then scoped to the (top-level site, your site) pair: the user is separately logged in on each embedding site, which for an issue tracker is arguably correct anyway. Combine with the Storage Access API for browsers that need an explicit grant. It works, but you're now testing three browsers' partitioning behaviour and accepting <code>SameSite=None</code>, which weakens your CSRF posture. Do it only if a project genuinely can't add a DNS record.</p>
+
+<h3>Google OAuth cannot be framed. Ever.</h3>
+<p>I checked this directly rather than trusting the documentation:</p>
+<pre><code>$ curl -I "https://accounts.google.com/o/oauth2/v2/auth?client_id=..."
+HTTP/2 302
+<span class="k">x-frame-options: DENY</span>          <span class="c">← the entire answer</span>
+</code></pre>
+<p><code>DENY</code>, not <code>SAMEORIGIN</code>. There is no allowlist, no client-ID setting, no <code>frame-ancestors</code> negotiation. Framed, you get "accounts.google.com refused to connect". This is deliberate: a framed consent screen hides the real URL bar, which is the entire security model of OAuth consent. It will not change.</p>
+
+<p><strong>But you don't need it to.</strong> Google Identity Services explicitly supports your exact topology. From their FedCM migration guide, verbatim: <em>"Only using One Tap in cross-origin but same-site iframes is a supported method"</em> — with <code>https://login.example.com</code> embedded in <code>https://www.example.com</code> as the worked example. That is row one of the table above, one-for-one.</p>
+
+<p>What this means concretely:</p>
+<ul>
+<li>Use <code>google.accounts.oauth2.initCodeClient</code> with <code>ux_mode:'popup'</code>, triggered by a real user click. <code>window.open</code> creates a <strong>top-level</strong> window, which is not framed, so <code>X-Frame-Options</code> never applies. This is the standard, compliant path.</li>
+<li>Add <code>allow="identity-credentials-get"</code> to the iframe tag. FedCM is permission-policy gated and cross-origin frames are <strong>opted out by default</strong> — and Google counts a subdomain as cross-origin. Miss this and it fails quietly.</li>
+<li>Set <code>Cross-Origin-Opener-Policy: same-origin-allow-popups</code>. Plain <code>same-origin</code> severs <code>window.opener</code>, so the popup can't post the auth code back and you'll debug it for an hour.</li>
+<li><strong>Never use <code>ux_mode:'redirect'</code> inside the frame.</strong> It redirects the <em>iframe</em>, Google refuses to render framed, and your app disappears. If you need redirect mode — Google's docs say ITP forces it on iOS — it must target the top-level window.</li>
+</ul>
+
+<div class="box warn">
+<p class="lbl">Don't confuse two Google policies</p>
+<p>The <code>disallowed_useragent</code> / "embedded webview" policy you may have read about targets <em>native</em> webviews (<code>WKWebView</code>, Android <code>WebView</code>). It does not apply to browser iframes, and a <code>window.open</code> popup is a compliant system browser. Your blocker is <code>X-Frame-Options</code>, not the user-agent policy. Useful to know when you get to the mobile apps.</p>
+</div>
+
+<h3>Third-party cookies: what actually happened</h3>
+<p>This changed direction publicly several times and most writing about it is stale, so briefly, for the record:</p>
+<ul>
+<li><strong>Chrome never deprecated them.</strong> In April 2025 Google confirmed it would keep third-party cookies and abandon the standalone choice prompt. In October 2025 it retired around ten Privacy Sandbox APIs (Topics, Protected Audience, Attribution Reporting, Related Website Sets). <strong>CHIPS and FedCM survived</strong> — the two you'd actually use.</li>
+<li><strong>Safari</strong> has blocked them by default since 13.1 (2020), keyed on registrable domain.</li>
+<li><strong>Firefox</strong> partitions rather than blocks, default for everyone since 103 (2022).</li>
+</ul>
+<p>If you see an article promising a Chrome "Privacy Choice" prompt in 2026, it's not supported by any official source. And note that <code>requestStorageAccessFor()</code> was retired with Related Website Sets in October 2025 — MDN still lists it as supported in Chrome, which is a live documentation error. Don't build on it.</p>
+
+<div class="box danger">
+<p class="lbl">The sharpest edge in the whole design</p>
+<p><strong><code>github.io</code> is itself a public suffix.</strong> The entire same-site analysis above depends on <code>lunamux.dev</code> being the registrable domain. If the site is ever reached via <code>soderbjorn.github.io</code>, the eTLD+1 becomes <code>soderbjorn.github.io</code>, which is <em>genuinely cross-site</em> from <code>issues.lunamux.dev</code> — Safari and Firefox break instantly, Chrome breaks in Incognito. Your <code>CNAME</code> file already pins <code>lunamux.dev</code>; keep "Enforce HTTPS" on and make sure the <code>.github.io</code> URL redirects rather than serves. This is invisible until it isn't.</p>
+</div>
+
+<h3>Headers the tracker must send</h3>
+<pre><code><span class="c"># per-request, generated from the project's allowed_origins</span>
+Content-Security-Policy: frame-ancestors 'self' https://lunamux.dev
+Cross-Origin-Opener-Policy: same-origin-allow-popups
+<span class="c"># and critically — do NOT send X-Frame-Options at all</span>
+</code></pre>
+<ul>
+<li><code>X-Frame-Options: ALLOW-FROM</code> is dead — modern browsers ignore the header entirely when they see it. Only <code>DENY</code> and <code>SAMEORIGIN</code> function, and there is no XFO way to allow a specific cross-origin parent. <code>frame-ancestors</code> is the only mechanism.</li>
+<li>CSP3 says <code>frame-ancestors</code> overrides XFO, and browsers implement that — but ship without XFO anyway rather than betting on override precedence against corporate proxies and scanners.</li>
+<li><strong>Audit Ktor's default headers.</strong> Most server stacks inject <code>X-Frame-Options: SAMEORIGIN</code> by default, and since <code>issues.lunamux.dev</code> is a different <em>origin</em> from <code>lunamux.dev</code>, <code>SAMEORIGIN</code> blocks you. This is the most likely cause of a mysterious "it just won't frame" afternoon.</li>
+<li><code>frame-ancestors</code> cannot be set via <code>&lt;meta&gt;</code> — HTTP header only — and it does not fall back to <code>default-src</code>.</li>
+<li><strong>Don't use <code>sandbox</code> on the iframe.</strong> It's your own app. Without <code>allow-same-origin</code> the frame gets an opaque origin: no cookies, no storage, no session. And <code>allow-scripts allow-same-origin</code> together let the frame remove its own sandbox anyway. The only config where your app works is the one that provides no protection.</li>
+</ul>
+<p>GitHub Pages as the <em>parent</em> is a non-issue — a parent needs no headers to frame someone; permission is entirely the child's decision. Pages currently sends no XFO, no CSP, and can't set custom headers at all, which doesn't matter here. One real trap: if <code>lunamux.dev</code> ever adds a <code>&lt;meta http-equiv="Content-Security-Policy"&gt;</code> with <code>default-src</code>, then <code>frame-src</code> inherits from it and silently blocks your iframe. Add <code>frame-src https://issues.lunamux.dev</code> explicitly if so.</p>
+
+<h3>Session storage: use a cookie, not localStorage</h3>
+<p>It's tempting to dodge cookies entirely by keeping the session token in the iframe's <code>localStorage</code> — and in the same-site case it isn't even partitioned, so it would work. Don't:</p>
+<ul>
+<li>You lose <code>HttpOnly</code>. With an <code>HttpOnly</code> cookie, an XSS in your Kotlin/JS bundle can <em>act</em> as the user but can't <em>steal</em> the credential. With <code>localStorage</code> it walks off with a portable token that works from anywhere.</li>
+<li>Safari caps script-writable storage at seven days → silent logouts.</li>
+</ul>
+<p>Note this differs from FramnaFolk, which stores its session token in <code>localStorage</code>. That's defensible there — it's an internal tool behind Google sign-in — but this app takes public signups on a domain you're staking a product name on. Use <code>Set-Cookie: session=…; Secure; HttpOnly; SameSite=Lax; Path=/</code> with <strong>no <code>Domain</code> attribute</strong>, so it stays host-only and isn't exposed to <code>lunamux.dev</code> or sibling subdomains.</p>
+
+<p>The stateless AES-GCM session token pattern from FramnaFolk (<code>auth/TokenEncryption.kt</code>) is worth reusing wholesale — it gives you no session table, encrypted refresh tokens riding inside the token, and transparent rotation via a response header. Just deliver it in an <code>HttpOnly</code> cookie rather than to JavaScript.</p>
+
+<h3>UX realities of iframing</h3>
+<ul>
+<li><strong>Height:</strong> no CSS-only cross-origin solution exists. <code>ResizeObserver</code> in the child → <code>postMessage</code> → parent sets height. Always pass an explicit <code>targetOrigin</code>, never <code>*</code>, and always verify <code>event.origin</code> on receipt. Note <code>iframe-resizer</code> relicensed to GPL-3.0 at v5 — hand-roll the ~30 lines instead.</li>
+<li><strong>URL sync:</strong> the parent cannot read the frame's URL (<code>contentWindow.location.href</code> throws <code>SecurityError</code>), so child→parent routing must go via <code>postMessage</code>. Your site's hash router is fine here, but <strong>don't re-assign <code>iframe.src</code> on hash changes</strong> — that hard-reloads the app and destroys its state.</li>
+<li><strong>Back button: no clean fix.</strong> iframe navigations push onto the joint session history, so a user who clicks through eight issues and hits Back walks back through eight in-app states instead of returning to your marketing site. The WHATWG issue for an opt-out is still open. Mitigate with <code>history.replaceState</code> internally. <strong>This is the strongest argument against the iframe</strong>, and worth weighing against just linking out to <code>issues.lunamux.dev</code> with shared styling.</li>
+<li><strong>Modals are clipped to the iframe box</strong> and can't overlay parent chrome. For an issue tracker with dialogs, this is often what actually kills the embedded feel.</li>
+<li><strong>iOS Safari</strong> sizes iframes to content and ignores your height — needs an <code>overflow:auto</code> wrapper.</li>
+</ul>
+
+<h3>The alternative worth keeping in your pocket</h3>
+<p>If the back button or modals become annoying, the clean escape is to <strong>reverse-proxy a path</strong> so the app is genuinely same-origin: <code>lunamux.dev/issues</code> → your Railway app. Every problem in this section evaporates at once — same origin, so no cookie question, no framing headers, no postMessage, no back-button weirdness.</p>
+<p>GitHub Pages cannot proxy, at all. But a <strong>Cloudflare Worker</strong> can (free tier: 100k req/day; a proxy burns essentially no CPU since <code>fetch</code> wait doesn't count), and if you moved the site to Netlify, Vercel or Cloudflare Pages Functions it's a one-line rewrite rule. Note Cloudflare's Rules-based origin override is Enterprise-only, and Pages' <code>_redirects</code> won't proxy to external hosts — it's Workers or Functions specifically.</p>
+<p>Worth noting this only helps <em>your own</em> site. Other projects embedding you still need the per-project CNAME. So the CNAME design isn't wasted either way — which is another reason to build it first.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="arch">
+<h2 class="sec"><span class="num">04</span>Kotlin Multiplatform architecture</h2>
+<p class="deck">You've built this exact shape twice. Copy it.</p>
+
+<p>Your instinct here is well-founded and you have a proven template: FramnaFolk's module structure is precisely what you're describing, and Lunamux already ships a Kotlin/JS DOM client. There's no research question to answer — just a recommendation to follow your own precedent rather than reinventing.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Module</th><th>Targets</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><code>:clientServer</code></td><td>jvm, js, android, iosArm64, iosSimulatorArm64</td><td><code>@Serializable</code> DTOs, the shared <code>HttpClient</code> and <code>Json</code> config. Depends on nothing internal.</td></tr>
+<tr><td><code>:client</code></td><td>same set</td><td>Backing view models, repository, API service. Depends on <code>:clientServer</code>.</td></tr>
+<tr><td><code>:server</code></td><td>JVM only (not KMP)</td><td>Ktor + Netty, SQLDelight, routes. Depends on <code>:clientServer</code>.</td></tr>
+<tr><td><code>:web</code></td><td>js(IR) browser</td><td>DOM rendering via kotlinx-html. Depends on <code>:client</code> + <code>:clientServer</code>.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Add <code>:androidApp</code> (Compose) and an Xcode project consuming the KMP framework (SwiftUI) later — declaring the targets now in <code>:client</code> and <code>:clientServer</code> costs nothing and means the mobile apps are additive rather than a refactor.</p>
+
+<h3>The backing view model pattern</h3>
+<p>In FramnaFolk there's no base class — it's a convention, and it holds up well: each backing VM is a plain class owning a <code>CoroutineScope(SupervisorJob() + Dispatchers.Main)</code>, with a private <code>MutableStateFlow(State())</code> exposed as <code>val stateFlow = _stateFlow.asStateFlow()</code>, a nested <code>data class State</code>, and <code>onXxxTapped()</code> intent methods. Platforms wrap it:</p>
+<ul>
+<li><strong>Web:</strong> collect <code>stateFlow</code> in a coroutine, call your render function. FramnaFolk skips per-screen wrappers on web entirely and uses the backing VMs directly from render code — fine, and less ceremony.</li>
+<li><strong>iOS:</strong> an <code>ObservableObject</code> with <code>@Published private(set) var state</code>, bridged via the 20-line <code>FlowObserver</code> helper (Swift can't consume Kotlin <code>Flow</code> directly). This is the single most reusable piece of FramnaFolk.</li>
+<li><strong>Android:</strong> an AndroidX <code>ViewModel</code> forwarding intents through <code>viewModelScope.launch</code>.</li>
+</ul>
+<p>I'd consider formalising it this time — a small <code>abstract class BackingViewModel&lt;S&gt;</code> owning the scope and the state flow. FramnaFolk's eight independent classes work, but they repeat the same six lines eight times, and a base class makes the contract discoverable for anyone else reading an open-source repo.</p>
+
+<h3>Kotlin/JS, not Wasm — and one warning from your own codebase</h3>
+<p>Kotlin/JS (IR) with kotlinx-html is the right call: it's what both existing projects use, the tooling is mature, and <code>:clientServer</code> in Lunamux already declares a <code>wasmJs</code> target if you want to experiment later.</p>
+
+<div class="box danger">
+<p class="lbl">Read this before you configure the JS build</p>
+<p>Lunamux's server module deliberately embeds the <strong>development</strong> JS bundle rather than the production one, with a comment explaining that Kotlin/JS production DCE and name mangling <em>miscompile</em> that codebase — <code>&lt;mangled&gt; is not a function</code> at runtime. It costs ~25 MB versus ~4.5 MB, which is free over loopback but is <em>not</em> free over the public internet for an embedded iframe.</p>
+<p>So: test <code>jsBrowserProductionWebpack</code> output <strong>early</strong>, not the week before launch. If you hit the same mangling bug, you need to know while the codebase is small enough to bisect. This is a known, real hazard in your own stack rather than a hypothetical.</p>
+</div>
+
+<p>Also worth stealing from FramnaFolk's server: the <code>pipelineRoute</code> + <code>Handler&lt;S, T&gt;</code> + <code>HandlerResult.Continue/Stop</code> DSL gives you composable per-route middleware with structured logging built in. If you reuse it, consider fixing the unchecked casts — the current version type-checks each handler but casts through <code>Handler&lt;Any?, Any?&gt;</code> when chaining, so a mis-ordered handler list fails at runtime rather than compile time.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="hosting">
+<h2 class="sec"><span class="num">05</span>Hosting &amp; surprise bills</h2>
+<p class="deck">Your "no surprise bills" requirement has a clear winner, and it's the one you already picked.</p>
+
+<div class="verdict">
+  <span class="tag">Railway</span>
+  <p>Of the five platforms I checked, <strong>Railway is the only one with a self-serve spend cap that actually stops workloads.</strong> Everyone else offers alerts, which are not a cap. Your instinct was right.</p>
+</div>
+
+<h3>The feature, precisely</h3>
+<p>Railway's <strong>Usage Limits</strong> come in two flavours, and the difference is the whole ballgame:</p>
+<ul>
+<li><strong>Soft limit:</strong> <em>"we will email you that this threshold has been met. Your resources will remain unaffected."</em> A notification.</li>
+<li><strong>Hard limit:</strong> <em>"all your workloads will be taken offline to prevent them from incurring further resource usage."</em> Real enforcement.</li>
+</ul>
+<p>Railway itself calls the hard limit <em>"a possibly destructive action"</em> — which is the tell that it's genuine. Details that matter:</p>
+<ul>
+<li><strong>Minimum hard limit is $10.</strong> You can't cap lower.</li>
+<li><strong>Scope is per-workspace</strong>, not per-project. Everything goes down together.</li>
+<li>Warnings escalate at 75%, 90%, 100%.</li>
+<li><strong>Data and configuration survive</strong> — only deployments are removed. Raise the limit and Railway automatically redeploys.</li>
+</ul>
+<p>So your worst case is <strong>$15 and an outage</strong>, not a $2 000 shock. Set a soft alert at $8 and a hard limit at $10, and the requirement in your plan is met.</p>
+
+<h3>The comparison</h3>
+<div class="tw">
+<table>
+<thead><tr><th>Platform</th><th>Hard cap?</th><th>Cost predictability</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><strong>Railway</strong></td><td class="yes">Yes — enforced</td><td>Metered, but capped</td><td>$5/mo Hobby including $5 usage. $10/GB RAM, $20/vCPU, $0.05/GB egress.</td></tr>
+<tr><td><strong>Hetzner VPS</strong></td><td class="meh">Partial — real, compute only</td><td class="yes">Best — contractual</td><td>CX23 <strong>€5.49/mo</strong> (2 vCPU / 4 GB / 40 GB) + 20 TB traffic. <small>Note: prices rose 15 June 2026; the widely-cited €3.79 is stale.</small></td></tr>
+<tr><td><strong>Fly.io</strong></td><td class="no">No — not even alerts</td><td>Cheapest always-on, zero guardrails</td><td>Their docs, verbatim: <em>"We don't support billing alerts (yet), so budget accordingly."</em></td></tr>
+<tr><td><strong>Render</strong></td><td class="no">No</td><td>Flat per-service</td><td><strong>Its "spend limit" is not a spend limit</strong> — it caps build minutes only. Running services keep billing.</td></tr>
+<tr><td><strong>Cloud Run</strong></td><td class="no">No</td><td>$0 at rest, worst tail risk</td><td>GCP Budgets explicitly <em>"do not automatically cap"</em>. The Pub/Sub-disables-billing workaround is destructive and leaky by Google's own admission.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>The real trade:</strong> Hetzner caps your <em>cost</em>; Railway caps your cost by capping your <em>uptime</em>. Hetzner is the better guarantee — the bill is fixed by contract and the app stays up because there's no ceiling to hit — but you're running the box: OS updates, TLS, deploys, monitoring, backups. Railway is a substantially better developer experience for a solo project. <strong>Take Railway.</strong> Revisit if you ever find the $10 ceiling binding, which at your scale you won't.</p>
+
+<h3>Railway gotchas specific to your stack</h3>
+<ol>
+<li><strong>Volumes and replicas are mutually exclusive</strong>, and <em>volume-backed services have downtime on every redeploy</em> — Railway prevents two deployments mounting one volume, so healthchecks can't give you a zero-downtime handover. For an issue tracker, a few seconds of downtime per deploy is fine. Just know it's structural, not a config mistake.</li>
+<li><strong>Serverless / app sleeping will never trigger for you.</strong> Inactivity is judged on <em>outbound</em> packets, and Railway's docs explicitly name an open database connection pool as something that keeps a service awake. A JVM app with Hikari never sleeps. Also, the first request to a slept service <em>"may return a 502"</em> — rough for a JVM cold start. Don't plan around this feature.</li>
+<li><strong>Healthchecks run at deploy time only.</strong> There's no ongoing liveness probe restarting a wedged process. If the JVM deadlocks at 3am it stays deadlocked.</li>
+<li><strong>Non-root images may need <code>RAILWAY_RUN_UID=0</code></strong> for volume permissions — relevant since hardened JVM images commonly run non-root.</li>
+<li>Use <strong>Dockerfile</strong>, not Railpack. Nixpacks is deprecated; Railpack's Kotlin/Gradle support is unconfirmed. A Dockerfile sidesteps the question and gives reproducible builds. Wire up BuildKit cache mounts for the Gradle cache — it's the difference between a 1-minute and a 5-minute build.</li>
+<li><strong>Custom domains and TLS are free and automatic</strong>, which is what makes the per-project CNAME plan from §3 practical. <small>Verify the domains-per-service limit before onboarding many projects — Railway's limits reference page currently 404s.</small></li>
+</ol>
+
+<div class="box info">
+<p class="lbl">On moving the marketing site to Railway — settled: don't</p>
+
+<p>You asked whether it would help. <strong>It doesn't, and it costs you something real.</strong> The marketing site stays on GitHub Pages.</p>
+
+<p><strong>Why it's a non-issue.</strong> An iframe boundary is resolved by the browser, not by a server. Pages answers for <code>lunamux.dev</code>, Railway answers for <code>issues.lunamux.dev</code>, and neither host needs to know the other exists. A parent needs no headers to frame someone — permission is entirely the child's decision, so <code>frame-ancestors</code> and the Stage 2 <code>Cross-Origin-Opener-Policy</code> are both sent by Railway. Pages' inability to set custom headers is famous and irrelevant, because nothing is asked of it. Even <code>allow="identity-credentials-get"</code> is an attribute on the iframe element, so it's just markup in <code>render.js</code>.</p>
+
+<p><strong>The same-site property survives too</strong> — the part people expect to break. Same-site is computed from the registrable domain (<code>lunamux.dev</code>) and has nothing to do with hosting providers. Two subdomains of one apex are the same site whether they're served from one rack or two continents. Cookies in the iframe work regardless of who hosts what.</p>
+
+<p><strong>The argument against moving is your own constraint.</strong> Pages is free with no meter running. Railway bills by usage against a hard limit that takes workloads <em>offline</em> when tripped. Co-hosting merges the failure domains: marketing traffic would burn tracker budget, and hitting the cap would take the marketing site down alongside the tracker. Today those are cleanly separated — the tracker can go dark while <code>lunamux.dev</code> serves normally. That's the blast radius you want. Moving trades a free, uncapped, globally-cached host for a metered one that can switch your marketing site off.</p>
+
+<p><strong>The one case that would change this</strong> is the <code>lunamux.dev/issues</code> reverse-proxy path from §3 — and <code>stages.html</code> commits to the subdomain iframe instead, so it's moot. Even then Railway has no native path-based routing, so you'd deploy a Caddy or nginx service to do it. And if you ever want same-origin embedding badly enough, a Cloudflare Worker in front of Pages gets you there without moving anything.</p>
+
+<p><small><strong>Practical wrinkle for Stage 1:</strong> Railway issues its own certificate for a custom domain, and Cloudflare's proxy (orange cloud) can interfere with that ACME challenge — DNS-only is the usual answer, at least through issuance. You've done this dance for Pages already; verify the proxy state rather than assuming it inherits.</small></p>
+</div>
+</section>
+
+<!-- ============================================ -->
+<section id="db">
+<h2 class="sec"><span class="num">06</span>Database: SQLite vs Postgres</h2>
+<p class="deck">Your SQLite instinct is right, your worry about persistence is right, and the fix is routine.</p>
+
+<h3>Why the file disappears — and the fix</h3>
+<p>Your concern is well-founded and the mechanism is worth stating exactly, because it's why this bites people. A container image is read-only layers; a running container adds one thin <strong>writable layer</strong> bound to <em>that container instance</em>. Anything not on a volume — including <code>app.db</code> — lives only there. <code>docker restart</code> keeps it (same container), so it looks like it works. A redeploy, a new image tag, or <code>--force-recreate</code> destroys the container and the layer, and the app comes back "clean". That's the trap: it works right up until you deploy.</p>
+
+<p>The fix is a mounted volume, which Railway supports and which survives redeploys and new image versions:</p>
+<pre><code>DATABASE_PATH=/data/app.db          <span class="c"># env var, 12-factor</span>
+volume mounted at /data             <span class="c"># Railway: 5 GB on Hobby, $0.15/GB/mo</span>
+</code></pre>
+<p>Mount the <strong>directory</strong>, never bind-mount the DB file itself — WAL mode creates <code>app.db-wal</code> and <code>app.db-shm</code> siblings, and Litestream wants a temp dir alongside. A single-file bind mount also pins an inode on Linux, so after a restore the container silently writes to a ghost file.</p>
+
+<h3>Pragmas that are not optional</h3>
+<pre><code>PRAGMA journal_mode=WAL;      <span class="c">-- persistent in the file; required by Litestream</span>
+PRAGMA busy_timeout=5000;     <span class="c">-- without this, concurrent writes 500 immediately</span>
+PRAGMA synchronous=NORMAL;    <span class="c">-- safe AND recommended in WAL mode</span>
+PRAGMA foreign_keys=ON;       <span class="c">-- SQLite defaults this OFF, per connection</span>
+</code></pre>
+<p>Set these via a connection-init SQL so they apply to <em>every</em> pooled connection, not just the first.</p>
+
+<div class="box danger">
+<p class="lbl">WAL on a network filesystem — the one way to lose everything</p>
+<p>SQLite's docs are blunt: <em>"All processes using a database must be on the same host computer; WAL does not work over a network filesystem."</em> The WAL index is mmap'd shared memory, and NFS/EFS/SMB emulate mmap coherency and advisory locking at best. Two processes can each believe they hold the write lock. You don't get an error — you get <strong>silent corruption</strong>. On a local block volume (Railway volumes, Docker named volumes, EBS, Hetzner volumes) this is a non-issue. <strong>Document "do not put the data directory on a NAS/NFS mount" prominently</strong> — it's the most likely way a self-hoster destroys their data with your software.</p>
+</div>
+
+<h3>Is SQLite actually adequate?</h3>
+<p>Not close to marginal. SQLite's own guidance puts the threshold around 100k hits/day and notes sqlite.org itself serves 400–500k requests/day on it. Expensify runs SQLite for millions of users. Their "use client/server instead" checklist has three triggers — data separated from the app by a network, high write concurrency, terabyte scale — and you hit none of them. Tens of users and megabytes of read-heavy data is two to three orders of magnitude inside the envelope.</p>
+<p>The honest counterargument isn't performance, it's that Postgres has a boring, universally-understood backup story and SQLite makes you think about it. So:</p>
+
+<h3>Backups</h3>
+<p><strong>Never</strong> <code>cp</code> or snapshot a live SQLite file — you'll copy a torn page set and find out at restore time. Two mechanisms, and I'd run both:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Approach</th><th>RPO</th><th>Effort</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td><strong>Litestream v0.5</strong> → R2<br><small>continuous WAL replication</small></td><td>~1 second</td><td>~20 lines of config</td><td class="yes">Primary. Real PITR.</td></tr>
+<tr><td><strong><code>VACUUM INTO</code></strong> nightly → R2<br><small>consistent, defragmented copy</small></td><td>24 hours</td><td>~15 lines of shell</td><td class="yes">Secondary. Different failure domain.</td></tr>
+<tr><td><strong>LiteFS</strong></td><td>—</td><td>High</td><td class="no">No. See below.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>Litestream is healthy again</strong>, which is worth knowing if you last looked a year ago. v0.5 shipped October 2025 after the long v0.3.13 plateau, and releases are steady (v0.5.14 on 6 July 2026). Ben Johnson works on it at Fly.io. v0.5 is a real upgrade: a new LTX format, generations replaced by monotonic transaction IDs giving genuine point-in-time recovery, hierarchical compaction, CGO-free builds.</p>
+
+<div class="box warn">
+<p class="lbl">Two Litestream caveats</p>
+<p><strong>v0.5 cannot restore v0.3.x WAL files</strong>, and enforces one replica destination per database. Any pre-2026 Litestream tutorial you find will be wrong — use the official migration guide.</p>
+<p><strong>Run it as a sidecar container, not in the same container.</strong> The same-container pattern makes Litestream your process supervisor, and the naive version (<code>litestream replicate &amp; java -jar app.jar</code>) gives you a shell as PID 1 that doesn't forward SIGTERM and <em>exits 0 when the JVM dies while Litestream keeps the container alive</em> — a "healthy" container serving nothing. Even done right, if Litestream crashes you get a healthy app that is silently no longer backed up. Sidecar, or <code>-exec</code>, or s6-overlay. <small>Railway note: sidecars sharing one volume are awkward there, since volumes are per-service. On Railway specifically, <code>litestream replicate -exec</code> in one container is the pragmatic answer — it handles the single-process case properly. The nightly dump is your safety net against Litestream failing silently.</small></p>
+</div>
+
+<p>Add a startup assertion that the DB is on a different device than <code>/</code>. It catches the number-one self-hoster mistake — forgot the volume — <em>before</em> it costs anyone data rather than after.</p>
+
+<h3>The alternatives, briefly</h3>
+<ul>
+<li><strong>Turso/libSQL</strong> — the Rust rewrite is real and the free tier is generous, but there is <strong>no official JVM SDK</strong>. The only option is a community JDBC driver speaking the remote HTTP protocol, which means embedded replicas — the entire reason to choose Turso — aren't available to you. You'd get a network round-trip per query: all of Postgres's downsides, none of its maturity. <span class="no">Skip.</span></li>
+<li><strong>Cloudflare D1</strong> — HTTP-only, and Cloudflare says the REST API is for administrative use and you should build a proxy Worker. Your architecture becomes Ktor → HTTPS → Worker → D1: a second service on a second platform to reach your database, with no JDBC and therefore no SQLDelight. Nonsensical for a self-hostable container. <span class="no">Skip.</span></li>
+<li><strong>rqlite</strong> — good software solving multi-node HA, which you don't have. Self-hosters would need a cluster. <span class="no">Skip</span> — but it's the right answer if this ever goes multi-node.</li>
+<li><strong>DuckDB</strong> — categorically wrong tool. It's OLAP: columnar, built to scan millions of rows for aggregates. You're OLTP: point lookups, single-row writes, transactions. It also has worse write concurrency than SQLite. It's what you'd use to <em>analyse</em> a dump of your tracker, not run it.</li>
+<li><strong>Managed Postgres</strong> — Neon's free tier is the best of them (0.5 GB, scale-to-zero, no overage billing). Supabase pauses projects after 7 days of <em>database</em> inactivity, which is a live landmine for a quiet internal tracker. Railway's own Postgres is <em>not</em> a managed service — their docs call it an unmanaged Postgres Docker image, no HA, no managed backups, no PITR. Fine, but know what it is. <strong>The deeper point: managed Postgres is not a self-hosting story.</strong> You can't ask someone deploying your container to go sign up for Neon.</li>
+</ul>
+
+<h3>Kotlin data access, and the dual-dialect trap</h3>
+<p><strong>SQLDelight 2.3.2</strong>, SQLite dialect, JVM target. You already run 2.0.2 in Lunamux and darknessirc, so this is a minor bump on a tool you know. It's the only KMP-capable option here, so "share schema types with a client later" stays free. Its migrations are its quiet superpower: numbered <code>.sqm</code> files plus a Gradle <code>verifyMigrations</code> task that <strong>fails your build if the migrations don't produce the schema your <code>.sq</code> files declare</strong>. That's compile-time protection against schema drift, which neither Exposed nor Flyway gives you. You don't need Flyway at all initially.</p>
+<p><small>Pin 2.3.2 exactly — 2.2.0, 2.3.0 and 2.3.1 are all marked failed releases with partially-published artifacts. Don't use a version range.</small></p>
+<p>Exposed hit 1.0 in January 2026 and is moving fast (1.3.1 in July), which is a genuine change if you evaluated it a year ago — but it's JVM-only, so it's out on KMP grounds, and its <code>createMissingTablesAndColumns()</code> is best-effort DDL reconciliation rather than versioned migration. jOOQ is the most powerful option and its Apache-2.0 edition covers SQLite and Postgres both, but it's JVM-only and Java-first.</p>
+
+<div class="box warn">
+<p class="lbl">On shipping both SQLite and Postgres so self-hosters can pick</p>
+<p><strong>It's a trap at this stage</strong>, and the reason is concrete rather than aesthetic. SQLDelight generates against a <em>dialect</em>, and the generated Kotlin types differ: SQLite has no native <code>BOOLEAN</code>, no <code>TIMESTAMP</code>, no <code>UUID</code>, and <code>INTEGER PRIMARY KEY</code> vs <code>BIGSERIAL</code> generate different code. Then the semantics diverge — type affinity, date handling, transaction isolation, full-text search (FTS5 vs <code>tsvector</code> is a total rewrite). The cost isn't writing it once; it's that <strong>you must run your whole test suite against both, forever</strong>, or the second backend silently rots.</p>
+<p><strong>Instead:</strong> SQLite only, all data access behind a repository interface, and keep the SQL boring — no FTS5, timestamps as epoch-millis INTEGER, UUIDs as TEXT. Then a Postgres implementation is additive if anyone ever asks. Vaultwarden's audience dwarfs yours and still defaults to SQLite. Nobody self-hosting an issue tracker for tens of users needs Postgres.</p>
+</div>
+</section>
+
+<!-- ============================================ -->
+<section id="scaling">
+<h2 class="sec"><span class="num">07</span>Scaling &amp; instances</h2>
+<p class="deck">Placed here because the constraint originates in the previous section: SQLite decides this.</p>
+
+<div class="verdict">
+  <span class="tag">One instance</span>
+  <p><strong>You won't need multiple instances — and with SQLite you <em>can't</em> have them.</strong> Railway enforces the same limit independently: <em>"Replicas cannot be used with volumes."</em> So this isn't a knob you can turn and get wrong. The real questions are whether you'd ever want to, and what the exit looks like.</p>
+</div>
+
+<h3>Would you ever need to? The numbers aren't close</h3>
+<ul>
+<li><strong>Railway Hobby scales one service to 48 GB RAM and 48 vCPU.</strong> That's a large machine, and it's a slider — not an architecture change.</li>
+<li><strong>A Ktor/Netty app on 1 vCPU and 512 MB</strong> handles hundreds of requests per second for this workload.</li>
+<li><strong>An issue tracker for tens of users</strong> is a few requests per second at peak, overwhelmingly reads.</li>
+<li><strong>SQLite's own guidance</strong> puts the threshold near 100k hits/day; sqlite.org serves 400–500k requests/day on it.</li>
+</ul>
+<p>You'd hit thousands of concurrent users before one instance was the constraint, and you'd see it coming in CPU and p99 latency. <strong>Vertical scaling is the answer, and it's a slider you probably never touch.</strong></p>
+
+<h3>What one instance actually costs you</h3>
+<p>Two things — and you pay both regardless of replicas, because the volume constraint already imposes them:</p>
+<ul>
+<li><strong>No high availability.</strong> If the container dies you're down until it restarts. Worse, Railway healthchecks run at <em>deploy time only</em>, so a JVM that deadlocks at 3am stays deadlocked until you notice. Point an external uptime check at <code>/health</code>.</li>
+<li><strong>Deploys have downtime</strong> — a few seconds while the old container releases the volume and the new one mounts it. Railway won't let two deployments mount one volume, so healthchecks can't hand over cleanly.</li>
+</ul>
+<p>Both are fine for an issue tracker and neither would be for something with an SLA. Know which you're building.</p>
+
+<h3>What would break if you went multi-instance</h3>
+<p>More than just the database — and one of them is a security regression rather than a performance one:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Concern</th><th>One instance</th><th>N instances</th></tr></thead>
+<tbody>
+<tr><td><strong>Database</strong></td><td class="yes">SQLite file on the volume</td><td class="no">Broken. Two instances = two files, or one file over a network FS = <strong>silent corruption</strong> (§6). <strong>Postgres becomes mandatory.</strong></td></tr>
+<tr><td><strong>Rate limiting</strong></td><td class="yes">In-memory counters</td><td class="no">Counters are per-instance, so N instances = <strong>N× the effective limit</strong>. Your "3 emails per address per day" silently becomes 3N. Needs DB- or Redis-backed counters.</td></tr>
+<tr><td><strong>Litestream</strong></td><td class="yes">One process, one WAL</td><td class="no">Must run <em>exactly once</em> per DB. Two corrupts the replica. Moot — you'd have dropped SQLite.</td></tr>
+<tr><td><strong>Scheduled jobs</strong></td><td class="yes">Run once</td><td class="meh">Run N times. Needs a DB lock or leader election.</td></tr>
+<tr><td><strong>In-memory caches</strong></td><td class="yes">Consistent</td><td class="meh">Diverge per instance → inconsistent reads.</td></tr>
+<tr><td><strong>WebSockets</strong> <small>(live updates)</small></td><td class="yes">Trivial</td><td class="meh">Connections pin to an instance; broadcast needs a pub/sub bus.</td></tr>
+<tr><td><strong>Sessions</strong></td><td class="yes">Fine</td><td class="yes"><strong>Already fine</strong> — stateless tokens, see below.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box rec">
+<p class="lbl">One thing you already got right</p>
+<p>The stateless AES-GCM session token from FramnaFolk (§3) means <strong>no session table and no sticky sessions</strong> — any instance can validate any request, because the session is self-contained in the encrypted cookie. That's the piece that usually forces sticky load balancing or a Redis session store. A nice accident of following your own precedent.</p>
+</div>
+
+<h3>Why SQLite is a hard stop, not a limitation to engineer around</h3>
+<p>Worth understanding the mechanism. Postgres is a <em>server</em>: your app opens a TCP connection and the server arbitrates concurrent access across every client, wherever they are. SQLite is a <em>library compiled into your process</em>: your app opens a file, and coordination happens through filesystem locks.</p>
+<p>Filesystem locks only work between processes <strong>on the same machine, on a real local filesystem</strong>. Two Railway replicas are two machines. There is no lock they can share. And the network-filesystem workaround is the dangerous one, per §6 — NFS/EFS emulate locking well enough to <em>appear</em> to work, so both instances believe they hold the write lock and you get silent corruption instead of an error. Railway forbidding the combination is them saving you from it.</p>
+
+<h3>The exit, if you ever need it</h3>
+<p>This is the concrete payoff for the repository interface in §6, which otherwise sounds like generic hygiene:</p>
+<ol>
+<li><strong>Write a Postgres implementation</strong> of the repository interface — bounded work, confined to the data layer, <em>if</em> you kept the SQL boring (no FTS5, epoch-millis timestamps, UUIDs as TEXT).</li>
+<li><strong>Move rate limiter state into the database.</strong> Small, and worth doing anyway.</li>
+<li><strong>Drop Litestream</strong> — Postgres has its own backup story.</li>
+<li><strong>Add a DB lock for scheduled jobs.</strong></li>
+<li><strong>Turn up replicas.</strong> Sessions already work; nothing else is stateful.</li>
+</ol>
+<p>Roughly a week — spent once you have traffic to justify it, on a schema that's stopped moving. Doing it now costs the same week <em>plus</em> the permanent dual-dialect test matrix (§6), to solve a problem you don't have.</p>
+
+<div class="box info">
+<p class="lbl">Cheaper levers, in the order you'd reach for them</p>
+<p><strong>1. Vertical scale</strong> — a slider. Covers you to thousands of users.<br>
+<strong>2. Cloudflare cache in front</strong> of anonymous/public issue views. If a project's issues are publicly readable, that's your read traffic gone at the edge, free, without touching the app.<br>
+<strong>3. Then, and only then,</strong> Postgres + replicas.</p>
+<p>Most projects that "need to scale" needed step 2.</p>
+</div>
+
+<p><strong>Recommendation: one instance, vertical scaling, don't design for horizontal.</strong> Keep the repository interface and keep the SQL portable — an afternoon of discipline now, and it's the entire migration path later. Revisit on evidence, not vibes. And for an open-source self-hosted tracker, "runs as exactly one instance" is unremarkable: Vaultwarden, Gitea-on-SQLite and Miniflux are all the same shape. Nobody will file an issue about it.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="email">
+<h2 class="sec"><span class="num">08</span>Email: sending &amp; receiving</h2>
+<p class="deck">Your specific question — can Gmail still impersonate lunamux.dev? — has a yes, with one condition.</p>
+
+<div class="box info">
+<p class="lbl">The mechanism, in one paragraph</p>
+<p><strong>You never run an SMTP server, and your Ktor code never speaks SMTP.</strong> Two vendors handle two independent directions. <strong>Inbound:</strong> Cloudflare hosts real receiving SMTP servers (that's what the <code>route1/2/3.mx.cloudflare.net</code> MX records point at), which accept mail for lunamux.dev and forward it to your Gmail. Your server isn't in that path at all. <strong>Outbound:</strong> your server makes an ordinary HTTPS POST to Resend's REST API; <em>Resend's</em> mail servers do the SMTP delivery, signing with your DKIM key. <strong>Replies from Gmail:</strong> Gmail acts as an SMTP <em>client</em>, relaying through <code>smtp.resend.com:587</code> — that's what the "outbound gateway" toggle permits.</p>
+<p>Running your own SMTP is not a realistic option, and not mainly for reputation reasons: <strong>Railway and every major cloud block outbound port 25 by default</strong>, and you can't set the reverse-DNS record receivers demand because you don't own the IP. See <code>answers.html</code> §1 for the full flow diagrams.</p>
+</div>
+
+<h3>Sending verification mail: Resend</h3>
+<p><strong>Resend is a transactional email service</strong> — a SaaS company, launched around 2023. You POST JSON to their API; they handle SMTP delivery, DKIM signing, bounce handling, suppression lists and deliverability. Under the hood they run on Amazon SES, which is why the DNS records they hand you point at <code>amazonses.com</code>. You're paying them (nothing) to abstract the part of email that is genuinely a specialty.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Resend tier</th><th>Cost</th><th>Volume</th><th>Card?</th><th>At the limit</th></tr></thead>
+<tbody>
+<tr><td><strong>Free</strong> ← you</td><td class="yes"><strong>$0</strong></td><td>3 000/mo, <strong>100/day</strong></td><td class="yes">No</td><td class="yes"><code>429 daily_quota_exceeded</code> — no overage mechanism exists</td></tr>
+<tr><td>Pro</td><td>$20/mo</td><td>50 000/mo</td><td>Yes</td><td class="meh">$0.90/1 000, capped at 5× plan</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>For this project it costs $0, and it's structurally hard for that to change.</strong> Your actual usage is signup verification for a low-traffic tracker — realistically tens of emails per month, a few hundred if Lunamux gets popular. That's 10–30× headroom on a tier you don't pay for.</p>
+
+<p>The reason to pick it over cheaper-per-message options is the <em>failure mode</em>, not the price. Amazon SES is genuinely cheaper at volume ($0.10 per 1 000) but has no spend cap at all and wants a card on file. At your volume "cheaper than free" isn't a thing, so the only axis that matters is whether a bad day can generate a bill. Here it can't. Domain setup is SPF + DKIM with no approval queue and no sandbox — you're sending within the hour.</p>
+
+<div class="box warn">
+<p class="lbl">Two honest caveats</p>
+<p><strong>The 100/day cap is the binding constraint</strong>, not the monthly figure. You can't burst 500 verification emails in an afternoon even while sitting well under 3 000/month. Fine for organic signups — and it's exactly why the per-address rate limiting below matters, because an abuse spike would burn the daily cap and start failing <em>real</em> signups.</p>
+<p><strong>"The free tier cannot be billed" is a strong inference, not a quote.</strong> Resend documents the 429 and lists no overage rate for Free, but doesn't state in so many words that the plan can't incur charges. Confidence is high; if a contractual $0 matters, it's one email to their support before you build on it.</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>Provider</th><th>Free tier (2026)</th><th>Card?</th><th>At the limit</th></tr></thead>
+<tbody>
+<tr><td><strong>Resend</strong></td><td>3 000/mo + 100/day</td><td class="yes">No</td><td class="yes">Hard stop — 429</td></tr>
+<tr><td>Brevo</td><td>300/day</td><td class="yes">No</td><td class="yes">Hard stop (prepaid = uncharge­able)</td></tr>
+<tr><td>Amazon SES</td><td>3 000/mo, <strong>first 12 months only</strong></td><td class="no">Yes</td><td class="meh">No spend cap; sending quota is enforceable</td></tr>
+<tr><td>Postmark</td><td>100/mo</td><td class="yes">No</td><td class="meh">Free stops; paid overage <em>cannot be disabled</em></td></tr>
+<tr><td>MailerSend</td><td>500/mo + 100/day</td><td class="no">Yes — on Free</td><td class="yes">Sending paused</td></tr>
+<tr><td>Mailgun</td><td>100/day, 1 domain</td><td class="meh">No*</td><td class="meh">Undocumented</td></tr>
+<tr><td><s>SendGrid</s></td><td class="no">None — retired 2025</td><td>—</td><td>—</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><small>Corrections to things you may have read: <strong>SendGrid killed its free tier</strong> in 2025 and did <em>not</em> grandfather legacy accounts. <strong>SES's free tier is no longer EC2-only</strong> — that changed in 2023; your Railway server qualifies. <strong>MailerSend is 500/mo now</strong>, not the widely-cited 3 000. Mailgun's "no credit card required" is technically true and functionally misleading — without one you can only send to five pre-verified addresses.</small></p>
+
+<p><strong>Skip the Java SDKs.</strong> Each drags a second blocking HTTP stack into a coroutine-based Ktor app for a single JSON POST you can write in ten lines with Ktor's own <code>HttpClient</code> and kotlinx.serialization. (SES is the exception — SigV4 makes raw HTTP genuinely painful.)</p>
+
+<h3>Receiving lunamux.dev mail: Cloudflare Email Routing</h3>
+<p>Free, unlimited inbound, catch-all, 200 rules per domain, 25 MiB messages. It forwards to a verified destination — your soderbjorn.se Gmail. It handles SRS properly (envelope sender rewritten so SPF validates), adds two DKIM signatures including one for your domain, and ARC-signs to preserve inbound auth results. It is <strong>receive-and-forward only</strong>.</p>
+<p>One correction to the premise in your plan: Cloudflare <em>did</em> add outbound sending under the "Email Service" name — public beta April 2026, authenticated SMTP submission June 2026 at <code>smtp.mx.cloudflare.net:465</code> (implicit TLS only; <strong>587/STARTTLS is unsupported</strong>, which matters for the Gmail send-as config). It needs the <strong>Workers Paid plan at $5/mo</strong>, then 3 000 emails included and $0.35 per 1 000 after.</p>
+<p>So you <em>could</em> consolidate to one vendor: one dashboard, one set of DNS records, $5/mo and an overage meter — versus Resend's $0 and a hard 429. <strong>I'd still take Resend</strong>, because "cannot be billed" is worth more to you than "one fewer dashboard", but it's a legitimate call. <small>Third-party blogs cite $0.09/1 000 for this; the official pricing page says $0.35. Trust the official number.</small></p>
+
+<h3>Your actual question: can Gmail send as lunamux.dev?</h3>
+<div class="verdict">
+  <span class="tag">Yes</span>
+  <p>Gmail allows up to 99 "Send mail as" addresses and does <strong>not</strong> check domain ownership — it checks control of the mailbox, by emailing a confirmation code. Cloudflare Email Routing delivers that code to your Gmail. <strong>The condition:</strong> for a domain Google can't verify you own, you <em>must</em> supply SMTP credentials. There is no "send through Gmail's servers" option.</p>
+</div>
+
+<p>That option was withdrawn for non-Google-hosted addresses around 2014, and for good reason: mail sent that way has <code>From: you@lunamux.dev</code> but a <code>gmail.com</code> Return-Path and DKIM, so neither aligns and <strong>DMARC fails on anything stricter than <code>p=none</code></strong>. Outlook renders it as "From you@gmail.com on behalf of you@lunamux.dev". Routing through Resend's SMTP instead gives you DKIM signed with <code>d=lunamux.dev</code>, which aligns and passes DMARC cleanly.</p>
+
+<div class="box warn">
+<p class="lbl">The Workspace-specific gotcha that will bite you</p>
+<p>Because soderbjorn.se is <strong>Workspace, not consumer Gmail</strong>, the SMTP fields are rejected with a "Functionality not enabled" error until an admin turns on <strong>Admin console → Apps → Google Workspace → Gmail → End User Access → <em>Allow per-user outbound gateways</em></strong>. You're the admin, so it's self-serve — but propagation can take up to 24 hours, and the error message doesn't tell you this is what's wrong.</p>
+</div>
+
+<h4>The recipe</h4>
+<ol>
+<li>Cloudflare Email Routing on lunamux.dev → destination = your soderbjorn.se Gmail → verify → catch-all rule.</li>
+<li>Resend: verify <code>send.lunamux.dev</code> (SPF + DKIM), take the SMTP credentials.</li>
+<li>Admin console: enable per-user outbound gateways.</li>
+<li>Gmail → Settings → Accounts → Send mail as → add <code>hello@lunamux.dev</code> → SMTP <code>smtp.resend.com</code>, <strong>port 587, TLS</strong>, username <code>resend</code>, password = API key.</li>
+<li>Confirmation code arrives via Cloudflare. Paste. Done.</li>
+</ol>
+
+<h3>The alternative: a Workspace domain alias</h3>
+<p>Worth knowing because it's strictly simpler <em>if</em> the constraint fits. A <strong>domain alias</strong> is free (up to 20), needs no extra licences, and gives you full send and receive as <code>robert@lunamux.dev</code> through Google's own servers with Google-managed DKIM — no relay, no SMTP config, no "via" banner. A <em>secondary</em> domain is different: it has its own separate users, and each consumes a paid licence.</p>
+<p><strong>The catch is exactly what you suspected:</strong> an alias domain <em>mirrors existing usernames</em>. <code>robert@soderbjorn.se</code> becomes <code>robert@lunamux.dev</code>, forced. You cannot create <code>hello@lunamux.dev</code> or <code>support@lunamux.dev</code> unless a matching user exists on soderbjorn.se. Local parts are welded together.</p>
+
+<div class="box danger">
+<p class="lbl">These two paths are mutually exclusive</p>
+<p>A domain has exactly one MX set, and both want it. <strong>Cloudflare Email Routing replaces and locks the MX records</strong> — while it manages the zone you can't add or modify MX at all. To point MX at Google you must disable Email Routing first. So: catch-all and arbitrary addresses (Cloudflare) <em>or</em> Google-native alias with mirrored usernames. Not both.</p>
+<p><strong>But note the transactional half is independent.</strong> Resend on <code>send.lunamux.dev</code> is a <em>subdomain</em> and doesn't touch the root MX — so you can run the Workspace alias for your mailbox <em>and</em> Resend for the server's verification mail simultaneously. That's arguably the best combination, at the price of giving up catch-all.</p>
+</div>
+
+<p><strong>My recommendation:</strong> Cloudflare Email Routing. You'll want <code>hello@</code>, <code>support@</code>, <code>noreply@</code> and <code>dmarc@</code> on a product domain, and the alias path can't give you any of them. The extra machinery is one admin toggle and one SMTP config.</p>
+
+<h3>DNS records</h3>
+<p><strong>Use a sending subdomain.</strong> Three reasons: a brand-new root domain has no sending reputation, so if verification mail gets spam-flagged the damage is confined to <code>send.lunamux.dev</code>; it keeps the root's MX free for Cloudflare; and relaxed DMARC alignment (the default) covers it since both share an organisational domain.</p>
+
+<pre><code><span class="c"># inbound — Cloudflare Email Routing provisions these on the root</span>
+MX   lunamux.dev            route1.mx.cloudflare.net   <span class="c"># priorities are randomised per</span>
+MX   lunamux.dev            route2.mx.cloudflare.net   <span class="c"># zone — read the dashboard,</span>
+MX   lunamux.dev            route3.mx.cloudflare.net   <span class="c"># don't hardcode. DNS-only (grey).</span>
+TXT  lunamux.dev            "v=spf1 include:_spf.mx.cloudflare.net ~all"
+TXT  cf2024-1._domainkey.lunamux.dev    [key from dashboard]
+
+<span class="c"># outbound — on the sending subdomain (Resend)</span>
+MX   send.lunamux.dev       feedback-smtp.eu-west-1.amazonses.com   10
+TXT  send.lunamux.dev       "v=spf1 include:amazonses.com ~all"
+TXT  resend._domainkey.send.lunamux.dev  "p=MIGfMA0GCSqGSIb3DQ..."
+
+<span class="c"># DMARC — start permissive, tighten after ~2 weeks of clean reports</span>
+TXT  _dmarc.lunamux.dev
+     "v=DMARC1; p=none; rua=mailto:dmarc@lunamux.dev; fo=1; adkim=r; aspf=r"
+     <span class="c"># → p=quarantine → p=reject</span>
+</code></pre>
+
+<p><strong>Why alignment matters:</strong> DMARC passes only if the <code>From:</code> header domain matches the domain that passed SPF <em>or</em> DKIM. Authentication alone isn't enough — this is the source of every "SPF and DKIM both pass but DMARC fails" confusion. You only need one aligned, and with a relay it'll be DKIM, because the Return-Path belongs to the relay. <strong>Keep relaxed alignment</strong> (<code>adkim=r</code>) — strict alignment plus a sending subdomain is a common self-inflicted failure.</p>
+<p><small>Two SPF rules that bite: <strong>one SPF record per domain, ever</strong> — two <code>v=spf1</code> TXT records is a permerror and SPF fails entirely. And there's a 10-DNS-lookup limit; the subdomain split helps, since the root carries only Cloudflare's include and the subdomain only Resend's.</small></p>
+<p>Point <code>rua</code> at an address Cloudflare forwards to you, and expect some initial spam-foldering regardless — it improves with engagement. Keep the mail plain: minimal HTML, no tracking pixels, no link shorteners, a real <code>Reply-To</code>.</p>
+
+<h3>Abuse — the thing that turns email into a bill</h3>
+<p>You flagged surprise bills from traffic; the realistic vector isn't traffic, it's your signup endpoint. <strong>Email bombing:</strong> an attacker POSTs <code>/signup</code> repeatedly with a <em>victim's</em> address, and your server dutifully mails someone who never signed up. You become the abuse vector, and your domain reputation and Resend account pay for it. Or they simply burn your 3 000/month in minutes to deny real signups.</p>
+<p>Layer these — none is sufficient alone:</p>
+<ul>
+<li><strong>Rate limit per target email address</strong> (e.g. 3 sends/24h), not just per IP. <em>This is the one that actually stops email bombing</em> — the victim's address is the constant across distributed sources, while IPs are not.</li>
+<li>Rate limit per IP too (5 signups/hour) — cheap, catches naive floods.</li>
+<li><strong>Cloudflare Turnstile</strong> on the form. It's free, you're already on Cloudflare. <strong>Verify the token server-side in Ktor</strong> — a client-side widget alone is bypassed by POSTing the endpoint directly.</li>
+<li><strong>A hard daily send cap in your own code.</strong> A counter that refuses to call Resend past ~200/day. Resend's 429 protects your wallet; this protects your <em>reputation</em> and keeps real signups working.</li>
+<li>Don't leak account existence — same response whether the address is new or known.</li>
+</ul>
+</section>
+
+<!-- ============================================ -->
+<section id="dns">
+<h2 class="sec"><span class="num">09</span>Domains &amp; DNS</h2>
+<p class="deck">Your Loopia → Cloudflare migration and the tracker only intersect in one place — but it's a place you should be careful.</p>
+
+<p>Your <code>domain-move-planning/dns-inventering.html</code> is thorough and its conclusions look right to me, so I won't re-litigate it. Two observations relevant to the tracker:</p>
+
+<h3>The two projects are independent — keep them that way</h3>
+<p>lunamux.dev is already on Cloudflare. The Loopia migration is about soderbjorn.se and friends. <strong>Nothing about the issue tracker depends on that migration finishing</strong>, and you shouldn't couple them. The one connection is that your Gmail on soderbjorn.se is the destination for Cloudflare Email Routing on lunamux.dev — and forwarding to a Gmail address doesn't care which nameservers soderbjorn.se uses.</p>
+<p>That said, your own document's central warning is worth repeating because it applies with full force while you're doing anything else at the same time: <strong>switching nameservers while a DS record still exists at the registry means SERVFAIL — domain and email down.</strong> You've confirmed DS is gone everywhere as of 2026-07-10. Don't do the NS switch in the same week you're debugging DKIM on lunamux.dev; if mail breaks you'll want to know which change caused it.</p>
+
+<h3>The tracker's DNS is small</h3>
+<pre><code>CNAME  issues.lunamux.dev   → [your-app].up.railway.app     <span class="c"># DNS-only or proxied, see below</span>
+TXT    lunamux.dev          → [Railway domain verification]
+<span class="c"># plus the mail records from §8</span>
+</code></pre>
+<p>Railway provisions TLS automatically. You can proxy this one through Cloudflare (orange cloud) if you want their WAF and rate limiting in front of the app — with SSL mode <strong>Full (strict)</strong>, never Flexible, which causes redirect loops. Grey-cloud is fine too and simpler.</p>
+
+<div class="box info">
+<p class="lbl">Multi-project DNS</p>
+<p>Per §3, each additional project adds one record <em>on their domain</em>: <code>issues.someproject.com → CNAME → your-app.up.railway.app</code>. They add it; you verify it and provision the custom domain in Railway. Worth confirming Railway's domains-per-service limit before you promise this to anyone — their limits reference page currently 404s, so I couldn't verify a number.</p>
+</div>
+
+<h3>One small thing worth fixing while you're in there</h3>
+<p>Your inventory notes that soderbjorn.se has <strong>no SPF record at all</strong> and no real DMARC, masked by a wildcard TXT that makes every subname answer with a Google verification string. That's unrelated to the tracker, but if soderbjorn.se is the Gmail account you'll be sending lunamux.dev mail <em>from</em> and receiving forwarded mail <em>into</em>, it's worth adding <code>v=spf1 include:_spf.google.com ~all</code> and a <code>_dmarc</code> record while email is already paged into your head. The wildcard TXT is also worth removing — it makes future debugging of any subdomain TXT record confusing, because everything answers.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="theme">
+<h2 class="sec"><span class="num">10</span>Theming</h2>
+<p class="deck">Easy, and easier still if you do one thing on day one.</p>
+
+<p>Your site's palette is already a clean set of CSS custom properties in <code>styles.css</code> — <code>--bg</code>, <code>--panel</code>, <code>--green</code> (which, per your own comment, now holds cyan), <code>--border</code>, <code>--glow</code> and so on. That's exactly the right substrate. <strong>Build the tracker's CSS against custom properties from the first commit</strong>, never literal hex values, and per-project theming is then a matter of emitting a different <code>:root</code> block.</p>
+
+<pre><code><span class="c">/* server emits this per project, from theme_json */</span>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --accent:#4dc8f5; --accent-hi:#66d9ff; --dim:#5f7590;
+  --border:rgba(77,200,245,.20); --glow:rgba(77,200,245,.35);
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+}
+</code></pre>
+
+<p>Two notes from reading your CSS:</p>
+<ul>
+<li><strong>Name the variables semantically this time.</strong> Your site carries <code>--green</code> holding <code>#4dc8f5</code>, with a comment explaining the names are historical and kept so existing usages pick up the new colours. That was the right call for a rename in place, but don't inherit it — a tenant theming their tracker shouldn't have to set a variable called <code>--green</code> to a shade of orange.</li>
+<li><strong><code>#eaf3fb</code> appears 16 times un-tokenised</strong> in <code>styles.css</code> as the mint-white heading colour. If the tracker's palette is going to track the site's, tokenise that one (as <code>--head</code> above) rather than copying the literal across.</li>
+</ul>
+
+<h3>How the theme should get in</h3>
+<p><strong>Server-side, from the project's entry in <code>projects.yaml</code></strong> (§2), emitted as a <code>:root</code> block into the embed page's <code>&lt;head&gt;</code>. Not via query parameters — an attacker could then restyle your tracker arbitrarily on a page they control, which is a phishing surface. Not via <code>postMessage</code> from the parent either, for the same reason plus a flash of unstyled content on every load.</p>
+<p>Validate the colour values server-side before emitting them into CSS. A theme field is a string that lands in a <code>&lt;style&gt;</code> block — treat it as untrusted input, parse it as a colour, and reject anything that isn't one. Emitting user-supplied strings into CSS unescaped is a real injection vector, not a theoretical one.</p>
+<p>For fonts: your site is monospace-only via system fonts with no <code>@font-face</code> and no webfont link — nothing to download, nothing to configure. Keep that property in the tracker; it's a meaningful chunk of why the site feels fast, and an embedded iframe pulling webfonts would undo it.</p>
+<p>Lastly — <strong>don't port the CRT scanline overlay into the tracker.</strong> Your site already suppresses it over the live demo via <code>body.demo-active</code>, which tells you it's wrong over interactive content. Let the iframe be a clean surface inside the themed page.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="docker">
+<h2 class="sec"><span class="num">11</span>Docker &amp; open source</h2>
+<p class="deck">Your instinct — a Docker component others can deploy — is sound, and there's a well-trodden shape for it.</p>
+
+<h3>The image</h3>
+<p>Multi-stage Gradle build. The thing that actually matters is caching the dependency resolution layer separately from the source, or every build re-downloads the world:</p>
+<pre><code>FROM eclipse-temurin:21-jdk AS build
+WORKDIR /src
+COPY gradle/ gradle/
+COPY gradlew settings.gradle.kts build.gradle.kts ./
+RUN ./gradlew --no-daemon dependencies      <span class="c"># cached unless deps change</span>
+COPY . .
+RUN ./gradlew --no-daemon installDist
+
+FROM eclipse-temurin:21-jre-alpine
+COPY --from=build /src/build/install/app /app
+ENV DATABASE_PATH=/data/app.db
+VOLUME /data
+EXPOSE 8080
+ENTRYPOINT ["/app/bin/app"]
+</code></pre>
+
+<p><strong>Size expectations</strong>, and be sceptical of blog numbers — measure yours. A Temurin JRE plus fat jar lands around 250–350 MB; <code>jre-alpine</code> multi-stage around 120–180 MB; jlink + distroless around 80–120 MB. Reported 339 MB → 54 MB reductions are for trivial apps, not Ktor + Netty + SQLDelight.</p>
+<p><strong>Start with <code>jre-alpine</code>; add jlink only if size actually bothers you.</strong> jlink adds real friction — <code>jdeps</code> misses reflective and <code>ServiceLoader</code> dependencies, so you'll chase <code>NoClassDefFoundError</code> at runtime and hand-add <code>--add-modules java.naming,jdk.crypto.ec,…</code>. Not a good use of your first week.</p>
+
+<div class="box warn">
+<p class="lbl">The one that will actually bite you</p>
+<p><strong>xerial's <code>sqlite-jdbc</code> ships a native <code>.so</code> and needs the musl vs glibc build to match.</strong> Alpine is musl; recent xerial versions handle it, but this is the classic "works on my Mac, <code>UnsatisfiedLinkError</code> in production". Test it on <em>both</em> amd64 and arm64 before you commit to a base image. <code>distroless/base-debian12</code> (glibc) sidesteps it if you hit trouble.</p>
+<p>Also: <strong>build multi-arch</strong> (<code>linux/amd64,linux/arm64</code> via buildx). A large share of self-hosters are on a Raspberry Pi or an ARM VPS, and missing arm64 is the number-one open-source packaging complaint. And set <code>-XX:MaxRAMPercentage=75</code> or the JVM may read the host's memory rather than the container limit.</p>
+</div>
+
+<h3>Configuration</h3>
+<p>You asked how users would configure it alongside the container. <strong>Environment variables for scalars, plus exactly one mounted config file for the project list.</strong> Env vars compose natively with docker-compose, Kubernetes, Railway and Fly, and a mounted file requires the user to create it, mount it and debug the mount — so keep files to the one case that genuinely needs structure. That's <code>projects.yaml</code> (§2): a nested list of projects with themes and origin allowlists is not a scalar, and cramming it into an env var is clever for a week and miserable forever. Everything else — <code>DATABASE_PATH</code>, <code>MAIL_FROM</code>, <code>RESEND_API_KEY</code>, <code>BASE_URL</code> — is an env var.</p>
+<p>The pattern that works:</p>
+<ul>
+<li><strong>Every setting has a sane default.</strong> <code>docker run -v data:/data -p 8080:8080 ghcr.io/you/tracker</code> should just work with zero config.</li>
+<li><strong>Ship a <code>.env.example</code></strong> documenting every variable with comments. This is the single most useful file in Vaultwarden's repo.</li>
+<li><strong>Support <code>*_FILE</code> variants</strong> for secrets (<code>RESEND_API_KEY_FILE=/run/secrets/resend</code>) — Docker and Kubernetes mount secrets as files, and env vars leak via <code>docker inspect</code> and crash dumps.</li>
+<li><strong>Validate at startup and fail loudly.</strong> Never silently default a <em>misconfigured</em> value. Vaultwarden has a live bug of exactly this class — a bad <code>DATABASE_URL</code> silently creates an empty SQLite file, and the user finds out when their data is "gone". Learn from it for free.</li>
+</ul>
+<p>Ktor note: <code>application.conf</code> with <code>${?ENV_VAR}</code> substitution is a nice middle ground — the schema stays visible in-repo while remaining env-injectable.</p>
+
+<h3>The precedent to copy</h3>
+<p><strong>Vaultwarden is the closest model to what you're building</strong> and worth studying directly: single container, SQLite by default via <code>DATABASE_URL=sqlite://data/db.sqlite3</code>, with Postgres and MySQL as opt-in through the same variable, ~50 MB RAM idle, one volume at <code>/data</code>. Gitea does the same — SQLite default, Postgres optional, compose file ships with the Postgres service commented out. Both have far more write concurrency than you will and still default to SQLite.</p>
+<p>The counterexamples are instructive too: <strong>Miniflux</strong> is Postgres-only by deliberate choice — one backend, one test matrix — which is legitimate but forces every self-hoster to run two containers. <strong>Plausible</strong> needs Postgres <em>and</em> ClickHouse, and their self-hosting support burden is correspondingly heavy. Don't emulate that.</p>
+<p>The pattern is unambiguous: <strong>small data + few writers → SQLite by default, Postgres as an escape hatch.</strong> An issue tracker for tens of users is squarely in that category. Ship a <code>docker-compose.yml</code> at the repo root that works with <code>docker compose up -d</code> and no edits, with Litestream commented out as opt-in.</p>
+
+<div class="box info">
+<p class="lbl">On open-sourcing it</p>
+<p>The single-operator model (§2) makes this lower-risk than I'd first framed it: <strong>you're shipping software, not operating a platform.</strong> Nobody else's projects live on your server, so open-sourcing doesn't sign you up for other people's abuse, moderation or outages. The residual cost is ordinary maintainership — issues, PRs, "does it support LDAP", and a stranger's misconfiguration becoming your Saturday.</p>
+<p>Timing still matters, since open-sourcing later is easy and the reverse isn't. Lunamux is MIT with a NOTICE file, so you have a precedent. My suggestion: build it private, deploy it for Lunamux, and open it once <code>projects.yaml</code> has actually been exercised by a second project — that's the point at which the config surface has stopped moving, which is what makes a self-hostable release honest rather than aspirational.</p>
+</div>
+</section>
+
+<!-- ============================================ -->
+<section id="cost">
+<h2 class="sec"><span class="num">12</span>Cost model</h2>
+<p class="deck">What this actually costs, and the ceiling.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Item</th><th>Expected</th><th>Ceiling</th><th>Mechanism</th></tr></thead>
+<tbody>
+<tr><td>Railway Hobby</td><td>$5/mo</td><td class="yes">$15/mo</td><td>$5 subscription (includes $5 usage) + hard limit at $10 → workloads offline</td></tr>
+<tr><td>Railway volume (1 GB)</td><td>$0.15/mo</td><td>within the above</td><td>$0.15/GB/mo</td></tr>
+<tr><td>Resend <small>(transactional email)</small></td><td class="yes">$0</td><td class="yes">$0</td><td>Free: 3 000/mo, 100/day. No overage mechanism — 429, not an invoice. Next tier is $20/mo for 50 000, which you're ~30× away from needing.</td></tr>
+<tr><td>Cloudflare Email Routing</td><td class="yes">$0</td><td class="yes">$0</td><td>Free, unlimited inbound</td></tr>
+<tr><td>Cloudflare R2 (backups)</td><td class="yes">~$0</td><td>~$0</td><td>Megabytes. Free egress — which matters precisely when you're restoring in a panic.</td></tr>
+<tr><td>Cloudflare DNS</td><td class="yes">$0</td><td class="yes">$0</td><td>Free plan</td></tr>
+<tr><td>GitHub Pages</td><td class="yes">$0</td><td class="yes">$0</td><td>Public repo</td></tr>
+<tr><td>lunamux.dev renewal</td><td>~$12/yr</td><td>fixed</td><td>Cloudflare Registrar, at cost</td></tr>
+<tr><th>Total</th><th>≈ $5–6/mo</th><th class="yes">$15/mo hard</th><th></th></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>The honest read on "no surprise bills":</strong> you've achieved it, but the mechanism is worth internalising. Railway's hard limit doesn't throttle you to stay under budget — it takes everything offline, workspace-wide, and emails you. For a hobby issue tracker that's the correct trade. It would not be for anything with an SLA.</p>
+<p>Everything else on the list is structurally uncappable-at-zero because it's free, which is a stronger guarantee than any budget alert. That's the actual reason to prefer Resend's free tier over SES's cheaper per-message rate: SES has no spend cap at all, and $0.10/1 000 is only cheaper than free at volumes you don't have.</p>
+<p><small>One thing to verify: a secondary source claims Railway removed prepaid credit in early 2026, requiring a post-paid card. I couldn't confirm it on any official page. If prepaid still exists it's a <em>cleaner</em> cap than Usage Limits — you simply can't spend money you haven't loaded — so it's worth thirty seconds checking at signup.</small></p>
+</section>
+
+<!-- ============================================ -->
+<section id="order">
+<h2 class="sec"><span class="num">13</span>Suggested order of work</h2>
+<p class="deck">Sequenced to hit the risky, un-de-riskable things first.</p>
+
+<p>The ordering principle: the two things that could invalidate the design are the <strong>Kotlin/JS production bundle</strong> and <strong>Google OAuth inside the frame</strong>. Both are cheap to test in isolation and expensive to discover late. Do them before you write an issue tracker.</p>
+
+<ol>
+<li><strong>Spike the embed + auth path, with nothing in it.</strong> A Ktor server on Railway serving one Kotlin/JS page that says "hello", framed on a local copy of lunamux-web, with Google sign-in via <code>initCodeClient</code> popup and a session cookie round-tripping. <strong>Build it with <code>jsBrowserProductionWebpack</code> from the first commit</strong> so you find out immediately whether the name-mangling bug that forced Lunamux to ship dev bundles affects you too. If both work, everything else here is ordinary work.</li>
+<li><strong>Set the Railway hard limit.</strong> Before you deploy anything real. Thirty seconds, and it's the requirement you were most worried about.</li>
+<li><strong>Wire the volume and prove persistence.</strong> Write a row, redeploy, read it back. Assert at startup that <code>/data</code> is a different device than <code>/</code>. Get Litestream replicating to R2 and — this is the part everyone skips — <strong>do a restore</strong>. A backup you've never restored is a hypothesis.</li>
+<li><strong>Email, end to end.</strong> Cloudflare Email Routing → Gmail, Resend on <code>send.lunamux.dev</code>, DMARC at <code>p=none</code>, send yourself a verification link. Then the Gmail "Send mail as" setup — and remember the per-user-outbound-gateways toggle can take a day to propagate, so start it early rather than debugging it under pressure.</li>
+<li><strong>Now build the tracker.</strong> Schema with <code>project_id</code> and per-project issue numbers from the first migration. Rate limits on the signup endpoint <em>in the same commit</em> as the signup endpoint, not later.</li>
+<li><strong>Second project, even a fake one.</strong> The multi-project design isn't proven until something other than Lunamux uses it — that's when you find out whether the CNAME flow, the origin allowlist and the theme records actually hold together.</li>
+<li><strong>Open source it</strong> once the config surface has stopped moving.</li>
+</ol>
+
+<hr>
+
+<h3>Things I'd flag as genuinely uncertain</h3>
+<p>Everything above is sourced from current vendor documentation, but these specifically are worth re-checking at decision time rather than trusting me:</p>
+<ul>
+<li><strong>Railway's domains-per-service limit</strong> — their limits reference page 404s. This matters if the per-project CNAME plan scales beyond a handful.</li>
+<li><strong>Railway prepaid credit</strong> — whether it still exists (see §12).</li>
+<li><strong>Whether Railway's Serverless actually zeroes billing</strong> — the docs frame it as cost reduction but don't say so plainly. Moot if you take my advice and don't rely on it.</li>
+<li><strong>Firefox's FedCM support state</strong> — it was in flight through 2025–26. Affects One Tap in the frame, not the popup path.</li>
+<li><strong>xerial sqlite-jdbc on musl/arm64</strong> — the most likely concrete packaging failure. Test, don't assume.</li>
+<li><strong>Litestream on Railway specifically</strong> — the sidecar pattern its docs recommend assumes two containers sharing a volume, which Railway's per-service volumes make awkward. The <code>-exec</code> single-container form should work, but I'd verify it rather than take it on faith.</li>
+</ul>
+</section>
+
+<footer>
+<p>Written 16 July 2026 against <code>plan.txt</code>, including the mid-flight addition of multi-project support. Vendor facts were checked against primary documentation at that date; the fast-moving ones (free-tier limits, Railway pricing, browser cookie policy) are worth re-verifying before you commit money or architecture to them.</p>
+<p>Repos consulted: <code>lunamux/main</code>, <code>lunamux-web</code>, <code>framnafolk/main</code>, <code>domains/domain-move-planning</code>.</p>
+</footer>
+
+</div>
+</body>
+</html>

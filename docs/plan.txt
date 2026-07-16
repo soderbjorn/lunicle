@@ -1,0 +1,30 @@
+i would like to create an issue tracker for lunamux (/Users/soderbjorn/repo-private/lunamux/main)
+for hosting as a new tab inside the lunamux website (/Users/soderbjorn/repo-private/lunamux-web).
+
+i have a bunch of domains hosted on loopia, including a google apps workspace account for soderbjorn.se.
+i have the lunamux website hosted on github pages, with the domain hosted on cloudflare and pointing to github pages.
+i am considering moving all of my domains (not the registration but the DNS) to cloudclare (see /Users/soderbjorn/repo-private/domains).
+
+the issue tracker will need to be able to run a cloud server which connects to a database, and hosts the issue tracking website.
+i would like to embed the issue tracking website inside one of the pages on the lunamux website.
+i am considering using railway for the hosting of the issue tracker, but i could also move the hosting of the lunamux website itself there if it helps.
+
+i want to be able to theme the issue tracker's colors to match the lunamux website.
+
+i want to create the issue tracker in kotlin, as a server component and a website that share code using kotlin multiplatform. the issue tracker website
+should not be compose multiplatform - it should use the DOM APIs directly.
+i might want to create mobile apps later, which would make the multiplatform approach extra interesting. client code should have native views (on the web it would be the kotlin dom api), on iOS it would be swiftui, on android compose) but each has a view model which is a thin wrapper over a kotlin "backing view model". the approach is used in framnafolk (/Users/soderbjorn/repo/framnafolk/main).
+
+i need to ensure that i cannot get surprise bills due to unsurprising traffic.
+i would like people to be able to create their own accounts on the issue tracker, by entering a unique account name and their email address, and they will need to verify
+their email address by clicking a link in an e-mail they receive. i therefore (and perhaps for other reasons) need a setup
+where the server can transmit mail that looks like it's coming from the lunamux domain. i also need to be able to read mail coming to lunamux.dev or lunamux.com. if google workspace still allows it, it would be okay (maybe preferable) if the mail lands in my soderbjorn.se google account, under the condition that google still allows me to "impersonate" lunamux.dev email adresses from my personal account. users should also be able to sign in with their google account using oauth, something i also implemented in framnafolk (for my employer, so not exactly the same situation).
+
+i am considering creating the issue tracker as a docker component. it might be open source so that others can deploy it too. we would need some way for users to be able to configure it outside or along with the docker component, i suppose.
+
+i am considering using a database that railway provides, but i am also wondering about the feasability of packaging a sqlite database with the server. in that case i am not sure how / where it would read and write its database in a way that survives deployment of newer versions of the docker component. also not sure how to handle backups etc.
+
+i probably want the same issue tracker server to be able to support multiple projects. this means the website of an individual projects
+  might be able to need to embed the hosted website with a specific project in mind.
+
+i want some commentary / analysis and recommendations on each of these points in an html file. you don't have to go in depth on code. i mainly want to know about feasability and how i could set up the overall infrastructure.

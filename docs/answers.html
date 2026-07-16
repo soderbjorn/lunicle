@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Answers — Questions on the Issue Tracker Analysis</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+  --maxw:1000px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0; background:var(--bg); color:var(--body); font-family:var(--mono);
+  font-size:15px; line-height:1.65; -webkit-font-smoothing:antialiased}
+body::before{content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 0%, rgba(77,200,245,.07), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(77,200,245,.04), transparent 70%)}
+.wrap{position:relative; z-index:1; max-width:var(--maxw); margin:0 auto; padding:0 24px 120px}
+header{padding:64px 0 32px; border-bottom:1px solid var(--border); margin-bottom:40px}
+.eyebrow{color:var(--green-dim); font-size:12px; letter-spacing:.18em; text-transform:uppercase; margin:0 0 14px}
+h1{color:var(--head); font-size:30px; line-height:1.25; margin:0 0 16px; letter-spacing:-.01em}
+.sub{color:var(--green-dim); margin:0; font-size:14px}
+.dot{display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green-hi);
+  box-shadow:0 0 10px var(--glow); margin-right:9px; vertical-align:middle; animation:dotGlow 2.2s ease-in-out infinite}
+@keyframes dotGlow{0%,100%{opacity:1}50%{opacity:.45}}
+.toc{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:22px 26px; margin:0 0 56px}
+.toc h2{font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--green-dim); margin:0 0 14px}
+.toc ol{margin:0; padding-left:22px}
+.toc li{margin:0 0 7px}
+.toc a{color:var(--green); text-decoration:none; font-size:13.5px}
+.toc a:hover{color:var(--green-hi); text-decoration:underline}
+section{margin:0 0 64px; scroll-margin-top:24px}
+h2.sec{color:var(--head); font-size:21px; margin:0 0 6px; letter-spacing:-.01em; display:flex; gap:12px; align-items:baseline}
+h2.sec .num{color:var(--green-dimmer); font-size:14px; flex:none}
+.q{color:var(--green-dim); font-size:13.5px; margin:0 0 24px; padding-left:34px; font-style:italic;
+   border-left:2px solid var(--green-dimmer); padding-top:2px; padding-bottom:2px; margin-left:2px}
+h3{color:var(--green-hi); font-size:15.5px; margin:30px 0 10px}
+h4{color:var(--head); font-size:14px; margin:22px 0 8px}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 14px; padding-left:22px}
+li{margin:0 0 7px}
+strong{color:var(--head); font-weight:600}
+em{color:var(--green); font-style:italic}
+a{color:var(--green)}
+code{background:var(--panel-2); border:1px solid var(--green-dimmer); border-radius:4px;
+  padding:1px 5px; font-size:12.5px; color:var(--green-hi); white-space:nowrap}
+pre{background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:16px 18px;
+  overflow-x:auto; margin:0 0 18px; font-size:12.5px; line-height:1.6}
+pre code{background:none; border:none; padding:0; white-space:pre; color:var(--body)}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+pre .r{color:var(--red)}
+pre .g{color:var(--traffic-g)}
+.box{border-left:3px solid; border-radius:0 8px 8px 0; padding:14px 18px; margin:0 0 18px; background:var(--panel)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; margin:0 0 6px}
+.rec{border-color:var(--traffic-g)} .rec .lbl{color:var(--traffic-g)}
+.warn{border-color:var(--yellow)} .warn .lbl{color:var(--yellow)}
+.danger{border-color:var(--red)} .danger .lbl{color:var(--red)}
+.info{border-color:var(--blue)} .info .lbl{color:var(--blue)}
+.verdict{display:flex; gap:14px; align-items:flex-start; background:var(--panel-2);
+  border:1px solid var(--border-hi); border-radius:8px; padding:14px 18px; margin:0 0 26px}
+.verdict .tag{flex:none; font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--bg); background:var(--green-hi); border-radius:4px; padding:3px 9px; font-weight:700; margin-top:2px}
+.verdict p{margin:0; color:var(--head); font-size:14px}
+.tw{overflow-x:auto; margin:0 0 18px; border:1px solid var(--border); border-radius:8px}
+table{border-collapse:collapse; width:100%; font-size:13px; min-width:520px}
+th{background:var(--panel-2); color:var(--green-hi); text-align:left; padding:10px 14px; font-weight:600;
+  border-bottom:1px solid var(--border); font-size:12px; letter-spacing:.06em; text-transform:uppercase; white-space:nowrap}
+td{padding:10px 14px; border-bottom:1px solid var(--green-dimmer); vertical-align:top}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(77,200,245,.03)}
+.yes{color:var(--traffic-g); font-weight:600}
+.no{color:var(--red); font-weight:600}
+.meh{color:var(--yellow); font-weight:600}
+td small{color:var(--green-dim); font-size:11.5px}
+footer{border-top:1px solid var(--border); padding-top:26px; color:var(--green-dim); font-size:12.5px}
+footer a{color:var(--green-dim)}
+hr{border:none; border-top:1px solid var(--green-dimmer); margin:26px 0}
+.diagram{background:var(--panel); border:1px solid var(--border-hi); border-radius:8px;
+  padding:20px 22px; margin:0 0 18px; overflow-x:auto}
+.diagram pre{background:none; border:none; padding:0; margin:0; font-size:12.5px; line-height:1.55}
+.dtitle{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--green-dim); margin:0 0 14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow"><span class="dot"></span>Lunamux · Follow-up</p>
+  <h1>Answers to your questions on the analysis</h1>
+  <p class="sub">Three questions from <code>questions-on-analysis.txt</code>: the email mechanism in detail, the single-operator clarification, and scaling. The second one changed my mind about a few things — see §4 for what I've revised in <code>analysis.html</code>.</p>
+</header>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#email">How email actually moves — who hosts what</a></li>
+    <li><a href="#tenancy">Single-operator instances: what this simplifies</a></li>
+    <li><a href="#scaling">Scaling and multiple instances</a></li>
+    <li><a href="#changed">What I changed in the analysis</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================ -->
+<section id="email">
+<h2 class="sec"><span class="num">01</span>How email actually moves — who hosts what</h2>
+<p class="q">"explain the email transmission mechanism. would it be cloudflare hosting it? would it host smtp servers? more detail please."</p>
+
+<div class="verdict">
+  <span class="tag">Short answer</span>
+  <p><strong>You never run an SMTP server, and your Ktor code never speaks SMTP.</strong> Two different vendors handle two independent directions: Cloudflare hosts the <em>receiving</em> SMTP servers, Resend hosts the <em>sending</em> ones. Your server just makes an HTTPS POST. The two halves don't know about each other.</p>
+</div>
+
+<p>The confusion is worth clearing up properly, because "email" is really three separate flows that happen to share a domain name. Let's take them one at a time.</p>
+
+<h3>Flow A — Someone emails <code>hello@lunamux.dev</code></h3>
+<p><strong>Yes, Cloudflare hosts real SMTP servers here.</strong> Those <code>route1/2/3.mx.cloudflare.net</code> MX records point at actual mail transfer agents listening on port 25, operated by Cloudflare. That's what an MX record <em>is</em> — a pointer to a machine that accepts SMTP connections for your domain.</p>
+
+<div class="diagram">
+<p class="dtitle">Inbound — your server is not involved at all</p>
+<pre><code>  someone@example.com
+          │
+          │ <span class="c">1. their mail server asks DNS: "MX for lunamux.dev?"</span>
+          │    <span class="c">→ route1.mx.cloudflare.net, route2…, route3…</span>
+          ▼
+  ┌────────────────────────┐
+  │  <span class="k">Cloudflare MX servers</span> │  <span class="c">← real SMTP servers, port 25,</span>
+  │  (Email Routing)       │  <span class="c">  run by Cloudflare, free</span>
+  └────────────────────────┘
+          │ <span class="c">2. rejects the mail outright unless it passes SPF or DKIM</span>
+          │ <span class="c">3. matches your rules: catch-all *@lunamux.dev → robert@soderbjorn.se</span>
+          │ <span class="c">4. SRS-rewrites the envelope sender so SPF still validates,</span>
+          │    <span class="c">adds DKIM signatures + an ARC seal. From: header untouched.</span>
+          ▼
+  ┌────────────────────────┐
+  │  <span class="k">Google Workspace</span>      │  <span class="c">← ASPMX.L.GOOGLE.COM, your existing MX</span>
+  │  (soderbjorn.se)       │
+  └────────────────────────┘
+          │
+          ▼
+     <span class="g">your Gmail inbox</span>          <span class="c">← lands here. Zero code. Pure DNS + config.</span>
+</code></pre>
+</div>
+
+<p>Nothing you write runs in this path. You don't have a mailbox on lunamux.dev in any real sense — Cloudflare accepts the mail on that domain's behalf and immediately hands it to Google, who store it. That's why it's free and why there's no storage limit to think about: Cloudflare is a relay, not a mailbox provider.</p>
+
+<h3>Flow B — Your server sends a verification email</h3>
+<p>This is the one people picture as "sending mail from the server", and it isn't. <strong>Your Ktor code makes an ordinary HTTPS request.</strong> No mail library, no JavaMail, no port 25, no queue, no retry logic.</p>
+
+<div class="diagram">
+<p class="dtitle">Outbound transactional — your server speaks HTTPS, not SMTP</p>
+<pre><code>  ┌────────────────────────┐
+  │  <span class="k">Your Ktor server</span>      │  POST https://api.resend.com/emails
+  │  (Railway)             │  { from, to, subject, html }
+  └────────────────────────┘  <span class="c">← plain HTTPS + JSON. ~10 lines of Ktor client.</span>
+          │
+          │ <span class="c">HTTPS, port 443</span>
+          ▼
+  ┌────────────────────────┐
+  │  <span class="k">Resend</span>                │  <span class="c">queues it, signs DKIM with d=send.lunamux.dev</span>
+  │  (runs on Amazon SES)  │  <span class="c">using the key you published in DNS</span>
+  └────────────────────────┘
+          │ <span class="c">SMTP, port 25 — Resend's MTAs do this part, from their IPs</span>
+          ▼
+  ┌────────────────────────┐
+  │  <span class="k">Recipient's MX</span>        │  <span class="c">checks SPF  → include:amazonses.com  ✓</span>
+  │  (gmail.com, etc.)     │  <span class="c">checks DKIM → your published key       ✓</span>
+  └────────────────────────┘  <span class="c">→ DMARC aligns → inbox</span>
+</code></pre>
+</div>
+
+<p><small>Incidentally, that <code>feedback-smtp.eu-west-1.amazonses.com</code> MX record Resend asks you to add is the tell that Resend is built on Amazon SES. It's their bounce-handling address. That's fine — it's what you're paying them (nothing) to abstract.</small></p>
+
+<h3>Flow C — You reply from Gmail as <code>hello@lunamux.dev</code></h3>
+<p>Here's the bit that answers "how can Gmail impersonate a domain it doesn't host". <strong>It doesn't deliver the mail — it hands it to Resend.</strong> Gmail acts as an SMTP <em>client</em>, authenticating to someone else's SMTP server:</p>
+
+<div class="diagram">
+<p class="dtitle">Send-as — Gmail as an SMTP client, not a sender</p>
+<pre><code>  You hit Send in Gmail
+          │
+          │ <span class="c">Gmail connects OUT to smtp.resend.com:587</span>
+          │ <span class="c">username "resend", password = your API key, STARTTLS</span>
+          │ <span class="c">↑ this is exactly what the Workspace admin toggle</span>
+          │ <span class="c">  "allow per-user outbound gateways" permits</span>
+          ▼
+  ┌────────────────────────┐
+  │  <span class="k">Resend</span>                │  <span class="c">signs with your DKIM, delivers as in Flow B</span>
+  └────────────────────────┘
+          │ <span class="c">SMTP, port 25</span>
+          ▼
+     <span class="g">recipient</span>                 <span class="c">← sees a properly aligned lunamux.dev email,</span>
+                                <span class="c">  no "via gmail.com", DMARC passes</span>
+</code></pre>
+</div>
+
+<p>An "outbound gateway" is just the mail world's term for <em>relay through a third party's SMTP server</em>. Google's default is to send through their own servers, which is why the DKIM would say <code>d=gmail.com</code> and DMARC would fail. Pointing it at Resend is what makes the identity honest.</p>
+
+<h3>Who hosts what — the whole picture</h3>
+<div class="tw">
+<table>
+<thead><tr><th>Component</th><th>Operated by</th><th>Protocol</th><th>Cost</th></tr></thead>
+<tbody>
+<tr><td>Receiving MX for lunamux.dev</td><td><strong>Cloudflare</strong></td><td>SMTP server, port 25 in</td><td class="yes">$0</td></tr>
+<tr><td>Forwarding to your Gmail</td><td><strong>Cloudflare</strong></td><td>SMTP client</td><td class="yes">$0</td></tr>
+<tr><td>Your actual mailbox / storage</td><td><strong>Google Workspace</strong></td><td>IMAP / web</td><td>already paying</td></tr>
+<tr><td>Transactional send API</td><td><strong>Resend</strong></td><td>HTTPS REST</td><td class="yes">$0 (3 000/mo)</td></tr>
+<tr><td>Transactional delivery</td><td><strong>Resend</strong> (on AWS SES)</td><td>SMTP client, port 25 out</td><td class="yes">$0</td></tr>
+<tr><td>Gmail send-as relay</td><td><strong>Resend</strong></td><td>SMTP submission, port 587</td><td class="yes">$0</td></tr>
+<tr><td><strong>Your Ktor server</strong></td><td><strong>you</strong></td><td class="yes"><strong>HTTPS client only</strong></td><td>Railway $5</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Why you must not run your own SMTP server</h3>
+<p>Worth spelling out, since it's the obvious next question and the answer is unusually one-sided. Self-hosting mail is one of the few places where "just run it yourself" is genuinely bad advice:</p>
+<ul>
+<li><strong>Port 25 is blocked outbound.</strong> Railway, AWS, GCP, Azure, DigitalOcean — all block it by default, precisely because spammers. This alone ends the conversation before reputation even comes up.</li>
+<li><strong>A fresh IP has no sending reputation.</strong> Gmail and Outlook will spam-folder or reject you outright, and there's no appeal — you earn reputation over months of consistent, wanted volume you don't have.</li>
+<li><strong>You need reverse DNS (PTR) matching your HELO.</strong> On Railway you don't own the IP, so you cannot set it. Many receivers reject on that alone.</li>
+<li><strong>Shared IPs.</strong> On a PaaS your outbound IP is shared. Someone else's spam becomes your deliverability problem.</li>
+<li><strong>And then the actual work:</strong> bounce handling, suppression lists, feedback loops with each ISP, DKIM key rotation, TLS for the MTA, queue management, retry backoff. Resend and SES exist because this is a specialty, not a weekend.</li>
+</ul>
+<p>Receiving is no better: you'd need port 25 open inbound, an always-on process, spam filtering, and somewhere to store the mail. Cloudflare does all of it for free and better.</p>
+
+<div class="box info">
+<p class="lbl">The one-vendor alternative, if you'd rather</p>
+<p>Cloudflare <em>can</em> now do both halves. <strong>Email Service</strong> added outbound sending (public beta April 2026) and authenticated SMTP submission (June 2026): <code>smtp.mx.cloudflare.net:465</code>, implicit TLS only — note <strong>587/STARTTLS is not supported</strong>, which matters because Gmail's send-as UI wants 587 or 465, so you'd pick 465/SSL there.</p>
+<p>It needs the <strong>Workers Paid plan at $5/mo</strong>, then 3 000 emails included and $0.35 per 1 000 after. So: one vendor, one dashboard, one set of DNS records — for $5/mo and an overage meter, versus Resend's $0 and a hard 429. <strong>I'd still take Resend</strong>, because "cannot be billed" is worth more to you than "one fewer dashboard", but it's a legitimate call and worth knowing the option exists. <small>Third-party blogs cite $0.09/1 000 for this; the official pricing page says $0.35. Trust the official number.</small></p>
+</div>
+
+<h3>What you actually build</h3>
+<p>The entire email surface in your codebase is roughly this — one function, no dependencies beyond what Ktor already gives you:</p>
+<pre><code><span class="k">suspend fun</span> sendVerificationMail(to: String, token: String) {
+    client.post(<span class="g">"https://api.resend.com/emails"</span>) {
+        header(HttpHeaders.Authorization, <span class="g">"Bearer $resendApiKey"</span>)
+        contentType(ContentType.Application.Json)
+        setBody(SendMailRequest(
+            from    = <span class="g">"Lunamux Issues &lt;noreply@send.lunamux.dev&gt;"</span>,
+            to      = listOf(to),
+            subject = <span class="g">"Verify your email"</span>,
+            html    = verifyTemplate(<span class="g">"$baseUrl/verify?t=$token"</span>),
+        ))
+    }
+}
+</code></pre>
+<p>That's it. Everything else in §7 of the analysis — SPF, DKIM, DMARC, the subdomain split — is DNS configuration you do once in a browser, not code.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="tenancy">
+<h2 class="sec"><span class="num">02</span>Single-operator instances: what this simplifies</h2>
+<p class="q">"clarification on creating projects: my own hosted server would only host my own projects. but since the whole thing should be open source, others might want to set up their own hosted version of the issue tracker for their projects."</p>
+
+<div class="verdict">
+  <span class="tag">Good news</span>
+  <p>This is a <strong>meaningfully simpler product</strong> than what I'd hedged against, and it deletes a category of work. You're building <em>multi-project, single-operator software</em>, not a multi-tenant SaaS. The distinction is the difference between shipping software and operating a platform.</p>
+</div>
+
+<p>I'd written §2 defensively because "multiple projects, embeddable in each project's site" reads like the start of a hosted service. Your clarification settles it: <strong>each deployment has exactly one operator, who owns every project on it.</strong> Yours has your projects. Someone else deploys their own container for theirs. Nobody's projects share a server with a stranger's.</p>
+
+<h3>What this deletes</h3>
+<ul>
+<li><strong>Cross-tenant abuse liability.</strong> I warned about someone else's project spamming from your sending domain and torching your reputation. Can't happen — nobody else has a project on your instance.</li>
+<li><strong>Content moderation.</strong> You're not responsible for policing what strangers file under a project you've never heard of.</li>
+<li><strong>Per-tenant support burden.</strong> Someone else's outage is their container, not your Saturday.</li>
+<li><strong>Per-project sending domains.</strong> This one's a real saving — see below.</li>
+<li><strong>Tenant isolation as a security boundary.</strong> Project scoping is still a correctness concern (don't leak project A's issues into project B's view), but it's no longer a <em>security</em> boundary between mutually distrusting parties. Much lower stakes if you get a query wrong.</li>
+</ul>
+
+<h3>What survives — and it's the important one</h3>
+<div class="box warn">
+<p class="lbl">Accounts are still public. Projects are not.</p>
+<p>Anyone on the internet can create an account on your instance to file an issue against Lunamux — that's the whole point. So <strong>every word of §7's abuse section still applies at full strength</strong>: rate limit per target email address, Turnstile on the form, a hard daily send cap in code. The public surface didn't shrink; only the <em>project creation</em> surface did.</p>
+<p>The two are easy to conflate. "Only my projects" makes it sound like a private tool. It isn't — it's a public signup form attached to a private project list.</p>
+</div>
+
+<h3>Sending domain: now settled</h3>
+<p>In the analysis I hedged: <em>"either keep one sending identity for everyone, or let each project verify its own domain"</em>, and recommended the former on complexity grounds. Your clarification makes it <strong>not a choice at all</strong>. One operator = one sending identity per deployment, full stop:</p>
+<pre><code>MAIL_FROM=Lunamux Issues &lt;noreply@send.lunamux.dev&gt;
+RESEND_API_KEY_FILE=/run/secrets/resend
+</code></pre>
+<p>Two env vars. A self-hoster sets <code>noreply@send.theirdomain.com</code> and their own key. There is never a per-project DKIM key, never a per-project reputation, never a "why is project X's mail bouncing" ticket. That's a whole subsystem that doesn't need to exist.</p>
+
+<h3>How projects should get created</h3>
+<p>This falls straight out of the model, and I think it's genuinely the nicest part of the clarification. <strong>You don't need an admin UI at all for v1.</strong> Projects are operator-controlled configuration, so declare them in a config file, mounted into the container, upserted into the DB by slug at startup:</p>
+
+<pre><code><span class="c"># /config/projects.yaml — mounted, version-controlled, no UI needed</span>
+projects:
+  - slug: lunamux
+    name: Lunamux
+    allowed_origins:
+      - https://lunamux.dev
+    theme:
+      bg:        <span class="g">"#04090f"</span>
+      panel:     <span class="g">"#070f1a"</span>
+      accent:    <span class="g">"#4dc8f5"</span>
+      accent_hi: <span class="g">"#66d9ff"</span>
+      head:      <span class="g">"#eaf3fb"</span>
+
+  - slug: darknessirc
+    name: Darkness IRC
+    allowed_origins:
+      - https://darknessirc.soderbjorn.se
+    theme: { ... }
+</code></pre>
+
+<p>Why this shape:</p>
+<ul>
+<li><strong>No admin UI to build, secure, or document.</strong> The single largest chunk of work you'd otherwise do before v1.</li>
+<li><strong>Version-controlled.</strong> Project config lives in git next to everything else; changes are reviewable and revertible.</li>
+<li><strong>Self-hosters get a file they can read.</strong> Far better than "click through six screens" as install documentation, and it's what makes your README short.</li>
+<li><strong>Theme and origin allowlist live together</strong>, which is exactly where §9 and §3 want them.</li>
+<li><strong>Slug is stable identity</strong>, so upsert-by-slug is idempotent — restart the container as often as you like.</li>
+</ul>
+<p>This is a small, deliberate exception to the "env vars, not config files" rule in §10. Env vars are right for scalars — a database path, an API key. A nested list of projects with per-project themes and origin lists is not a scalar, and cramming it into <code>PROJECTS=lunamux:Lunamux:#04090f,…</code> is the kind of thing that's clever for a week and miserable forever. Keep env vars for everything else.</p>
+
+<div class="box rec">
+<p class="lbl">Also: multi-project is now clearly worth it</p>
+<p>Worth saying plainly, since "do I even need this" is the reasonable question. <strong>Yes.</strong> Without it you'd run one container, one volume, one domain, one Railway service <em>per project</em> — and pay Railway's $5 floor for each. With it, every project you ever start is a five-line entry in a YAML file on infrastructure you're already paying for. That's the feature paying for itself at project number two.</p>
+</div>
+
+<h3>The embedding story gets easier too</h3>
+<p>I checked what's actually deployed: only <code>lunamux-web</code> (→ <code>lunamux.dev</code>) and <code>termtastic-web</code> (→ <code>termtastic.soderbjorn.se</code>) have sites today. That means future projects will land either on their own domain or on a <code>soderbjorn.se</code> subdomain — and <strong>you control the DNS for all of them.</strong></p>
+<p>So the per-project CNAME recommendation from §3, which I framed as needing coordination with project owners, is really just you adding a DNS record to a zone you already administer. No emails to third parties, no waiting. Each project's site gets:</p>
+<pre><code>issues.lunamux.dev              CNAME → your-app.up.railway.app
+issues.darknessirc…             CNAME → your-app.up.railway.app
+</code></pre>
+<p>…and every embed is same-site with its parent, so the entire cross-site cookie problem never arises in any browser. Same for self-hosters: they own their domains too. <strong>The design that was defensive is now just the obvious one.</strong></p>
+<p><small>Worth noting the alternative you now have: if most projects end up on <code>soderbjorn.se</code> subdomains, hosting the tracker at <code>issues.soderbjorn.se</code> would make those same-site for free, with only <code>lunamux.dev</code> needing its own CNAME. But the uniform per-project CNAME works everywhere and costs one record either way, so I wouldn't optimise for it.</small></p>
+</section>
+
+<!-- ============================================ -->
+<section id="scaling">
+<h2 class="sec"><span class="num">03</span>Scaling and multiple instances</h2>
+<p class="q">"would i need multiple instances of the server for scaling? what would be the implications - in general, and for database access?"</p>
+
+<div class="verdict">
+  <span class="tag">Blunt answer</span>
+  <p><strong>No — and with SQLite you <em>can't</em>, which is worth being explicit about.</strong> SQLite hard-caps you at exactly one instance, and Railway enforces the same limit independently: <em>"Replicas cannot be used with volumes."</em> So this isn't a knob you'll be tempted to turn and get wrong. The real question is whether you'd ever want to, and what the exit looks like.</p>
+</div>
+
+<h3>Would you ever need to? Almost certainly not</h3>
+<p>The numbers aren't close:</p>
+<ul>
+<li><strong>Railway Hobby lets one service scale to 48 GB RAM and 48 vCPU.</strong> That's a large machine, and it's a slider, not an architecture change.</li>
+<li><strong>A Ktor/Netty JVM app on 1 vCPU and 512 MB</strong> handles hundreds of requests per second for a workload like this.</li>
+<li><strong>An issue tracker for tens of users</strong> is a handful of requests per second at peak, overwhelmingly reads.</li>
+<li><strong>SQLite's own guidance</strong> puts the threshold around 100k hits/day; sqlite.org itself serves 400–500k requests/day on it, and Expensify runs it at millions of users.</li>
+</ul>
+<p>You'd hit thousands of concurrent users before a single instance became the constraint — and long before that you'd notice, because CPU and p99 latency would tell you. <strong>Vertical scaling is the answer, and it's a slider you probably never touch.</strong></p>
+
+<h3>What one instance actually costs you</h3>
+<p>Two things, and both are already true regardless of replicas:</p>
+<ul>
+<li><strong>No high availability.</strong> If the container dies you're down until it restarts. Worse, Railway's healthchecks run at <em>deploy time only</em> — there's no ongoing liveness probe, so a JVM that deadlocks at 3am stays deadlocked until you notice. Worth an uptime check (Cloudflare, UptimeRobot, whatever) pointed at <code>/health</code>.</li>
+<li><strong>Deploys have downtime.</strong> A few seconds while the old container releases the volume and the new one mounts it. <em>You lose this to the volume constraint whether or not you ever wanted replicas</em> — Railway won't let two deployments mount one volume, so healthchecks can't do a zero-downtime handover.</li>
+</ul>
+<p>For an issue tracker, both are fine. For something with an SLA, neither would be. Know which one you're building.</p>
+
+<h3>What would break if you went multi-instance</h3>
+<p>This is the interesting part of your question, because the answer is "more than just the database" — and one of them is a security regression rather than a performance one:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Concern</th><th>One instance</th><th>N instances</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Database</strong></td>
+  <td class="yes">SQLite file on the volume</td>
+  <td class="no">Broken. SQLite is a library, not a server — the DB is a local file. Two instances means two different files, or one file over a network FS, which is <strong>silent corruption</strong> (§6). <strong>You must move to Postgres.</strong> Not optional.</td>
+</tr>
+<tr>
+  <td><strong>Rate limiting</strong></td>
+  <td class="yes">In-memory counters</td>
+  <td class="no">Counters are per-instance, so N instances = <strong>N× the effective limit</strong>. Your "3 verification emails per address per day" quietly becomes 3N. This is a security regression, not a perf one. Needs DB- or Redis-backed counters.</td>
+</tr>
+<tr>
+  <td><strong>Litestream</strong></td>
+  <td class="yes">One process, one WAL</td>
+  <td class="no">Must run <em>exactly once</em> per database. Two replicating the same DB corrupts the replica. Moot anyway — you'd have dropped SQLite.</td>
+</tr>
+<tr>
+  <td><strong>Scheduled jobs</strong></td>
+  <td class="yes">Run once</td>
+  <td class="meh">Run N times. Needs a DB lock or leader election.</td>
+</tr>
+<tr>
+  <td><strong>In-memory caches</strong></td>
+  <td class="yes">Consistent</td>
+  <td class="meh">Diverge per instance → inconsistent reads.</td>
+</tr>
+<tr>
+  <td><strong>WebSockets</strong> <small>(if you add live updates)</small></td>
+  <td class="yes">Trivial</td>
+  <td class="meh">Connections pin to one instance; broadcasting needs a pub/sub bus.</td>
+</tr>
+<tr>
+  <td><strong>Sessions</strong></td>
+  <td class="yes">Fine</td>
+  <td class="yes"><strong>Already fine</strong> — see below.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="box rec">
+<p class="lbl">One thing you already got right</p>
+<p>The stateless AES-GCM session token pattern I recommended borrowing from FramnaFolk (§3) means <strong>no session table and no sticky sessions</strong>. Any instance can validate any request, because the session is self-contained in the encrypted cookie. That's the piece that usually forces sticky load balancing or a Redis session store, and you'd get it for free. Nice accident of following your own precedent.</p>
+</div>
+
+<h3>Database access specifically — why SQLite is the hard stop</h3>
+<p>Worth understanding the mechanism rather than the rule, because it explains why there's no clever workaround. Postgres is a <em>server</em>: your app opens a TCP connection and the server arbitrates concurrent access across every client. SQLite is a <em>library compiled into your process</em>: your app opens a file, and coordination happens through filesystem locks.</p>
+<p>Filesystem locks only work between processes <strong>on the same machine, on a real local filesystem</strong>. Two Railway replicas are two machines. There is no lock they can share. And as §6 covers, the network-filesystem workaround is the dangerous one — NFS/EFS emulate mmap coherency and advisory locking well enough to <em>appear</em> to work, so both instances think they hold the write lock, and you get silent corruption rather than an error. That's why Railway simply forbids the combination: they're saving you from it.</p>
+<p>So: <strong>SQLite and horizontal scaling are mutually exclusive by construction.</strong> Not a limitation to engineer around — a property of what SQLite is.</p>
+
+<h3>The exit, if you ever need it</h3>
+<p>This is why the repository interface from §6 matters, and it's the concrete payoff for a recommendation that otherwise sounds like generic hygiene:</p>
+<ol>
+<li><strong>Write a Postgres implementation</strong> of the repository interface. Bounded work, confined to the data layer — <em>if</em> you kept the SQL boring (no FTS5, timestamps as epoch-millis INTEGER, UUIDs as TEXT).</li>
+<li><strong>Move rate limiter state into the database.</strong> Small, and you'd want it anyway.</li>
+<li><strong>Drop Litestream</strong> — Postgres has its own backup story.</li>
+<li><strong>Add a DB lock for scheduled jobs.</strong></li>
+<li><strong>Turn up replicas.</strong> Sessions already work; nothing else is stateful.</li>
+</ol>
+<p>That's maybe a week, and it's a week you'd spend <em>once you have the traffic to justify it</em> — with real numbers, on a schema that's stopped moving. Doing it now costs the same week, plus the permanent tax of a dual-dialect test matrix (§6), to solve a problem you don't have.</p>
+
+<div class="box info">
+<p class="lbl">Cheaper levers, in the order you'd actually reach for them</p>
+<p><strong>1. Vertical scale.</strong> A slider in Railway. Covers you to thousands of users.<br>
+<strong>2. Cloudflare cache in front</strong> of anonymous/public issue views. If a project's issues are publicly readable, that's your read traffic gone at the edge for free, without touching the app.<br>
+<strong>3. Then, and only then,</strong> Postgres + replicas.</p>
+<p>Most projects that "need to scale" needed step 2.</p>
+</div>
+
+<div class="box rec">
+<p class="lbl">Recommendation</p>
+<p><strong>One instance. Vertical scaling. Don't design for horizontal.</strong> Keep the repository interface and keep the SQL portable — that's an afternoon of discipline now and it's the entire migration path later. Revisit when you have evidence: CPU saturation, p99 latency, an actual complaint. Not before.</p>
+<p>And for an open-source self-hosted tracker, "runs as exactly one instance" is a completely unremarkable constraint. Vaultwarden, Gitea-on-SQLite, Miniflux — same shape. Nobody will file an issue about it.</p>
+</div>
+</section>
+
+<!-- ============================================ -->
+<section id="changed">
+<h2 class="sec"><span class="num">04</span>What I changed in the analysis</h2>
+<p class="q">Your second question invalidated some hedging, so <code>analysis.html</code> has been revised rather than left to contradict this document.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Section</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td><strong>§1 Verdict</strong></td><td>Stack table now states the tenancy model (multi-project, single-operator) and "exactly one instance" explicitly. Added scaling to the cross-references.</td></tr>
+<tr><td><strong>§2 Multi-project</strong></td><td><strong>Rewritten.</strong> The "multi-project is really a product" warning is gone — it was hedging against a hosted-SaaS reading you've now ruled out. Replaced with the single-operator model, the accounts-public/projects-private distinction, and the <code>projects.yaml</code> recommendation. Sending domain is now stated as settled rather than offered as a choice.</td></tr>
+<tr><td><strong>§3 Embedding</strong></td><td>Per-project CNAME reframed: you control every domain involved, so it's a record in your own zone, not a coordination problem. Notes what's actually deployed today.</td></tr>
+<tr><td><strong>§7 Email</strong></td><td>Added the mechanism summary and the "you never run SMTP" point — the detail lives here in §1, but the analysis shouldn't leave it implicit. Added the Cloudflare Email Service one-vendor option.</td></tr>
+<tr><td><strong>§8 Scaling</strong> <small>(new)</small></td><td><strong>New section</strong> covering everything in §3 above, placed after the database section since that's where the constraint originates. Subsequent sections renumbered.</td></tr>
+<tr><td><strong>§11 Theming</strong></td><td>Theme source is now <code>projects.yaml</code> rather than an unspecified "project record".</td></tr>
+<tr><td><strong>§12 Docker</strong></td><td>Config guidance now covers the env-vars-plus-one-config-file split and why. Open-source timing advice softened — you're shipping software, not operating a platform, which was the risk I was hedging against.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Nothing in the technical findings changed — Railway's spend cap, the <code>X-Frame-Options: DENY</code> on Google's consent screen, the same-site cookie analysis, SQLite's durability story and the email DNS records all stand exactly as written. What changed is scope: <strong>a chunk of the complexity I'd priced in was insurance against a product you're not building.</strong></p>
+</section>
+
+<footer>
+<p>Written 16 July 2026, answering <code>questions-on-analysis.txt</code>. Companion to <code>analysis.html</code>, which has been revised to match — see §4 above for the diff.</p>
+</footer>
+
+</div>
+</body>
+</html>

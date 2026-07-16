@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Issue Tracker — Feature Scope</title>
+<meta name="description" content="Feature scope for a simple issue tracker built for software engineers.">
+<style>
+/* ============================================================
+   Issue Tracker — feature scope.
+   Styled after the Lunamux site: deep navy ground, cyan glow,
+   mint-white headings. Pure CSS, no external fonts or assets.
+   ============================================================ */
+
+:root {
+  --bg:        #04090f;
+  --panel:     #070f1a;
+  --panel-2:   #0b1626;
+  --green:     #4dc8f5;
+  --green-hi:  #66d9ff;
+  --green-dim: #5f7590;
+  --green-dimmer: #24384f;
+  --border:    rgba(77, 200, 245, .20);
+  --border-hi: rgba(77, 200, 245, .45);
+  --glow:      rgba(77, 200, 245, .35);
+  --red:       #ff5f57;
+  --yellow:    #febc2e;
+  --traffic-g: #28c840;
+  --blue:      #5fa8ff;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  --maxw: 1120px;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(120% 80% at 70% -10%, rgba(77,200,245,.06), transparent 60%),
+    radial-gradient(90% 60% at 0% 110%, rgba(77,200,245,.05), transparent 55%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* decorative CRT scanlines, above text but below nothing interactive */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0) 0px,
+    rgba(0,0,0,0) 2px,
+    rgba(0,0,0,.18) 3px,
+    rgba(0,0,0,0) 4px
+  );
+  mix-blend-mode: multiply;
+  opacity: .35;
+}
+
+a { color: inherit; text-decoration: none; }
+code, em { font-style: normal; color: var(--green-hi); }
+
+/* ---------- NAV ---------- */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  background: rgba(4, 9, 15, .82);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--green-hi);
+  letter-spacing: .5px;
+  white-space: nowrap;
+}
+.brand .dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--green-hi);
+  box-shadow: 0 0 10px var(--green-hi);
+  animation: dotGlow 2.2s ease-in-out infinite;
+}
+@keyframes dotGlow {
+  0%, 100% {
+    background: var(--green-dim);
+    box-shadow: 0 0 2px rgba(102,217,255,.25);
+    opacity: .35;
+  }
+  50% {
+    background: var(--green-hi);
+    box-shadow: 0 0 14px var(--green-hi), 0 0 28px rgba(102,217,255,1),
+                0 0 46px rgba(102,217,255,.6);
+    opacity: 1;
+  }
+}
+.tabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.tabs a {
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--green-dim);
+  transition: color .2s, border-color .2s, background .2s;
+}
+.tabs a:hover { color: var(--green); border-color: var(--border); }
+
+/* ---------- HERO ---------- */
+.hero {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 72px 20px 40px;
+}
+.kicker {
+  color: var(--green-dim);
+  font-size: 13px;
+  letter-spacing: 1px;
+  margin-bottom: 16px;
+}
+h1 {
+  font-size: clamp(34px, 5vw, 56px);
+  line-height: 1.08;
+  margin: 0 0 20px;
+  font-weight: 700;
+  letter-spacing: -.5px;
+  color: #eaf3fb;
+}
+.glow {
+  color: var(--green-hi);
+  text-shadow: 0 0 24px var(--glow), 0 0 4px var(--glow);
+}
+.lede {
+  color: var(--green);
+  font-size: 16px;
+  max-width: 68ch;
+  margin: 0 0 8px;
+}
+
+/* ---------- section headings ---------- */
+.sec {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 44px 20px 8px;
+}
+.sec h2 {
+  font-size: clamp(24px, 3vw, 32px);
+  margin: 0 0 10px;
+  color: #eaf3fb;
+  letter-spacing: -.3px;
+}
+.sec .sub {
+  color: var(--green-dim);
+  font-size: 14px;
+  max-width: 74ch;
+  margin: 0 0 4px;
+}
+.rule {
+  max-width: var(--maxw);
+  margin: 26px auto 0;
+  padding: 0 20px;
+}
+.rule i {
+  display: block;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-hi), transparent);
+}
+
+/* ---------- terminal window component ---------- */
+.grid {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 18px 20px 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+.term {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,.55);
+  transition: border-color .2s, box-shadow .2s, transform .15s;
+}
+.term:hover {
+  border-color: var(--border-hi);
+  transform: translateY(-2px);
+  box-shadow: 0 24px 70px rgba(0,0,0,.6), 0 0 50px rgba(77,200,245,.12);
+}
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.lights { display: flex; gap: 7px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.lights .r { background: var(--red); }
+.lights .y { background: var(--yellow); }
+.lights .g { background: var(--traffic-g); }
+.term-title {
+  color: var(--green-dim);
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+.term-body { padding: 16px 16px 18px; }
+.term-body > p {
+  margin: 0 0 14px;
+  color: var(--green-dim);
+  font-size: 13px;
+}
+
+/* ---------- key/value feature lists ---------- */
+.kv { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.kv li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--green);
+  font-size: 14px;
+}
+.kv em { color: var(--green-dim); }
+
+.led {
+  width: 9px; height: 9px; border-radius: 50%;
+  display: inline-block; flex: none;
+  transform: translateY(1px);
+}
+.led-r { background: var(--red);    box-shadow: 0 0 8px var(--red); }
+.led-b { background: var(--blue);   box-shadow: 0 0 8px var(--blue); }
+.led-g { background: var(--traffic-g); box-shadow: 0 0 8px var(--traffic-g); }
+.led-y { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+
+/* ---------- badges ---------- */
+.badge-ver {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--green-dim);
+  border-radius: 999px;
+  color: var(--green);
+  background: rgba(77, 200, 245, .08);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  white-space: nowrap;
+}
+.badge-exp {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--yellow);
+  border-radius: 999px;
+  color: var(--yellow);
+  background: rgba(254, 188, 46, .08);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(254, 188, 46, .12);
+}
+
+/* ---------- kanban vs sprint comparison ---------- */
+.compare {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 18px 20px 10px;
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th, td {
+  text-align: left;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+thead th {
+  color: var(--green-hi);
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border-hi);
+}
+tbody td:first-child {
+  color: var(--green-dim);
+  white-space: nowrap;
+}
+tbody tr:hover td { background: rgba(77,200,245,.04); }
+
+/* ---------- footer ---------- */
+.foot {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 40px 20px 64px;
+  color: var(--green-dim);
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  margin-top: 48px;
+}
+.cursor {
+  display: inline-block;
+  color: var(--green-hi);
+  margin-left: 2px;
+  text-shadow: 0 0 8px var(--glow);
+  transform: scaleX(1.5);
+  transform-origin: left center;
+  animation: blink 1.05s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+@media (max-width: 640px) {
+  .hero { padding-top: 48px; }
+  .tabs { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <div class="brand"><span class="dot"></span> issue-tracker</div>
+    <nav class="tabs">
+      <a href="#asked">Your list</a>
+      <a href="#boards">Kanban vs. sprints</a>
+      <a href="#proposed">Proposed additions</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="kicker">SCOPE / v0</div>
+    <h1>A simple issue tracker,<br><span class="glow">built for engineers.</span></h1>
+    <p class="lede">
+      Two lists below. The first is what you already asked for, fleshed out into
+      concrete decisions you'll have to make anyway. The second is what a tracker
+      needs before a real team will actually use it instead of quietly moving back
+      to a spreadsheet.
+    </p>
+  </section>
+
+  <div class="rule"><i></i></div>
+
+  <!-- ============ SECTION 1: what the user asked for ============ -->
+  <section class="sec" id="asked">
+    <h2>What you asked for</h2>
+    <p class="sub">
+      Your original list, with the decisions each one implies.
+    </p>
+  </section>
+
+  <div class="grid">
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">TICKETS / CRUD</span>
+      </div>
+      <div class="term-body">
+        <p>Create and edit tickets — the core loop everything else hangs off.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Human-readable key per ticket (<code>PROJ-142</code>) — never expose raw database ids, people paste keys into Slack and commit messages.</span></li>
+          <li><span class="led led-g"></span><span>Title, markdown description, reporter, assignee, timestamps.</span></li>
+          <li><span class="led led-g"></span><span>Issue <em>type</em>: bug, task, story, epic. Drives which fields show.</span></li>
+          <li><span class="led led-g"></span><span>Status <em>and</em> resolution as separate fields — "Closed" and "Won't fix" answer different questions.</span></li>
+          <li><span class="led led-g"></span><span>Priority and, for bugs, severity — impact and urgency aren't the same axis.</span></li>
+          <li><span class="led led-b"></span><span>Soft delete only. Someone always deletes the wrong ticket.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">USERS / ACCESS</span>
+      </div>
+      <div class="term-body">
+        <p>Manage users and permissions without building an identity provider.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>SSO from day one (OIDC / Google / GitHub). Don't own passwords if you can avoid it.</span></li>
+          <li><span class="led led-g"></span><span>Roles scoped <em>per project</em>, not globally: admin, member, reporter, viewer.</span></li>
+          <li><span class="led led-g"></span><span>Reporter-only role for support or external users who file but don't browse.</span></li>
+          <li><span class="led led-g"></span><span>Teams/groups, so access is granted to a group rather than 30 individuals.</span></li>
+          <li><span class="led led-y"></span><span>Deactivate, never delete, a user — their comment history has to survive.</span></li>
+          <li><span class="led led-b"></span><span>Service accounts and API tokens for CI, bots, and scripts.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">VERSIONS / RELEASES</span>
+      </div>
+      <div class="term-body">
+        <p>Planned fix version vs. actual fixed version — two fields, deliberately.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span><em>Target version</em>: intent. Set at triage, moves when plans slip.</span></li>
+          <li><span class="led led-g"></span><span><em>Fixed version</em>: fact. Set on merge/release, never edited afterward.</span></li>
+          <li><span class="led led-g"></span><span>Keeping both is what lets you answer "what slipped out of 2.4?" — a single field silently overwrites that history.</span></li>
+          <li><span class="led led-g"></span><span><em>Affects version(s)</em>: where the bug was seen. Multi-value.</span></li>
+          <li><span class="led led-g"></span><span>Versions as real objects: name, release date, status (unreleased / released / archived).</span></li>
+          <li><span class="led led-b"></span><span>Generate release notes from tickets whose fixed version equals the release.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">BOARDS / KANBAN + SPRINTS</span>
+      </div>
+      <div class="term-body">
+        <p>Both are board views over the same tickets. See the comparison below.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Columns map to workflow statuses; drag-drop is a status transition.</span></li>
+          <li><span class="led led-g"></span><span>Swimlanes by assignee, epic, or priority.</span></li>
+          <li><span class="led led-g"></span><span>WIP limits per column (kanban's whole point).</span></li>
+          <li><span class="led led-g"></span><span>Sprints as first-class objects: name, goal, start/end, state.</span></li>
+          <li><span class="led led-y"></span><span>Board mode is a <em>project setting</em>, not a fork of the codebase.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">ATTACHMENTS</span>
+      </div>
+      <div class="term-body">
+        <p>Engineers attach screenshots and logs constantly. Make it frictionless.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Paste-from-clipboard and drag-drop straight into the description or a comment.</span></li>
+          <li><span class="led led-g"></span><span>Object storage (S3-compatible) with pre-signed URLs — never blobs in your database.</span></li>
+          <li><span class="led led-g"></span><span>Inline image previews; syntax-highlighted preview for logs and diffs.</span></li>
+          <li><span class="led led-y"></span><span>Size caps, MIME allowlist, and virus scanning if anything is user-facing.</span></li>
+          <li><span class="led led-b"></span><span>Attachments inherit the ticket's permissions — a leaked URL is a data breach.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">INLINE EDITING</span>
+      </div>
+      <div class="term-body">
+        <p>Click a field, change it, done. No modal, no separate edit screen.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Optimistic UI with rollback on failure.</span></li>
+          <li><span class="led led-g"></span><span>Conflict handling: version/etag per ticket so two editors don't clobber each other silently.</span></li>
+          <li><span class="led led-g"></span><span>Every inline edit writes a history entry — cheap edits still need an audit trail.</span></li>
+          <li><span class="led led-g"></span><span>Escape cancels, Cmd+Enter saves. Engineers live on the keyboard.</span></li>
+          <li><span class="led led-b"></span><span>Same editing affordance in list, board, and detail views.</span></li>
+        </ul>
+      </div>
+    </article>
+
+  </div>
+
+  <div class="rule"><i></i></div>
+
+  <!-- ============ Kanban vs. Sprints ============ -->
+  <section class="sec" id="boards">
+    <h2>Kanban vs. sprints — how to differentiate</h2>
+    <p class="sub">
+      Don't build two products. Build one board and one backlog, then let a project
+      setting decide whether work is bounded by a <em>time box</em> (sprint) or by a
+      <em>WIP limit</em> (kanban). That single choice cascades into everything below.
+    </p>
+  </section>
+
+  <div class="compare">
+    <table>
+      <thead>
+        <tr>
+          <th>Dimension</th>
+          <th>Kanban</th>
+          <th>Sprints (Scrum)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Unit of commitment</td>
+          <td>None — pull the next card when there's capacity</td>
+          <td>A fixed set of tickets committed to a dated iteration</td>
+        </tr>
+        <tr>
+          <td>What limits work</td>
+          <td>WIP limit per column</td>
+          <td>Sprint capacity in points or hours</td>
+        </tr>
+        <tr>
+          <td>Board contents</td>
+          <td>Everything not done, continuously</td>
+          <td>Only tickets in the active sprint</td>
+        </tr>
+        <tr>
+          <td>Backlog role</td>
+          <td>An ordered queue you pull from</td>
+          <td>A staging area you plan sprints out of</td>
+        </tr>
+        <tr>
+          <td>Cadence</td>
+          <td>Continuous flow; release when ready</td>
+          <td>Start → plan → work → close → retro, on a fixed rhythm</td>
+        </tr>
+        <tr>
+          <td>Key metric</td>
+          <td>Cycle time, throughput, aging WIP</td>
+          <td>Velocity, burndown, commitment accuracy</td>
+        </tr>
+        <tr>
+          <td>Leftover work</td>
+          <td>Concept doesn't exist — it just stays in its column</td>
+          <td>Explicitly rolled over into the next sprint at close</td>
+        </tr>
+        <tr>
+          <td>Best fit</td>
+          <td>Support, ops, interrupt-driven teams</td>
+          <td>Feature teams planning against a roadmap</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <div class="grid">
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">THE SHARED MODEL</span>
+      </div>
+      <div class="term-body">
+        <p>What both modes reduce to under the hood.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>A ticket has a status and a rank (an orderable position).</span></li>
+          <li><span class="led led-g"></span><span>A board is a saved filter + a column-to-status mapping.</span></li>
+          <li><span class="led led-g"></span><span>Kanban = that board, with WIP limits, filtered to "not done".</span></li>
+          <li><span class="led led-g"></span><span>Scrum = that board, filtered to <code>sprint == active</code>, plus a backlog view that assigns tickets to sprints.</span></li>
+          <li><span class="led led-b"></span><span>A sprint is just a nullable foreign key on the ticket plus a small sprint table. That's the entire difference.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">MY ADVICE / v0</span>
+      </div>
+      <div class="term-body">
+        <p>Sequencing, if you want something usable in weeks not quarters.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Ship kanban first. It's strictly simpler and it's a coherent product on its own.</span></li>
+          <li><span class="led led-g"></span><span>Add the sprint foreign key to your schema now even if the UI comes later — retrofitting it across a live board is miserable.</span></li>
+          <li><span class="led led-y"></span><span>Resist per-project custom workflows in v0. It's the single biggest complexity multiplier in every tracker ever built.</span></li>
+          <li><span class="led led-b"></span><span>One fixed workflow, one board, one backlog. Earn the configurability later.</span></li>
+        </ul>
+      </div>
+    </article>
+  </div>
+
+  <div class="rule"><i></i></div>
+
+  <!-- ============ SECTION 2: proposed additions ============ -->
+  <section class="sec" id="proposed">
+    <h2>Proposed additions</h2>
+    <p class="sub">
+      Everything below is missing from your list. The
+      <span class="badge-ver">v0</span> items are, in my view, the ones you cannot
+      credibly ship without — search and git integration especially. The
+      <span class="badge-exp">later</span> items are real but can wait.
+    </p>
+  </section>
+
+  <div class="grid">
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">SEARCH / FILTERING<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>The single most-used feature in any tracker. Underbuild it and the tool is dead.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Full-text over title, description, and comments.</span></li>
+          <li><span class="led led-g"></span><span>Structured filters: project, type, status, assignee, label, version, date ranges.</span></li>
+          <li><span class="led led-g"></span><span>Saved filters, shareable by URL. "My open bugs" should be a link.</span></li>
+          <li><span class="led led-b"></span><span>A small query language eventually (JQL-like) — but filters and URLs get you 90% there.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">GIT / CI INTEGRATION<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>This is what makes it a tracker <em>for engineers</em> rather than a todo list.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Detect the ticket key in branch names, commits, and PR titles; link automatically.</span></li>
+          <li><span class="led led-g"></span><span>Show linked branches, PRs, and their CI status on the ticket.</span></li>
+          <li><span class="led led-g"></span><span>Auto-transition on merge — the status update nobody remembers to do by hand.</span></li>
+          <li><span class="led led-b"></span><span>Stamp fixed version from the release tag that contains the merge commit.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">COMMENTS / ACTIVITY<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>Tickets are conversations. The history is often worth more than the ticket.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Markdown comments with code fences and @mentions.</span></li>
+          <li><span class="led led-g"></span><span>Full change history: who changed what field, from what, to what, when.</span></li>
+          <li><span class="led led-g"></span><span>Merged activity timeline — comments, transitions, and commits interleaved.</span></li>
+          <li><span class="led led-y"></span><span>Internal vs. public comments if external reporters can see the ticket.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">RELATIONSHIPS<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>Real work is a graph. Flat ticket lists lose the plot fast.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Parent/child: epic → story → subtask.</span></li>
+          <li><span class="led led-g"></span><span>Links: blocks / blocked-by, duplicates, relates-to.</span></li>
+          <li><span class="led led-g"></span><span>"Duplicate" needs to point at the canonical ticket, not just close.</span></li>
+          <li><span class="led led-b"></span><span>Surface blockers on the board — a blocked card should look blocked.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">NOTIFICATIONS<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>The feature most likely to make people mute your product. Tune it carefully.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Watchers per ticket; auto-watch on comment or assignment.</span></li>
+          <li><span class="led led-g"></span><span>In-app inbox plus email; per-user granularity.</span></li>
+          <li><span class="led led-g"></span><span>Batch and debounce — one digest, not nine emails from one bulk edit.</span></li>
+          <li><span class="led led-b"></span><span>Slack/Teams delivery is usually more wanted than email.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">API / WEBHOOKS<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>Engineers will automate this whether you plan for it or not.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>REST API covering everything the UI can do — build the UI on it.</span></li>
+          <li><span class="led led-g"></span><span>Token auth with scopes; rate limiting.</span></li>
+          <li><span class="led led-g"></span><span>Outbound webhooks on create/update/transition.</span></li>
+          <li><span class="led led-b"></span><span>CSV/JSON import and export. Nobody adopts a tracker they can't leave.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">ORGANIZATION<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>Structure that keeps a few thousand tickets navigable.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Projects with their own key, members, versions, and board.</span></li>
+          <li><span class="led led-g"></span><span>Components or areas — "auth", "billing", "ios" — with default assignees.</span></li>
+          <li><span class="led led-g"></span><span>Free-form labels alongside components; both, not either.</span></li>
+          <li><span class="led led-b"></span><span>Due dates, and an explicit triage/backlog state for unsorted intake.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">UX ESSENTIALS<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>The things that decide whether engineers actually keep tickets updated.</p>
+        <ul class="kv">
+          <li><span class="led led-g"></span><span>Keyboard shortcuts and a command palette. This audience expects it.</span></li>
+          <li><span class="led led-g"></span><span>Bulk edit from the list view: reassign, relabel, move 40 tickets at once.</span></li>
+          <li><span class="led led-g"></span><span>Ticket templates per type — a bug form that asks for repro steps and version.</span></li>
+          <li><span class="led led-g"></span><span>Fast. Sub-100ms interactions or people go back to Slack threads.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">REPORTING<span class="badge-exp">later</span></span>
+      </div>
+      <div class="term-body">
+        <p>Deliberately deferred — but note which mode each metric belongs to.</p>
+        <ul class="kv">
+          <li><span class="led led-y"></span><span>Sprint mode: burndown, velocity over the last N sprints.</span></li>
+          <li><span class="led led-y"></span><span>Kanban mode: cycle time, throughput, cumulative flow, aging WIP.</span></li>
+          <li><span class="led led-y"></span><span>Estimation: story points or t-shirt sizes. Pick one, per project.</span></li>
+          <li><span class="led led-y"></span><span>Roadmap view over epics and versions.</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">SCALE / MATURITY<span class="badge-exp">later</span></span>
+      </div>
+      <div class="term-body">
+        <p>Real needs that arrive with the second or third team.</p>
+        <ul class="kv">
+          <li><span class="led led-y"></span><span>Custom fields per project. Powerful, and a permanent complexity tax.</span></li>
+          <li><span class="led led-y"></span><span>Configurable workflows with transition rules and required fields.</span></li>
+          <li><span class="led led-y"></span><span>SLAs and escalation, if support ever files into this.</span></li>
+          <li><span class="led led-y"></span><span>Time tracking. Ask whether you truly want it — it changes the culture.</span></li>
+          <li><span class="led led-y"></span><span>Duplicate detection at file time; automation rules ("if X then Y").</span></li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="term">
+      <div class="term-bar">
+        <span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+        <span class="term-title">NON-FUNCTIONAL<span class="badge-ver">v0</span></span>
+      </div>
+      <div class="term-body">
+        <p>Unglamorous, and the reason trackers get trusted or abandoned.</p>
+        <ul class="kv">
+          <li><span class="led led-r"></span><span>Backups you have actually restored from. Your tracker is institutional memory.</span></li>
+          <li><span class="led led-r"></span><span>Audit log for permission and access changes.</span></li>
+          <li><span class="led led-g"></span><span>Stable ticket URLs, forever. They get pasted into everything.</span></li>
+          <li><span class="led led-g"></span><span>Responsive layout — triage happens on phones.</span></li>
+          <li><span class="led led-b"></span><span>Dark mode. Non-negotiable for this audience.</span></li>
+        </ul>
+      </div>
+    </article>
+
+  </div>
+
+  <footer class="foot">
+    <div>issue-tracker / feature scope — draft for discussion<span class="cursor">█</span></div>
+  </footer>
+
+</main>
+
+</body>
+</html>

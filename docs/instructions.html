@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunamux Issues — Stage 1 instructions</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.65 var(--mono);
+  padding:48px 24px 120px;
+}
+.wrap{max-width:920px;margin:0 auto}
+
+header.top{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+.eyebrow{color:var(--green-dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+h1{color:var(--head);font-size:30px;line-height:1.25;margin:0 0 14px;font-weight:600}
+h1 .glow{color:var(--green-hi);text-shadow:0 0 18px var(--glow)}
+.lede{color:var(--green-dim);margin:0;max-width:70ch}
+
+h2{
+  color:var(--head);font-size:19px;margin:0 0 6px;font-weight:600;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2 .num{
+  color:var(--green);font-size:12px;letter-spacing:.12em;
+  border:1px solid var(--border-hi);border-radius:3px;padding:3px 8px;
+  text-shadow:0 0 12px var(--glow);flex:none;
+}
+h3{color:var(--green-hi);font-size:14px;letter-spacing:.04em;margin:32px 0 10px;font-weight:600}
+p{margin:0 0 14px;max-width:74ch}
+small{color:var(--green-dim)}
+code{
+  background:var(--panel-2);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px;color:var(--green-hi);font-size:.9em;
+}
+strong{color:var(--head);font-weight:600}
+a{color:var(--green-hi)}
+
+section.stage{
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  padding:28px 30px;margin:0 0 26px;
+}
+.subtitle{color:var(--green-dim);margin:0 0 22px;font-size:13px}
+
+ul,ol{margin:0 0 14px;padding-left:0;list-style:none}
+li{position:relative;padding-left:22px;margin-bottom:9px;max-width:74ch}
+li::before{content:"›";position:absolute;left:4px;color:var(--green);opacity:.75}
+ol{counter-reset:step}
+ol>li{counter-increment:step}
+ol>li::before{content:counter(step) ".";color:var(--green);font-size:12px;left:0;opacity:1}
+li ul,li ol{margin-top:9px}
+
+pre{
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;
+  padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:13px;line-height:1.6;
+  color:var(--body);
+}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+.box{border-radius:5px;padding:16px 18px;margin:18px 0;border:1px solid var(--border)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;margin:0 0 8px;font-weight:600}
+.warn{background:rgba(254,188,46,.05);border-color:rgba(254,188,46,.35)}
+.warn .lbl{color:var(--yellow)}
+.stop{background:rgba(255,95,87,.05);border-color:rgba(255,95,87,.35)}
+.stop .lbl{color:var(--red)}
+.ok{background:rgba(40,200,64,.05);border-color:rgba(40,200,64,.3)}
+.ok .lbl{color:var(--traffic-g)}
+.note{background:var(--panel-2)}
+.note .lbl{color:var(--blue)}
+
+table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:13px}
+th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel-2);color:var(--green-hi);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+td.yes{color:var(--traffic-g)}
+td.no{color:var(--red)}
+
+.exit{border-top:1px dashed var(--green-dimmer);margin-top:26px;padding-top:20px}
+.exit .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--traffic-g);margin:0 0 10px;font-weight:600}
+
+footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color:var(--green-dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Lunamux / Issue tracker</p>
+  <h1>Stage 1 — <span class="glow">deploy</span> instructions</h1>
+  <p class="lede">The steps that need your accounts: Railway, the domain, and the two repos.
+  Everything that could be built and proven without them already has been — see
+  <em>What's already verified</em> before you start, so you know what you are and aren't
+  debugging.</p>
+</header>
+
+<!-- ═══════════════════════════ VERIFIED ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Context</span> What's already verified</h2>
+  <p class="subtitle">Run locally, in a real browser, against the real artifacts. Not assumed.</p>
+
+  <table>
+    <tr><th>Proven</th><th>How</th></tr>
+    <tr>
+      <td class="yes">Kotlin/JS bundle runs when served from the JVM server</td>
+      <td>Headless Chrome against the packaged fat jar: the view mounted and rendered the
+      server's count. The <em>production</em> (minified) bundle, which is the risky one.</td>
+    </tr>
+    <tr>
+      <td class="yes">The full round-trip</td>
+      <td>Two real button clicks in Chrome drove the server's count 0 → 2, and the view
+      re-rendered from the view model's <code>StateFlow</code> each time.</td>
+    </tr>
+    <tr>
+      <td class="yes">Framing is enforced, and permissive to the right origin</td>
+      <td>Chrome <strong>refused</strong> to frame from a disallowed origin
+      (<em>"violates the following Content Security Policy directive"</em>), and <strong>allowed</strong>
+      it from the permitted one — where the framed tracker loaded its bundle and called
+      <code>/api/counter</code> from inside the iframe.</td>
+    </tr>
+    <tr>
+      <td class="yes">The container</td>
+      <td>Image builds; boots on an injected <code>PORT</code> (not 8080, as Railway will do);
+      runs as a non-root user; serves the bundle; the app renders in Chrome against it.</td>
+    </tr>
+    <tr>
+      <td class="yes">The secret tab, against the real lunamux-web</td>
+      <td>With <code>?issues=1</code> the tab renders and the iframe's <code>data-src</code> is
+      promoted to <code>src</code>; without it the tab is absent. Every other tab still renders.</td>
+    </tr>
+    <tr>
+      <td class="no">DNS and the TLS certificate</td>
+      <td><strong>Cannot be tested locally — this is the actual remaining risk.</strong> Localhost
+      has no certificate and no CNAME. §3 and §4 below are where Stage 1 can still surprise you.</td>
+    </tr>
+    <tr>
+      <td class="no">Safari</td>
+      <td>The local checks drove Chrome. Safari is in the exit criteria for a reason; it is the
+      one that differs on iframes and storage.</td>
+    </tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════ 0 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 0</span> The spend limit, before anything is public</h2>
+
+  <div class="stop">
+    <p class="lbl">Do this before the first deploy, not after</p>
+    <p>Railway → <strong>Workspace → Usage → Usage Limits</strong>. Set the <strong>hard</strong>
+    limit. The <em>soft</em> limit only emails you; the <strong>hard</strong> limit is the one that
+    actually takes workloads offline, which is the behaviour you asked for. Minimum is $10, set
+    per-workspace. It takes two minutes and it belongs in front of the first public URL.</p>
+    <p>Nothing below this line should happen until it's set.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 1 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 1</span> Local, before Railway</h2>
+  <p class="subtitle">Neither mode deploys anything. Both work with nothing on the internet.</p>
+
+  <p>Two scripts, two modes. Both run the <strong>actual Docker image</strong> Railway will build,
+  with the same entrypoint and the same injected <code>PORT</code> — so they exercise the packaging,
+  not just the code. Both wait until the server really answers, then open the right URL. Add
+  <code>--no-open</code> to skip the browser, <code>--no-build</code> to skip the image rebuild.</p>
+
+  <h3>Standalone — the tracker on its own</h3>
+<pre>./scripts/run-standalone.sh     <span class="c"># → http://localhost:8080/</span></pre>
+  <p>Just the app: no website around it, and therefore <strong>no Issues tab</strong> — that is this
+  mode working, not failing. Framing stays restricted to <code>lunamux.dev</code> exactly as in
+  production, so this mode can never prove something the deployed site wouldn't allow.</p>
+
+  <h3>Embedded — the tracker inside the lunamux site</h3>
+<pre>./scripts/run-embedded.sh       <span class="c"># → http://localhost:8000/?issues=1#/issues</span></pre>
+  <p>This is the one that shows what Stage 1 is for. It serves your <code>lunamux-web</code>
+  checkout with Python's built-in HTTP server (already on your Mac — nothing to install), points the
+  tab's iframe at the container, and opens the tab. Ctrl-C stops the site; the container keeps
+  running.</p>
+  <p>Two things make it work, and both are worth knowing because they are the same mechanisms
+  production uses:</p>
+  <ul>
+    <li>The container is started permitting <code>http://localhost:8000</code> to frame it (plus
+      lunamux.dev — <code>frame-ancestors</code> takes a space-separated list). Same header, same
+      browser enforcement; only the value differs. <strong>This is the single deliberate difference
+      from the deployed configuration</strong>; <code>run-standalone.sh</code> uses production's
+      policy untouched.</li>
+    <li>lunamux-web frames <code>localhost:8080</code> instead of <code>issues.lunamux.dev</code>
+      when the <em>site itself</em> is served from localhost
+      (<code>SITE.issues.devIframeSrc</code>). That choice keys off your own hostname and
+      <strong>never off a query parameter</strong> — a visitor-supplied iframe URL on the live site
+      would let any link frame arbitrary content inside lunamux.dev.</li>
+  </ul>
+  <p>Override the paths and ports with <code>LUNAMUX_WEB</code>, <code>ISSUES_PORT</code>,
+  <code>SITE_PORT</code> if the defaults don't fit.</p>
+
+  <div class="warn">
+    <p class="lbl">The easy mistake: two URLs, one of them tab-less</p>
+    <p><code>:8080</code> is the tracker <em>standalone</em> — a bare counter, no site, no tab.
+    <code>:8000/?issues=1#/issues</code> is the <em>site</em> with the tracker inside its Issues
+    tab. Landing on :8080 when you wanted the embed looks exactly like "the embed is broken" while
+    nothing is wrong at all. That is why <code>container-up.sh</code> opens no browser of its own
+    and the run scripts each open only their own URL.</p>
+  </div>
+
+  <h3>The container underneath</h3>
+<pre>./scripts/container-up.sh       <span class="c"># build + run the image, nothing else</span>
+./scripts/container-down.sh     <span class="c"># stop and remove it</span></pre>
+  <p>Lifecycle only — no site, no browser. The run scripts call <code>container-up.sh</code> for
+  you, so you rarely need it directly; <code>container-down.sh</code> is how you stop the container
+  either script leaves running. <code>container-up.sh</code> starts Docker Desktop if it isn't
+  running, replaces any previous instance so re-running after a code change just works, and dumps
+  the container's logs if it fails to come up. Switching between the two modes re-creates the
+  container with that mode's framing policy, so a stale policy can't linger.</p>
+
+  <div class="note">
+    <p class="lbl">Also there: dev-local.sh</p>
+    <p><code>./scripts/dev-local.sh</code> (and <code>--embed</code>) does the same two modes
+    straight from Gradle, with no Docker. It is much faster to iterate against — an incremental
+    Kotlin build in seconds, rather than a full rebuild inside the image — so it's the one to reach
+    for while changing code. The two scripts above are what you want when the question is "does the
+    thing I'm about to deploy work".</p>
+  </div>
+
+  <div class="note">
+    <p class="lbl">What this does and doesn't buy you</p>
+    <p>It proves the framing contract, the lazy-load, the nav gate and the round-trip — cheaply,
+    and without a deploy. It does <strong>not</strong> prove DNS or the certificate, because
+    localhost has neither. Those are exactly what Steps 3–4 exist to establish, and they are the
+    parts that can still bite.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 2 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 2</span> Railway</h2>
+
+  <ol>
+    <li>This repo already points at <code>github.com:soderbjorn/issue-tracker</code> (private).</li>
+    <li>Railway → <strong>New Project → Deploy from GitHub repo</strong> → pick it.</li>
+    <li>Railway detects the <code>Dockerfile</code> at the repo root and uses it. No buildpack, no
+      Nixpacks, no configuration — that is the whole point of shipping a Dockerfile.</li>
+    <li>Leave <code>PORT</code> alone. <strong>Railway injects it and the server reads it at
+      runtime</strong> (<code>resolvePort()</code> in <code>Application.kt</code>). Hard-coding a
+      port here is the classic way to get a service that builds, boots, and never answers.</li>
+    <li>Set no other variables. <code>FRAME_ANCESTORS</code> defaults to
+      <code>https://lunamux.dev</code>, which is what production wants; it exists as an override for
+      local runs and preview deploys.</li>
+  </ol>
+
+  <div class="warn">
+    <p class="lbl">The build is slower than you'll expect the first time</p>
+    <p>The image compiles Kotlin/JVM <em>and</em> Kotlin/JS, and the JS half downloads a Node
+    toolchain and an npm tree inside the build. Several minutes cold is normal, not a hang. The
+    Dockerfile copies the build files before the sources specifically so this layer caches and a
+    source-only edit doesn't pay it again.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 3 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 3</span> The domain — Railway side</h2>
+
+  <ol>
+    <li>Railway → your service → <strong>Settings → Networking → Custom Domain</strong>.</li>
+    <li>Enter <code>issues.lunamux.dev</code>.</li>
+    <li>Railway shows a <strong>CNAME target</strong> (something like
+      <code>&lt;id&gt;.up.railway.app</code>). Copy it — Step 4 needs it. It is specific to your
+      service; don't guess it.</li>
+  </ol>
+</section>
+
+<!-- ═══════════════════════════ 4 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 4</span> The domain — Cloudflare side</h2>
+
+  <ol>
+    <li>Cloudflare → <code>lunamux.dev</code> → <strong>DNS → Records → Add record</strong>.</li>
+    <li>Type <strong>CNAME</strong>, name <code>issues</code>, target = the value from Step 3.</li>
+    <li><strong>Proxy status: DNS only</strong> (grey cloud). Not orange. See below.</li>
+  </ol>
+
+  <div class="stop">
+    <p class="lbl">Grey cloud first — this is the one that wastes an afternoon</p>
+    <p>Railway issues the certificate for <code>issues.lunamux.dev</code> itself, via Let's Encrypt,
+    and to do that it must be reachable at that name. With Cloudflare's proxy <strong>on</strong>
+    (orange cloud), Cloudflare terminates TLS and answers the validation challenge, so Railway's
+    issuance can fail or hang — and you get a certificate error on a service that is otherwise
+    working perfectly.</p>
+    <p>So: <strong>grey cloud, let Railway issue the certificate, confirm the site loads over
+    HTTPS.</strong> Only then consider turning the proxy on — and if you do, Cloudflare SSL/TLS mode
+    must be <strong>Full (strict)</strong>. Anything less (<em>Flexible</em> especially) gives you
+    either a redirect loop or Cloudflare talking plaintext to Railway, which is worse than it
+    sounds.</p>
+    <p>Honestly: Stage 1 has no reason to want the proxy. Grey cloud is the answer here.</p>
+  </div>
+
+  <p>DNS propagation is usually a minute or two, not the mythical 48 hours. Check it directly rather
+  than refreshing a browser tab and guessing:</p>
+<pre>$ dig +short issues.lunamux.dev
+$ curl -sI https://issues.lunamux.dev/ | head -1
+$ curl -sI https://issues.lunamux.dev/ | grep -i content-security</pre>
+  <p>That last one should print
+  <code>frame-ancestors 'self' https://lunamux.dev</code>. If it doesn't, the embed in Step 5 will
+  be a blank rectangle and you'll be debugging the wrong layer.</p>
+</section>
+
+<!-- ═══════════════════════════ 5 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 5</span> Publish the secret tab</h2>
+
+  <p>The lunamux-web edits are already made in your local checkout but <strong>not
+  committed</strong>. Review them, then commit and push — GitHub Pages serves that repo, so pushing
+  is publishing.</p>
+
+  <p>Five files, mirroring the demo page's pattern rather than inventing one:</p>
+  <table>
+    <tr><th>File</th><th>Edit</th></tr>
+    <tr><td><code>content.js</code></td><td><code>navHidden</code> (the gated tab, as data) and the
+      <code>issues</code> page block with its prod + local iframe URLs.</td></tr>
+    <tr><td><code>index.html</code></td><td>The <code>#page-issues</code> container.</td></tr>
+    <tr><td><code>render.js</code></td><td>The nav gate (<code>URLSearchParams</code>) and the
+      iframe markup with its <code>data-src</code>.</td></tr>
+    <tr><td><code>script.js</code></td><td>Page registration, <code>ensureIssuesLoaded()</code>, and
+      the chromeless body class.</td></tr>
+    <tr><td><code>styles.css</code></td><td>The demo's chromeless iframe rules, extended to cover
+      the issues embed.</td></tr>
+  </table>
+
+  <p>Then the URL is:</p>
+<pre>https://lunamux.dev/?issues=1#/issues</pre>
+  <p>The parameter is in the query string, <em>before</em> the hash, so the hash router never sees
+  it.</p>
+
+  <div class="warn">
+    <p class="lbl">"Secret" means undiscoverable, not protected</p>
+    <p>lunamux-web is a static site. The tab, the parameter name and the
+    <code>issues.lunamux.dev</code> URL are all sitting in <code>content.js</code> for anyone who
+    opens view-source, and the server is publicly reachable regardless of what the marketing site
+    links to. Fine for what you want — no links, nobody stumbles in — as long as it is never
+    mistaken for an access control. Note that <code>#/issues</code> stays routable without the
+    parameter: the gate hides the tab, and that is all it was ever asked to do. When Stage 2 adds
+    real users, the server enforces that itself.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ EXIT ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 6</span> Exit criteria</h2>
+  <p class="subtitle">Straight from stages.html. The first two are the ones that matter.</p>
+
+  <div class="exit">
+    <p class="lbl">Check, in order</p>
+    <ul>
+      <li>Load <code>https://lunamux.dev/?issues=1#/issues</code> in <strong>Chrome</strong> and
+        <strong>Safari</strong>. The counter increments inside the iframe.</li>
+      <li>Redeploy the container. The count resets to zero — <strong>that's correct</strong>, it
+        proves the count was the server's and the server is genuinely new.</li>
+      <li>The Railway hard limit is set. (Step 0. If you skipped it, do it now.)</li>
+      <li>No console errors.</li>
+    </ul>
+  </div>
+
+  <div class="note">
+    <p class="lbl">If the iframe is a blank rectangle</p>
+    <p>Open the console. <em>"Refused to frame … violates the following Content Security Policy
+    directive"</em> means the header is wrong or missing — check Step 4's <code>curl</code>, and
+    check that Cloudflare's proxy isn't stripping or replacing it. That message is the good failure:
+    it tells you exactly which layer to fix. A blank frame with a <em>certificate</em> error instead
+    means Step 4's grey-cloud advice was skipped.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STATE ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Notes</span> Where things stand</h2>
+
+  <ul>
+    <li><strong>Both repos are committed and pushed.</strong> This one to
+      <code>soderbjorn/issue-tracker</code> (private), and the tab edits to
+      <code>soderbjorn/lunamux-web</code>. Note what the second one means: GitHub Pages serves that
+      repo, so the Issues tab is <em>live</em> on lunamux.dev now — and because
+      <code>issues.lunamux.dev</code> doesn't exist until Steps 2–4 are done, opening
+      <code>?issues=1#/issues</code> today gives an empty frame. Nobody without the parameter sees
+      anything change.</li>
+    <li><strong>The image is 509 MB.</strong> Fine for now, and not worth optimising before it has
+      ever run in anger. A <code>jre-alpine</code> base or a <code>jlink</code>'d runtime is the
+      lever if cold-start time ever annoys you.</li>
+    <li><strong>The bundle is the production one</strong> (~700 KB), unlike Lunamux itself, which
+      deliberately ships its dev bundle to dodge a Kotlin/JS optimizer miscompilation. That bug is
+      layout-sensitive, so this being a much smaller codebase is a reason to expect it to be fine —
+      not a proof. It renders correctly in Chrome today. If a console error like
+      <em>"&lt;mangled&gt; is not a function"</em> ever appears, that is what it is, and
+      <code>server/build.gradle.kts</code> has the two lines to swap and a comment pointing at
+      Lunamux's write-up.</li>
+    <li><strong>Stage 2 will need two more headers</strong> — <code>allow="identity-credentials-get"</code>
+      on the iframe element and <code>Cross-Origin-Opener-Policy: same-origin-allow-popups</code> on
+      the server — because Google's consent screen cannot be framed. Not needed yet; noted so the
+      iframe markup's shape isn't a surprise later. See stages.html §Stage 2.</li>
+  </ul>
+</section>
+
+<footer>
+  Companion to stages.html · Stage 1 · 2026-07-16
+</footer>
+
+</div>
+</body>
+</html>

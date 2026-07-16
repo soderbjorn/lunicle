@@ -1,0 +1,19 @@
+# Keep the build context to just the sources the image builds from. Everything
+# here is either regenerated inside the image or irrelevant to it — and a stale
+# host build/ directory leaking in is a genuine source of "works locally,
+# broken in the container".
+.git
+.gradle
+build
+*/build
+kotlin-js-store
+.claude
+.idea
+local.properties
+
+# Planning + instruction documents, and the local dev scripts. They belong in
+# the repo, not in the image. (The Dockerfile COPYs specific paths, so these
+# were never going to land in the image regardless — excluding them keeps the
+# build context small, and a smaller context is a faster build.)
+docs/
+scripts/

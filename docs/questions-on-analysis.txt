@@ -1,0 +1,5 @@
+explain the email transmission mechanism. would it be cloudflare hosting it? would it host smtp servers? more detail please.
+
+clarification on creating projects: my own hosted server would only host my own projects. but since the whole thing should be open source, others might want to set up their own hosted version of the issue tracker for their projects.
+
+would i need multiple instances of the server for scaling? what would be the implications - in general, and for database access?

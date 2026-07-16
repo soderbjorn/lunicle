@@ -1,0 +1,46 @@
+# Gradle
+.gradle/
+# Matches build/ at any depth — server/build, web/build, and the rest.
+build/
+# No-op today (nothing here ignores *.jar), kept because the wrapper jar MUST
+# be committed: ./gradlew and the Docker build both need it, and a repo without
+# it can't bootstrap Gradle at all.
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# Kotlin / KMP
+.kotlin/
+*.klib
+# The Kotlin/JS yarn.lock. Ignored to match the sibling Lunamux repo, which
+# doesn't commit it either. Nothing depends on it being here: the Dockerfile
+# COPYs specific paths and this isn't one of them, so image builds resolve npm
+# fresh regardless.
+kotlin-js-store/
+
+# Node (Kotlin/JS toolchain)
+node_modules/
+
+# IDE — IntelliJ / Android Studio / Fleet / VS Code
+.idea/
+*.iml
+*.ipr
+*.iws
+.fleet/
+.vscode/
+
+# Claude Code — ignore local config, share commands/skills.
+# settings.local.json is machine-local (MCP toggles, permissions). It happens to
+# be covered by ~/.gitignore_global on this machine, but that file doesn't
+# travel with the repo — a fresh clone or CI has no such protection, so the rule
+# belongs here too.
+.claude/*
+!.claude/commands/
+!.claude/skills/
+.mcp.json
+
+# macOS
+.DS_Store
+
+# Logs & temp
+*.log
+*.tmp
