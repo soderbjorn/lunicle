@@ -39,6 +39,7 @@ class CounterView(
     private lateinit var valueElement: HTMLParagraphElement
     private lateinit var buttonElement: HTMLButtonElement
     private lateinit var errorElement: HTMLParagraphElement
+    private lateinit var promptElement: HTMLParagraphElement
 
     /**
      * Build the panel and attach it to [host].
@@ -71,13 +72,21 @@ class CounterView(
         errorElement.className = "counter-error"
         errorElement.setAttribute("role", "status")
 
+        // Why the button is inert, for a signed-out visitor. role=status so a
+        // screen reader hears it when it appears, rather than leaving a
+        // disabled button unexplained.
+        promptElement = document.createElement("p") as HTMLParagraphElement
+        promptElement.className = "counter-prompt"
+        promptElement.setAttribute("role", "status")
+
         val note = document.createElement("p") as HTMLParagraphElement
         note.className = "counter-note"
-        note.textContent = "The count lives on the server, in memory. A redeploy resets it."
+        note.textContent = "Your count lives on the server, in SQLite on a mounted volume. It survives a redeploy."
 
         panel.appendChild(eyebrow)
         panel.appendChild(valueElement)
         panel.appendChild(buttonElement)
+        panel.appendChild(promptElement)
         panel.appendChild(errorElement)
         panel.appendChild(note)
 
@@ -94,7 +103,17 @@ class CounterView(
      */
     fun render(state: CounterBackingViewModel.State) {
         valueElement.textContent = state.countLabel
-        buttonElement.disabled = state.isBusy
+        buttonElement.disabled = !state.isIncrementEnabled
+        promptElement.textContent = state.prompt ?: ""
         errorElement.textContent = state.errorMessage ?: ""
+
+        // The whole panel dims while there is nobody to count for, so the
+        // counter reads as waiting rather than broken. A class rather than
+        // inline styles, so the look stays in styles.css with the rest.
+        //
+        // The `!isSessionKnown` case is deliberately NOT dimmed: during the
+        // first fetch we do not yet know whether this person is signed in, and
+        // dimming would flash at someone who turns out to have a session.
+        panel.classList.toggle("counter-signed-out", state.isSessionKnown && !state.isSignedIn)
     }
 }

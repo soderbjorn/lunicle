@@ -116,6 +116,27 @@ html { background: var(--bg); }
   min-height: 1.6em;
 }
 
+/* Why the button is inert, shown only while signed out. Same min-height
+   reservation as .counter-error and for the same reason: this text appears and
+   disappears on sign-in, and without it the panel jumps. */
+.counter-prompt {
+  color: var(--green-dim);
+  font-size: 12px;
+  margin: 12px 0 0;
+  min-height: 1.6em;
+}
+
+/* Signed out: the counter is visible but plainly not yours yet.
+
+   Dimming the value and not the whole panel is deliberate — the sign-in
+   buttons live inside .counter (see the sign-in row below), and dimming those
+   would mute the one control that is actually actionable. */
+.counter-signed-out .counter-value {
+  color: var(--green-dim);
+  text-shadow: none;
+  opacity: .55;
+}
+
 /* ============================================================
    Sign-in row — Stage 2.
 
