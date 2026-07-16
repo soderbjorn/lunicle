@@ -1,4 +1,6 @@
-Stage 1
+Stage 1 — done, validated in production 2026-07-16
+
+Embed loads on lunamux.dev in Chrome and Safari, counter intact, served from Railway.
 
 A POC which has the following:
 * A Kotlin multiplatform project with a server and a UI (the server serving the UI), with them sharing code for the API between them, and the UI using Kotlin DOM APIs (like FramnaFolk does) to produce code in a theme styled liked the Lunamux website. The view using Kotlin DOM APIs has a BackingViewModel on the Kotlin side which serves as its view model. The view has a button and a counter display.
@@ -9,14 +11,32 @@ A POC which has the following:
 * Destination: a subdomain "lunicle.lunamux.dev" on the Lunamux website. Secret for now, no links to it.
 * An instructions HTML with step-by-step instructions how to configure the domain, how to configure Railway and deploy the Docker file there. 
 
-Stage 2
+Stage 2 — identity and persistence
+
+Originally split into two stages (OAuth, then the database). Merged because the exit
+criterion proves both at once: sign in, increment, redeploy, sign back in, count still
+there. A database with nobody in it and users with nothing to persist are each half a
+demo. See stages.html for the reasoning and the OAuth-in-an-iframe problem.
 
 * Add OAuth to sign in with Google and Github.
 * No custom e-mail based accounts and no e-mail transmission functionality.
+* Add an embedded database (SQLite on a Railway volume).
+* A users table (provider, provider id, display name) and a per-user persisted counter.
+  The counter is still the POC payload, it just belongs to someone now and survives redeploys.
 * A second instructions HTML how to configure everything on Google and Github to make this work.
+* Instructions (and/or scripts) how to create the volume we need on Railway or elsewhere
+  for hosting the database.
 
-Stage 3
+Watch out: Google's consent endpoint sends X-Frame-Options: DENY and can never be framed.
+The popup flow is the only path. Test sign-in through the iframe from the first commit —
+testing it at lunicle.lunamux.dev directly passes and proves nothing.
 
-* Add an embedded database.
-* Persist the counter in the database as a POC.
-* Instructions (and/or scripts) how to create the volume we need on Railway or elsewhere for hosting the database.
+Later — deliberately deferred
+
+Named here so they're choices, not oversights. stages.html has the why for each.
+
+* Multi-project support.
+* Email, sending and receiving.
+* Issues themselves. Correct to be last.
+* Litestream / real backups.
+* Docker config surface, open-sourcing.
