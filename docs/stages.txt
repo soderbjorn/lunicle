@@ -36,6 +36,12 @@ Watch out: Google's consent endpoint sends X-Frame-Options: DENY and can never b
 The popup flow is the only path. Test sign-in through the iframe from the first commit —
 testing it at lunicle.lunamux.dev directly passes and proves nothing.
 
+Watch out: Railway rejects a Dockerfile containing Docker's VOLUME instruction
+("docker VOLUME at Line N is not supported, use Railway Volumes"). It fails at upload,
+before any build output, so `docker build` locally cannot reproduce it — the image is
+fine, Railway just won't take it. Declare volumes in Railway's dashboard, never in the
+Dockerfile.
+
 Watch out: a Railway volume mounts owned by root, and this container runs as an
 unprivileged user — so the server cannot write its own database, and SQLite says only
 "unable to open database file". Railway's documented answer is RAILWAY_RUN_UID=0, i.e.

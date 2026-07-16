@@ -51,15 +51,19 @@ RUN useradd --system --create-home --uid 10001 issues
 
 COPY --from=build /app/server/build/libs/server-all.jar server.jar
 
-# The default mount point for the database volume. Created here so that a plain
-# `docker run` with no volume still has somewhere to put the file, and declared
-# as a VOLUME so `docker run -v lunicle-data:/data` needs no extra ceremony.
+# The default mount point for the database volume.
 #
-# Creating it in the image does NOT make it writable once a volume is mounted
+# Deliberately NOT declared with Docker's `VOLUME` instruction. Railway rejects
+# the whole image if you do — "dockerfile invalid: docker VOLUME at Line 62 is
+# not supported, use Railway Volumes" — and it fails at *upload*, before any
+# build output, so a local `docker build` cannot reproduce it. Nothing is lost:
+# `docker run -v lunicle-data:/data` mounts here regardless, and the volume that
+# matters in production is the one attached in Railway's own dashboard.
+#
+# Creating the directory here does NOT make it writable once a volume is mounted
 # over it — that is precisely the problem the entrypoint solves. This only
 # covers the no-volume case.
 RUN mkdir -p /data && chown issues:issues /data
-VOLUME ["/data"]
 
 COPY scripts/container-entrypoint.sh /usr/local/bin/container-entrypoint.sh
 RUN chmod +x /usr/local/bin/container-entrypoint.sh
