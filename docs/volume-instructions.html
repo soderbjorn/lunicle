@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunicle — Stage 2 database volume setup</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.65 var(--mono);
+  padding:48px 24px 120px;
+}
+.wrap{max-width:920px;margin:0 auto}
+
+header.top{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+.eyebrow{color:var(--green-dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+h1{color:var(--head);font-size:30px;line-height:1.25;margin:0 0 14px;font-weight:600}
+h1 .glow{color:var(--green-hi);text-shadow:0 0 18px var(--glow)}
+.lede{color:var(--green-dim);margin:0;max-width:70ch}
+
+h2{
+  color:var(--head);font-size:19px;margin:0 0 6px;font-weight:600;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2 .num{
+  color:var(--green);font-size:12px;letter-spacing:.12em;
+  border:1px solid var(--border-hi);border-radius:3px;padding:3px 8px;
+  text-shadow:0 0 12px var(--glow);flex:none;
+}
+h3{color:var(--green-hi);font-size:14px;letter-spacing:.04em;margin:32px 0 10px;font-weight:600}
+p{margin:0 0 14px;max-width:74ch}
+small{color:var(--green-dim)}
+code{
+  background:var(--panel-2);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px;color:var(--green-hi);font-size:.9em;
+}
+strong{color:var(--head);font-weight:600}
+a{color:var(--green-hi)}
+
+section.stage{
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  padding:28px 30px;margin:0 0 26px;
+}
+.subtitle{color:var(--green-dim);margin:0 0 22px;font-size:13px}
+
+ul,ol{margin:0 0 14px;padding-left:0;list-style:none}
+li{position:relative;padding-left:22px;margin-bottom:9px;max-width:74ch}
+li::before{content:"›";position:absolute;left:4px;color:var(--green);opacity:.75}
+ol{counter-reset:step}
+ol>li{counter-increment:step}
+ol>li::before{content:counter(step) ".";color:var(--green);font-size:12px;left:0;opacity:1}
+li ul,li ol{margin-top:9px}
+
+pre{
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;
+  padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:13px;line-height:1.6;
+  color:var(--body);
+}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+.box{border-radius:5px;padding:16px 18px;margin:18px 0;border:1px solid var(--border)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;margin:0 0 8px;font-weight:600}
+.warn{background:rgba(254,188,46,.05);border-color:rgba(254,188,46,.35)}
+.warn .lbl{color:var(--yellow)}
+.stop{background:rgba(255,95,87,.05);border-color:rgba(255,95,87,.35)}
+.stop .lbl{color:var(--red)}
+.ok{background:rgba(40,200,64,.05);border-color:rgba(40,200,64,.3)}
+.ok .lbl{color:var(--traffic-g)}
+.note{background:var(--panel-2)}
+.note .lbl{color:var(--blue)}
+
+table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:13px}
+th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel-2);color:var(--green-hi);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+td.yes{color:var(--traffic-g)}
+td.no{color:var(--red)}
+
+.exit{border-top:1px dashed var(--green-dimmer);margin-top:26px;padding-top:20px}
+.exit .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--traffic-g);margin:0 0 10px;font-weight:600}
+
+footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color:var(--green-dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Lunamux / Lunicle</p>
+  <h1>Stage 2 — the <span class="glow">database volume</span></h1>
+  <p class="lede">The steps that need your Railway account: one volume, one mount path, and a look at
+  two lines of log. Everything else — creating the schema, migrating it, making the mount writable —
+  the server and its entrypoint already do. This is the shortest document in the set, and the one
+  place where getting it wrong is invisible until it costs you every account you have.</p>
+</header>
+
+<!-- ═══════════════════════════ WHAT AND WHY ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Read first</span> Why this needs a volume at all</h2>
+  <p class="subtitle">One paragraph of context, then one trap that is already handled.</p>
+
+  <p><strong>A container's filesystem is thrown away.</strong> Railway replaces the whole container on
+  every deploy — that is what makes deploys safe and repeatable, and it is also why Stage 1's counter
+  reset to zero each time. SQLite is one file. Put that file inside the container and it dies with
+  the container; put it on a <em>volume</em> — a disk that is mounted into the container at start and
+  outlives it — and it doesn't. That is the entire mechanism. There is no clever part.</p>
+
+  <p><strong>The failure mode is silence.</strong> A server whose database is in the wrong place works
+  perfectly. It signs people in, it counts, it looks healthy for as long as you care to test it. It
+  loses everything on the next unrelated redeploy, with nothing in the logs to explain why. That is
+  the only reason this document exists, and it is why Step 3 is not optional.</p>
+
+  <div class="warn">
+    <p class="lbl">The trap you don't have to fall into</p>
+    <p>A Railway volume mounts <strong>owned by root</strong>, and Lunicle's container runs as an
+    unprivileged user (<code>issues</code>, uid 10001) — so the server cannot write to its own
+    database. SQLite reports this as <code>unable to open database file</code>, which points at
+    nothing. Railway's documented fix is to set <code>RAILWAY_RUN_UID=0</code> and run everything as
+    root. <strong>Do not do that, and you don't need to.</strong>
+    <code>scripts/container-entrypoint.sh</code> already handles it: it starts as root, chowns the
+    mount, and drops to <code>issues</code> before starting the JVM. Root exists for exactly one
+    <code>chown</code>. Setting <code>RAILWAY_RUN_UID</code> would <em>undo</em> this, not help it.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STEP 1 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 1</span> Create the volume and attach it</h2>
+  <p class="subtitle">Dashboard or CLI. Both do the same thing; pick either.</p>
+
+  <h3>In the dashboard</h3>
+  <ol>
+    <li>Open the Lunicle project.</li>
+    <li>Press <code>⌘K</code> for the command palette and choose to create a volume — or right-click
+    the project canvas and do the same there.</li>
+    <li>Pick the <strong>Lunicle service</strong> when it asks what to connect the volume to.</li>
+    <li>Set the mount path to <code>/data</code> — exactly this, see below.</li>
+  </ol>
+
+  <h3>Or with the CLI</h3>
+<pre><span class="c"># From the repo, against the linked project.</span>
+$ railway link
+$ railway volume add <span class="k">-m /data</span> <span class="k">-s</span> &lt;your-lunicle-service&gt;
+
+<span class="c"># Confirm it exists and is mounted where you think.</span>
+$ railway volume list</pre>
+
+  <div class="note">
+    <p class="lbl">Why <code>/data</code>, and why exactly that</p>
+    <p>Two reasons. It must not be <code>/app</code> — that is where Railway puts your application,
+    and a volume is not an overlay, so mounting there would <em>hide the server</em>. And
+    <code>/data</code> is what everything else in this repo already assumes: it is the
+    <code>VOLUME</code> declared in the Dockerfile, the directory the entrypoint chowns, and the path
+    <code>scripts/container-up.sh</code> mounts locally. Choosing a different path works — the server
+    reads the mount path from Railway rather than hardcoding it — but you would be the only one who
+    knows.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STEP 2 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 2</span> Set no variables at all</h2>
+  <p class="subtitle">This step is deliberately empty. Read it anyway — it's the part people undo.</p>
+
+  <p>Railway injects <code>RAILWAY_VOLUME_MOUNT_PATH</code> into the container automatically whenever
+  a volume is attached, and that is exactly what the server resolves its database path from. So a
+  correctly-attached volume needs <strong>no database variable</strong>. Attach it and deploy.</p>
+
+  <p>The escape hatch exists if you need it: <code>LUNICLE_DB_PATH</code> overrides the path outright.
+  It is there for a non-Railway host. If you set it on Railway you are opting out of the mechanism
+  that already works, and if you point it somewhere that isn't the volume you get the silent data
+  loss this whole document is about.</p>
+
+  <table>
+    <tr><th>Variable</th><th>Who sets it</th><th>You should</th></tr>
+    <tr><td><code>RAILWAY_VOLUME_MOUNT_PATH</code></td><td>Railway, automatically</td><td class="yes">Leave alone</td></tr>
+    <tr><td><code>LUNICLE_DB_PATH</code></td><td>You, only off-Railway</td><td class="no">Leave unset</td></tr>
+    <tr><td><code>RAILWAY_RUN_UID</code></td><td>You, never</td><td class="no">Leave unset — see the warning above</td></tr>
+    <tr><td><code>RAILWAY_DEPLOYMENT_DRAINING_SECONDS</code></td><td>You, optional</td><td>Consider <code>30</code> — see Step 5</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════ STEP 3 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 3</span> Read the log. This is the actual verification.</h2>
+  <p class="subtitle">Two lines. Everything in this document is aimed at making them say the right thing.</p>
+
+  <p>Deploy, then open the service's Deploy Logs. The server says where its database is, on every
+  boot, on purpose — so that this is a five-second check rather than an investigation.</p>
+
+  <h3>What a correct deploy says</h3>
+<pre><span class="k">INFO  Database - Database: /data/lunicle.db (via RAILWAY_VOLUME_MOUNT_PATH)</span>
+<span class="k">INFO  Database - Database: fresh — creating schema at version 1</span></pre>
+  <p><code>via RAILWAY_VOLUME_MOUNT_PATH</code> is the phrase that matters: it means the path came from
+  a real attached volume rather than a guess. On the <em>first</em> deploy you'll see
+  <code>fresh — creating schema</code>. On every deploy after that:</p>
+<pre><span class="k">INFO  Database - Database: schema is current at version 1</span></pre>
+  <p>Which is the good news you want — it means it found the database that was already there.</p>
+
+  <h3>What a broken deploy says</h3>
+<pre><span class="k">WARN  Database - Database: /data/lunicle.db — NO PERSISTENT VOLUME.
+      Data will be lost on redeploy. Attach a Railway volume, or set
+      LUNICLE_DB_PATH. See docs/volume-instructions.html.</span></pre>
+
+  <div class="stop">
+    <p class="lbl">If you see that WARN, stop</p>
+    <p>The server is running and the app works — and every account it creates from now on will be
+    destroyed by the next deploy. It means no volume is attached to this service (so Railway injected
+    no mount path). Go back to Step 1. Do not "test it later": the longer it runs, the more real
+    accounts are on the disk that is about to disappear.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STEP 4 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 4</span> Prove it — the stage's exit criterion</h2>
+  <p class="subtitle">Sign in, increment, redeploy, sign back in, count still there.</p>
+
+  <p>This is the whole of Stage 2, and it is one test. Do it through the <strong>iframe on
+  lunamux.dev</strong>, not against <code>lunicle.lunamux.dev</code> directly — the same rule as the
+  OAuth document, and for the same reason: the framed context is the one that breaks, so the
+  unframed test passes and proves nothing.</p>
+
+  <ol>
+    <li>Open <code>https://lunamux.dev/?issues=1#/issues</code>.</li>
+    <li>Sign in with Google or GitHub. The popup opens; you come back with your name on screen.</li>
+    <li>Increment the counter a few times. Note the number.</li>
+    <li>Redeploy the service from the Railway dashboard, and wait for it to go green.</li>
+    <li>Reload the page.</li>
+  </ol>
+
+  <div class="ok">
+    <p class="lbl">Pass</p>
+    <p>You are <strong>still signed in</strong> — sessions live on the volume too now, so a redeploy
+    no longer signs anyone out — and the counter shows the number you left it at. If you sign out and
+    back in, it is still yours: the count is keyed to your provider identity, not to your cookie.</p>
+  </div>
+
+  <div class="stop">
+    <p class="lbl">Fail</p>
+    <p>Counter back to <code>—</code> or zero, or you're signed out. Go read the two log lines in Step
+    3; they will tell you which of the two things went wrong.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STEP 5 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 5</span> Things that will surprise you later</h2>
+  <p class="subtitle">None of these need action today. All of them cost an afternoon if met cold.</p>
+
+  <h3>Redeploys now have downtime</h3>
+  <p>Railway refuses to run two containers against one volume — deliberately, to stop exactly the kind
+  of corruption two SQLite writers would cause. So a service with a volume gets a small gap on every
+  redeploy, even with a healthcheck configured. This is a good trade and not a misconfiguration: it is
+  also what lets the server assume it is the only writer.</p>
+
+  <h3>Replicas are off the table</h3>
+  <p>One volume per service, and no replicas on a service that has one. Scaling horizontally means
+  leaving SQLite, which is a Stage-later problem and named as such in <code>stages.txt</code>.</p>
+
+  <h3>Consider a draining period</h3>
+  <p>Railway's default <code>RAILWAY_DEPLOYMENT_DRAINING_SECONDS</code> is <code>0</code> — an
+  immediate <code>SIGKILL</code>. The server closes its database on shutdown so SQLite can checkpoint
+  its write-ahead log back into the main file; a hard kill skips that. SQLite recovers on the next
+  open regardless, so this is tidiness rather than safety, but setting it to <code>30</code> costs
+  nothing.</p>
+
+  <h3>Size, and the trial ceiling</h3>
+  <p>Free/Trial volumes are <strong>0.5&nbsp;GB</strong>; Hobby 5&nbsp;GB; Pro 50&nbsp;GB. A users
+  table, a sessions table and one integer each will not trouble half a gigabyte for years. Worth
+  knowing rather than worth doing anything about.</p>
+
+  <h3>Backups are not solved</h3>
+  <p>Railway offers volume backups, and a snapshot of a live SQLite file is <em>not</em> guaranteed to
+  be consistent — the <code>.db</code> and its <code>-wal</code> must be captured together. Litestream
+  is the real answer and it is <strong>deliberately deferred</strong> (see <code>stages.txt</code>).
+  Until then, the honest position is: this data is a POC's data, and it is not backed up.</p>
+
+  <h3>Reading the volume when you need to</h3>
+<pre><span class="c"># Browse it interactively.</span>
+$ railway volume browse /
+
+<span class="c"># Or pull the database down and open it locally.</span>
+$ railway volume files download /data/lunicle.db ./lunicle.db
+$ sqlite3 lunicle.db "SELECT id, provider, display_name FROM users;"</pre>
+
+  <h3>Deleting the volume is soft, briefly</h3>
+  <p>A deleted volume is queued rather than destroyed, and is recoverable for about 48 hours via an
+  emailed link. Do not rely on this; do notice that it exists if you delete the wrong thing.</p>
+</section>
+
+<!-- ═══════════════════════════ LOCAL ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Local</span> The same thing, on your machine</h2>
+  <p class="subtitle">You do not need a deploy to test any of this, and you shouldn't.</p>
+
+  <p><code>scripts/container-up.sh</code> runs the same image with a real Docker volume and passes
+  <code>RAILWAY_VOLUME_MOUNT_PATH=/data</code>, so the local container resolves its database by the
+  identical mechanism the deploy does. A <strong>named</strong> Docker volume, specifically: those
+  come up root-owned exactly as Railway's do, so this genuinely exercises the entrypoint's
+  chown-and-drop. A bind mount would inherit your home directory's ownership, work by accident, and
+  prove nothing.</p>
+
+<pre>$ ./scripts/container-up.sh
+<span class="c"># … sign in, increment, then:</span>
+$ ./scripts/container-down.sh      <span class="c"># keeps the volume</span>
+$ ./scripts/container-up.sh --no-build
+<span class="c"># → still signed in, count intact. That is the exit criterion, locally.</span>
+
+$ ./scripts/container-down.sh --wipe   <span class="c"># deletes the volume</span>
+<span class="c"># → next start logs "fresh — creating schema at version 1"</span></pre>
+
+  <p><code>--wipe</code> is worth knowing about: creating the schema on an empty volume is a code path
+  production runs exactly <em>once</em>, on the very first deploy, where it is most expensive and
+  least observable to get wrong. This runs it as often as you like.</p>
+
+  <p>A plain <code>./gradlew :server:run</code> keeps its database under
+  <code>server/build/lunicle.db</code>, so <code>./gradlew clean</code> throws it away.</p>
+</section>
+
+<!-- ═══════════════════════════ SCHEMA ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Later</span> Changing the schema, once there's data</h2>
+  <p class="subtitle">Not needed now. Needed the first time you touch a <code>.sq</code> file.</p>
+
+  <p>From the moment the volume has real accounts on it, a schema edit is a migration rather than a
+  rewrite. The build enforces this — <code>verifyMigrations</code> is on, so changing a
+  <code>.sq</code> without a matching migration <strong>fails the build</strong> rather than
+  discovering itself in production.</p>
+
+  <ol>
+    <li>Edit the <code>.sq</code> file.</li>
+    <li>Add <code>server/src/main/sqldelight/migrations/&lt;n&gt;.sqm</code> — the SQL that gets a
+    version-<code>n</code> database to version <code>n+1</code>.</li>
+    <li>Run <code>./gradlew :server:generateMainLunicleDatabaseSchema</code> to snapshot the new
+    version, and commit the <code>.db</code> it writes under
+    <code>server/src/main/sqldelight/databases/</code>.</li>
+  </ol>
+
+  <p>The server applies migrations itself at startup, tracked in SQLite's own <code>user_version</code>
+  — you will see <code>migrating schema 1 → 2</code> in the deploy log. It runs at startup because it
+  has to: the volume is not mounted during the build, nor during pre-deploy, so container start is the
+  first moment the file exists at all.</p>
+
+  <div class="note">
+    <p class="lbl">Rolling back is not free</p>
+    <p>A database migrated to version 2 will <strong>refuse to start</strong> under a build that
+    expects version 1, with a log line saying so. That is deliberate: the old build's queries do not
+    match the volume, and letting it write anyway is the unrecoverable version of this problem. Roll
+    forward.</p>
+  </div>
+</section>
+
+<footer>
+  Lunicle — Stage 2, the persistence half. Companion to <code>oauth-instructions.html</code> (the
+  identity half) and <code>instructions.html</code> (Stage 1: domain, Railway, Docker). The plan and
+  its reasoning live in <code>stages.txt</code> and <code>stages.html</code>.
+</footer>
+
+</div>
+</body>
+</html>

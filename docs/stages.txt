@@ -18,18 +18,50 @@ criterion proves both at once: sign in, increment, redeploy, sign back in, count
 there. A database with nobody in it and users with nothing to persist are each half a
 demo. See stages.html for the reasoning and the OAuth-in-an-iframe problem.
 
-* Add OAuth to sign in with Google and Github.
-* No custom e-mail based accounts and no e-mail transmission functionality.
-* Add an embedded database (SQLite on a Railway volume).
+OAuth half — done, validated in production 2026-07-16.
+Persistence half — built and proven locally; NOT yet validated in production.
+
+* Add OAuth to sign in with Google and Github.                                    [done]
+* No custom e-mail based accounts and no e-mail transmission functionality.       [done]
+* Add an embedded database (SQLite on a Railway volume).                          [built]
 * A users table (provider, provider id, display name) and a per-user persisted counter.
   The counter is still the POC payload, it just belongs to someone now and survives redeploys.
+                                                                                  [built]
 * A second instructions HTML how to configure everything on Google and Github to make this work.
+                                                                                  [done: oauth-instructions.html]
 * Instructions (and/or scripts) how to create the volume we need on Railway or elsewhere
-  for hosting the database.
+  for hosting the database.                                                       [done: volume-instructions.html]
 
 Watch out: Google's consent endpoint sends X-Frame-Options: DENY and can never be framed.
 The popup flow is the only path. Test sign-in through the iframe from the first commit —
 testing it at lunicle.lunamux.dev directly passes and proves nothing.
+
+Watch out: a Railway volume mounts owned by root, and this container runs as an
+unprivileged user — so the server cannot write its own database, and SQLite says only
+"unable to open database file". Railway's documented answer is RAILWAY_RUN_UID=0, i.e.
+run everything as root, which throws the non-root user away. scripts/container-entrypoint.sh
+instead chowns the mount as root and drops to uid 10001 before exec'ing the JVM. Do not set
+RAILWAY_RUN_UID; it undoes this.
+
+Decisions taken during the persistence half, worth not re-litigating:
+
+* SQLDelight, in :server only. SQL-first rather than an ORM, and it brings migrations,
+  which the volume makes mandatory from the first deploy. Its multiplatform half is
+  unused on purpose: the client never touches the database — it cannot, the file is on
+  Railway's disk — and reaches it only through LunicleApi over HTTP.
+* Sessions persist too, not just users and counters. Sessions.kt had promised this
+  ("when the volume lands, this file is what gets replaced"). A redeploy no longer signs
+  anyone out, which is a stronger result than the exit criterion asks for.
+* The counter is keyed by user id, so it follows the person rather than the browser.
+  Signed out, the panel shows the counter dimmed and inert with "Sign in to start
+  counting" — the affordance explaining itself — rather than hiding it or keeping a
+  shared anonymous count.
+* /api/counter now 401s when signed out. /api/session never does, and is therefore what
+  the dev scripts probe for liveness.
+
+Exit criterion, still outstanding: run it in production, through the iframe on lunamux.dev.
+Proven locally against a real root-owned Docker volume — new container, same volume, count
+and session both intact — which is the same mechanism but not the same proof.
 
 Later — deliberately deferred
 
