@@ -24,6 +24,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 
+# OAuth credentials from .env, so container-up.sh can forward them. Silent no-op
+# without a .env.
+#
+# run-embedded.sh has always done this and this script never did, which was
+# harmless right up until the counter needed an owner: standalone mode used to
+# be a working counter and no sign-in, and without this it would now be a
+# permanently inert counter and no way to sign in — the whole app, dead, for a
+# reason nothing on screen explains.
+# shellcheck source=load-env.sh
+source "$SCRIPT_DIR/load-env.sh"
+
 # Plain strings, not an array: macOS still ships bash 3.2, where expanding an
 # empty array under `set -u` is a fatal error.
 build_flag=""

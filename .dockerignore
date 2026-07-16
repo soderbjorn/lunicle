@@ -16,4 +16,15 @@ local.properties
 # were never going to land in the image regardless — excluding them keeps the
 # build context small, and a smaller context is a faster build.)
 docs/
-scripts/
+scripts/*
+
+# …except the entrypoint, which is genuinely part of the image: it chowns the
+# mounted volume and drops to the unprivileged user before exec'ing the JVM.
+# See the Dockerfile, and the script's own header for why that has to happen at
+# runtime rather than at build time.
+#
+# Note `scripts/*` above rather than `scripts/`: Docker will not re-include a
+# file from a directory that has itself been excluded, so the negation below is
+# silently ineffective against a bare `scripts/` and the COPY fails with "file
+# not found" while the file is plainly right there.
+!scripts/container-entrypoint.sh

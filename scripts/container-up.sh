@@ -33,6 +33,12 @@ set -euo pipefail
 
 IMAGE="lunicle:local"
 NAME="lunicle-local"
+# A named Docker volume, standing in for Railway's. Named rather than a bind
+# mount on purpose: a Docker volume comes up root-owned, exactly as Railway's
+# does, so this local run exercises the entrypoint's chown-and-drop for real. A
+# bind mount would inherit the host directory's ownership and quietly work,
+# proving nothing about the deploy.
+VOLUME="${LUNICLE_VOLUME:-lunicle-data}"
 LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 SITE_PORT="${SITE_PORT:-8000}"
 FRAME_ANCESTORS="${FRAME_ANCESTORS:-http://localhost:$SITE_PORT https://lunamux.dev}"
@@ -121,6 +127,7 @@ done
 
 echo "==> Starting the container"
 echo "    frame-ancestors: $FRAME_ANCESTORS"
+echo "    volume: $VOLUME → /data (survives --no-build restarts; wipe with container-down.sh --wipe)"
 if [[ "${#oauth_env[@]}" -gt 0 ]]; then
   # Names only. A secret echoed here would end up in scrollback and in any CI
   # log that ever runs this.
@@ -128,17 +135,30 @@ if [[ "${#oauth_env[@]}" -gt 0 ]]; then
 fi
 # PORT is how Railway tells the server where to listen, so pass it the same way
 # here: this exercises the real mechanism rather than the 8080 fallback.
+#
+# RAILWAY_VOLUME_MOUNT_PATH is passed for exactly the same reason. Railway
+# injects it into the container whenever a volume is attached, and it is what
+# the server resolves its database path from (see resolveDatabaseLocation()).
+# Setting it here means the local container puts its database on the mounted
+# volume by the same mechanism the deploy does, rather than via a local-only
+# override that would leave the real branch untested. Without it the server
+# would fall back to /app/lunicle.db — inside the container, next to the jar,
+# quietly missing the volume mounted an inch away.
 docker run -d --name "$NAME" \
   -e PORT="$LUNICLE_PORT" \
+  -e RAILWAY_VOLUME_MOUNT_PATH=/data \
   -e FRAME_ANCESTORS="$FRAME_ANCESTORS" \
   ${oauth_env[@]+"${oauth_env[@]}"} \
+  -v "$VOLUME:/data" \
   -p "$LUNICLE_PORT:$LUNICLE_PORT" \
   "$IMAGE" > /dev/null
 
 echo "==> Waiting for it to answer…"
 ready=0
 for _ in $(seq 1 60); do
-  if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/counter"; then ready=1; break; fi
+  # /api/session rather than /api/counter — the counter 401s when signed out
+  # and `curl -sf` would read that as "not up". See dev-local.sh.
+  if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/session"; then ready=1; break; fi
   if [[ -z "$(docker ps -q --filter "name=^${NAME}$")" ]]; then
     echo "error: the container exited. Its logs:" >&2
     docker logs "$NAME" 2>&1 | tail -20 >&2

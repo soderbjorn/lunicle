@@ -74,7 +74,12 @@ server_marker="lunicle.webDist=$REPO_ROOT/web/build"
 # server was configured with (its framing policy, its counter, its code) while
 # looking perfectly healthy. That is a genuinely misleading failure — it cost
 # real time during this stage's development — so it is now loud.
-if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/counter" 2>/dev/null; then
+# /api/session, not /api/counter: the counter now 401s for a signed-out caller
+# (it belongs to a user), and `curl -sf` treats 401 as failure — so probing it
+# would report a perfectly healthy server as absent. /api/session answers 200
+# for everyone, signed in or not, which is exactly what a liveness probe wants.
+# Same reasoning at the readiness loop below and in container-up.sh.
+if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/session" 2>/dev/null; then
   echo "error: something is already serving http://localhost:$LUNICLE_PORT/" >&2
   if pgrep -f "$server_marker" > /dev/null 2>&1; then
     echo "       It looks like an orphaned tracker from an earlier run. Stop it with:" >&2
@@ -170,7 +175,7 @@ trap cleanup EXIT INT TERM
 echo "==> Waiting for the tracker to answer (first run compiles the JS bundle — this is slow)…"
 ready=0
 for _ in $(seq 1 180); do
-  if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/counter"; then ready=1; break; fi
+  if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/session"; then ready=1; break; fi
   if ! kill -0 "$gradle_pid" 2>/dev/null; then
     echo "error: the server exited before it answered; see the Gradle output above" >&2
     exit 1

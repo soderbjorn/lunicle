@@ -36,15 +36,52 @@ RUN ./gradlew --no-daemon :server:shadowJar
 FROM eclipse-temurin:21-jre AS runtime
 WORKDIR /app
 
-# Run as a non-root user. Nothing here needs root, and a container that never
-# needed it should never have it.
+# The unprivileged user the server actually runs as. Nothing in the JVM needs
+# root, and the part of this container that reads untrusted input from the
+# internet should not have it.
+#
+# Note there is no `USER issues` here, which is a change from Stage 1 and looks
+# like a regression until you read scripts/container-entrypoint.sh. The short
+# version: a Railway volume mounts at container start owned by root, so
+# *something* must chown it before the server runs, and that something needs
+# root. The entrypoint below starts as root, chowns the mount, and drops to this
+# user via setpriv before exec'ing the JVM. Root exists for one chown; the
+# server still runs unprivileged.
 RUN useradd --system --create-home --uid 10001 issues
-USER issues
 
 COPY --from=build /app/server/build/libs/server-all.jar server.jar
+
+# The default mount point for the database volume. Created here so that a plain
+# `docker run` with no volume still has somewhere to put the file, and declared
+# as a VOLUME so `docker run -v lunicle-data:/data` needs no extra ceremony.
+#
+# Creating it in the image does NOT make it writable once a volume is mounted
+# over it — that is precisely the problem the entrypoint solves. This only
+# covers the no-volume case.
+RUN mkdir -p /data && chown issues:issues /data
+VOLUME ["/data"]
+
+COPY scripts/container-entrypoint.sh /usr/local/bin/container-entrypoint.sh
+RUN chmod +x /usr/local/bin/container-entrypoint.sh
+
+# Run from /data, not /app.
+#
+# This is about the *un*configured case. The server's last-resort database path
+# is a relative "lunicle.db" — i.e. the working directory (see
+# resolveDatabaseLocation). With WORKDIR /app that resolves to /app/lunicle.db,
+# which is root-owned and therefore unwritable by the unprivileged JVM: a
+# no-volume container would warn that data won't persist and then die anyway,
+# with SQLite's uninformative "unable to open database file". /data is the one
+# directory the entrypoint guarantees is writable, so the fallback lands
+# somewhere it can actually work.
+#
+# Nothing else depends on the working directory — the jar is referenced
+# absolutely in CMD, and the web bundle is read from the classpath.
+WORKDIR /data
 
 # Documentation only — Railway injects its own PORT at runtime and the server
 # reads it (see resolvePort in Application.kt). This is the local-run default.
 EXPOSE 8080
 
-CMD ["java", "-jar", "server.jar"]
+ENTRYPOINT ["/usr/local/bin/container-entrypoint.sh"]
+CMD ["java", "-jar", "/app/server.jar"]
