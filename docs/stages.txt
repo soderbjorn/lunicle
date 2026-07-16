@@ -6,7 +6,7 @@ A POC which has the following:
 * A StateFlow is emitted with a single state for the entire view. The UI listens and updates the counter display.
 * No persistence, no database.
 * Everything packaged to a Docker container I can deploy on Railway.
-* Destination: a subdomain "issues.lunamux.dev" on the Lunamux website. Secret for now, no links to it.
+* Destination: a subdomain "lunicle.lunamux.dev" on the Lunamux website. Secret for now, no links to it.
 * An instructions HTML with step-by-step instructions how to configure the domain, how to configure Railway and deploy the Docker file there. 
 
 Stage 2

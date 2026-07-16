@@ -29,7 +29,7 @@
 #     enforcement as production — only the value differs. This is the single
 #     deliberate difference from the deployed configuration.
 #   * lunamux-web frames http://localhost:$LUNICLE_PORT/ instead of
-#     issues.lunamux.dev when the site is itself served from localhost (see
+#     lunicle.lunamux.dev when the site is itself served from localhost (see
 #     SITE.issues.devIframeSrc in content.js). That keys off the site's own
 #     hostname, never off anything a visitor supplies.
 #

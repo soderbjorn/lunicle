@@ -75,7 +75,7 @@ private const val CONTENT_SECURITY_POLICY = "Content-Security-Policy"
  * server sets CSP and never sets X-Frame-Options.
  *
  * `'self'` is included so the tracker can also frame itself, and so that
- * opening issues.lunamux.dev directly is unaffected (frame-ancestors only
+ * opening lunicle.lunamux.dev directly is unaffected (frame-ancestors only
  * governs who may *embed* the page, never who may visit it).
  *
  * @param ancestors the permitted framing origin.

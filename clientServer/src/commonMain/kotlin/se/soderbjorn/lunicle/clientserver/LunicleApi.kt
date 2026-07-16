@@ -42,7 +42,7 @@ fun createHttpClient(): HttpClient = HttpClient {
  * @param baseUrl prefix for every request. Defaults to `""` — a relative URL —
  *   which is correct for the browser bundle: the server that serves the bundle
  *   is the server the bundle talks to, and that stays true inside the
- *   lunamux.dev iframe, where the frame's own origin is issues.lunamux.dev. So
+ *   lunamux.dev iframe, where the frame's own origin is lunicle.lunamux.dev. So
  *   there is no cross-origin request here and no CORS to configure. Pass an
  *   absolute URL from a JVM caller or a test.
  * @param httpClient the transport; defaults to a fresh [createHttpClient].

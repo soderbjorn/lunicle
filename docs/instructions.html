@@ -196,7 +196,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
       browser enforcement; only the value differs. <strong>This is the single deliberate difference
       from the deployed configuration</strong>; <code>run-standalone.sh</code> uses production's
       policy untouched.</li>
-    <li>lunamux-web frames <code>localhost:8080</code> instead of <code>issues.lunamux.dev</code>
+    <li>lunamux-web frames <code>localhost:8080</code> instead of <code>lunicle.lunamux.dev</code>
       when the <em>site itself</em> is served from localhost
       (<code>SITE.issues.devIframeSrc</code>). That choice keys off your own hostname and
       <strong>never off a query parameter</strong> — a visitor-supplied iframe URL on the live site
@@ -274,7 +274,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
 
   <ol>
     <li>Railway → your service → <strong>Settings → Networking → Custom Domain</strong>.</li>
-    <li>Enter <code>issues.lunamux.dev</code>.</li>
+    <li>Enter <code>lunicle.lunamux.dev</code>.</li>
     <li>Railway shows a <strong>CNAME target</strong> (something like
       <code>&lt;id&gt;.up.railway.app</code>). Copy it — Step 4 needs it. It is specific to your
       service; don't guess it.</li>
@@ -287,13 +287,13 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
 
   <ol>
     <li>Cloudflare → <code>lunamux.dev</code> → <strong>DNS → Records → Add record</strong>.</li>
-    <li>Type <strong>CNAME</strong>, name <code>issues</code>, target = the value from Step 3.</li>
+    <li>Type <strong>CNAME</strong>, name <code>lunicle</code>, target = the value from Step 3.</li>
     <li><strong>Proxy status: DNS only</strong> (grey cloud). Not orange. See below.</li>
   </ol>
 
   <div class="stop">
     <p class="lbl">Grey cloud first — this is the one that wastes an afternoon</p>
-    <p>Railway issues the certificate for <code>issues.lunamux.dev</code> itself, via Let's Encrypt,
+    <p>Railway issues the certificate for <code>lunicle.lunamux.dev</code> itself, via Let's Encrypt,
     and to do that it must be reachable at that name. With Cloudflare's proxy <strong>on</strong>
     (orange cloud), Cloudflare terminates TLS and answers the validation challenge, so Railway's
     issuance can fail or hang — and you get a certificate error on a service that is otherwise
@@ -308,9 +308,9 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
 
   <p>DNS propagation is usually a minute or two, not the mythical 48 hours. Check it directly rather
   than refreshing a browser tab and guessing:</p>
-<pre>$ dig +short issues.lunamux.dev
-$ curl -sI https://issues.lunamux.dev/ | head -1
-$ curl -sI https://issues.lunamux.dev/ | grep -i content-security</pre>
+<pre>$ dig +short lunicle.lunamux.dev
+$ curl -sI https://lunicle.lunamux.dev/ | head -1
+$ curl -sI https://lunicle.lunamux.dev/ | grep -i content-security</pre>
   <p>That last one should print
   <code>frame-ancestors 'self' https://lunamux.dev</code>. If it doesn't, the embed in Step 5 will
   be a blank rectangle and you'll be debugging the wrong layer.</p>
@@ -346,7 +346,7 @@ $ curl -sI https://issues.lunamux.dev/ | grep -i content-security</pre>
   <div class="warn">
     <p class="lbl">"Secret" means undiscoverable, not protected</p>
     <p>lunamux-web is a static site. The tab, the parameter name and the
-    <code>issues.lunamux.dev</code> URL are all sitting in <code>content.js</code> for anyone who
+    <code>lunicle.lunamux.dev</code> URL are all sitting in <code>content.js</code> for anyone who
     opens view-source, and the server is publicly reachable regardless of what the marketing site
     links to. Fine for what you want — no links, nobody stumbles in — as long as it is never
     mistaken for an access control. Note that <code>#/issues</code> stays routable without the
@@ -391,7 +391,7 @@ $ curl -sI https://issues.lunamux.dev/ | grep -i content-security</pre>
       <code>soderbjorn/lunicle</code> (private), and the tab edits to
       <code>soderbjorn/lunamux-web</code>. Note what the second one means: GitHub Pages serves that
       repo, so the Issues tab is <em>live</em> on lunamux.dev now — and because
-      <code>issues.lunamux.dev</code> doesn't exist until Steps 2–4 are done, opening
+      <code>lunicle.lunamux.dev</code> doesn't exist until Steps 2–4 are done, opening
       <code>?issues=1#/issues</code> today gives an empty frame. Nobody without the parameter sees
       anything change.</li>
     <li><strong>The image is 509 MB.</strong> Fine for now, and not worth optimising before it has

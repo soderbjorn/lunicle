@@ -134,7 +134,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
       <code>StateFlow&lt;State&gt;</code> for the whole view, with an <code>onIncrementTapped()</code>
       intent. The view subscribes and re-renders the display.</li>
     <li>Docker container, deployed to Railway.</li>
-    <li>Subdomain <code>issues.lunamux.dev</code>, Cloudflare DNS → Railway.</li>
+    <li>Subdomain <code>lunicle.lunamux.dev</code>, Cloudflare DNS → Railway.</li>
     <li><strong>A secret <code>Issues</code> tab on lunamux-web</strong> that embeds it — details
       below.</li>
     <li>An instructions HTML: domain config, Railway config, Docker deploy.</li>
@@ -170,7 +170,7 @@ nav: [
 document.getElementById("page-issues").innerHTML =
   '&lt;section class="issues"&gt;' +
     '&lt;iframe id="issues-iframe" title="Lunamux issues" ' +
-      'data-src="https://issues.lunamux.dev/"&gt;&lt;/iframe&gt;' +
+      'data-src="https://lunicle.lunamux.dev/"&gt;&lt;/iframe&gt;' +
   '&lt;/section&gt;';
 
 <span class="c">// script.js — register the page + lazy-load, like ensureDemoLoaded()</span>
@@ -184,7 +184,7 @@ var pages = { <span class="c">/* … */</span> issues: document.getElementById("
   <div class="warn">
     <p class="lbl">"Secret" here means undiscoverable, not protected</p>
     <p>lunamux-web is a static site. The tab, the parameter name and the
-    <code>issues.lunamux.dev</code> URL are all sitting in <code>content.js</code> for anyone who
+    <code>lunicle.lunamux.dev</code> URL are all sitting in <code>content.js</code> for anyone who
     opens view-source, and the server itself is publicly reachable regardless of what the marketing
     site does or doesn't link to. That is completely fine for what you actually want here — no
     links, nobody stumbles in — as long as you don't later mistake it for an access control. When
@@ -207,7 +207,7 @@ var pages = { <span class="c">/* … */</span> issues: document.getElementById("
 
   <div class="ok">
     <p class="lbl">One quiet piece of luck</p>
-    <p><code>issues.lunamux.dev</code> and <code>lunamux.dev</code> share a registrable domain, so
+    <p><code>lunicle.lunamux.dev</code> and <code>lunamux.dev</code> share a registrable domain, so
     the embed is <strong>same-site</strong>. Browsers key their third-party restrictions on site, not
     origin, which means cookies just work in the iframe and you need none of the misery —
     CHIPS, Storage Access API, partitioning — that a genuinely cross-site embed would force on you in
@@ -257,7 +257,7 @@ HTTP/2 302
     latter the popup opens and then can't talk back to the opener, which presents as a login that
     silently does nothing.</p>
     <p><strong>Test the sign-in through the iframe from the first commit of this stage.</strong>
-    Tested at <code>issues.lunamux.dev</code> directly it will pass, and that pass tells you nothing
+    Tested at <code>lunicle.lunamux.dev</code> directly it will pass, and that pass tells you nothing
     about the configuration you're actually shipping.</p>
   </div>
 

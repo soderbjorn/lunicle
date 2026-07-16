@@ -22,14 +22,14 @@
 #     is all it takes for the browser to allow the frame. Same header and same
 #     enforcement as production — only the value differs.
 #
-#   * lunamux-web frames http://localhost:8080/ instead of issues.lunamux.dev
+#   * lunamux-web frames http://localhost:8080/ instead of lunicle.lunamux.dev
 #     when the site is itself served from localhost (SITE.issues.devIframeSrc
 #     in content.js). That choice keys off the site's own hostname, never off
 #     anything a visitor supplies.
 #
 # Caveat worth knowing: this proves the framing contract, the lazy-load, the nav
 # gate and the round-trip. It does NOT prove the two things that only exist in
-# production — real DNS and a real certificate for issues.lunamux.dev. Those
+# production — real DNS and a real certificate for lunicle.lunamux.dev. Those
 # fail in ways localhost cannot reproduce, which is why the Stage 1 exit
 # criteria are written against the deployed site. See docs/instructions.html.
 #
