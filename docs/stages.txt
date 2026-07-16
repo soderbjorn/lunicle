@@ -18,15 +18,20 @@ criterion proves both at once: sign in, increment, redeploy, sign back in, count
 there. A database with nobody in it and users with nothing to persist are each half a
 demo. See stages.html for the reasoning and the OAuth-in-an-iframe problem.
 
-OAuth half — done, validated in production 2026-07-16.
-Persistence half — built and proven locally; NOT yet validated in production.
+Stage 2 — done, validated in production 2026-07-16.
+
+Signed in with Google and with GitHub, incremented, redeployed, came back still signed
+in with the count intact — and signed out and back in, which is the stronger half: the
+count follows the identity, not the cookie. The deploy log said "schema is current at
+version 1" rather than "fresh", i.e. it found the database already on the volume, and
+"Sessions live: 1" across a container replacement.
 
 * Add OAuth to sign in with Google and Github.                                    [done]
 * No custom e-mail based accounts and no e-mail transmission functionality.       [done]
-* Add an embedded database (SQLite on a Railway volume).                          [built]
+* Add an embedded database (SQLite on a Railway volume).                          [done]
 * A users table (provider, provider id, display name) and a per-user persisted counter.
   The counter is still the POC payload, it just belongs to someone now and survives redeploys.
-                                                                                  [built]
+                                                                                  [done]
 * A second instructions HTML how to configure everything on Google and Github to make this work.
                                                                                   [done: oauth-instructions.html]
 * Instructions (and/or scripts) how to create the volume we need on Railway or elsewhere
@@ -65,9 +70,12 @@ Decisions taken during the persistence half, worth not re-litigating:
 * /api/counter now 401s when signed out. /api/session never does, and is therefore what
   the dev scripts probe for liveness.
 
-Exit criterion, still outstanding: run it in production, through the iframe on lunamux.dev.
-Proven locally against a real root-owned Docker volume — new container, same volume, count
-and session both intact — which is the same mechanism but not the same proof.
+Known, and deliberately left: sessions expire after 30 days and are only swept at startup,
+so lookup() does not check expiry itself — an old session stays usable on a server that
+runs untouched. Fine while a session holds nothing but a user id; the first thing to fix
+if that changes. And there are still no tests: this stage was verified by driving real
+containers against real volumes, which is the stronger evidence for this particular
+change, but it is not a regression net for the next one.
 
 Later — deliberately deferred
 
