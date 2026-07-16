@@ -73,6 +73,11 @@ fi
 # even if run-standalone.sh started a production-only one earlier.
 export FRAME_ANCESTORS="http://localhost:$SITE_PORT https://lunamux.dev"
 
+# OAuth credentials from .env, if present, for container-up.sh to forward into
+# the container. Sourced this late so it can't affect the checks above.
+# shellcheck source=load-env.sh
+source "$SCRIPT_DIR/load-env.sh"
+
 if [[ -n "$build_flag" ]]; then
   "$SCRIPT_DIR/container-up.sh" "$build_flag"
 else

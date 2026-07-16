@@ -38,6 +38,13 @@ node_modules/
 !.claude/skills/
 .mcp.json
 
+# Secrets — the local OAuth credentials the dev scripts source. The committed
+# template is .env.example; the filled-in file never leaves this machine.
+# Negation is explicit rather than relying on the pattern not matching, because
+# `.env.example` is the only thing that makes `.env` discoverable at all.
+.env
+!.env.example
+
 # macOS
 .DS_Store
 

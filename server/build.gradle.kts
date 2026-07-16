@@ -83,4 +83,26 @@ tasks.named<JavaExec>("run") {
     val frameAncestors = providers.gradleProperty("frameAncestors")
         .getOrElse("https://lunamux.dev")
     systemProperty("lunicle.frameAncestors", frameAncestors)
+
+    // OAuth credentials, passed by scripts/dev-local.sh from a gitignored .env
+    // (see .env.example). Same -P-not-environment reasoning as frameAncestors,
+    // and it matters more here: a secret exported into the daemon's environment
+    // would survive a rotation and resolve to the stale value until the daemon
+    // was killed, which presents as "I changed the secret and nothing happened".
+    //
+    // Unset is normal, not an error — a developer without credentials gets a
+    // server with no sign-in, which is Stage 1 and boots fine. Each property is
+    // only forwarded when present so that resolveOAuthConfig()'s blank-is-absent
+    // rule never has to distinguish "unset" from "set to empty".
+    //
+    // See resolveValue() in OAuthConfig.kt for the runtime half.
+    listOf(
+        "googleClientId",
+        "googleClientSecret",
+        "githubClientId",
+        "githubClientSecret",
+    ).forEach { name ->
+        val value = providers.gradleProperty(name).getOrElse("")
+        if (value.isNotBlank()) systemProperty("lunicle.$name", value)
+    }
 }

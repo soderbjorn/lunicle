@@ -41,6 +41,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The lunamux-web checkout to serve. Override if yours lives elsewhere.
 LUNAMUX_WEB="${LUNAMUX_WEB:-$REPO_ROOT/../lunamux-web}"
 
+# OAuth credentials, if you've made a .env. Silent no-op without one.
+# shellcheck source=load-env.sh
+source "$REPO_ROOT/scripts/load-env.sh"
+
 mode="standalone"
 open_browser=1
 for arg in "$@"; do
@@ -104,7 +108,33 @@ else
   echo "==> Starting the tracker on :$LUNICLE_PORT (frame-ancestors: $frame_ancestors — as in production)"
 fi
 
-"$REPO_ROOT/gradlew" -p "$REPO_ROOT" "-PframeAncestors=$frame_ancestors" :server:run &
+# OAuth credentials from .env, if present. Passed as -P properties rather than
+# left in the environment: a Gradle JavaExec inherits the *daemon's*
+# environment, not this shell's, so an exported secret would go stale the moment
+# it was rotated and stay stale until the daemon died. Same reasoning as
+# -PframeAncestors above. Absent credentials are fine — the server just offers
+# no sign-in. See scripts/load-env.sh and OAuthConfig.kt.
+oauth_props=()
+for var in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET; do
+  value="${!var:-}"
+  [[ -n "$value" ]] || continue
+  # GOOGLE_CLIENT_ID -> googleClientId, matching build.gradle.kts.
+  prop="$(echo "$var" | awk -F_ '{
+    out = tolower($1)
+    for (i = 2; i <= NF; i++) out = out toupper(substr($i,1,1)) tolower(substr($i,2))
+    print out
+  }')"
+  oauth_props+=("-P$prop=$value")
+done
+
+if [[ "${#oauth_props[@]}" -gt 0 ]]; then
+  echo "==> OAuth credentials loaded from .env for: $(
+    for p in "${oauth_props[@]}"; do echo "${p%%=*}" | sed 's/^-P//'; done | tr '\n' ' '
+  )"
+fi
+
+"$REPO_ROOT/gradlew" -p "$REPO_ROOT" "-PframeAncestors=$frame_ancestors" \
+  ${oauth_props[@]+"${oauth_props[@]}"} :server:run &
 gradle_pid=$!
 
 # Stop everything we started, by explicit PID, plus the server JVM by marker.

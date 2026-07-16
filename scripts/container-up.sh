@@ -103,13 +103,35 @@ if [[ -n "$(docker ps -aq --filter "name=^${NAME}$")" ]]; then
   docker rm -f "$NAME" > /dev/null
 fi
 
+# OAuth credentials, forwarded only when the caller has them in scope (a run
+# script that sourced .env). Unlike the Gradle path, the environment is the
+# right mechanism here and needs no -P translation: a container is a plain
+# `java -jar` with no daemon to inherit a stale environment from, which is
+# exactly how Railway supplies these in production. Passing them this way means
+# the local container exercises the real mechanism rather than a stand-in.
+#
+# Absent is normal: the container then serves with no sign-in. Names must match
+# resolveOAuthConfig() in OAuthConfig.kt.
+oauth_env=()
+for var in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET; do
+  value="${!var:-}"
+  [[ -n "$value" ]] || continue
+  oauth_env+=(-e "$var=$value")
+done
+
 echo "==> Starting the container"
 echo "    frame-ancestors: $FRAME_ANCESTORS"
+if [[ "${#oauth_env[@]}" -gt 0 ]]; then
+  # Names only. A secret echoed here would end up in scrollback and in any CI
+  # log that ever runs this.
+  echo "    oauth: $(printf '%s\n' "${oauth_env[@]}" | grep -v '^-e$' | cut -d= -f1 | tr '\n' ' ')"
+fi
 # PORT is how Railway tells the server where to listen, so pass it the same way
 # here: this exercises the real mechanism rather than the 8080 fallback.
 docker run -d --name "$NAME" \
   -e PORT="$LUNICLE_PORT" \
   -e FRAME_ANCESTORS="$FRAME_ANCESTORS" \
+  ${oauth_env[@]+"${oauth_env[@]}"} \
   -p "$LUNICLE_PORT:$LUNICLE_PORT" \
   "$IMAGE" > /dev/null
 

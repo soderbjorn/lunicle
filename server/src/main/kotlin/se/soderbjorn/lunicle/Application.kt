@@ -90,7 +90,14 @@ internal fun frameAncestors(ancestors: String): String =
 fun main() {
     val port = resolvePort()
     val logger = LoggerFactory.getLogger("Application")
-    logger.info("Starting Lunicle on port $port; frame-ancestors=${resolveFrameAncestors()}")
+    // Which providers are live is worth a line: "sign-in doesn't appear" is
+    // otherwise indistinguishable from "the button is broken", and the answer
+    // is usually a variable that didn't reach the process. Names only — never a
+    // secret, not even a prefix of one.
+    logger.info(
+        "Starting Lunicle on port $port; frame-ancestors=${resolveFrameAncestors()}; " +
+            "oauth=${resolveOAuthConfig().describe()}",
+    )
     embeddedServer(
         factory = Netty,
         port = port,
