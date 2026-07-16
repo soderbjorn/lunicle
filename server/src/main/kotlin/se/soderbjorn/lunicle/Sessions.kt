@@ -1,62 +1,120 @@
 /**
- * In-memory session storage for Stage 2's popup slice.
+ * Session storage, on the volume.
  *
- * Deliberately not persisted. The database is the *next* slice, and mixing it in
- * here would mean debugging OAuth and SQLite at the same time — which is exactly
- * what splitting the stage was meant to avoid. The consequence is honest and
- * visible: a redeploy signs everyone out, the same way it resets the counter
- * today. When the volume lands, this file is what gets replaced.
+ * This file used to say that sessions were in memory, that a redeploy signed
+ * everyone out, and that when the volume landed this is what would get
+ * replaced. The volume has landed. Sessions are rows now, so a redeploy keeps
+ * you signed in — the cookie in your browser still names a session that still
+ * exists.
+ *
+ * That is a real change in what a session id *is*. In memory it was a secret
+ * that died with the process; on disk it is a secret at rest, and a row here is
+ * enough to be someone. Nothing logs it, and nothing returns it except
+ * [SessionStore.create]'s caller.
  *
  * @see AuthRoutes
+ * @see Database
  */
 package se.soderbjorn.lunicle
 
-import se.soderbjorn.lunicle.clientserver.SignedInUser
+import kotlinx.coroutines.withContext
+import se.soderbjorn.lunicle.db.LunicleDatabase
 import java.security.SecureRandom
 import java.util.Base64
-import java.util.concurrent.ConcurrentHashMap
 
 /** The cookie the browser carries a session id in. */
 const val SESSION_COOKIE = "lunicle_session"
 
 /**
+ * How long a session lasts.
+ *
+ * Sessions expire for two different reasons, and only one is about security.
+ * The first is ordinary: a bearer credential that never expires is one a stolen
+ * cookie can use forever. The second is that nothing else ever deletes these
+ * rows — a user who closes the tab and never signs out leaves their session
+ * behind, so without a cutoff this table only grows, on a volume whose trial
+ * ceiling is half a gigabyte.
+ *
+ * Thirty days is a judgement call: long enough that the persistence is visible
+ * — the point of the stage is that you come back and are still signed in — and
+ * short enough to bound the table.
+ */
+private const val SESSION_LIFETIME_MILLIS: Long = 30L * 24 * 60 * 60 * 1000
+
+/**
  * Session ids, and the users behind them.
  *
- * [ConcurrentHashMap] rather than a plain map because Netty serves requests on
- * many threads and this is shared mutable state; the counter gets away with an
- * atomic, this cannot.
+ * @param database the open database.
+ * @param now supplies timestamps; injectable so a test can age a session
+ *   without waiting a month.
  */
-class SessionStore {
-    private val sessions = ConcurrentHashMap<String, SignedInUser>()
-
+class SessionStore(
+    private val database: LunicleDatabase,
+    private val now: () -> Long = System::currentTimeMillis,
+) {
     // SecureRandom, not Random: a session id is a bearer credential for the
     // whole account. Random is seeded predictably enough that ids could be
     // guessed from one another, which is the entire attack.
     private val random = SecureRandom()
 
     /**
-     * Mint a session id for [user] and remember it.
+     * Mint a session id for [userId] and store it.
      *
      * @return the new id, to be handed to the browser as a cookie and never
      *   logged.
      */
-    fun create(user: SignedInUser): String {
+    suspend fun create(userId: Long): String = withContext(DatabaseDispatcher) {
         // 32 bytes: comfortably past guessing, and url-safe so it survives a
         // cookie round-trip without encoding surprises.
         val bytes = ByteArray(32).also(random::nextBytes)
         val id = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-        sessions[id] = user
-        return id
+        database.sessionsQueries.insert(id = id, user_id = userId, created_at = now())
+        id
     }
 
-    /** The user behind [id], or null if it's unknown, expired, or forged. */
-    fun lookup(id: String?): SignedInUser? = id?.let(sessions::get)
+    /**
+     * The user behind [id], or null if it's unknown, expired, or forged.
+     *
+     * Runs on every request that cares who the caller is, which makes it the
+     * hottest query in the server. One primary-key lookup joined to one row.
+     */
+    suspend fun lookup(id: String?): UserRecord? {
+        if (id == null) return null
+        return withContext(DatabaseDispatcher) {
+            database.sessionsQueries.findUser(id).executeAsOneOrNull()
+                ?.let { userRecordOf(it.id, it.provider, it.provider_id, it.display_name) }
+        }
+    }
 
     /** Forget [id]. Idempotent — signing out twice is not an error. */
-    fun destroy(id: String?) {
-        id?.let(sessions::remove)
+    suspend fun destroy(id: String?) {
+        if (id == null) return
+        withContext(DatabaseDispatcher) {
+            database.sessionsQueries.delete(id)
+        }
+    }
+
+    /**
+     * Delete sessions past [SESSION_LIFETIME_MILLIS].
+     *
+     * Called once at startup by `Application.module`. A startup sweep rather
+     * than a scheduled job because a container that restarts on every deploy
+     * gets swept often enough, and a timer would be a second thing to reason
+     * about for a table that gains one row per sign-in.
+     *
+     * The honest limitation: a server left running for months does not sweep,
+     * and [lookup] does not check expiry itself — so an old session stays
+     * usable until a restart. That is the next thing to fix if sessions ever
+     * carry more than a user id.
+     *
+     * @return how many were removed.
+     */
+    suspend fun deleteExpired(): Long = withContext(DatabaseDispatcher) {
+        database.sessionsQueries.deleteOlderThan(now() - SESSION_LIFETIME_MILLIS).value
     }
 
     /** How many sessions are live. For the startup/debug log only. */
-    val size: Int get() = sessions.size
+    suspend fun size(): Long = withContext(DatabaseDispatcher) {
+        database.sessionsQueries.countAll().executeAsOne()
+    }
 }

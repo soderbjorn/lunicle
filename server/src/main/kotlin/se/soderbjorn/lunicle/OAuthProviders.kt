@@ -23,7 +23,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import se.soderbjorn.lunicle.clientserver.AuthProvider
-import se.soderbjorn.lunicle.clientserver.SignedInUser
 
 private val logger = LoggerFactory.getLogger("OAuthProviders")
 
@@ -51,6 +50,13 @@ private data class GoogleTokenResponse(
 /** Google's userinfo response. */
 @Serializable
 private data class GoogleUserInfo(
+    /**
+     * Google's stable, per-account identifier. Not optional and not the email:
+     * `sub` is the only field Google documents as immutable and never reused,
+     * which is exactly what the users table needs to key on. An account's email
+     * and name can both change; this cannot.
+     */
+    val sub: String,
     val name: String? = null,
     val email: String? = null,
 )
@@ -66,6 +72,15 @@ private data class GitHubTokenResponse(
 /** GitHub's `/user` response. */
 @Serializable
 private data class GitHubUser(
+    /**
+     * GitHub's stable numeric account id. The users table keys on this rather
+     * than on `login`, which looks like an identifier and is not: a user can
+     * rename themselves at any time, and GitHub then makes the old name
+     * available for someone else to take. Keying on `login` would therefore
+     * hand a renamed user a brand-new empty account, and — far worse —
+     * eventually hand their old account to whoever claimed the freed name.
+     */
+    val id: Long,
     val name: String? = null,
     val login: String,
 )
@@ -79,6 +94,30 @@ private data class GitHubUser(
  */
 class SignInFailure(val userMessage: String, cause: Throwable? = null) :
     Exception(userMessage, cause)
+
+/**
+ * Who a provider says someone is.
+ *
+ * The output of a sign-in, and the input to [UserStore.upsert] — this is the
+ * boundary where an OAuth identity stops being a provider's business and starts
+ * being an account.
+ *
+ * Not [SignedInUser], which is what the *client* is told. The difference is
+ * [providerId]: the server needs it to find the same person again on their next
+ * sign-in, and a client has no use for it whatsoever. Keeping the two types
+ * apart is what stops it from drifting onto the wire by accident.
+ *
+ * @property provider which provider authenticated them.
+ * @property providerId the provider's stable id — Google's `sub`, GitHub's
+ *   numeric `id`. Stable and never reused, which is the entire reason the users
+ *   table keys on it rather than on an email or a name.
+ * @property displayName what to render. Never blank; see [displayName].
+ */
+data class ProviderIdentity(
+    val provider: AuthProvider,
+    val providerId: String,
+    val displayName: String,
+)
 
 /**
  * Turn a name, an email and a fallback into something renderable.
@@ -103,6 +142,8 @@ private fun displayName(name: String?, email: String?, fallback: String): String
  *   there is no redirect; Google's JS reference says `redirect_uri` "defaults to
  *   the origin of the page", and this exchange must send that same value or the
  *   code is rejected. See docs/oauth-instructions.html.
+ * @return the identity behind the code, for [UserStore.upsert] to turn into an
+ *   account.
  * @throws SignInFailure if Google refuses the code or the profile call fails.
  */
 suspend fun exchangeGoogleCode(
@@ -110,7 +151,7 @@ suspend fun exchangeGoogleCode(
     credentials: ProviderCredentials,
     code: String,
     redirectUri: String,
-): SignedInUser {
+): ProviderIdentity {
     val token = runCatching {
         httpClient.submitForm(
             url = "https://oauth2.googleapis.com/token",
@@ -141,9 +182,10 @@ suspend fun exchangeGoogleCode(
         throw SignInFailure("Signed in with Google, but could not read the profile.", t)
     }
 
-    return SignedInUser(
-        displayName = displayName(info.name, info.email, fallback = "Google user"),
+    return ProviderIdentity(
         provider = AuthProvider.GOOGLE,
+        providerId = info.sub,
+        displayName = displayName(info.name, info.email, fallback = "Google user"),
     )
 }
 
@@ -153,6 +195,8 @@ suspend fun exchangeGoogleCode(
  * @param redirectUri must match the OAuth app's registered callback exactly —
  *   which is why production and local development need two separate apps. See
  *   docs/oauth-instructions.html.
+ * @return the identity behind the code, for [UserStore.upsert] to turn into an
+ *   account.
  * @throws SignInFailure if GitHub refuses the code or the profile call fails.
  */
 suspend fun exchangeGitHubCode(
@@ -161,7 +205,7 @@ suspend fun exchangeGitHubCode(
     code: String,
     redirectUri: String,
     codeVerifier: String,
-): SignedInUser {
+): ProviderIdentity {
     val token = runCatching {
         httpClient.submitForm(
             url = "https://github.com/login/oauth/access_token",
@@ -206,8 +250,11 @@ suspend fun exchangeGitHubCode(
     // and the real addresses need a second call to /user/emails with the
     // user:email scope. That call belongs with the users table, which needs an
     // email to store; a display name doesn't. See docs/oauth-instructions.html.
-    return SignedInUser(
-        displayName = displayName(user.name, email = null, fallback = user.login),
+    return ProviderIdentity(
         provider = AuthProvider.GITHUB,
+        // Long → String: the users table stores every provider's id as TEXT,
+        // because Google's is not a number. See provider_id in Users.sq.
+        providerId = user.id.toString(),
+        displayName = displayName(user.name, email = null, fallback = user.login),
     )
 }

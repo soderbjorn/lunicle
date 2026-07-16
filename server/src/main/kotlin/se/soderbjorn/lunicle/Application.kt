@@ -15,7 +15,9 @@ package se.soderbjorn.lunicle
 
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.install
+import io.ktor.server.application.log
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticFiles
 import io.ktor.server.http.content.staticResources
@@ -24,6 +26,7 @@ import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.io.File
 
@@ -127,11 +130,39 @@ fun Application.module() {
 
     val webDistPath = System.getProperty("lunicle.webDist")
     val oauthConfig = resolveOAuthConfig()
-    val sessions = SessionStore()
+
+    // Opening the database creates or migrates the schema, so this is also
+    // where a bad volume announces itself — see openDatabase(). Deliberately
+    // not wrapped in a try/catch: a server that cannot reach its database has
+    // nothing to serve, and starting anyway would turn a loud startup failure
+    // into a 500 on every request instead.
+    val opened = openDatabase()
+    val sessions = SessionStore(opened.database)
+    val users = UserStore(opened.database)
+    val counters = CounterStore(opened.database)
+
+    // Sweep expired sessions once, at startup. launch{} rather than a blocking
+    // call so a slow delete on a large table cannot hold up the port binding —
+    // Railway's healthcheck is watching, and nothing else depends on the sweep
+    // having finished.
+    launch {
+        val removed = sessions.deleteExpired()
+        if (removed > 0) log.info("Removed $removed expired session(s)")
+        log.info("Sessions live: ${sessions.size()}")
+    }
+
+    // Close the driver when Ktor shuts down, so SQLite can checkpoint the WAL
+    // back into the database file and release the lock. Without this the volume
+    // keeps a -wal alongside the .db and recovery is left to the next open —
+    // which works, but means an unclean file on a volume we may want to copy.
+    monitor.subscribe(ApplicationStopping) {
+        log.info("Closing the database")
+        opened.close()
+    }
 
     routing {
-        counterRoutes()
-        authRoutes(oauthConfig, sessions)
+        counterRoutes(counters, sessions)
+        authRoutes(oauthConfig, sessions, users)
         if (webDistPath != null) {
             staticFiles("/", File(webDistPath)) {
                 default("index.html")

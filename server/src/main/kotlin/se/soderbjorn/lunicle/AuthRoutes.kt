@@ -184,10 +184,16 @@ private fun sessionStateFor(user: SignedInUser?, config: OAuthConfig): SessionSt
  * @param config which providers are live; an absent provider's endpoints 400
  *   rather than 404, because "not configured here" is a different fact from
  *   "no such route" and the difference matters when debugging a deploy.
+ * @param sessions where sessions are kept — on the volume now, so a redeploy no
+ *   longer signs anyone out.
+ * @param users the users table. Every completed exchange goes through it: an
+ *   identity becomes an account before it becomes a session, which is what
+ *   gives the session a user id to point at.
  */
 fun Route.authRoutes(
     config: OAuthConfig,
     sessions: SessionStore,
+    users: UserStore,
     httpClient: HttpClient = createProviderHttpClient(),
 ) {
     val pending = PendingGitHubAuths()
@@ -196,7 +202,7 @@ fun Route.authRoutes(
     // handles — and an endpoint the whole UI depends on should not have a
     // failure mode for the most common case.
     get(ApiRoutes.SESSION) {
-        call.respond(sessionStateFor(sessions.lookup(call.sessionId()), config))
+        call.respond(sessionStateFor(sessions.lookup(call.sessionId())?.toSignedInUser(), config))
     }
 
     post(ApiRoutes.SIGN_OUT) {
@@ -218,10 +224,14 @@ fun Route.authRoutes(
         }
         try {
             // The origin, not a path — see exchangeGoogleCode's docs.
-            val user = exchangeGoogleCode(httpClient, credentials, request.code, call.serverOrigin())
-            call.setSessionCookie(sessions.create(user))
-            logger.info("Signed in via Google: ${user.displayName}")
-            call.respond(sessionStateFor(user, config))
+            val identity = exchangeGoogleCode(httpClient, credentials, request.code, call.serverOrigin())
+            // Find-or-create the account, then point a session at it. On a
+            // returning user this finds the row written the first time — which
+            // is what reunites them with their counter.
+            val user = users.upsert(identity)
+            call.setSessionCookie(sessions.create(user.id))
+            logger.info("Signed in via Google: ${user.displayName} (user ${user.id})")
+            call.respond(sessionStateFor(user.toSignedInUser(), config))
         } catch (failure: SignInFailure) {
             call.respond(HttpStatusCode.BadGateway, failure.userMessage)
         }
@@ -266,15 +276,16 @@ fun Route.authRoutes(
         }
 
         try {
-            val user = exchangeGitHubCode(
+            val identity = exchangeGitHubCode(
                 httpClient = httpClient,
                 credentials = credentials!!,
                 code = code!!,
                 redirectUri = call.serverOrigin() + ApiRoutes.AUTH_GITHUB_CALLBACK,
                 codeVerifier = verifier!!,
             )
-            call.setSessionCookie(sessions.create(user))
-            logger.info("Signed in via GitHub: ${user.displayName}")
+            val user = users.upsert(identity)
+            call.setSessionCookie(sessions.create(user.id))
+            logger.info("Signed in via GitHub: ${user.displayName} (user ${user.id})")
             call.respondText(popupClosingPage(error = null), ContentType.Text.Html)
         } catch (f: SignInFailure) {
             call.respondText(popupClosingPage(error = f.userMessage), ContentType.Text.Html)
