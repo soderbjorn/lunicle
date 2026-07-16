@@ -22,9 +22,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import se.soderbjorn.lunicle.clientserver.ApiFailure
 import se.soderbjorn.lunicle.clientserver.LunicleApi
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SignedInUser
+
+/**
+ * What to show the user for a failure.
+ *
+ * The server writes its sign-in refusals for a human — "GitHub would not
+ * complete the sign-in" — so prefer that to a generic line invented here, which
+ * is by definition less specific than what the server already knows. Anything
+ * that isn't an [ApiFailure] is a transport or parse problem with no message
+ * worth showing, so it gets the fallback.
+ */
+private fun Throwable.userMessage(fallback: String): String =
+    (this as? ApiFailure)?.serverMessage?.takeIf { it.isNotBlank() } ?: fallback
 
 /**
  * Owns the session round-trips and exposes the result as a [StateFlow].
@@ -101,7 +114,7 @@ class SessionBackingViewModel(
                 onSuccess = { it.applyTo(_stateFlow.value).copy(isBusy = false) },
                 onFailure = { t ->
                     println("Session: Google sign-in failed: ${t.message ?: t::class.simpleName}")
-                    _stateFlow.value.copy(isBusy = false, errorMessage = "Google sign-in did not complete.")
+                    _stateFlow.value.copy(isBusy = false, errorMessage = t.userMessage("Google sign-in did not complete."))
                 },
             )
         }

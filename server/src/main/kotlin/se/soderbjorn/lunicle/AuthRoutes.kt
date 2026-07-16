@@ -102,13 +102,34 @@ private fun codeChallengeFor(verifier: String): String =
  * in production, which is the worst place to first meet it.
  */
 private fun ApplicationCall.serverOrigin(): String {
+    // Scheme must come from the forwarded header: Railway terminates TLS at its
+    // edge and speaks plain HTTP to the container, so request.local.scheme is
+    // "http" on every deployed request and Google would reject the exchange
+    // over a scheme mismatch.
     val forwardedProto = request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim()
     val scheme = forwardedProto?.takeIf { it.isNotBlank() } ?: request.local.scheme
-    val host = request.host()
-    val port = request.headers["X-Forwarded-Port"]?.substringBefore(',')?.trim()?.toIntOrNull()
-        ?: request.local.serverPort
-    val isDefaultPort = (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
-    return if (isDefaultPort) "$scheme://$host" else "$scheme://$host:$port"
+
+    // The authority is taken verbatim from the request rather than rebuilt from
+    // a host and a port, because rebuilding it is wrong in production and the
+    // way it is wrong is invisible until you get there.
+    //
+    // Railway forwards to the container as plain HTTP on port 80 while
+    // X-Forwarded-Proto says https. Composing scheme + host + port therefore
+    // yields "https://lunicle.lunamux.dev:80" — an https URL carrying http's
+    // default port. Both providers match redirect_uri by exact string, neither
+    // registered a port, and both reject it. Locally the scheme and port agree,
+    // so no local run can reproduce this.
+    //
+    // The Host header is already exactly what we want: the authority the client
+    // used, carrying a port only when it is not the scheme's default —
+    // "localhost:8080" in development, "lunicle.lunamux.dev" deployed. There is
+    // nothing to compute.
+    val authority = request.headers["X-Forwarded-Host"]?.substringBefore(',')?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: request.headers[HttpHeaders.Host]?.takeIf { it.isNotBlank() }
+        ?: request.host()
+
+    return "$scheme://$authority"
 }
 
 /** Read the caller's session cookie. */

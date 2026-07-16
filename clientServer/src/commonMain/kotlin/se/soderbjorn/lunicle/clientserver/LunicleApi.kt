@@ -18,8 +18,12 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 
@@ -37,6 +41,35 @@ fun createHttpClient(): HttpClient = HttpClient {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
+}
+
+/**
+ * A request the server refused, carrying the reason it gave.
+ *
+ * @property status the HTTP status.
+ * @property serverMessage the server's own explanation, already written for a
+ *   human — [SignInFailure]'s user message on the far side.
+ */
+class ApiFailure(
+    val status: HttpStatusCode,
+    val serverMessage: String,
+) : Exception("$status: $serverMessage")
+
+/**
+ * Decode a successful response, or throw [ApiFailure] carrying what the server
+ * actually said.
+ *
+ * Calling `.body<T>()` on a failed response is a trap: the server's errors are
+ * plain text, so Ktor throws NoTransformationFoundException — "Expected response
+ * body of the type 'class SessionState' but was 'class SourceByteReadChannel'" —
+ * and the *real* message, which the server wrote specifically to be read, is
+ * discarded. That turns "Google would not complete the sign-in" into a
+ * serialization puzzle, one layer away from the actual fault. Check the status
+ * first, always.
+ */
+private suspend inline fun <reified T> HttpResponse.requireSuccess(): T {
+    if (!status.isSuccess()) throw ApiFailure(status, bodyAsText())
+    return body()
 }
 
 /**
@@ -65,7 +98,7 @@ class LunicleApi(
      *   what a failure looks like on screen.
      */
     suspend fun counter(): CounterState =
-        httpClient.get(baseUrl + ApiRoutes.COUNTER).body()
+        httpClient.get(baseUrl + ApiRoutes.COUNTER).requireSuccess()
 
     /**
      * Increment the counter and return its new value.
@@ -78,7 +111,7 @@ class LunicleApi(
      * @throws Exception on any transport or parse failure.
      */
     suspend fun increment(): CounterState =
-        httpClient.post(baseUrl + ApiRoutes.COUNTER_INCREMENT).body()
+        httpClient.post(baseUrl + ApiRoutes.COUNTER_INCREMENT).requireSuccess()
 
     /**
      * Who, if anyone, this browser is signed in as — and which providers this
@@ -90,7 +123,7 @@ class LunicleApi(
      * @return the caller's [SessionState].
      */
     suspend fun session(): SessionState =
-        httpClient.get(baseUrl + ApiRoutes.SESSION).body()
+        httpClient.get(baseUrl + ApiRoutes.SESSION).requireSuccess()
 
     /**
      * Trade a Google authorization code for a session.
@@ -107,7 +140,7 @@ class LunicleApi(
         httpClient.post(baseUrl + ApiRoutes.AUTH_GOOGLE) {
             contentType(ContentType.Application.Json)
             setBody(GoogleCodeRequest(code))
-        }.body()
+        }.requireSuccess()
 
     /**
      * Drop this browser's session.
@@ -116,5 +149,5 @@ class LunicleApi(
      * @throws Exception on any transport or parse failure.
      */
     suspend fun signOut(): SessionState =
-        httpClient.post(baseUrl + ApiRoutes.SIGN_OUT).body()
+        httpClient.post(baseUrl + ApiRoutes.SIGN_OUT).requireSuccess()
 }
