@@ -293,8 +293,16 @@ HTTP/2 302
     </tr>
   </table>
 
-  <p>Copy both client ids and generate a client secret for each — four values. The dev app's secret
-  protects nothing of consequence, but keep it out of git anyway; the habit is the point.</p>
+  <p><strong>Leave "Enable Device Flow" unchecked</strong> on both. Device flow exists for inputs you
+  can't type into — a CLI, a TV, an IoT box — where the user reads a code off one screen and enters it
+  at <code>github.com/login/device</code> on another. Your popup is a browser sitting in front of the
+  user, so it solves a problem you don't have, and ticking it enables a second grant type for no
+  benefit. The KMP mobile apps won't change this: iOS and Android use an ordinary authorization-code
+  flow with PKCE in a system browser view. Tick it the day you ship a Lunicle CLI, not before.</p>
+
+  <p>Register the app, then <strong>Generate a new client secret</strong>. Copy both client ids and
+  both secrets — four values. The dev app's secret protects nothing of consequence, but keep it out
+  of git anyway; the habit is the point.</p>
 
   <div class="warn">
     <p class="lbl">The tempting third option is an open redirect</p>
@@ -304,17 +312,32 @@ HTTP/2 302
     parameter tells it to. Two apps and an environment switch is less clever and correct.</p>
   </div>
 
-  <h3>Scopes</h3>
-  <p><code>read:user user:email</code>. The second one is not optional and the reason is a trap:
+  <p>That is the entire GitHub console setup. Name, homepage, callback, secret — nothing else on the
+  form matters to us.</p>
+
+  <div class="note">
+    <p class="lbl">Looking for where to set scopes? There isn't anywhere — and that's correct</p>
+    <p>Unlike Google, <strong>GitHub OAuth apps do not declare scopes up front</strong>. There is no
+    field, no checklist, no consent-screen builder. Scopes are requested per-authorization, as a query
+    parameter on the URL that opens the popup:</p>
+<pre>https://github.com/login/oauth/authorize?client_id=…<span class="k">&amp;scope=read%3Auser%20user%3Aemail</span>&amp;…</pre>
+    <p>So the scopes below are <em>code</em>, not configuration — they're mine to get right, not
+    something you need to find in a form. They're recorded here so the two halves of the setup live
+    in one document.</p>
+  </div>
+
+  <h3>Scopes the code will request</h3>
+  <p><code>read:user user:email</code>. The second is not optional and the reason is a trap:
   <code>GET /user</code> returns <code>email: null</code> whenever the user's address is private,
   which is extremely common and will absolutely be true of some early user while it isn't of you.
   The addresses live behind <code>GET /user/emails</code>, which requires <code>user:email</code>;
   take the entry that is both <code>primary</code> and <code>verified</code>.
   <code>read:user</code> alone does <strong>not</strong> grant emails.</p>
 
-  <p>Use <code>state</code>, and use <strong>PKCE</strong> (<code>code_challenge</code> +
-  <code>code_challenge_method=S256</code>) — GitHub documents it for OAuth Apps now and marks it
-  strongly recommended. It's a recent enough addition that older tutorials won't mention it.</p>
+  <p>The code will also use <code>state</code>, and <strong>PKCE</strong>
+  (<code>code_challenge</code> + <code>code_challenge_method=S256</code>) — GitHub documents PKCE for
+  OAuth Apps now and marks it strongly recommended. It's a recent enough addition that older
+  tutorials won't mention it.</p>
 </section>
 
 <!-- ═══════════════════════════ 4 ═══════════════════════════ -->
