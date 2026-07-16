@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunicle — Stage 2 OAuth provider setup</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.65 var(--mono);
+  padding:48px 24px 120px;
+}
+.wrap{max-width:920px;margin:0 auto}
+
+header.top{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+.eyebrow{color:var(--green-dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+h1{color:var(--head);font-size:30px;line-height:1.25;margin:0 0 14px;font-weight:600}
+h1 .glow{color:var(--green-hi);text-shadow:0 0 18px var(--glow)}
+.lede{color:var(--green-dim);margin:0;max-width:70ch}
+
+h2{
+  color:var(--head);font-size:19px;margin:0 0 6px;font-weight:600;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2 .num{
+  color:var(--green);font-size:12px;letter-spacing:.12em;
+  border:1px solid var(--border-hi);border-radius:3px;padding:3px 8px;
+  text-shadow:0 0 12px var(--glow);flex:none;
+}
+h3{color:var(--green-hi);font-size:14px;letter-spacing:.04em;margin:32px 0 10px;font-weight:600}
+p{margin:0 0 14px;max-width:74ch}
+small{color:var(--green-dim)}
+code{
+  background:var(--panel-2);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px;color:var(--green-hi);font-size:.9em;
+}
+strong{color:var(--head);font-weight:600}
+a{color:var(--green-hi)}
+
+section.stage{
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  padding:28px 30px;margin:0 0 26px;
+}
+.subtitle{color:var(--green-dim);margin:0 0 22px;font-size:13px}
+
+ul,ol{margin:0 0 14px;padding-left:0;list-style:none}
+li{position:relative;padding-left:22px;margin-bottom:9px;max-width:74ch}
+li::before{content:"›";position:absolute;left:4px;color:var(--green);opacity:.75}
+ol{counter-reset:step}
+ol>li{counter-increment:step}
+ol>li::before{content:counter(step) ".";color:var(--green);font-size:12px;left:0;opacity:1}
+li ul,li ol{margin-top:9px}
+
+pre{
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;
+  padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:13px;line-height:1.6;
+  color:var(--body);
+}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+.box{border-radius:5px;padding:16px 18px;margin:18px 0;border:1px solid var(--border)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;margin:0 0 8px;font-weight:600}
+.warn{background:rgba(254,188,46,.05);border-color:rgba(254,188,46,.35)}
+.warn .lbl{color:var(--yellow)}
+.stop{background:rgba(255,95,87,.05);border-color:rgba(255,95,87,.35)}
+.stop .lbl{color:var(--red)}
+.ok{background:rgba(40,200,64,.05);border-color:rgba(40,200,64,.3)}
+.ok .lbl{color:var(--traffic-g)}
+.note{background:var(--panel-2)}
+.note .lbl{color:var(--blue)}
+
+table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:13px}
+th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel-2);color:var(--green-hi);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+td.yes{color:var(--traffic-g)}
+td.no{color:var(--red)}
+
+.exit{border-top:1px dashed var(--green-dimmer);margin-top:26px;padding-top:20px}
+.exit .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--traffic-g);margin:0 0 10px;font-weight:600}
+
+footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color:var(--green-dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Lunamux / Lunicle</p>
+  <h1>Stage 2 — <span class="glow">OAuth</span> provider setup</h1>
+  <p class="lede">The steps that need your accounts: a Google Cloud project, two GitHub OAuth apps,
+  and one header on the parent site. Everything here is configuration you do in a browser — no code.
+  Do this first; the sign-in code is written against the values it produces.</p>
+</header>
+
+<!-- ═══════════════════════════ WHAT AND WHY ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Read first</span> The shape of the problem</h2>
+  <p class="subtitle">Two paragraphs that explain every strange decision below.</p>
+
+  <p><strong>Neither provider can be framed.</strong> Verified live, today, against both:</p>
+<pre>$ curl -sSI "https://accounts.google.com/o/oauth2/v2/auth?client_id=…"
+HTTP/2 302
+<span class="k">x-frame-options: DENY</span>
+
+$ curl -sSI "https://github.com/login/oauth/authorize?client_id=test"
+HTTP/2 302
+<span class="k">x-frame-options: deny</span>
+<span class="k">content-security-policy: … frame-ancestors 'none'; …</span></pre>
+  <p>GitHub is double-blocked — the legacy header <em>and</em> CSP. There is no header you can set on
+  your side to change either. A full-page redirect <em>inside the iframe</em> is equally dead: it
+  would navigate the frame to the provider, and the provider refuses to be the thing in a frame. So
+  the flow is a <strong>popup</strong>, for both providers, and that is not a preference.</p>
+
+  <p><strong>Lunicle is a framed document, and that changes which headers matter.</strong> Almost
+  every OAuth guide you'll find assumes your app is the top-level page. Yours isn't — it's an iframe
+  inside <code>lunamux.dev</code>. The consequence is the single most surprising thing in this
+  document, and it has its own section (Step 4).</p>
+
+  <div class="note">
+    <p class="lbl">What you'll produce</p>
+    <p>Four secrets and two client ids, which become environment variables on Railway and a local
+    <code>.env</code> for development. Nothing in this document goes into git.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ CORRECTION ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Errata</span> Two things stages.html gets wrong</h2>
+  <p class="subtitle">Corrected here rather than silently contradicted. The plan was written before
+  the providers were checked.</p>
+
+  <div class="stop">
+    <p class="lbl">"Cross-Origin-Opener-Policy: same-origin-allow-popups on your server"</p>
+    <p><strong>This is a no-op and will not help you.</strong> COOP is only enforced on
+    <strong>top-level browsing contexts</strong>. Lunicle is served into an iframe, so a COOP header
+    on <code>lunicle.lunamux.dev</code> is read and ignored by the browser. Setting it costs nothing
+    and achieves nothing.</p>
+    <p>The COOP that can actually break your sign-in is on <strong><code>lunamux.dev</code>, the
+    parent</strong> — and the failure is the one the plan describes, so the instinct was right and
+    only the address was wrong. See Step 4.</p>
+  </div>
+
+  <div class="warn">
+    <p class="lbl">"needs allow='identity-credentials-get' on the iframe element"</p>
+    <p>Not for this flow, as far as the documentation goes. That attribute gates <strong>FedCM</strong>
+    — One Tap and the Sign In With Google button, which go through
+    <code>navigator.credentials.get()</code>. The popup we're using
+    (<code>initCodeClient</code>) is <code>window.open</code>-based and shouldn't need it.</p>
+    <p><strong>Add it anyway.</strong> It is inert when unused, and Google has been migrating GIS
+    surfaces onto FedCM since 2025 with no published statement about whether the code client
+    follows. Cheap insurance against a silent breakage later.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 1 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 1</span> Google — the OAuth client</h2>
+  <p class="subtitle">The console was reorganised; the path in most tutorials is stale.</p>
+
+  <ol>
+    <li>Go to <a href="https://console.cloud.google.com/auth/clients">console.cloud.google.com/auth/clients</a>
+      — that's <strong>Google Auth Platform → Clients</strong>. The old <em>APIs &amp; Services →
+      Credentials</em> route still redirects here, which is why both names are floating around.</li>
+    <li>Create a project (or pick one). If the app isn't registered yet, Google forces you through
+      branding registration first — do that, it's Step 2 below.</li>
+    <li><strong>Create client</strong> → application type <strong>Web application</strong>.</li>
+    <li>Name it something you'll recognise in a year. <code>Lunicle</code> is fine.</li>
+    <li>Fill both origin fields exactly as in the table, then <strong>Create</strong>.</li>
+  </ol>
+
+  <table>
+    <tr><th>Field</th><th>Values</th></tr>
+    <tr>
+      <td><strong>Authorized JavaScript origins</strong></td>
+      <td><code>https://lunicle.lunamux.dev</code><br>
+          <code>http://localhost:8080</code><br>
+          <code>http://localhost</code></td>
+    </tr>
+    <tr>
+      <td><strong>Authorized redirect URIs</strong></td>
+      <td><code>https://lunicle.lunamux.dev</code><br>
+          <code>http://localhost:8080</code></td>
+    </tr>
+  </table>
+
+  <div class="warn">
+    <p class="lbl">Yes, the redirect URIs really are bare origins — and yes, that looks wrong</p>
+    <p>In popup mode you never set a <code>redirect_uri</code>; you pass a <code>callback</code>
+    function. Google's JS reference is explicit: <em>"When <code>ux_mode: 'popup'</code> is used this
+    parameter is ignored and <code>redirect_uri</code> defaults to the origin of the page that calls
+    <code>initCodeClient</code>."</em> But the server-side token exchange still sends a
+    <code>redirect_uri</code>, and that step's docs say it must be one of the URIs registered in the
+    console. Its value <em>is the origin</em>. Hence: register the origin in both fields.</p>
+    <p><strong>Flagging honest uncertainty:</strong> Google's own docs are in tension here — the popup
+    page implies no redirect registration is needed, the exchange page implies it is. Registering in
+    both fields costs nothing and satisfies both readings, which is why this document tells you to.
+    If the exchange still rejects it, the community fallback is
+    <code>redirect_uri=postmessage</code>, a <code>gapi.auth2</code>-era convention that appears in
+    no current official documentation. Try the documented thing first.</p>
+  </div>
+
+  <p>Copy the <strong>Client ID</strong> and <strong>Client secret</strong> now. The secret is
+  retrievable later, but not conveniently.</p>
+
+  <div class="note">
+    <p class="lbl">Before you debug a redirect_uri_mismatch, wait</p>
+    <p>The console warns that changes take <strong>five minutes to a few hours</strong> to propagate.
+    A mismatch error on a config you just saved is usually not a mistake, it's a clock. Change one
+    thing, wait, retry — rather than changing five things in the five minutes it takes to start
+    working anyway.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 2 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 2</span> Google — audience, and why to publish immediately</h2>
+  <p class="subtitle">Google Auth Platform → Branding / Audience / Data Access.</p>
+
+  <ol>
+    <li><strong>Audience: External.</strong> Internal only exists for projects inside a Google
+      Workspace organisation and restricts sign-in to that org's members. Your
+      <code>soderbjorn.se</code> Workspace doesn't make <code>lunamux.dev</code> internal; anyone
+      outside gets an <code>org_internal</code> error.</li>
+    <li><strong>Branding:</strong> app name, user support email, developer contact email. That's all
+      Testing status requires.</li>
+    <li><strong>Data Access → scopes:</strong> <code>openid</code>, <code>email</code>,
+      <code>profile</code>. Nothing else. These are non-sensitive, which is the entire reason Step 4
+      of this list is painless.</li>
+    <li>Add yourself as a test user on the Audience page.</li>
+    <li><strong>Then publish to production.</strong> Yes, already.</li>
+  </ol>
+
+  <div class="stop">
+    <p class="lbl">Testing status expires tokens after seven days</p>
+    <p>Google: <em>"Authorizations by a test user will expire seven days from the time of consent."</em>
+    A refresh token issued under Testing dies in a week and comes back as
+    <code>invalid_grant</code>. You will have forgotten this configuration by then, and the bug
+    presents as "sign-in worked fine last week and is broken now" — which is about the worst
+    debugging prompt there is.</p>
+    <p>Testing also caps you at <strong>100 test users</strong>, each added by hand.</p>
+    <p>Publishing removes both. And because you're only asking for <code>openid email profile</code>
+    — all non-sensitive — <strong>publishing needs no verification review</strong>. There's no
+    security questionnaire, no demo video, no waiting. The cap and the expiry just go away. This is
+    the rare case where the scary-sounding button is the easy path, and taking it on day one saves
+    you a mystery on day eight.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 3 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 3</span> GitHub — two OAuth apps</h2>
+  <p class="subtitle">Two, because GitHub gives you no choice.</p>
+
+  <p>Path: <strong>your avatar → Settings → Developer settings</strong> (bottom of the left sidebar)
+  <strong>→ OAuth Apps → New OAuth App</strong>. Direct:
+  <a href="https://github.com/settings/developers">github.com/settings/developers</a>.</p>
+
+  <div class="note">
+    <p class="lbl">OAuth App, not GitHub App</p>
+    <p>GitHub's docs push GitHub Apps as the modern choice, and for repository access they're right —
+    fine-grained permissions, short-lived tokens. None of that reasoning applies to you: you want
+    identity and nothing else, touch no repositories, and a GitHub App would add an installation step
+    and a permission prompt for zero benefit. OAuth App is correct here.</p>
+  </div>
+
+  <p><strong>Create two.</strong> An OAuth App has exactly one callback URL — GitHub's docs state it
+  plainly: <em>"OAuth apps cannot have multiple callback URLs, unlike GitHub Apps."</em> Host and port
+  must match exactly, so no single registration can cover both production and localhost.</p>
+
+  <table>
+    <tr><th>App</th><th>Homepage URL</th><th>Authorization callback URL</th></tr>
+    <tr>
+      <td><strong>Lunicle</strong></td>
+      <td><code>https://lunicle.lunamux.dev</code></td>
+      <td><code>https://lunicle.lunamux.dev/auth/github/callback</code></td>
+    </tr>
+    <tr>
+      <td><strong>Lunicle (dev)</strong></td>
+      <td><code>http://localhost:8080</code></td>
+      <td><code>http://localhost:8080/auth/github/callback</code></td>
+    </tr>
+  </table>
+
+  <p>Copy both client ids and generate a client secret for each — four values. The dev app's secret
+  protects nothing of consequence, but keep it out of git anyway; the habit is the point.</p>
+
+  <div class="warn">
+    <p class="lbl">The tempting third option is an open redirect</p>
+    <p>You'll find advice suggesting one app whose callback points at production, which then bounces
+    the browser onward to <code>localhost</code>. That is an open-redirect shape wearing a
+    convenience costume: a production endpoint that forwards an authorization code to wherever a
+    parameter tells it to. Two apps and an environment switch is less clever and correct.</p>
+  </div>
+
+  <h3>Scopes</h3>
+  <p><code>read:user user:email</code>. The second one is not optional and the reason is a trap:
+  <code>GET /user</code> returns <code>email: null</code> whenever the user's address is private,
+  which is extremely common and will absolutely be true of some early user while it isn't of you.
+  The addresses live behind <code>GET /user/emails</code>, which requires <code>user:email</code>;
+  take the entry that is both <code>primary</code> and <code>verified</code>.
+  <code>read:user</code> alone does <strong>not</strong> grant emails.</p>
+
+  <p>Use <code>state</code>, and use <strong>PKCE</strong> (<code>code_challenge</code> +
+  <code>code_challenge_method=S256</code>) — GitHub documents it for OAuth Apps now and marks it
+  strongly recommended. It's a recent enough addition that older tutorials won't mention it.</p>
+</section>
+
+<!-- ═══════════════════════════ 4 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 4</span> The parent site — the one that will bite</h2>
+  <p class="subtitle">Two changes in lunamux-web. This is the step with no error message.</p>
+
+  <p>Everything so far was provider configuration. This step is about the <em>page doing the
+  framing</em>, and it's where a correctly-configured sign-in still silently does nothing.</p>
+
+  <div class="stop">
+    <p class="lbl">lunamux.dev must not send Cross-Origin-Opener-Policy: same-origin</p>
+    <p>When a top-level page sets <code>COOP: same-origin</code> and a <strong>cross-origin
+    iframe</strong> inside it opens a popup, the browser forces <code>noopener</code> and puts the
+    popup in a separate browsing context group. The popup opens. The user signs in. The popup closes.
+    The callback never fires. Nothing appears in the console, because nothing went wrong from the
+    browser's point of view — it did exactly what the header asked.</p>
+    <p><strong>Checked on 2026-07-16: you are currently fine.</strong> GitHub Pages sends no COOP
+    header at all, which is the safe default (<code>unsafe-none</code>):</p>
+<pre>$ curl -sD - -o /dev/null https://lunamux.dev/ | grep -i cross-origin
+<span class="c">(nothing)</span></pre>
+    <p>So this is a hazard to <em>preserve</em>, not one to fix. Nothing to do today — but it's a
+    header you can't set on GitHub Pages anyway, which means the day this breaks is the day you move
+    the parent site somewhere you can (Railway, Cloudflare Pages), and set security headers wholesale
+    without noticing this one is load-bearing. If you ever add COOP, the value is
+    <code>same-origin-allow-popups</code>.</p>
+    <p><strong>Uncertainty, stated plainly:</strong> this nested-iframe COOP behaviour comes from a
+    WHATWG spec issue and MDN, not from Google's documentation, and this corner of the spec has been
+    moving — <code>restrict-properties</code> and friends are recent. Treat it as the first thing to
+    suspect if the popup goes quiet, not as settled law.</p>
+  </div>
+
+  <p>Second change: add the FedCM attribute to the iframe element, per the Errata reasoning above.</p>
+<pre>&lt;iframe id="issues-iframe" title="Lunamux issues"
+        <span class="k">allow="identity-credentials-get"</span>
+        data-src="https://lunicle.lunamux.dev/"&gt;&lt;/iframe&gt;</pre>
+  <p>If the frame is ever nested further, every ancestor iframe needs it too — Google's docs are
+  explicit that it must be on <strong>all</strong> parent iframes. Not your situation today.</p>
+</section>
+
+<!-- ═══════════════════════════ 5 ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Step 5</span> Where the secrets go</h2>
+  <p class="subtitle">Railway variables for production, a gitignored file for local.</p>
+
+  <p>Four values. The server reads them from the environment, the same way it already reads
+  <code>PORT</code> and <code>FRAME_ANCESTORS</code>.</p>
+
+  <table>
+    <tr><th>Variable</th><th>Production (Railway)</th><th>Local</th></tr>
+    <tr><td><code>GOOGLE_CLIENT_ID</code></td><td>from Step 1</td><td>same — one Google client covers both</td></tr>
+    <tr><td><code>GOOGLE_CLIENT_SECRET</code></td><td>from Step 1</td><td>same</td></tr>
+    <tr><td><code>GITHUB_CLIENT_ID</code></td><td>the <strong>Lunicle</strong> app</td><td>the <strong>Lunicle (dev)</strong> app</td></tr>
+    <tr><td><code>GITHUB_CLIENT_SECRET</code></td><td>the <strong>Lunicle</strong> app</td><td>the <strong>Lunicle (dev)</strong> app</td></tr>
+  </table>
+
+  <p>Railway → your service → <strong>Variables</strong>. Setting a variable triggers a redeploy;
+  that's expected and, at this stage, free of consequence.</p>
+
+  <div class="warn">
+    <p class="lbl">The client secret never reaches the browser</p>
+    <p>The client id is public by design and ships in the bundle. The secret is used in exactly one
+    place — the server-side <code>POST</code> that exchanges the code for a token. If a secret ever
+    appears in Kotlin/JS source, it is in the bundle, and the bundle is a file anyone can download
+    from <code>lunicle.lunamux.dev</code>. Both providers let you rotate; assume you'll need to.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ REFERENCE ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Reference</span> The exchange endpoints</h2>
+  <p class="subtitle">For when the code is being written — and for the two gotchas.</p>
+
+  <h3>Google</h3>
+<pre>POST https://oauth2.googleapis.com/token
+Content-Type: application/x-www-form-urlencoded
+
+code=…&amp;client_id=…&amp;client_secret=…
+&amp;redirect_uri=&lt;the calling page's origin&gt;
+&amp;grant_type=authorization_code</pre>
+  <p>Returns <code>access_token</code>, <code>expires_in</code>, <code>scope</code>,
+  <code>token_type</code>, and — because <code>openid</code> is in scope — an <code>id_token</code>,
+  which is where the identity actually is. A <code>refresh_token</code> only appears with
+  <code>access_type=offline</code>, which sign-in doesn't need.</p>
+
+  <h3>GitHub</h3>
+<pre>POST https://github.com/login/oauth/access_token
+<span class="k">Accept: application/json</span>          <span class="c">← without this you get a URL-encoded body</span>
+
+client_id=…&amp;client_secret=…&amp;code=…&amp;redirect_uri=…&amp;code_verifier=…</pre>
+  <p>That <code>Accept</code> header is the classic one. Omit it and GitHub answers
+  <code>access_token=…&amp;scope=…</code> as form encoding, your JSON parser throws something
+  unhelpful, and you go looking for the bug in your credentials.</p>
+
+  <p>Then <code>GET https://api.github.com/user/emails</code> for the verified primary address, per
+  Step 3.</p>
+</section>
+
+<!-- ═══════════════════════════ EXIT ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Done</span> What you should have</h2>
+
+  <ul>
+    <li>A Google OAuth client, <strong>published to production</strong>, with three JS origins and
+      two redirect URIs.</li>
+    <li>Two GitHub OAuth apps, prod and dev, each with its own secret.</li>
+    <li>Four values in Railway's Variables, four in a gitignored local file.</li>
+    <li><code>lunamux.dev</code> confirmed not to send <code>COOP: same-origin</code>, and its iframe
+      carrying <code>allow="identity-credentials-get"</code>.</li>
+  </ul>
+
+  <div class="exit">
+    <p class="lbl">Exit criteria — configuration only</p>
+    <p>None of this is testable until the sign-in code exists; the proof is Stage 2's own exit
+    criterion — sign in through the iframe, in Chrome and Safari, both providers. The COOP check that
+    would otherwise belong here has already been run and passes (Step 4), so what's left is entirely
+    console work with no observable output until there's code to observe it with.</p>
+  </div>
+</section>
+
+<footer>
+  Stage 2 companion to instructions.html · provider behaviour verified against Google and GitHub
+  documentation and live headers, 2026-07-16 · corrections to stages.html noted in Errata
+</footer>
+
+</div>
+</body>
+</html>
