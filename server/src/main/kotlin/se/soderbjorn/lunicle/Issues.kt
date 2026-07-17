@@ -22,9 +22,11 @@ import se.soderbjorn.lunicle.db.LunicleDatabase
  *   because `labels` is already a table; see Issues.sq.
  * @property isDraft whether this issue is still being written. A draft appears
  *   on nobody's board — see `forProject`.
- * @property createdBy the author, or null once their account is deleted. A null
- *   author is an issue only an admin or a `change_unowned_issues` holder can
- *   edit, which is correct — see [AccessControl.canEditIssue].
+ * @property author who wrote it: an account, an imported name, or nobody — see
+ *   [Author]. Nobody is what a deleted account leaves behind, and an imported
+ *   name is unowned for the same purposes, so both are issues only an admin or
+ *   a `change_unowned_issues` holder can edit. That is correct in both cases —
+ *   see [AccessControl.canEditIssue].
  */
 data class IssueRecord(
     val id: Long,
@@ -41,7 +43,7 @@ data class IssueRecord(
     val updatedAt: Long,
     /** Manual rank within this issue's board group; 0 means unranked. See Issues.sq. */
     val sortOrder: Long,
-    val createdBy: Long?,
+    val author: Author,
 )
 
 /** Reads and writes `issues`, `issue_labels` and `issue_components`. */
@@ -68,7 +70,7 @@ class IssueStore(
         title: String,
         statusId: Long,
         priorityId: Long,
-        createdBy: Long?,
+        author: Author,
         createdAt: Long? = null,
     ): Pair<Long, Long> = withContext(DatabaseDispatcher) {
         // The number is allocated inside the INSERT, by MAX+1, so a gap after a
@@ -82,7 +84,10 @@ class IssueStore(
         // backfill path unable to reintroduce the straddle by hand.
         val timestamp = createdAt ?: now()
         val row = database.issuesQueries
-            .insert(projectId, projectId, title, "", statusId, priorityId, timestamp, timestamp, createdBy)
+            .insert(
+                projectId, projectId, title, "", statusId, priorityId, timestamp, timestamp,
+                author.accountId, author.externalName,
+            )
             .executeAsOne()
         row.id to row.number
     }
@@ -303,5 +308,5 @@ private fun se.soderbjorn.lunicle.db.Issues.toRecord(): IssueRecord = IssueRecor
     createdAt = created_at,
     updatedAt = updated_at,
     sortOrder = sort_order,
-    createdBy = created_by,
+    author = authorOf(created_by, created_by_external),
 )

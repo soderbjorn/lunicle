@@ -10,17 +10,22 @@ CREATE TABLE comments (
     body TEXT NOT NULL,          -- markdown, same editor as the issue
     created_at INTEGER NOT NULL,
     created_by INTEGER,          -- SET NULL, same reasoning as issues
+    -- An author with no account, for imported history. Exclusive with
+    -- created_by, same reasoning as issues — the long version lives there.
+    created_by_external TEXT,
     -- Same reason as issues: the comment modal supports inline image upload, so
     -- the row must exist before the image does. Cancel deletes it; the flag
     -- covers the crash.
     is_draft INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
 );
 
 insert:
-INSERT INTO comments (issue_id, body, created_at, created_by)
-VALUES (?, ?, ?, ?)
+INSERT INTO comments (issue_id, body, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?)
 RETURNING id;
 
 publish:
@@ -33,9 +38,10 @@ delete:
 DELETE FROM comments WHERE id = ?;
 
 findById:
-SELECT id, issue_id, body, created_at, created_by, is_draft FROM comments WHERE id = ?;
+SELECT id, issue_id, body, created_at, created_by, created_by_external, is_draft
+FROM comments WHERE id = ?;
 
 forIssue:
-SELECT id, issue_id, body, created_at, created_by, is_draft
+SELECT id, issue_id, body, created_at, created_by, created_by_external, is_draft
 FROM comments WHERE issue_id = ? AND is_draft = 0
 ORDER BY created_at;

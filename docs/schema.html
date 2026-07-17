@@ -154,7 +154,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
   <p class="subtitle">Accumulated across both clarification rounds.</p>
 
   <ul>
-    <li><strong>Local volume</strong> — augment <code>dev-local.sh</code>: stable DB path outside
+    <li><strong>Local volume</strong> — augment <code>run-dev-standalone.sh</code>: stable DB path outside
     <code>build/</code>, plus wipe/seed/inspect.</li>
     <li><strong>Shell</strong> — right sidebar (sign-in state at top), top bar with project picker and
     cogwheel, project modal, delete confirmation.</li>
@@ -604,6 +604,15 @@ CREATE TABLE statuses (
     <span class="c">-- change_unowned_issues holder can edit — which is correct.</span>
     created_by INTEGER,
 
+    <span class="c">-- The author when there is no account to point at: history imported</span>
+    <span class="c">-- from another tracker, written by somebody who has never signed in</span>
+    <span class="c">-- here. The name itself, because naming somebody does not create an</span>
+    <span class="c">-- account and minting one to hang this on would put a row in users</span>
+    <span class="c">-- that cannot sign in. Exclusive with created_by — see the CHECK.</span>
+    <span class="c">-- An imported issue is therefore unowned, landing on the same rule as</span>
+    <span class="c">-- a deleted author above: admin, or change_unowned_issues.</span>
+    created_by_external TEXT,
+
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
     <span class="c">-- Composite: a status must belong to THIS issue's project. No ON</span>
@@ -612,7 +621,13 @@ CREATE TABLE statuses (
     FOREIGN KEY (status_id, project_id) REFERENCES statuses(id, project_id),
 
     UNIQUE (project_id, number),
-    UNIQUE (id, project_id)
+    UNIQUE (id, project_id),
+
+    <span class="c">-- One author or the other, never both. Both null is still "nobody",</span>
+    <span class="c">-- which is what ON DELETE SET NULL leaves behind. Without this, an</span>
+    <span class="c">-- imported name could sit alongside a real account and mask it on</span>
+    <span class="c">-- every read.</span>
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
 );</pre>
 
   <div class="box ok">
@@ -678,9 +693,11 @@ RETURNING id, number;</pre>
     body TEXT NOT NULL,          <span class="c">-- markdown, same editor as the issue</span>
     created_at INTEGER NOT NULL,
     created_by INTEGER,          <span class="c">-- SET NULL, same reasoning as issues</span>
+    created_by_external TEXT,    <span class="c">-- no account; exclusive with created_by, as issues</span>
     is_draft INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
 );</pre>
 
   <p><code>is_draft</code> for the same reason as issues: the comment modal supports inline image
@@ -716,6 +733,7 @@ RETURNING id, number;</pre>
 
     created_at INTEGER NOT NULL,
     created_by INTEGER,
+    created_by_external TEXT,    <span class="c">-- no account; exclusive with created_by, as issues</span>
 
     FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
     FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
@@ -724,7 +742,8 @@ RETURNING id, number;</pre>
     <span class="c">-- SQLite counts a true condition as 1, so this reads "exactly one</span>
     <span class="c">-- owner is set". An orphan attachment and a doubly-owned one are both</span>
     <span class="c">-- now unrepresentable rather than merely unlikely.</span>
-    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1)
+    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1),
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
 );</pre>
 
   <p>Files rather than BLOBs, for three reasons in order of how much they bite: <strong>heap</strong>

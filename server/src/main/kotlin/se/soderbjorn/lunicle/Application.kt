@@ -213,6 +213,11 @@ fun Application.module() {
         comments = comments,
         attachments = attachments,
         attachmentRepository = attachmentRepository,
+        // Built here like everything else, and shared with McpTools through the
+        // same object graph: the tool that mints a ticket and the route that
+        // spends it must be looking at the same map, and two of these would be a
+        // feature that silently never works.
+        attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
         impersonations = impersonations,

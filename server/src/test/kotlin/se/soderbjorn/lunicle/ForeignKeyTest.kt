@@ -77,9 +77,9 @@ class ForeignKeyTest {
         val attachments = AttachmentStore(database)
         val issues = IssueStore(database)
 
-        val commentId = comments.insertDraft(fixture.issueId, createdBy = fixture.userId)
-        attachments.insertForIssue(fixture.issueId, "a.png", "image/png", 1, "key-issue", fixture.userId)
-        attachments.insertForComment(commentId, "b.png", "image/png", 1, "key-comment", fixture.userId)
+        val commentId = comments.insertDraft(fixture.issueId, Author.Account(fixture.userId))
+        attachments.insertForIssue(fixture.issueId, "a.png", "image/png", 1, "key-issue", Author.Account(fixture.userId))
+        attachments.insertForComment(commentId, "b.png", "image/png", 1, "key-comment", Author.Account(fixture.userId))
 
         issues.delete(fixture.issueId)
 
@@ -147,7 +147,7 @@ class ForeignKeyTest {
     @Test
     fun `an attachment cannot be owned by both an issue and a comment, or neither`(): Unit = runBlocking {
         val fixture = seed()
-        val commentId = CommentStore(database).insertDraft(fixture.issueId, fixture.userId)
+        val commentId = CommentStore(database).insertDraft(fixture.issueId, Author.Account(fixture.userId))
 
         assertFailsWith<Exception>("An attachment with two owners was stored.") {
             withContext(DatabaseDispatcher) {
@@ -172,6 +172,64 @@ class ForeignKeyTest {
     }
 
     /**
+     * One author or the other, on all three tables that have one.
+     *
+     * ── Why this is asserted at the driver rather than through a store ─────────
+     *
+     * Because the [Author] type means no store *can* ask for both — that is the
+     * point of it, and it is why this constraint should never fire in
+     * production. Which is also why it needs a test that goes around the type:
+     * an assertion made through the code that makes the state unreachable proves
+     * only that the code is still there. This one asks SQLite directly, and it
+     * is the only thing standing behind a row written by a future store, a
+     * script, or a hand-typed UPDATE on the volume.
+     *
+     * It is also the *only* check on this constraint anywhere. MigrationTest
+     * compares `PRAGMA` output and SQLite reports no CHECK through any pragma,
+     * so the schema comparison is blind to it — see that file's note. Delete
+     * this test and the CHECK could vanish from all three tables with the build
+     * staying green.
+     *
+     * Both-null is deliberately not asserted as a failure: it is legal, it means
+     * "nobody", and it is exactly what `ON DELETE SET NULL` leaves behind.
+     */
+    @Test
+    fun `a row cannot have both an account author and an external one`(): Unit = runBlocking {
+        val fixture = seed()
+        val commentId = CommentStore(database).insertDraft(fixture.issueId, Author.Account(fixture.userId))
+
+        val doubly = mapOf(
+            "issue" to "INSERT INTO issues (project_id, number, title, description, status_id, " +
+                "priority_id, is_draft, created_at, updated_at, created_by, created_by_external) " +
+                "SELECT ${fixture.projectId}, 99, 'x', '', status_id, priority_id, 0, 0, 0, " +
+                "${fixture.userId}, 'octocat' FROM issues WHERE id = ${fixture.issueId};",
+            "comment" to "INSERT INTO comments (issue_id, body, created_at, created_by, created_by_external) " +
+                "VALUES (${fixture.issueId}, 'x', 0, ${fixture.userId}, 'octocat');",
+            "attachment" to "INSERT INTO attachments (issue_id, filename, mime_type, byte_size, " +
+                "storage_key, created_at, created_by, created_by_external) " +
+                "VALUES (${fixture.issueId}, 'x', 'image/png', 1, 'k-two-authors', 0, ${fixture.userId}, 'octocat');",
+        )
+
+        doubly.forEach { (what, sql) ->
+            val failure = assertFailsWith<Exception>(
+                "A $what was stored with an account author AND an external one.",
+            ) {
+                withContext(DatabaseDispatcher) { opened.driver.execute(null, sql, 0) }
+            }
+            // Asserting on the *reason*, not merely that something threw. Without
+            // this the test passes on a NOT NULL or a UNIQUE violation from a
+            // typo in the SQL above — which is to say it would pass with the
+            // CHECK deleted from all three tables, proving nothing while looking
+            // exactly like proof.
+            assertTrue(
+                failure.message.orEmpty().contains("CHECK constraint failed", ignoreCase = true),
+                "The $what insert failed, but not on the CHECK — so this test is not testing it. " +
+                    "SQLite said: ${failure.message}",
+            )
+        }
+    }
+
+    /**
      * An issue outlives its author.
      *
      * SET NULL rather than CASCADE, and the difference is the board losing its
@@ -185,7 +243,11 @@ class ForeignKeyTest {
         }
         val issue = IssueStore(database).findById(fixture.issueId)
         assertTrue(issue != null, "Deleting a user deleted their issue.")
-        assertEquals(null, issue.createdBy)
+        assertEquals(
+            Author.Nobody,
+            issue.author,
+            "SET NULL left something other than an authorless issue behind.",
+        )
     }
 
     // ── Fixture ──────────────────────────────────────────────────────────────
@@ -216,7 +278,7 @@ class ForeignKeyTest {
             attachmentRepository,
             AttachmentStore(database),
         )
-        val (issueId, _) = issueRepository.createDraft(project.id, user.id)
+        val (issueId, _) = issueRepository.createDraft(project.id, Author.Account(user.id))
         return Fixture(user.id, project.id, issueId)
     }
 

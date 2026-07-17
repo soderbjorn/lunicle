@@ -14,18 +14,41 @@
  * fails" against a database that believes it is up to date. No local run
  * reproduces it, because a local volume gets wiped and takes the `create` path.
  *
- * ── The baseline reset ──────────────────────────────────────────────────────
+ * ── The baseline resets ─────────────────────────────────────────────────────
  *
  * There are no .sqm files at the moment, so the migration half of this file
  * currently proves nothing: the schema was collapsed to a version-1 baseline,
  * every volume was wiped, and versions 1–6 and the five migrations between them
- * were deleted rather than carried. That is deliberate and it is a one-off —
- * everything from this baseline forward gets a migration, and the moment the
- * first `1.sqm` lands, the test below has something to check again.
+ * were deleted rather than carried.
+ *
+ * That has now happened twice. The second time added `created_by_external` to
+ * issues, comments and attachments: the .sq files were edited in place, the
+ * version stayed at 1, `1.db` was re-cut, and the volume was wiped again rather
+ * than a `1.sqm` being written. An earlier version of this comment called the
+ * first reset a one-off and promised a migration for everything after it. That
+ * promise was made and then not kept, so it is not repeated here.
+ *
+ * The honest rule is narrower, and it is a rule about the *data*, not about
+ * good intentions: while the volume holds nothing anyone would miss, re-cutting
+ * the baseline is cheaper than a migration and loses nothing, so that is what
+ * happens. The moment it holds something real, that stops being true instantly
+ * and completely — a wipe is then data loss, and the only way forward is a
+ * `1.sqm`, a version bump, a fresh snapshot, and this test doing the job it was
+ * written for. There is no gradient between those two states. If you are
+ * reading this because you are about to change the schema, the question to
+ * answer first is not "is a migration warranted" but "is the volume still
+ * disposable" — and the answer is not in this repo, it is in the deployment.
  *
  * The file stays as it is in the meantime. It is not dead: `the current snapshot
  * matches the sq files` is what catches an edited .sq with no re-snapshot, which
  * is the ordinary mistake and is live today.
+ *
+ * One gap worth knowing, since a CHECK now carries real weight here: what this
+ * test compares is `PRAGMA` output, and SQLite does not report CHECK
+ * constraints through any pragma. The exclusivity between `created_by` and
+ * `created_by_external` is therefore invisible to the comparison below. It is
+ * covered by tests that try to insert both and expect a constraint violation —
+ * which is the better check anyway, being about behaviour rather than shape.
  *
  * What it compares is structure — columns, types, nullability, defaults, primary
  * keys, foreign keys (including their `ON DELETE` behaviour), and indexes — read

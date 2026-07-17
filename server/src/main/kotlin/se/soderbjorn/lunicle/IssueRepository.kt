@@ -59,7 +59,7 @@ class IssueRepository(
      */
     suspend fun createDraft(
         projectId: Long,
-        createdBy: Long?,
+        author: Author,
         createdAt: Long? = null,
     ): Pair<Long, Long> {
         val first = statuses.firstForProject(projectId) ?: error(
@@ -76,7 +76,7 @@ class IssueRepository(
             title = "",
             statusId = first.id,
             priorityId = priority.id,
-            createdBy = createdBy,
+            author = author,
             createdAt = createdAt,
         )
     }
@@ -141,8 +141,8 @@ class IssueRepository(
      * @param createdAt when it should claim to have been written, or null for now.
      *   The backfill path's only lever here; see [CommentStore.insertDraft].
      */
-    suspend fun createCommentDraft(issueId: Long, createdBy: Long?, createdAt: Long? = null): Long =
-        comments.insertDraft(issueId, createdBy, createdAt)
+    suspend fun createCommentDraft(issueId: Long, author: Author, createdAt: Long? = null): Long =
+        comments.insertDraft(issueId, author, createdAt)
 
     /** Save a comment's body and publish it. Same reasoning as [save]. */
     suspend fun saveComment(id: Long, body: String) {

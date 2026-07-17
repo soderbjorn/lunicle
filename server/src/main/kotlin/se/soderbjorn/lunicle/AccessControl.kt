@@ -109,7 +109,7 @@ class AccessControl(
     suspend fun canEditIssue(user: UserRecord?, issue: IssueRecord): Boolean =
         user != null && (
             user.isAdmin ||
-                issue.createdBy == user.id ||
+                issue.author == Author.Account(user.id) ||
                 roles.hasRole(user.id, issue.projectId, Role.CHANGE_UNOWNED_ISSUES)
             )
 
@@ -141,11 +141,20 @@ class AccessControl(
      * have in the web app", because the web app has no way to say "Ada wrote this,
      * in 2019" either. It is not a capability an agent gained; it is one nobody had.
      *
-     * The exception is kept as small as it can be: two optional parameters on
-     * `create_issue` and `add_comment`, no tool of its own, no scope of its own,
-     * and no way to reach it that does not come through here. There is deliberately
-     * no backfill for *editing* — an existing issue's author and timestamps are not
-     * rewritable by anyone, agent or not.
+     * The exception is kept as small as it can be: three optional parameters —
+     * `author`, `author_external` and `created_at` — on the three tools that
+     * create things, no scope of its own, and no way to reach it that does not
+     * come through here. There is deliberately no backfill for *editing* — an
+     * existing issue's author and timestamps are not rewritable by anyone, agent
+     * or not.
+     *
+     * This paragraph used to say "no tool of its own", and `start_attachment_upload`
+     * is one, so the claim is retired rather than quietly left standing. What it
+     * was protecting still holds and is worth saying precisely: that tool is not
+     * an admin tool. Anyone who may edit an issue may attach a file to it, exactly
+     * as in the web app; only attaching one *as somebody else* comes through here.
+     * A tool existing is not the thing that was dangerous — a capability nobody
+     * had outside this check would be, and there still is not one.
      *
      * ── Why it is admin, and why it is here rather than in McpTools ────────────
      *
@@ -182,9 +191,14 @@ class AccessControl(
      * Authorship, not the comment role: `comment_on_issue` grants writing your
      * own, never editing someone else's words. Admin overrides, as everywhere.
      * A comment whose author is deleted is admin-only, which is correct.
+     *
+     * An imported comment is admin-only too, and falls out of the same line
+     * rather than needing a case: an [Author.External] is a name, and a name is
+     * never equal to an account. Nobody can inherit an imported comment by
+     * happening to share the name it was filed under.
      */
     fun canEditComment(user: UserRecord?, comment: CommentRecord): Boolean =
-        user != null && (user.isAdmin || comment.createdBy == user.id)
+        user != null && (user.isAdmin || comment.author == Author.Account(user.id))
 
     // ── Affordances ──────────────────────────────────────────────────────────
 

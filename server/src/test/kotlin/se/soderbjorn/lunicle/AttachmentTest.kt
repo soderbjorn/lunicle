@@ -396,7 +396,7 @@ class AttachmentTest {
     private suspend fun seed(): Fixture {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", null))
         val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        val (issueId, _) = issueRepository.createDraft(project.id, admin.id)
+        val (issueId, _) = issueRepository.createDraft(project.id, Author.Account(admin.id))
         return Fixture(admin.id, issueId, sessions.create(admin.id))
     }
 
@@ -455,6 +455,7 @@ class AttachmentTest {
         comments = comments,
         attachments = attachmentStore,
         attachmentRepository = attachments,
+        attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
         impersonations = Impersonations(),

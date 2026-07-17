@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunicle — scripts</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.65 var(--mono);
+  padding:48px 24px 120px;
+}
+.wrap{max-width:920px;margin:0 auto}
+
+header.top{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+.eyebrow{color:var(--green-dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+h1{color:var(--head);font-size:30px;line-height:1.25;margin:0 0 14px;font-weight:600}
+h1 .glow{color:var(--green-hi);text-shadow:0 0 18px var(--glow)}
+.lede{color:var(--green-dim);margin:0;max-width:70ch}
+
+h2{
+  color:var(--head);font-size:19px;margin:0 0 6px;font-weight:600;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2 .num{
+  color:var(--green);font-size:12px;letter-spacing:.12em;
+  border:1px solid var(--border-hi);border-radius:3px;padding:3px 8px;
+  text-shadow:0 0 12px var(--glow);flex:none;
+}
+h3{color:var(--green-hi);font-size:14px;letter-spacing:.04em;margin:32px 0 10px;font-weight:600}
+p{margin:0 0 14px;max-width:74ch}
+small{color:var(--green-dim)}
+code{
+  background:var(--panel-2);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px;color:var(--green-hi);font-size:.9em;
+}
+strong{color:var(--head);font-weight:600}
+a{color:var(--green-hi)}
+
+section.stage{
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  padding:28px 30px;margin:0 0 26px;
+}
+.subtitle{color:var(--green-dim);margin:0 0 22px;font-size:13px}
+
+ul,ol{margin:0 0 14px;padding-left:0;list-style:none}
+li{position:relative;padding-left:22px;margin-bottom:9px;max-width:74ch}
+li::before{content:"›";position:absolute;left:4px;color:var(--green);opacity:.75}
+ol{counter-reset:step}
+ol>li{counter-increment:step}
+ol>li::before{content:counter(step) ".";color:var(--green);font-size:12px;left:0;opacity:1}
+li ul,li ol{margin-top:9px}
+
+pre{
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;
+  padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:13px;line-height:1.6;
+  color:var(--body);
+}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+.box{border-radius:5px;padding:16px 18px;margin:18px 0;border:1px solid var(--border)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;margin:0 0 8px;font-weight:600}
+.warn{background:rgba(254,188,46,.05);border-color:rgba(254,188,46,.35)}
+.warn .lbl{color:var(--yellow)}
+.stop{background:rgba(255,95,87,.05);border-color:rgba(255,95,87,.35)}
+.stop .lbl{color:var(--red)}
+.ok{background:rgba(40,200,64,.05);border-color:rgba(40,200,64,.3)}
+.ok .lbl{color:var(--traffic-g)}
+.note{background:var(--panel-2)}
+.note .lbl{color:var(--blue)}
+
+table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:13px}
+th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel-2);color:var(--green-hi);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+td.yes{color:var(--traffic-g)}
+td.no{color:var(--red)}
+td.pick{color:var(--green-hi)}
+th.corner{background:transparent;border-color:transparent}
+
+footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color:var(--green-dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Lunamux / Lunicle</p>
+  <h1>The <span class="glow">scripts</span>, and which one you want</h1>
+  <p class="lede">Everything here runs on your machine. Nothing in this directory deploys, and
+  nothing touches Railway, Cloudflare, or the live site. Every script explains itself at the top of
+  its own file — this page is the map between them.</p>
+</header>
+
+<!-- ═══════════════════════════ THE MATRIX ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Start</span> Four ways to run it</h2>
+  <p class="subtitle">Two questions, two answers each. The names are the answers.</p>
+
+  <p>Every run script is <code>run-&lt;what&gt;-&lt;how&gt;.sh</code>. <strong>What</strong> runs the
+  tracker, and <strong>how</strong> it is presented. Those two choices are independent, which is why
+  there are four:</p>
+
+  <table>
+    <tr>
+      <th class="corner"></th>
+      <th>standalone — the app alone</th>
+      <th>embedded — inside the lunamux site</th>
+    </tr>
+    <tr>
+      <th>dev — your working tree</th>
+      <td class="pick"><code>run-dev-standalone.sh</code><br><small>→ localhost:8080/</small></td>
+      <td class="pick"><code>run-dev-embedded.sh</code><br><small>→ localhost:8000/?issues=1#/issues</small></td>
+    </tr>
+    <tr>
+      <th>container — the Docker image</th>
+      <td class="pick"><code>run-container-standalone.sh</code><br><small>→ localhost:8080/</small></td>
+      <td class="pick"><code>run-container-embedded.sh</code><br><small>→ localhost:8000/?issues=1#/issues</small></td>
+    </tr>
+  </table>
+
+  <h3>Choosing the row: dev or container?</h3>
+  <ul>
+    <li><strong>dev</strong> runs <em>the code you just edited</em>, via Gradle. An incremental
+      Kotlin build takes seconds. This is the one to reach for while writing code.</li>
+    <li><strong>container</strong> runs <em>the image you last built</em> — the same image Railway
+      builds, with the same entrypoint, the same injected <code>PORT</code>, and a real Docker
+      volume. It exercises the packaging and the deploy mechanisms, not just the code. Reach for it
+      when the question is <em>"does the thing I'm about to deploy work?"</em></li>
+  </ul>
+
+  <div class="warn">
+    <p class="lbl">The container runs what you BUILT, not what you edited</p>
+    <p>A <code>run-container-*.sh</code> without <code>--no-build</code> rebuilds the image first, so
+    it picks your changes up. With <code>--no-build</code> it does not — which is fast and correct
+    when you meant it, and a genuinely confusing five minutes when you didn't.</p>
+  </div>
+
+  <h3>Choosing the column: standalone or embedded?</h3>
+  <ul>
+    <li><strong>standalone</strong> is the app on its own on <code>:8080</code>. There is no website
+      around it and therefore <strong>no Issues tab</strong> — that is this mode working, not
+      failing. Framing stays restricted to <code>lunamux.dev</code> exactly as in production, so
+      this mode can never prove something the deployed site wouldn't allow.</li>
+    <li><strong>embedded</strong> serves your <code>lunamux-web</code> checkout on <code>:8000</code>
+      with Python's built-in HTTP server and points the Issues tab's iframe at your tracker. This is
+      the one that shows what Stage 1 is for.</li>
+  </ul>
+
+  <div class="warn">
+    <p class="lbl">The easy mistake: two URLs, one of them tab-less</p>
+    <p><code>:8080</code> is the tracker <em>standalone</em> — no site, no tab.
+    <code>:8000/?issues=1#/issues</code> is the <em>site</em> with the tracker inside its Issues tab.
+    Landing on :8080 when you wanted the embed looks exactly like "the embed is broken" while nothing
+    is wrong at all. That is why each run script opens only its own URL, and
+    <code>container-up.sh</code> opens none.</p>
+  </div>
+
+  <p>Flags: all four take <code>--no-open</code>. The two <code>container</code> ones also take
+  <code>--no-build</code>. Anything else is a usage error rather than a silently ignored typo.</p>
+</section>
+
+<!-- ═══════════════════════════ EVERYTHING ELSE ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Also</span> The supporting cast</h2>
+  <p class="subtitle">You need these less often, and never to just run the thing.</p>
+
+  <table>
+    <tr><th>Script</th><th>What it's for</th></tr>
+    <tr>
+      <td><code>stop.sh</code></td>
+      <td>Stops whatever you have running, whichever way you started it, and <strong>never deletes
+      data</strong>. <code>--status</code> says what's running and changes nothing. Reach for this
+      when a run script says the port is taken.</td>
+    </tr>
+    <tr>
+      <td><code>local-db.sh</code></td>
+      <td>The dev database at <code>~/.lunicle/</code>: <code>path</code>, <code>inspect</code>,
+      <code>dump</code>, <code>sql</code>, <code>seed</code>, <code>admin</code>, <code>wipe</code>.
+      Only the <code>dev</code> row of the matrix uses it — the container has its own volume.</td>
+    </tr>
+    <tr>
+      <td><code>container-up.sh</code><br><code>container-down.sh</code></td>
+      <td>Container lifecycle, nothing else: no site, no browser. The <code>run-container-*</code>
+      scripts call <code>up</code> for you, so you rarely need it directly. <code>down</code> is how
+      you stop the container they leave running; <code>down --wipe</code> also deletes the database
+      volume.</td>
+    </tr>
+    <tr>
+      <td><code>container-entrypoint.sh</code></td>
+      <td><strong>Not a script you run.</strong> It is copied <em>into</em> the image and is its
+      entrypoint — see the <code>Dockerfile</code>. It starts as root, chowns the mounted volume,
+      and drops privileges. Renaming it means editing the Dockerfile and .dockerignore too.</td>
+    </tr>
+    <tr>
+      <td><code>lib/*.sh</code></td>
+      <td>Sourced, never run. See below.</td>
+    </tr>
+  </table>
+
+  <div class="ok">
+    <p class="lbl">Deliberate: down keeps the data</p>
+    <p><code>container-down.sh</code> keeps the volume, so <em>down, up, and your data is still
+    there</em> is the local rehearsal of the production exit criterion. <code>--wipe</code> is for
+    the other half — proving the fresh-volume path still works, which is a code path production runs
+    exactly once, on the first deploy, where getting it wrong is most expensive and least
+    observable.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ LIB ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">lib/</span> The shared parts</h2>
+  <p class="subtitle">Sourced by the scripts above. Each fact lives in exactly one of these.</p>
+
+  <p>These exist because the four run scripts genuinely share most of their work, and the shared
+  parts carry hard-won reasoning that must not be allowed to drift into four slightly different
+  copies. If you are about to copy a block between scripts, it probably belongs here instead.</p>
+
+  <table>
+    <tr><th>File</th><th>Owns</th></tr>
+    <tr>
+      <td><code>lib/env.sh</code></td>
+      <td>Loading <code>.env</code>, and the list of OAuth providers (<code>LUNICLE_OAUTH_VARS</code>)
+      — shared because the Gradle path turns each into a <code>-P</code> property and the container
+      path into a <code>-e</code> variable, and adding a provider while updating only one of those is
+      the drift this prevents.</td>
+    </tr>
+    <tr>
+      <td><code>lib/probe.sh</code></td>
+      <td>"Is it up?" and "who holds the port?" — including <em>why</em> the readiness probe hits
+      <code>/api/session</code> and not <code>/api/counter</code>, and why <code>lsof</code> needs
+      <code>-sTCP:LISTEN</code>.</td>
+    </tr>
+    <tr>
+      <td><code>lib/dev-server.sh</code></td>
+      <td>Starting, waiting for, and reaping the Gradle-run server — plus the marker that identifies
+      it, and the whole <code>-P</code>-not-environment story.</td>
+    </tr>
+    <tr>
+      <td><code>lib/site.sh</code></td>
+      <td>Serving the lunamux-web checkout: the python server, the framing check, the Issues-tab
+      banner. Both embed scripts differ only in what serves the tracker; the site half is identical
+      and lives here once.</td>
+    </tr>
+    <tr>
+      <td><code>lib/browser.sh</code></td>
+      <td>Opening the browser, and honouring <code>--no-open</code>.</td>
+    </tr>
+  </table>
+
+  <div class="note">
+    <p class="lbl">Why -P properties instead of environment variables</p>
+    <p>The one piece of background that explains most of <code>lib/dev-server.sh</code>:
+    <code>:server:run</code> is a Gradle JavaExec, so the server inherits the long-lived
+    <em>daemon's</em> environment, not your shell's. An exported variable is therefore whatever the
+    daemon started with and stays that way, invisibly, until the daemon dies — which has bitten the
+    port, the framing origin, and every OAuth secret in turn. A <code>-P</code> property is
+    per-invocation and cannot drift. The deployed container <em>does</em> use environment variables
+    for all of these: there is no daemon there, and it is how Railway supplies them.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ ENV ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Env</span> Knobs</h2>
+  <p class="subtitle">All optional. The defaults are what you want.</p>
+
+  <table>
+    <tr><th>Variable</th><th>Default</th><th>Effect</th></tr>
+    <tr>
+      <td><code>LUNICLE_PORT</code></td>
+      <td>8080</td>
+      <td>The tracker's port. Useful when something else holds 8080 and you'd rather not fight it.</td>
+    </tr>
+    <tr>
+      <td><code>SITE_PORT</code></td>
+      <td>8000</td>
+      <td>The local lunamux-web port. Embed scripts only.</td>
+    </tr>
+    <tr>
+      <td><code>LUNAMUX_WEB</code></td>
+      <td><code>../lunamux-web</code></td>
+      <td>Where your lunamux-web checkout is. Embed scripts only.</td>
+    </tr>
+    <tr>
+      <td><code>LUNICLE_LOCAL_DATA</code></td>
+      <td><code>~/.lunicle</code></td>
+      <td>Where the <code>dev</code> row keeps its database and attachments. Read by
+      <code>local-db.sh</code> and the <code>run-dev-*</code> pair alike, so they can't disagree
+      about which database is the real one.</td>
+    </tr>
+    <tr>
+      <td><code>FRAME_ANCESTORS</code></td>
+      <td>set per mode</td>
+      <td>Overrides the framing policy for the container. Each run script sets it to what its mode
+      means, so you should not normally touch it.</td>
+    </tr>
+  </table>
+
+  <p>OAuth credentials live in a gitignored <code>.env</code> at the repo root — see
+  <code>.env.example</code> and <a href="../docs/oauth-instructions.html">oauth-instructions.html</a>.
+  Absent is fine and silent: the server just offers no sign-in.</p>
+</section>
+
+<footer>
+  Related: <a href="../docs/instructions.html">deploy instructions</a> ·
+  <a href="../docs/volume-instructions.html">the volume</a> ·
+  <a href="../docs/oauth-instructions.html">OAuth</a>.
+  Each script's own header is the authority on its flags; this page is the map.
+</footer>
+
+</div>
+</body>
+</html>

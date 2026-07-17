@@ -533,6 +533,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
       <tr><td><code>update_issue</code></td><td><code>PUT /api/issues/{id}</code></td><td><code>canEditIssue</code></td></tr>
       <tr><td><code>move_issue</code></td><td><code>POST /api/issues/{id}/status</code></td><td><code>canEditIssue</code></td></tr>
       <tr><td><code>add_comment</code></td><td><code>POST</code> + <code>PUT /api/comments/{id}</code></td><td><code>canComment</code></td></tr>
+      <tr><td><code>start_attachment_upload</code></td><td><code>POST /api/attachments/upload/{token}</code> — <em>new route</em></td><td><code>canEditIssue</code> / <code>canEditComment</code></td></tr>
     </tbody>
   </table>
 
@@ -540,6 +541,25 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
   API (create hidden draft → publish). The tool must present that as one call — an agent should not have
   to know about drafts, and a half-created draft left behind by an agent that stopped thinking is
   litter. One tool call, both steps, or neither.</p>
+
+  <h3><code>start_attachment_upload</code> breaks the 1:1 rule, and here is the honest accounting</h3>
+  <p>Every other row above is a second front door onto a route that already existed. This one is not:
+  it mints a short-lived, single-use ticket and adds a route to spend it. The subtitle's claim survives
+  in the way that matters — the <em>gate</em> is the same <code>canEditIssue</code> /
+  <code>canEditComment</code> the existing upload routes use, so an agent gets exactly what the person
+  driving it has in the web app — but "maps 1:1 onto a route" is simply not true of it.</p>
+
+  <p>The reason is that the existing route cannot be reused. <code>POST /api/issues/{id}/attachments</code>
+  wants a session cookie, and an MCP token belongs to the client, never to the model. The two obvious
+  repairs are both worse: <strong>base64 in the tool call</strong> puts a 2&nbsp;MB screenshot through the
+  model's context as ~2.7&nbsp;million characters to move bytes it never looks at; <strong>having the
+  server fetch a URL the agent names</strong> is SSRF, on a host whose internal network includes the
+  volume. A ticket keeps the decision where <code>AccessControl</code> already is, and lets the agent —
+  which has a shell — push the bytes itself. See <code>AttachmentTickets.kt</code>.</p>
+
+  <p>It is <strong>not</strong> an admin tool, and that distinction is the one to hold on to: attaching a
+  file is ordinary, attaching one <em>as somebody else</em> is <code>canAttributeWrites</code>, exactly as
+  on <code>create_issue</code>.</p>
 
   <h3>The <code>instructions</code> field is not optional</h3>
   <p><code>McpServer.kt:242</code> returns a large <code>instructions</code> string in the

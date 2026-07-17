@@ -147,7 +147,7 @@ tasks.named<JavaExec>("run") {
     systemProperty("lunicle.webDist", webDistDir.get().asFile.absolutePath)
 
     // Framing origin for local runs, passed as `-PframeAncestors=…` (see
-    // scripts/dev-local.sh), defaulting to the production value.
+    // scripts/lib/dev-server.sh), defaulting to the production value.
     //
     // Always set, even to the default, so that a local run's framing policy is
     // decided entirely by this invocation. The alternative — reading the
@@ -206,7 +206,7 @@ tasks.named<JavaExec>("run") {
         .getOrElse(File(System.getProperty("user.home"), ".lunicle/lunicle.db").absolutePath)
     systemProperty("lunicle.databasePath", databasePath)
 
-    // OAuth credentials, passed by scripts/dev-local.sh from a gitignored .env
+    // OAuth credentials, passed by scripts/lib/dev-server.sh from a gitignored .env
     // (see .env.example). Same -P-not-environment reasoning as frameAncestors,
     // and it matters more here: a secret exported into the daemon's environment
     // would survive a rotation and resolve to the stale value until the daemon

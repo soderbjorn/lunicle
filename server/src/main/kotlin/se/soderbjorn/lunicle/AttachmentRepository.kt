@@ -94,13 +94,16 @@ class AttachmentRepository(
         filename: String,
         declaredMimeType: String,
         bytes: ByteArray,
-        createdBy: Long?,
+        author: Author,
+        createdAt: Long? = null,
     ): Long {
         val mimeType = validate(declaredMimeType, bytes)
         val key = newStorageKey()
         writeFile(key, bytes)
         return runCatching {
-            attachments.insertForIssue(issueId, cleanFilename(filename), mimeType, bytes.size.toLong(), key, createdBy)
+            attachments.insertForIssue(
+                issueId, cleanFilename(filename), mimeType, bytes.size.toLong(), key, author, createdAt,
+            )
         }.getOrElse { failure ->
             // The row did not land, so the file is already an orphan. Unlink it
             // now rather than leaving it for the next restart's sweep — this is
@@ -116,13 +119,16 @@ class AttachmentRepository(
         filename: String,
         declaredMimeType: String,
         bytes: ByteArray,
-        createdBy: Long?,
+        author: Author,
+        createdAt: Long? = null,
     ): Long {
         val mimeType = validate(declaredMimeType, bytes)
         val key = newStorageKey()
         writeFile(key, bytes)
         return runCatching {
-            attachments.insertForComment(commentId, cleanFilename(filename), mimeType, bytes.size.toLong(), key, createdBy)
+            attachments.insertForComment(
+                commentId, cleanFilename(filename), mimeType, bytes.size.toLong(), key, author, createdAt,
+            )
         }.getOrElse { failure ->
             fileFor(key).delete()
             throw failure

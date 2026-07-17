@@ -11,25 +11,33 @@
 # no browser. You normally don't need to call this directly — the two scripts
 # that do call it are the ones to reach for:
 #
-#   ./scripts/run-standalone.sh            # the tracker on its own
-#   ./scripts/run-embedded.sh              # the tracker inside the lunamux site
+#   ./scripts/run-container-standalone.sh   # the tracker on its own
+#   ./scripts/run-container-embedded.sh     # the tracker inside the lunamux site
 #
 # To stop: ./scripts/container-down.sh
 #
 # Env:
-#   LUNICLE_PORT       host port to publish (default: 8080)
+#   LUNICLE_PORT      host port to publish (default: 8080)
 #   SITE_PORT         the local site's port, used for the framing policy below
 #                     (default: 8000)
 #   FRAME_ANCESTORS   override the framing policy outright
 #
-# Framing: FRAME_ANCESTORS is normally set by whichever run script called this
-# — run-standalone.sh passes production's policy, run-embedded.sh additionally
-# permits the local site. Called directly with nothing set, the default below
-# permits both, so the embed works either way. `frame-ancestors` takes a
-# space-separated source list. Production sets no such variable at all and falls
-# back to lunamux.dev alone.
+# Framing: FRAME_ANCESTORS is normally set by whichever run script called this —
+# run-container-standalone.sh passes production's policy, run-container-embedded.sh
+# additionally permits the local site. Called directly with nothing set, the
+# default below permits both, so the embed works either way. `frame-ancestors`
+# takes a space-separated source list. Production sets no such variable at all
+# and falls back to lunamux.dev alone.
 #
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/probe.sh
+source "$SCRIPT_DIR/lib/probe.sh"
+# For LUNICLE_OAUTH_VARS, and so that calling this script directly still picks
+# up .env rather than silently serving with no sign-in.
+# shellcheck source=lib/env.sh
+source "$SCRIPT_DIR/lib/env.sh"
 
 IMAGE="lunicle:local"
 NAME="lunicle-local"
@@ -71,18 +79,14 @@ fi
 
 # ---- port ----
 # Refuse if something that ISN'T our container holds the port — most likely a
-# `./scripts/dev-local.sh` server still running. Publishing would fail anyway,
-# but with a Docker error that buries the actual cause.
-#
-# -sTCP:LISTEN matters: a bare `lsof -ti :PORT` also matches CLIENTS with a
-# connection to that port, so an open browser tab pointing at localhost:8080 —
-# or Docker's own backend proxy — counted as "the port is taken" and this
-# refused to start for no reason. Only a listener actually holds the port.
-if lsof -ti ":$LUNICLE_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
+# run-dev-*.sh server still running. Publishing would fail anyway, but with a
+# Docker error that buries the actual cause. (port_is_held only counts
+# listeners; see lib/probe.sh for why that distinction matters here.)
+if port_is_held "$LUNICLE_PORT"; then
   if [[ -z "$(docker ps -q --filter "name=^${NAME}$")" ]]; then
     echo "error: something is already using port $LUNICLE_PORT, and it isn't this container." >&2
-    echo "       A dev-local.sh server, perhaps? Stop it with:" >&2
-    echo "         pkill -f 'lunicle.webDist=$REPO_ROOT/web/build'" >&2
+    echo "       It's: $(port_holder "$LUNICLE_PORT")" >&2
+    echo "       A run-dev-*.sh server, perhaps? Stop it with:  ./scripts/stop.sh" >&2
     echo "       …or re-run with LUNICLE_PORT=<other port>." >&2
     exit 1
   fi
@@ -116,10 +120,10 @@ fi
 # exactly how Railway supplies these in production. Passing them this way means
 # the local container exercises the real mechanism rather than a stand-in.
 #
-# Absent is normal: the container then serves with no sign-in. Names must match
-# resolveOAuthConfig() in OAuthConfig.kt.
+# Absent is normal: the container then serves with no sign-in. The provider list
+# is shared with the Gradle path — see LUNICLE_OAUTH_VARS in lib/env.sh.
 oauth_env=()
-for var in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET; do
+for var in $LUNICLE_OAUTH_VARS; do
   value="${!var:-}"
   [[ -n "$value" ]] || continue
   oauth_env+=(-e "$var=$value")
@@ -154,17 +158,18 @@ docker run -d --name "$NAME" \
   "$IMAGE" > /dev/null
 
 echo "==> Waiting for it to answer…"
+# No guard PID here: the container isn't our child, so "did it die?" is a docker
+# question rather than a kill -0 one. Poll in short waits and ask docker between
+# them — a container that exits on startup is the common failure, and its logs
+# are the whole answer.
 ready=0
 for _ in $(seq 1 60); do
-  # /api/session rather than /api/counter — the counter 401s when signed out
-  # and `curl -sf` would read that as "not up". See dev-local.sh.
-  if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/session"; then ready=1; break; fi
+  if wait_for_http "$(lunicle_probe_url "$LUNICLE_PORT")" 1 1; then ready=1; break; fi
   if [[ -z "$(docker ps -q --filter "name=^${NAME}$")" ]]; then
     echo "error: the container exited. Its logs:" >&2
     docker logs "$NAME" 2>&1 | tail -20 >&2
     exit 1
   fi
-  sleep 1
 done
 if [[ "$ready" -ne 1 ]]; then
   echo "error: the container never answered on port $LUNICLE_PORT. Its logs:" >&2

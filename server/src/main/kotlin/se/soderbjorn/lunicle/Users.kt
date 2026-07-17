@@ -86,6 +86,105 @@ data class UserRecord(
 }
 
 /**
+ * Who wrote an issue, a comment or an attachment.
+ *
+ * ── Why a type, and not two nullable columns' worth of parameters ───────────
+ *
+ * Because `created_by` and `created_by_external` are exclusive, and the database
+ * says so with a CHECK — see Issues.sq. A CHECK is the right backstop and the
+ * wrong enforcement: it catches the illegal pair as a constraint violation,
+ * which surfaces as a 500 rather than as a sentence anybody can act on. Passing
+ * `(Long?, String?)` down through three stores would leave every one of those
+ * call sites able to construct the pair, and would leave the reader of any one
+ * of them unable to tell that it must not.
+ *
+ * So the pair is unconstructable instead. [Account] and [External] are the two
+ * halves of the CHECK, spelled as a choice; the CHECK goes back to being a
+ * backstop that should never fire.
+ *
+ * ── On [Nobody] ────────────────────────────────────────────────────────────
+ *
+ * Both columns null is legal and means what it has always meant: nobody. That is
+ * what `ON DELETE SET NULL` leaves behind when an account goes, and it is what
+ * an unauthenticated write has always recorded. It is a case here rather than a
+ * nullable `Author?` so that "we have no author" is a thing a caller says on
+ * purpose, rather than a thing it forgets to say.
+ */
+sealed interface Author {
+
+    /** Somebody with an account. The ordinary case: every write from the web UI. */
+    data class Account(val id: Long) : Author
+
+    /**
+     * A name with nobody behind it — history imported from another tracker,
+     * written by somebody who has never signed in here.
+     *
+     * Admin-only, and only ever at creation. See `created_by_external` in
+     * Issues.sq for why the name is held rather than an account minted for it,
+     * and [AccessControl.canAttributeWrites] for who may say it.
+     */
+    data class External(val name: String) : Author
+
+    /** No author: a deleted account, or a write nobody was signed in for. */
+    data object Nobody : Author
+}
+
+/**
+ * This user as the author of something they are writing now.
+ *
+ * The ordinary path: every write from the web UI goes through here. Nullable
+ * receiver because the routes carry a nullable user, and "nobody was signed in"
+ * has always been recordable — see [Author.Nobody].
+ *
+ * Note there is no way to reach [Author.External] from a [UserRecord], and that
+ * is the point: an imported author is not a user and never becomes one.
+ */
+fun UserRecord?.asAuthor(): Author = this?.let { Author.Account(it.id) } ?: Author.Nobody
+
+/** What goes in `created_by`. Null for both other cases; see [Author]. */
+val Author.accountId: Long? get() = (this as? Author.Account)?.id
+
+/** What goes in `created_by_external`. Null for both other cases; see [Author]. */
+val Author.externalName: String? get() = (this as? Author.External)?.name
+
+/**
+ * The name to render for an author, given a map of resolved account names.
+ *
+ * Here rather than beside either caller because both BoardRoutes and McpTools
+ * answer this question and must answer it identically — an issue's author is the
+ * same fact whether a browser or an agent asks. The lookup that builds [names]
+ * stays with each caller, since each has its own way to reach the user store;
+ * this is the half that decides what the answer *means*, and there is one of it.
+ *
+ * Null means "no author", which is what the client already renders for an issue
+ * whose account was deleted — so an unresolvable id and [Author.Nobody] land in
+ * the same place on purpose.
+ */
+fun Author.displayName(names: Map<Long, String>): String? = when (this) {
+    is Author.Account -> names[id]
+    // Already a name. Looking it up in `names` would be looking up a string in a
+    // map keyed by account id, which is the whole point of the column: there is
+    // nothing to resolve, because there is no account.
+    is Author.External -> name
+    Author.Nobody -> null
+}
+
+/**
+ * The author of a row, read back from its two columns.
+ *
+ * The inverse of [accountId]/[externalName], and the only place that decides
+ * what an unexpected pair means. The CHECK makes "both set" unwritable, so
+ * reaching it means the row predates the constraint or was written around it;
+ * preferring the account is the conservative answer, because it is the one that
+ * cannot invent an author who does not exist.
+ */
+fun authorOf(createdBy: Long?, createdByExternal: String?): Author = when {
+    createdBy != null -> Author.Account(createdBy)
+    createdByExternal != null -> Author.External(createdByExternal)
+    else -> Author.Nobody
+}
+
+/**
  * Parse a provider name back out of the database.
  *
  * `valueOf` would throw, and this is a value read from storage rather than one

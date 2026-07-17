@@ -36,6 +36,15 @@ CREATE TABLE attachments (
     created_at INTEGER NOT NULL,
     created_by INTEGER,
 
+    -- An author with no account, for imported history. Exclusive with
+    -- created_by, same reasoning as issues — the long version lives there.
+    --
+    -- Here it carries a file rather than prose, which changes nothing about the
+    -- attribution and everything about how the bytes arrive: an importer has no
+    -- session to POST with, so uploads come through a minted ticket instead.
+    -- See AttachmentTickets.
+    created_by_external TEXT,
+
     FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
     FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
@@ -43,21 +52,25 @@ CREATE TABLE attachments (
     -- SQLite counts a true condition as 1, so this reads "exactly one owner is
     -- set". An orphan attachment and a doubly-owned one are both now
     -- unrepresentable rather than merely unlikely.
-    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1)
+    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1),
+
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
 );
 
 insertForIssue:
-INSERT INTO attachments (issue_id, filename, mime_type, byte_size, storage_key, created_at, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO attachments (issue_id, filename, mime_type, byte_size, storage_key, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id;
 
 insertForComment:
-INSERT INTO attachments (comment_id, filename, mime_type, byte_size, storage_key, created_at, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO attachments (comment_id, filename, mime_type, byte_size, storage_key, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id;
 
 findById:
-SELECT id, issue_id, comment_id, filename, mime_type, byte_size, storage_key, created_at, created_by
+SELECT id, issue_id, comment_id, filename, mime_type, byte_size, storage_key, created_at, created_by,
+       created_by_external
 FROM attachments WHERE id = ?;
 
 delete:

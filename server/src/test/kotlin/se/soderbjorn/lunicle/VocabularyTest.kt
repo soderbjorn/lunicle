@@ -107,8 +107,8 @@ class VocabularyTest {
         val status = statuses.forProject(fixture.projectId).first()
         // Two issues, both in the seeded leftmost column — which is where
         // createDraft puts them.
-        issueRepository.createDraft(fixture.projectId, fixture.adminId)
-        issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
+        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
 
         val row = vocabularies.find(fixture.projectId, VocabularyKind.STATUS, status.id)
         assertNotNull(row)
@@ -143,7 +143,7 @@ class VocabularyTest {
     @Test
     fun `a draft issue is enough to block deleting its status`(): Unit = runBlocking {
         val fixture = seed()
-        issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
         val status = statuses.forProject(fixture.projectId).first()
         val row = vocabularies.find(fixture.projectId, VocabularyKind.STATUS, status.id)!!
 
@@ -162,7 +162,7 @@ class VocabularyTest {
         val fixture = seed()
         val closing = statuses.forProject(fixture.projectId).first { it.requiresResolution }
         val resolution = resolutions.forProject(fixture.projectId).first()
-        val (issueId, _) = issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        val (issueId, _) = issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
         issues.setStatus(issueId, closing.id, resolution.id)
 
         val row = vocabularies.find(fixture.projectId, VocabularyKind.RESOLUTION, resolution.id)!!
@@ -182,7 +182,7 @@ class VocabularyTest {
     fun `deleting a label that issues wear unlabels them and leaves the issues`(): Unit = runBlocking {
         val fixture = seed()
         val label = labels.forProject(fixture.projectId).first()
-        val (issueId, _) = issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        val (issueId, _) = issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
         issues.setLabelsAndComponents(issueId, fixture.projectId, listOf(label.id), emptyList())
         assertEquals(listOf(label.id), issues.labelsFor(issueId))
 
@@ -225,7 +225,7 @@ class VocabularyTest {
 
         // The point of the rule, asserted rather than implied: the project can
         // still take an issue.
-        issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
     }
 
     /** The same rule for priorities, which `createDraft` also cannot do without. */
@@ -242,7 +242,7 @@ class VocabularyTest {
         assertFailsWith<VocabularyRefusal> {
             vocabularies.delete(fixture.projectId, VocabularyKind.PRIORITY, last)
         }
-        issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
     }
 
     /**
@@ -260,7 +260,7 @@ class VocabularyTest {
             vocabularies.delete(fixture.projectId, VocabularyKind.RESOLUTION, row)
         }
         assertEquals(0, resolutions.forProject(fixture.projectId).size)
-        issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
     }
 
     // ── Names and order ──────────────────────────────────────────────────────
@@ -611,6 +611,7 @@ class VocabularyTest {
         comments = comments,
         attachments = attachmentStore,
         attachmentRepository = attachments,
+        attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
         impersonations = Impersonations(),

@@ -20,13 +20,15 @@ import se.soderbjorn.lunicle.db.LunicleDatabase
  * @property isDraft as on an issue: the comment modal supports inline image
  *   upload, so the row exists before the image does. Cancel deletes it; the
  *   flag covers the closed tab.
+ * @property author who wrote it: an account, an imported name, or nobody. See
+ *   [Author].
  */
 data class CommentRecord(
     val id: Long,
     val issueId: Long,
     val body: String,
     val createdAt: Long,
-    val createdBy: Long?,
+    val author: Author,
     val isDraft: Boolean,
 )
 
@@ -46,10 +48,12 @@ class CommentStore(
      */
     suspend fun insertDraft(
         issueId: Long,
-        createdBy: Long?,
+        author: Author,
         createdAt: Long? = null,
     ): Long = withContext(DatabaseDispatcher) {
-        database.commentsQueries.insert(issueId, "", createdAt ?: now(), createdBy).executeAsOne()
+        database.commentsQueries
+            .insert(issueId, "", createdAt ?: now(), author.accountId, author.externalName)
+            .executeAsOne()
     }
 
     suspend fun publish(id: Long, body: String): Unit = withContext(DatabaseDispatcher) {
@@ -79,6 +83,6 @@ private fun se.soderbjorn.lunicle.db.Comments.toRecord(): CommentRecord = Commen
     issueId = issue_id,
     body = body,
     createdAt = created_at,
-    createdBy = created_by,
+    author = authorOf(created_by, created_by_external),
     isDraft = is_draft != 0L,
 )

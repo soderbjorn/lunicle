@@ -36,8 +36,9 @@
 #
 # Railway mounts a volume at $RAILWAY_VOLUME_MOUNT_PATH and the server puts
 # lunicle.db and attachments/ inside it (see Database.kt). Locally there is no
-# Railway, so dev-local.sh passes -PdatabasePath and the same code takes the
-# `lunicle.databasePath` branch instead. Same directory layout, same create and
+# Railway, so a local run takes the `lunicle.databasePath` branch instead —
+# defaulted to ~/.lunicle by server/build.gradle.kts, or pointed elsewhere with
+# LUNICLE_LOCAL_DATA, which this script and the run-dev-*.sh scripts both read. Same directory layout, same create and
 # migrate paths, same orphan sweep — a real directory on your disk rather than a
 # mount. That is the whole trick, and it is why you can test all of this without
 # building a container.
@@ -66,7 +67,7 @@ require_sqlite() {
 require_db() {
   if [[ ! -f "$DB_PATH" ]]; then
     echo "error: no database at $DB_PATH" >&2
-    echo "       Start the server once (./scripts/dev-local.sh) — it creates the schema on boot." >&2
+    echo "       Start the server once (./scripts/run-dev-standalone.sh) — it creates the schema on boot." >&2
     exit 1
   fi
 }
@@ -81,7 +82,7 @@ require_db() {
 refuse_if_running() {
   if curl -sf -o /dev/null "http://localhost:${LUNICLE_PORT:-8080}/api/session" 2>/dev/null; then
     echo "error: the server is running on :${LUNICLE_PORT:-8080} and has this database open." >&2
-    echo "       Stop it first (Ctrl-C in the dev-local.sh window), then re-run." >&2
+    echo "       Stop it first (Ctrl-C in the run script's window), then re-run." >&2
     exit 1
   fi
 }
@@ -296,6 +297,17 @@ SELECT p.id, 5, 'A draft nobody finished', 'If you can see this on the board, is
        (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
        1, $now, $now, NULL
 FROM projects p WHERE p.name = 'Lunamux';
+
+-- Imported history: an author with no account, which is the other real state
+-- worth seeing render. The card should say "octocat" and be uneditable by
+-- anyone but an admin — there is no account for it to belong to. Note
+-- created_by is NULL and must stay that way; the CHECK forbids the pair.
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by, created_by_external)
+SELECT p.id, 6, 'Imported from GitHub', 'Filed by somebody who has never signed in here.',
+       (SELECT id FROM statuses WHERE project_id = p.id AND name = 'Backlog'),
+       (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
+       0, $now, $now, NULL, 'octocat'
+FROM projects p WHERE p.name = 'Lunamux';
 COMMIT;
 SQL
 
@@ -321,7 +333,8 @@ WHERE i.number = 2 AND l.name = 'Feature' AND i.project_id = (SELECT id FROM pro
 COMMIT;
 SQL
 
-  echo "Seeded \"Lunamux\" (LMX), public, with 4 issues and 1 invisible draft."
+  echo "Seeded \"Lunamux\" (LMX), public, with 5 issues and 1 invisible draft."
+  echo "LMX-6 is imported history: its author is a name, not an account."
   echo
   # Foreign keys are OFF by default in the sqlite3 CLI — unlike the server,
   # which sets the pragma on every connection. So this checks that the rows just

@@ -199,7 +199,7 @@ private suspend fun handleMcpPost(call: ApplicationCall, deps: McpDependencies, 
         // than an empty array, which is not a legal JSON-RPC response.
         is JsonArray -> {
             val responses = body.mapNotNull { element ->
-                (element as? JsonObject)?.let { processMessage(user, it, tools) }
+                (element as? JsonObject)?.let { processMessage(user, it, tools, call.serverOrigin()) }
             }
             if (responses.isEmpty()) {
                 call.respondText("", ContentType.Application.Json, HttpStatusCode.Accepted)
@@ -209,7 +209,7 @@ private suspend fun handleMcpPost(call: ApplicationCall, deps: McpDependencies, 
         }
 
         is JsonObject -> {
-            val response = processMessage(user, body, tools)
+            val response = processMessage(user, body, tools, call.serverOrigin())
             if (response == null) {
                 call.respondText("", ContentType.Application.Json, HttpStatusCode.Accepted)
             } else {
@@ -239,7 +239,12 @@ private const val INVALID_PARAMS = -32602
  *   sending a response to `notifications/initialized`, which some clients treat
  *   as a protocol violation and drop the connection over.
  */
-private suspend fun processMessage(user: UserRecord, message: JsonObject, tools: McpTools): JsonObject? {
+private suspend fun processMessage(
+    user: UserRecord,
+    message: JsonObject,
+    tools: McpTools,
+    origin: String,
+): JsonObject? {
     val id: JsonElement? = message["id"]
     val isNotification = id == null
     val method = (message["method"] as? JsonPrimitive)?.contentOrNull
@@ -299,7 +304,7 @@ private suspend fun processMessage(user: UserRecord, message: JsonObject, tools:
             // result it is a sentence the agent can report to the person, and the
             // stack trace lands in our log where it belongs.
             val output = try {
-                tools.call(user, name, arguments)
+                tools.call(user, name, arguments, origin)
             } catch (failure: Exception) {
                 logger.error("MCP: tool '$name' failed for user ${user.id}", failure)
                 McpToolResult(

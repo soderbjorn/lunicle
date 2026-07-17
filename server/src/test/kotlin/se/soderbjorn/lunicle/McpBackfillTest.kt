@@ -241,7 +241,7 @@ class McpBackfillTest {
         }
 
         val issue = issues.forProject(fixture.projectId).single()
-        assertEquals(fixture.ordinaryId, issue.createdBy, "The issue was not attributed to the named author.")
+        assertEquals(Author.Account(fixture.ordinaryId), issue.author, "The issue was not attributed to the named author.")
         assertEquals(backfilledAt, issue.createdAt, "The given created_at was not stored.")
         assertEquals(
             backfilledAt,
@@ -268,7 +268,7 @@ class McpBackfillTest {
         }
 
         val comment = comments.forIssue(issueId).single()
-        assertEquals(fixture.ordinaryId, comment.createdBy)
+        assertEquals(Author.Account(fixture.ordinaryId), comment.author)
         assertEquals(backfilledAt, comment.createdAt)
     }
 
@@ -286,7 +286,197 @@ class McpBackfillTest {
             )
             assertTrue(!result.isError, result.text)
         }
-        assertEquals(fixture.ordinaryId, issues.forProject(fixture.projectId).single().createdBy)
+        assertEquals(Author.Account(fixture.ordinaryId), issues.forProject(fixture.projectId).single().author)
+    }
+
+    // ── An author with no account ────────────────────────────────────────────
+
+    /**
+     * The case the whole `author_external` parameter exists for.
+     *
+     * A GitHub handle with nothing behind it: no account, no way to make one, and
+     * the import is worthless if the board says the admin wrote all of it. Asserts
+     * the row, not the response — "Created LMX-1" is what the broken version says
+     * too.
+     */
+    @Test
+    fun `an admin can attribute an issue to somebody with no account`(): Unit = runBlocking {
+        val fixture = seed()
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "create_issue",
+                """{"project_id":${fixture.projectId},"title":"Imported","author_external":"octocat",""" +
+                    """"created_at":$backfilledAt}""",
+            )
+            assertTrue(!result.isError, "The admin's external backfill was refused: ${result.text}")
+        }
+
+        val issue = issues.forProject(fixture.projectId).single()
+        assertEquals(Author.External("octocat"), issue.author)
+        assertEquals(backfilledAt, issue.createdAt, "The given created_at was not stored.")
+        assertEquals(backfilledAt, issue.updatedAt, "updated_at straddled created_at on the external path.")
+    }
+
+    /**
+     * A non-admin is refused, and nothing is written.
+     *
+     * The same failure the file's first test guards, on the parameter that is
+     * strictly worse to get wrong: `author` can at least only name somebody who
+     * already exists here, while `author_external` will write whatever string it
+     * is handed. If this one is ever ignored rather than refused, any user can
+     * put any name on the board and the agent will report that it worked.
+     */
+    @Test
+    fun `a non-admin naming an external author is refused, and no issue is written`(): Unit = runBlocking {
+        val fixture = seed()
+        val token = tokenFor(fixture.ordinaryId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "create_issue",
+                """{"project_id":${fixture.projectId},"title":"Imported","author_external":"octocat"}""",
+            )
+            assertTrue(result.isError, "A non-admin wrote an issue under an invented author.")
+            assertTrue(
+                result.text.contains("Only an admin"),
+                "The refusal must say why. Got: ${result.text}",
+            )
+        }
+        assertEquals(
+            emptyList(),
+            issues.forProject(fixture.projectId),
+            "The refusal was reported but the issue was written anyway.",
+        )
+    }
+
+    /**
+     * Two answers to one question.
+     *
+     * The database would refuse this anyway — see the CHECK in Issues.sq — but as
+     * a constraint violation, which reaches the agent as "that failed inside
+     * Lunicle" and reads as our bug rather than its mistake. Refused here, in a
+     * sentence, before anything is written.
+     */
+    @Test
+    fun `naming both an account author and an external one is refused`(): Unit = runBlocking {
+        val fixture = seed()
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "create_issue",
+                """{"project_id":${fixture.projectId},"title":"Both","author":"Ordinary",""" +
+                    """"author_external":"octocat"}""",
+            )
+            assertTrue(result.isError, "An issue was written with two authors.")
+            assertTrue(
+                !result.text.contains("inside Lunicle"),
+                "The pair reached the database and surfaced as a server error rather than a refusal.",
+            )
+        }
+        assertEquals(emptyList(), issues.forProject(fixture.projectId))
+    }
+
+    /**
+     * An imported comment keeps its author too.
+     *
+     * Separate from the issue case because the two write through different stores
+     * and only one of them was ever going to be remembered.
+     */
+    @Test
+    fun `an admin can attribute a comment to somebody with no account`(): Unit = runBlocking {
+        val fixture = seed()
+        val (issueId, _) = published(fixture)
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "add_comment",
+                """{"issue_id":$issueId,"body":"Imported reply","author_external":"octocat",""" +
+                    """"created_at":$backfilledAt}""",
+            )
+            assertTrue(!result.isError, result.text)
+        }
+
+        val comment = comments.forIssue(issueId).single()
+        assertEquals(Author.External("octocat"), comment.author)
+        assertEquals(backfilledAt, comment.createdAt)
+    }
+
+    /**
+     * The name reaches a reader, on both surfaces.
+     *
+     * The point of storing it. A `created_by_external` that is written and then
+     * rendered as "no author" is the same board the import was trying to avoid,
+     * and the two read paths decide this separately — see `Author.displayName`,
+     * which exists so they cannot decide it differently.
+     */
+    @Test
+    fun `an external author is rendered as the author over MCP`(): Unit = runBlocking {
+        val fixture = seed()
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            client.callTool(
+                token,
+                "create_issue",
+                """{"project_id":${fixture.projectId},"title":"Imported","author_external":"octocat"}""",
+            )
+            // Parsed rather than substring-matched: the tools pretty-print, so
+            // `"author":"octocat"` is not a string that appears in the output
+            // even when the answer is right.
+            val board = client.callTool(token, "get_board", """{"project_id":${fixture.projectId}}""")
+            val card = Json.parseToJsonElement(board.text).jsonObject["issues"]!!.jsonArray.single().jsonObject
+            assertEquals(
+                "octocat",
+                card["author"]?.jsonPrimitive?.contentOrNull,
+                "get_board did not report the imported author.",
+            )
+
+            val issueId = issues.forProject(fixture.projectId).single().id
+            val detail = client.callTool(token, "get_issue", """{"issue_id":$issueId}""")
+            assertEquals(
+                "octocat",
+                Json.parseToJsonElement(detail.text).jsonObject["author"]?.jsonPrimitive?.contentOrNull,
+                "get_issue did not report the imported author.",
+            )
+        }
+    }
+
+    /**
+     * An imported issue belongs to nobody, so nobody inherits it.
+     *
+     * The consequence of there being no account: `created_by` is null, which
+     * [AccessControl.canEditIssue] already reads as unowned. Worth pinning
+     * because the tempting "fix" — matching an external name against display
+     * names at read time — would hand a stranger edit rights over imported
+     * history by virtue of sharing a GitHub handle.
+     */
+    @Test
+    fun `an imported issue is not editable by a user who happens to share the name`(): Unit = runBlocking {
+        val fixture = seed()
+        // An ordinary account whose display name IS the imported handle.
+        val impostor = users.upsert(ProviderIdentity(AuthProvider.GOOGLE, "google-octocat", "octocat", null))
+        withMcp { client ->
+            client.callTool(
+                tokenFor(fixture.adminId),
+                "create_issue",
+                """{"project_id":${fixture.projectId},"title":"Imported","author_external":"octocat"}""",
+            )
+        }
+
+        val issue = issues.forProject(fixture.projectId).single()
+        assertEquals(Author.External("octocat"), issue.author)
+        assertTrue(
+            !access.canEditIssue(impostor, issue),
+            "A user called \"octocat\" inherited an issue imported from a GitHub user called \"octocat\".",
+        )
     }
 
     // ── The author must be a real row ────────────────────────────────────────
@@ -428,7 +618,7 @@ class McpBackfillTest {
         }
 
         val issue = issues.forProject(fixture.projectId).single()
-        assertEquals(fixture.ordinaryId, issue.createdBy, "An ordinary issue lost its author.")
+        assertEquals(Author.Account(fixture.ordinaryId), issue.author, "An ordinary issue lost its author.")
         assertTrue(
             issue.createdAt >= before && issue.createdAt <= System.currentTimeMillis(),
             "An ordinary issue was not stamped now: ${issue.createdAt}",
@@ -458,7 +648,7 @@ class McpBackfillTest {
         }
 
         val issue = issues.forProject(fixture.projectId).single()
-        assertEquals(fixture.adminId, issue.createdBy)
+        assertEquals(Author.Account(fixture.adminId), issue.author)
         assertTrue(issue.createdAt >= before)
     }
 
@@ -482,7 +672,7 @@ class McpBackfillTest {
             )
             assertTrue(!result.isError, "A client that spelled out its nulls was refused: ${result.text}")
         }
-        assertEquals(fixture.ordinaryId, issues.forProject(fixture.projectId).single().createdBy)
+        assertEquals(Author.Account(fixture.ordinaryId), issues.forProject(fixture.projectId).single().author)
     }
 
     // ── Fixture ──────────────────────────────────────────────────────────────
@@ -520,7 +710,7 @@ class McpBackfillTest {
 
     /** A published issue to hang comments off. */
     private suspend fun published(fixture: Fixture): Pair<Long, Long> {
-        val created = issueRepository.createDraft(fixture.projectId, fixture.adminId)
+        val created = issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
         val issue = issues.findById(created.first)!!
         issueRepository.save(
             issue = issue,
@@ -621,6 +811,7 @@ class McpBackfillTest {
         comments = comments,
         attachments = attachmentStore,
         attachmentRepository = attachments,
+        attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
         impersonations = Impersonations(),

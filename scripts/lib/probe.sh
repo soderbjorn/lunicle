@@ -25,8 +25,14 @@ lunicle_probe_url() {
 # connection to that port, so an open browser tab pointing at localhost:8080 —
 # or Docker's own backend proxy — would count as "the port is taken". Only a
 # listener actually holds it.
+#
+# The trailing `|| true` is not decoration. lsof exits 1 when it matches
+# nothing, and every caller runs under `set -o pipefail`, so without it this
+# function FAILS precisely when the port is free — and `set -e` then kills the
+# caller mid-sentence. That is how `stop.sh --status` came to exit 1 without
+# ever printing its verdict: the happy path was the fatal one.
 port_holder() {
-  lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $1" (pid "$2")"; exit}'
+  lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $1" (pid "$2")"; exit}' || true
 }
 
 # port_is_held PORT — true if anything is listening.

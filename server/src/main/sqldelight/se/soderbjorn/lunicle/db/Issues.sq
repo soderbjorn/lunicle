@@ -103,6 +103,21 @@ CREATE TABLE issues (
     -- edit — which is correct.
     created_by INTEGER,
 
+    -- The author when there is no account to point at: history imported from
+    -- another tracker, written by somebody who has never signed in here.
+    --
+    -- The name itself, because there is nothing else to hold. Naming somebody
+    -- does not create an account, and minting one to hang this on would put a
+    -- row in `users` that cannot sign in, must never be offered in a picker,
+    -- and would collide with the real account if that person ever arrived.
+    --
+    -- Exclusive with created_by — see the CHECK below. So an imported issue is
+    -- unowned as far as AccessControl is concerned, landing on the same rule as
+    -- a deleted author above: admin, or a change_unowned_issues holder. That is
+    -- the correct answer rather than a shortfall. An imported author cannot
+    -- edit their own issue because there is no "they" here to be.
+    created_by_external TEXT,
+
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
     -- Composite: a status must belong to THIS issue's project. No ON DELETE —
@@ -115,7 +130,17 @@ CREATE TABLE issues (
 
     UNIQUE (project_id, number),
     -- The target of the join tables' composite foreign keys. See IssueLabels.sq.
-    UNIQUE (id, project_id)
+    UNIQUE (id, project_id),
+
+    -- One author or the other, never both. Both null is still allowed and still
+    -- means "nobody" — that is what ON DELETE SET NULL leaves behind.
+    --
+    -- Without this, an imported name could sit alongside a real account and the
+    -- reads that prefer the external name would silently mask the account on
+    -- every board and every API response. That is the precise bug this column
+    -- exists to avoid, so it is worth making unrepresentable rather than
+    -- merely discouraged.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
 );
 
 -- Allocate the number and insert, in one statement.
@@ -136,11 +161,11 @@ CREATE TABLE issues (
 -- one that demands a resolution. It defaults to NULL, which is the correct
 -- answer for every issue that is not closed.
 insert:
-INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by)
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by, created_by_external)
 VALUES (
     ?,
     (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project_id = ?),
-    ?, ?, ?, ?, 1, ?, ?, ?
+    ?, ?, ?, ?, 1, ?, ?, ?, ?
 )
 RETURNING id, number;
 
@@ -190,7 +215,7 @@ DELETE FROM issues WHERE id = ?;
 
 findById:
 SELECT id, project_id, number, title, description, status_id, priority_id, resolution_id,
-       is_draft, created_at, updated_at, sort_order, created_by
+       is_draft, created_at, updated_at, sort_order, created_by, created_by_external
 FROM issues WHERE id = ?;
 
 -- How many issues hold each of this project's statuses — the count the settings
@@ -261,7 +286,8 @@ GROUP BY resolution_id;
 -- an inner join would return an empty board.
 forProject:
 SELECT i.id, i.project_id, i.number, i.title, i.description, i.status_id, i.priority_id,
-       i.resolution_id, i.is_draft, i.created_at, i.updated_at, i.sort_order, i.created_by
+       i.resolution_id, i.is_draft, i.created_at, i.updated_at, i.sort_order, i.created_by,
+       i.created_by_external
 FROM issues i
 JOIN priorities p ON p.id = i.priority_id
 LEFT JOIN resolutions r ON r.id = i.resolution_id

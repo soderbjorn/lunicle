@@ -35,6 +35,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import org.slf4j.LoggerFactory
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AttachmentRef
 import se.soderbjorn.lunicle.clientserver.BoardState
@@ -105,6 +107,14 @@ class BoardDependencies(
     val comments: CommentStore,
     val attachments: AttachmentStore,
     val attachmentRepository: AttachmentRepository,
+    /**
+     * Live upload tickets, for the one attachment route that has no session.
+     *
+     * In memory and therefore not a store like the rest of these — see
+     * [AttachmentTicketStore] for why that is safe here and exactly when it
+     * would stop being.
+     */
+    val attachmentTickets: AttachmentTicketStore,
     val sessions: SessionStore,
     val users: UserStore,
     // Read on every request, to turn the session cookie into an EFFECTIVE user.
@@ -187,12 +197,20 @@ private suspend fun ApplicationCall.readableProject(
     return project
 }
 
-/** Names for the author columns, resolved once per response rather than per row. */
-private suspend fun BoardDependencies.authorNames(ids: Collection<Long>): Map<Long, String> =
+/**
+ * Names for the accounts among [authors], resolved once per response rather than
+ * per row.
+ *
+ * Only accounts appear here. An [Author.External] carries its name already —
+ * there is nothing to look it up in, which is the whole point of the column —
+ * and [Author.Nobody] has none. See [displayName], which is the other half.
+ */
+private suspend fun BoardDependencies.authorNames(authors: Collection<Author>): Map<Long, String> =
     // distinct() first: a board where one person filed forty issues would
     // otherwise be forty identical lookups. Small, but this is the one query in
     // the response that scales with the number of cards.
-    ids.distinct().mapNotNull { id -> users.findById(id)?.let { id to it.resolvedName } }.toMap()
+    authors.mapNotNull { it.accountId }.distinct()
+        .mapNotNull { id -> users.findById(id)?.let { id to it.resolvedName } }.toMap()
 
 
 /**
@@ -403,7 +421,7 @@ private suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: U
     // IssueStore.labelsForProject.
     val labelsByIssue = issues.labelsForProject(project.id)
     val componentsByIssue = issues.componentsForProject(project.id)
-    val names = authorNames(issueRows.mapNotNull { it.createdBy })
+    val names = authorNames(issueRows.map { it.author })
     val permissions = access.permissionsFor(user, project.id)
 
     return BoardState(
@@ -428,7 +446,7 @@ private suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: U
                 resolutionId = issue.resolutionId,
                 labelIds = labelsByIssue[issue.id].orEmpty(),
                 componentIds = componentsByIssue[issue.id].orEmpty(),
-                authorName = issue.createdBy?.let { names[it] },
+                authorName = issue.author.displayName(names),
                 createdAt = issue.createdAt,
                 updatedAt = issue.updatedAt,
                 canEdit = access.canEditIssue(user, issue),
@@ -452,7 +470,7 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.Forbidden, "You cannot create issues in this project.")
             return@post
         }
-        val (id, number) = deps.issueRepository.createDraft(project.id, user?.id)
+        val (id, number) = deps.issueRepository.createDraft(project.id, user.asAuthor())
         call.respond(IssueDraft(id, number))
     }
 
@@ -662,7 +680,7 @@ private suspend fun ApplicationCall.readableIssue(
 
 private suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user: UserRecord?): IssueDetail {
     val commentRows = comments.forIssue(issue.id)
-    val names = authorNames(commentRows.mapNotNull { it.createdBy } + listOfNotNull(issue.createdBy))
+    val names = authorNames(commentRows.map { it.author } + issue.author)
     return IssueDetail(
         id = issue.id,
         projectId = issue.projectId,
@@ -675,14 +693,14 @@ private suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user:
         isDraft = issue.isDraft,
         labelIds = issues.labelsFor(issue.id),
         componentIds = issues.componentsFor(issue.id),
-        authorName = issue.createdBy?.let { names[it] },
+        authorName = issue.author.displayName(names),
         createdAt = issue.createdAt,
         updatedAt = issue.updatedAt,
         comments = commentRows.map { comment ->
             CommentView(
                 id = comment.id,
                 body = comment.body,
-                authorName = comment.createdBy?.let { names[it] },
+                authorName = comment.author.displayName(names),
                 createdAt = comment.createdAt,
                 canEdit = access.canEditComment(user, comment),
             )
@@ -703,7 +721,7 @@ private fun Route.commentRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.Forbidden, "You cannot comment on this project's issues.")
             return@post
         }
-        call.respond(CommentDraft(deps.issueRepository.createCommentDraft(issue.id, user?.id)))
+        call.respond(CommentDraft(deps.issueRepository.createCommentDraft(issue.id, user.asAuthor())))
     }
 
     put("/api/comments/{id}") {
@@ -788,7 +806,7 @@ private fun Route.attachmentRoutes(deps: BoardDependencies) {
                 filename = upload.filename,
                 declaredMimeType = upload.mimeType,
                 bytes = upload.bytes,
-                createdBy = user?.id,
+                author = user.asAuthor(),
             )
             call.respond(AttachmentRef(id))
         } catch (rejected: AttachmentRejected) {
@@ -806,10 +824,77 @@ private fun Route.attachmentRoutes(deps: BoardDependencies) {
                 filename = upload.filename,
                 declaredMimeType = upload.mimeType,
                 bytes = upload.bytes,
-                createdBy = user?.id,
+                author = user.asAuthor(),
             )
             call.respond(AttachmentRef(id))
         } catch (rejected: AttachmentRejected) {
+            call.respond(HttpStatusCode.BadRequest, rejected.userMessage)
+        }
+    }
+
+    /**
+     * Redeem an upload ticket: the one attachment route with no session.
+     *
+     * The token IS the authorisation, and it is the whole of it. Everything this
+     * route would otherwise have to decide — may you, which issue, what is it
+     * called, whose is it, when does it claim to be from — was decided at mint,
+     * under [AccessControl], and is read back out of the ticket rather than out
+     * of the request. See [AttachmentTicketStore].
+     *
+     * So there is deliberately no `caller(deps)` here, and its absence is the
+     * design rather than an omission: a signed-in user redeeming a ticket gets
+     * the ticket's author, not their own. The alternative — letting the request
+     * contribute *anything* to attribution — is how an admin-only capability
+     * stops being admin-only, because the mint check would no longer be the last
+     * word.
+     *
+     * 404 rather than 401/403 for a bad token, and one answer for every kind of
+     * bad. See [AttachmentTicketStore.redeem].
+     */
+    post("/api/attachments/upload/{token}") {
+        val token = call.parameters["token"]
+        val ticket = token?.let { deps.attachmentTickets.redeem(it) }
+        if (ticket == null) {
+            call.respond(
+                HttpStatusCode.NotFound,
+                "That upload ticket is not valid. Tickets are single-use and expire after a few " +
+                    "minutes — mint a new one and upload again.",
+            )
+            return@post
+        }
+        val upload = call.receiveUpload(knownFilename = ticket.filename) ?: return@post
+        try {
+            val id = when (val target = ticket.target) {
+                is AttachmentTarget.Issue -> deps.attachmentRepository.storeForIssue(
+                    issueId = target.issueId,
+                    filename = upload.filename,
+                    declaredMimeType = upload.mimeType,
+                    bytes = upload.bytes,
+                    author = ticket.author,
+                    createdAt = ticket.createdAt,
+                )
+
+                is AttachmentTarget.Comment -> deps.attachmentRepository.storeForComment(
+                    commentId = target.commentId,
+                    filename = upload.filename,
+                    declaredMimeType = upload.mimeType,
+                    bytes = upload.bytes,
+                    author = ticket.author,
+                    createdAt = ticket.createdAt,
+                )
+            }
+            call.respond(
+                TicketedUpload(
+                    attachmentId = id,
+                    url = ApiRoutes.attachment(id),
+                    rendersInline = isInlineImageType(upload.mimeType),
+                ),
+            )
+        } catch (rejected: AttachmentRejected) {
+            // The ticket is already spent, and stays spent. Re-admitting it on a
+            // rejection would make "single use" mean "one success", and a caller
+            // could sit on a ticket retrying variations of a file until one got
+            // past validate.
             call.respond(HttpStatusCode.BadRequest, rejected.userMessage)
         }
     }
@@ -917,15 +1002,47 @@ private fun Route.attachmentRoutes(deps: BoardDependencies) {
 private class Upload(val filename: String, val mimeType: String, val bytes: ByteArray)
 
 /**
+ * What a ticketed upload answers with.
+ *
+ * Deliberately richer than [AttachmentRef], which the session routes still use.
+ * A browser already knows what it sent and has `attachmentMarkdown` to spell the
+ * result; an agent holding a ticket has neither, so this hands back the three
+ * things it would otherwise have to guess at — where the file now lives, and
+ * whether it draws inline or downloads.
+ *
+ * [rendersInline] is the important one, and it is here rather than left to the
+ * agent because it is a *fact this server owns*: [INLINE_IMAGE_MIME_TYPES] is
+ * the single list that decides both the `Content-Disposition` on the way back
+ * out and whether an `<img>` is honest. An agent guessing from a file extension
+ * would be a second copy of that list, in a language model, drifting.
+ *
+ * Not in :clientServer with the other wire types: nothing on the client reads
+ * this. The audience is an agent, and the house rule for that module is "what
+ * both sides must agree on", which this is not.
+ */
+@Serializable
+private data class TicketedUpload(
+    @SerialName("attachment_id") val attachmentId: Long,
+    val url: String,
+    @SerialName("renders_inline") val rendersInline: Boolean,
+)
+
+/**
  * Read an upload, or respond and return null.
  *
  * Raw bytes with the filename in a query parameter rather than a multipart form:
  * there is exactly one field here — the body *is* the file — and the
  * Content-Type header already says what it is. Multipart would add a boundary,
  * a part header and an encoder to express what those two already do.
+ *
+ * @param knownFilename the name when the request is not the thing that gets to
+ *   say it — a ticketed upload, whose filename was fixed at mint. Null for the
+ *   session routes, which read it from the query as they always have. This is
+ *   not a default to prefer: a ticket holder naming their own file would be a
+ *   caller editing a decision that was made under a permission check.
  */
-private suspend fun ApplicationCall.receiveUpload(): Upload? {
-    val filename = request.queryParameters["filename"]?.takeIf { it.isNotBlank() } ?: run {
+private suspend fun ApplicationCall.receiveUpload(knownFilename: String? = null): Upload? {
+    val filename = knownFilename ?: request.queryParameters["filename"]?.takeIf { it.isNotBlank() } ?: run {
         respond(HttpStatusCode.BadRequest, "A filename is required.")
         return null
     }

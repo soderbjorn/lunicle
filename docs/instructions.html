@@ -171,19 +171,30 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
   <h2><span class="num">Step 1</span> Local, before Railway</h2>
   <p class="subtitle">Neither mode deploys anything. Both work with nothing on the internet.</p>
 
-  <p>Two scripts, two modes. Both run the <strong>actual Docker image</strong> Railway will build,
-  with the same entrypoint and the same injected <code>PORT</code> — so they exercise the packaging,
-  not just the code. Both wait until the server really answers, then open the right URL. Add
-  <code>--no-open</code> to skip the browser, <code>--no-build</code> to skip the image rebuild.</p>
+  <p>Four run scripts, named <code>run-&lt;what&gt;-&lt;how&gt;.sh</code>. <em>What</em> runs the
+  tracker is either <code>dev</code> (your working tree, via Gradle — fast to iterate) or
+  <code>container</code> (the actual Docker image Railway will build, with the same entrypoint and
+  the same injected <code>PORT</code> — so it exercises the packaging, not just the code).
+  <em>How</em> it is presented is either <code>standalone</code> or <code>embedded</code> in the
+  lunamux site. All four wait until the server really answers, then open the right URL. Add
+  <code>--no-open</code> to skip the browser; the two container scripts also take
+  <code>--no-build</code> to skip the image rebuild. See <a href="../scripts/README.html">
+  scripts/README.html</a> for the full map.</p>
+
+  <p>The <code>container</code> pair is what you want when the question is <em>"does the thing I'm
+  about to deploy work"</em>. The <code>dev</code> pair is what you want while changing code — an
+  incremental Kotlin build in seconds, rather than a full rebuild inside the image.</p>
 
   <h3>Standalone — the tracker on its own</h3>
-<pre>./scripts/run-standalone.sh     <span class="c"># → http://localhost:8080/</span></pre>
+<pre>./scripts/run-container-standalone.sh   <span class="c"># → http://localhost:8080/</span>
+./scripts/run-dev-standalone.sh         <span class="c"># → same, from your working tree</span></pre>
   <p>Just the app: no website around it, and therefore <strong>no Issues tab</strong> — that is this
   mode working, not failing. Framing stays restricted to <code>lunamux.dev</code> exactly as in
   production, so this mode can never prove something the deployed site wouldn't allow.</p>
 
   <h3>Embedded — the tracker inside the lunamux site</h3>
-<pre>./scripts/run-embedded.sh       <span class="c"># → http://localhost:8000/?issues=1#/issues</span></pre>
+<pre>./scripts/run-container-embedded.sh     <span class="c"># → http://localhost:8000/?issues=1#/issues</span>
+./scripts/run-dev-embedded.sh           <span class="c"># → same, from your working tree</span></pre>
   <p>This is the one that shows what Stage 1 is for. It serves your <code>lunamux-web</code>
   checkout with Python's built-in HTTP server (already on your Mac — nothing to install), points the
   tab's iframe at the container, and opens the tab. Ctrl-C stops the site; the container keeps
@@ -194,7 +205,7 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
     <li>The container is started permitting <code>http://localhost:8000</code> to frame it (plus
       lunamux.dev — <code>frame-ancestors</code> takes a space-separated list). Same header, same
       browser enforcement; only the value differs. <strong>This is the single deliberate difference
-      from the deployed configuration</strong>; <code>run-standalone.sh</code> uses production's
+      from the deployed configuration</strong>; the <code>standalone</code> pair uses production's
       policy untouched.</li>
     <li>lunamux-web frames <code>localhost:8080</code> instead of <code>lunicle.lunamux.dev</code>
       when the <em>site itself</em> is served from localhost
@@ -223,15 +234,6 @@ footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color
   running, replaces any previous instance so re-running after a code change just works, and dumps
   the container's logs if it fails to come up. Switching between the two modes re-creates the
   container with that mode's framing policy, so a stale policy can't linger.</p>
-
-  <div class="note">
-    <p class="lbl">Also there: dev-local.sh</p>
-    <p><code>./scripts/dev-local.sh</code> (and <code>--embed</code>) does the same two modes
-    straight from Gradle, with no Docker. It is much faster to iterate against — an incremental
-    Kotlin build in seconds, rather than a full rebuild inside the image — so it's the one to reach
-    for while changing code. The two scripts above are what you want when the question is "does the
-    thing I'm about to deploy work".</p>
-  </div>
 
   <div class="note">
     <p class="lbl">What this does and doesn't buy you</p>

@@ -24,18 +24,18 @@
  *
  * ── The one exception, and its shape ────────────────────────────────────────
  *
- * Someone asked. `create_issue` and `add_comment` take an optional `author` and
- * `created_at`, so that an admin importing another tracker's history ends up with
- * a board that says who wrote what and when — rather than one where every issue
- * was filed by the admin, today. §3 of the plan says admin operations are not
- * exposed over MCP and that there is one flat `mcp` scope; both still hold, and
- * this is deliberately not a counterexample to either:
+ * Someone asked. `create_issue` and `add_comment` take an optional `author`,
+ * `author_external` and `created_at`, so that an admin importing another tracker's
+ * history ends up with a board that says who wrote what and when — rather than one
+ * where every issue was filed by the admin, today. §3 of the plan says admin
+ * operations are not exposed over MCP and that there is one flat `mcp` scope; both
+ * still hold, and this is deliberately not a counterexample to either:
  *
- *  - **No new tool and no new scope.** Two optional parameters on two tools that
- *    already exist. The token still says only who you are.
+ *  - **No new scope**, and the one new tool is not an admin tool — see below.
+ *    The token still says only who you are.
  *  - **The gate is [AccessControl.canAttributeWrites]**, asked of the *token's*
  *    user on every call, server-side. Never of anything in the arguments.
- *  - **Refused, never ignored.** A non-admin who sends either parameter gets an
+ *  - **Refused, never ignored.** A non-admin who sends any of them gets an
  *    error. Silently dropping them would be the worst outcome available: the agent
  *    would report that it had backfilled history under Ada's name having actually
  *    written it under its own, and the person reading that report has no way to
@@ -43,6 +43,32 @@
  *  - **Creation only.** There is no way to rewrite an existing row's author or
  *    timestamps, for anyone. Backfill is a thing you do at import, not a thing the
  *    board's history is subject to afterwards.
+ *
+ * `author_external` is the same exception widened by exactly one case: an imported
+ * author who has no account here at all, and cannot be given one — see Issues.sq's
+ * `created_by_external`. It is a separate parameter rather than `author` falling
+ * back to a bare name when nothing matches, because that fallback would eat the
+ * refusal in [resolveAuthor] precisely when it matters: a typo in a real user's
+ * name matches nothing, and would quietly become an invented author reading almost
+ * right. See [resolveAttribution].
+ *
+ * ── The second exception: uploading ─────────────────────────────────────────
+ *
+ * `start_attachment_upload` is a new tool, which the paragraph above says there
+ * would not be. It earns it by being the only way to finish the job the first
+ * exception started — an imported issue whose screenshots are all dead GitHub
+ * links is an import that did not happen — and it stays inside the rule that
+ * matters: it grants an agent exactly what the person driving it already has
+ * through the web app, gated by the same [AccessControl.canEditIssue] and
+ * [AccessControl.canEditComment] the HTTP routes use.
+ *
+ * It is deliberately **not** admin-only. Attaching a file is an ordinary thing an
+ * ordinary user does; attaching one *as somebody else* is the admin-only part, and
+ * that is [resolveAttribution]'s job here exactly as it is on `create_issue`.
+ *
+ * The bytes do not come through this tool, and that is the whole design rather
+ * than an optimisation. See [AttachmentTicketStore] for why base64-through-context
+ * and fetch-a-URL-server-side were both rejected, and what a ticket can do instead.
  *
  * ── Names, not ids, wherever a human would use a name ───────────────────────
  *
@@ -170,17 +196,36 @@ internal val MCP_INSTRUCTIONS = """
     exist. If a task needs one, say so — do not approximate it by editing an issue
     into a tombstone.
 
+    Attaching a file takes two steps and the second one is yours: start_attachment_upload
+    hands back a URL, and the bytes only arrive when you push them at it with a
+    shell command. They never travel through this conversation — do not read a
+    file in order to upload it, and do not base64 anything. Uploading also does
+    not put the file into any text: the tool tells you the url to use, and writing
+    the markdown that points at it is a separate edit you make yourself.
+
     Backfilling history, if and only if you are acting as an admin: create_issue
-    and add_comment take an optional `author` and an optional `created_at`, for
-    importing issues from somewhere else so that they keep the name and date they
-    had. Both are admin-only and are refused outright — not ignored — for anyone
-    else, so do not send either speculatively: a refusal costs a round-trip, and
-    the alternative you might imagine (it silently files under your own name) is
-    exactly what the refusal exists to prevent. Name the author by their display
-    name as it appears on the board, or by the email address on their account if
-    two people share a name. `created_at` is epoch milliseconds and cannot be in
-    the future. Neither can be changed afterwards by any tool, so get them right on
-    the way in.
+    and add_comment take an optional `author`, an optional `author_external` and an
+    optional `created_at`, for importing issues from somewhere else so that they
+    keep the name and date they had. All three are admin-only and are refused
+    outright — not ignored — for anyone else, so do not send them speculatively: a
+    refusal costs a round-trip, and the alternative you might imagine (it silently
+    files under your own name) is exactly what the refusal exists to prevent.
+
+    Which author parameter to use is a question about the person, not a fallback
+    chain. `author` is for somebody who has a Lunicle account: name them by their
+    display name as it appears on the board, or by the email address on their
+    account if two people share a name. It is refused if no account matches, and
+    that refusal is load-bearing — it is how a misspelled name gets caught instead
+    of quietly becoming a stranger. `author_external` is for somebody who has no
+    account at all, which is the ordinary case when importing from another tracker:
+    it records the name as written, creates nothing, and grants nobody anything.
+    Passing both is refused. `created_at` is epoch milliseconds and cannot be in
+    the future. None of them can be changed afterwards by any tool, so get them
+    right on the way in.
+
+    An issue or comment filed under `author_external` is unowned: nobody can edit
+    it afterwards except an admin. That is a consequence of there being no account
+    to own it, not an oversight, and it applies to imported attachments too.
 
     Writing issues well: the title is one line and is what people see on the card,
     so make it a statement of the problem rather than a category. The description
@@ -305,6 +350,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "labels" to stringArrayProp("Label names from get_board."),
                 "components" to stringArrayProp("Component names from get_board."),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
+                "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
                     "ADMIN ONLY, for backfilling. When this issue was written, in epoch " +
                         "milliseconds. Cannot be in the future. Also becomes the issue's " +
@@ -350,12 +396,49 @@ class McpTools(private val deps: BoardDependencies) {
                 "issue_id" to integerProp("The issue to comment on."),
                 "body" to stringProp("The comment, in markdown."),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
+                "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
                     "ADMIN ONLY, for backfilling. When this comment was written, in epoch " +
                         "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
                         "not an admin. Defaults to now.",
                 ),
                 required = listOf("issue_id", "body"),
+            ),
+        ),
+        McpTool(
+            name = "start_attachment_upload",
+            description = "Attach a file to an issue or a comment. Two steps, because the bytes " +
+                "do not travel through this conversation: this call returns an `upload_url`, and " +
+                "you then PUSH THE FILE AT IT YOURSELF with a shell command. Nothing is attached " +
+                "until you do.\n\n" +
+                "  curl -sS --fail --data-binary @FILE -H 'Content-Type: image/png' 'UPLOAD_URL'\n\n" +
+                "The response gives you `attachment_id` and `url`. Put the file into the issue or " +
+                "comment body yourself, as markdown, using that `url` — uploading does not change " +
+                "any text. Use ![name](url) if the response says `renders_inline` is true, and " +
+                "[name (size)](url) otherwise; getting that backwards leaves a broken image in the " +
+                "issue.\n\n" +
+                "For a file on the web, download it first — `curl -sL SRC -o /tmp/f.png` — then " +
+                "upload that. Do NOT pipe one curl into another: the upload needs a Content-Length " +
+                "and a pipe has none, so it is rejected with 411. When you are importing a body " +
+                "that already contains image markdown, you are REPLACING the old URL with the new " +
+                "one, not writing new markdown.\n\n" +
+                "The ticket is single-use and expires in a few minutes. If it lapses, call this " +
+                "again — they are free.",
+            inputSchema = schema(
+                "issue_id" to integerProp("Attach to this issue's description. Give this or comment_id, not both."),
+                "comment_id" to integerProp("Attach to this comment. Give this or issue_id, not both."),
+                "filename" to stringProp(
+                    "The name to store it under, as it should appear to someone downloading it. " +
+                        "Fixed now: the upload cannot rename it.",
+                ),
+                "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
+                "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
+                "created_at" to integerProp(
+                    "ADMIN ONLY, for backfilling. When this file was uploaded, in epoch " +
+                        "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
+                        "not an admin. Defaults to whenever the bytes land.",
+                ),
+                required = listOf("filename"),
             ),
         ),
     )
@@ -367,7 +450,19 @@ class McpTools(private val deps: BoardDependencies) {
      * a session cookie produces — which is why every branch below can hand it
      * straight to [AccessControl] without a word about tokens.
      */
-    suspend fun call(user: UserRecord, name: String, arguments: JsonObject): McpToolResult = when (name) {
+    /**
+     * @param origin this server's own base URL, as the caller reached it. Passed
+     *   in rather than configured or rebuilt: [start_attachment_upload] hands
+     *   back a URL somebody has to be able to curl, and the one function that
+     *   knows what this server is called is `ApplicationCall.serverOrigin` — see
+     *   its docs for why there must be exactly one of it.
+     */
+    suspend fun call(
+        user: UserRecord,
+        name: String,
+        arguments: JsonObject,
+        origin: String,
+    ): McpToolResult = when (name) {
         "list_projects" -> listProjects(user)
         "get_board" -> getBoard(user, arguments)
         "get_issue" -> getIssue(user, arguments)
@@ -375,6 +470,7 @@ class McpTools(private val deps: BoardDependencies) {
         "update_issue" -> updateIssue(user, arguments)
         "move_issue" -> moveIssue(user, arguments)
         "add_comment" -> addComment(user, arguments)
+        "start_attachment_upload" -> startAttachmentUpload(user, arguments, origin)
         else -> refuse("No such tool: $name")
     }
 
@@ -419,7 +515,7 @@ class McpTools(private val deps: BoardDependencies) {
         val componentNames = components.associate { it.id to it.name }
         // One lookup per distinct author for the whole board, not one per card.
         // See BoardDependencies.authorNames, whose reasoning this mirrors.
-        val authors = issues.mapNotNull { it.createdBy }.distinct()
+        val authors = issues.map { it.author }.mapNotNull { it.accountId }.distinct()
             .mapNotNull { id -> deps.users.findById(id)?.let { id to it.resolvedName } }
             .toMap()
         // Resolved before the JSON is built, because buildJsonObject's lambda is
@@ -468,7 +564,7 @@ class McpTools(private val deps: BoardDependencies) {
                                 putJsonArray("components") {
                                     componentsByIssue[issue.id].orEmpty().forEach { id -> componentNames[id]?.let { add(it) } }
                                 }
-                                put("author", issue.createdBy?.let { authors[it] })
+                                put("author", issue.author.displayName(authors))
                                 put("updatedAt", issue.updatedAt)
                                 // Sent for the same reason the web board sends it:
                                 // editing is per issue — authorship is one of the
@@ -492,7 +588,7 @@ class McpTools(private val deps: BoardDependencies) {
         val labelNames = deps.labels.forProject(issue.projectId).associate { it.id to it.name }
         val componentNames = deps.components.forProject(issue.projectId).associate { it.id to it.name }
         val comments = deps.comments.forIssue(issue.id)
-        val authors = (comments.mapNotNull { it.createdBy } + listOfNotNull(issue.createdBy)).distinct()
+        val authors = (comments.map { it.author } + issue.author).mapNotNull { it.accountId }.distinct()
             .mapNotNull { id -> deps.users.findById(id)?.let { id to it.resolvedName } }
             .toMap()
         // Read before the JSON is built — buildJsonObject's lambda is not a
@@ -518,7 +614,7 @@ class McpTools(private val deps: BoardDependencies) {
                 putJsonArray("components") {
                     issueComponents.forEach { id -> componentNames[id]?.let { add(it) } }
                 }
-                put("author", issue.createdBy?.let { authors[it] })
+                put("author", issue.author.displayName(authors))
                 put("createdAt", issue.createdAt)
                 put("updatedAt", issue.updatedAt)
                 put("canEdit", canEdit)
@@ -529,7 +625,7 @@ class McpTools(private val deps: BoardDependencies) {
                             buildJsonObject {
                                 put("id", comment.id)
                                 put("body", comment.body)
-                                put("author", comment.createdBy?.let { authors[it] })
+                                put("author", comment.author.displayName(authors))
                                 put("createdAt", comment.createdAt)
                             },
                         )
@@ -599,7 +695,7 @@ class McpTools(private val deps: BoardDependencies) {
 
         val (issueId, number) = deps.issueRepository.createDraft(
             project.id,
-            attribution.authorId,
+            attribution.author,
             attribution.at,
         )
         val issue = deps.issues.findById(issueId)
@@ -719,7 +815,7 @@ class McpTools(private val deps: BoardDependencies) {
 
         val commentId = deps.issueRepository.createCommentDraft(
             issue.id,
-            attribution.authorId,
+            attribution.author,
             attribution.at,
         )
         try {
@@ -731,20 +827,119 @@ class McpTools(private val deps: BoardDependencies) {
         return ok("Commented on issue ${issue.id}.")
     }
 
+    // ── Attachments ──────────────────────────────────────────────────────────
+
+    /**
+     * Mint an upload ticket.
+     *
+     * **This function is the permission check for the entire upload path.** The
+     * route that takes the bytes has none — it cannot, because the thing pushing
+     * them is a curl command with no session — so everything it will not ask is
+     * asked here, once, and stored in the ticket. See [AttachmentTicketStore].
+     *
+     * Read the order the way [resolveAttribution] asks to be read: may you write
+     * here at all, and only then whose name goes on it. The two are separate
+     * questions and the second is strictly narrower — anyone who can edit an
+     * issue may attach to it, and only an admin may attach *as somebody else*.
+     * That is the same split `create_issue` already has, and it is why this tool
+     * is not admin-only despite carrying admin-only parameters.
+     *
+     * The permission is the one the equivalent HTTP route uses, not a new one:
+     * [AccessControl.canEditIssue] for an issue, [AccessControl.canEditComment]
+     * for a comment. An agent gets what the person driving it would get through
+     * the web app, which is the whole rule for this surface.
+     */
+    private suspend fun startAttachmentUpload(
+        user: UserRecord,
+        arguments: JsonObject,
+        origin: String,
+    ): McpToolResult {
+        val wantsIssue = arguments.isPresent("issue_id")
+        val wantsComment = arguments.isPresent("comment_id")
+        if (wantsIssue == wantsComment) {
+            // Both or neither. Said as one sentence because the fix is the same
+            // either way, and because the CHECK in Attachments.sq means a row
+            // with two owners is not a thing that could be written even if this
+            // let it through.
+            return refuse(
+                "An attachment belongs to exactly one thing. Give `issue_id` to put it in an " +
+                    "issue's description, or `comment_id` to put it in a comment — not both, and " +
+                    "not neither.",
+            )
+        }
+
+        val filename = arguments.string("filename")
+            ?: return refuse("What should the file be called? `filename` is required.")
+
+        val target = if (wantsIssue) {
+            val issue = readableIssue(user, arguments) ?: return noSuchIssue()
+            if (!deps.access.canEditIssue(user, issue)) {
+                return refuse("You cannot attach files to this issue.")
+            }
+            AttachmentTarget.Issue(issue.id)
+        } else {
+            val commentId = arguments.long("comment_id")
+                ?: return refuse("`comment_id` must be a number.")
+            val comment = deps.comments.findById(commentId)
+                ?: return refuse("There is no comment $commentId.")
+            // Readable-then-editable, in that order, so a comment in a project
+            // this user cannot see is "no such comment" rather than "you may
+            // not" — the second sentence confirms it exists.
+            val issue = deps.issues.findById(comment.issueId)
+            val project = issue?.let { deps.projects.findById(it.projectId) }
+            if (project == null || !deps.access.canReadProject(user, project)) {
+                return refuse("There is no comment $commentId.")
+            }
+            if (!deps.access.canEditComment(user, comment)) {
+                return refuse("You cannot attach files to that comment. It is not yours.")
+            }
+            AttachmentTarget.Comment(comment.id)
+        }
+
+        val attribution = resolveAttribution(user, arguments)
+            .getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
+
+        val token = deps.attachmentTickets.mint(
+            target = target,
+            filename = filename,
+            author = attribution.author,
+            createdAt = attribution.at,
+        )
+
+        return ok(
+            buildJsonObject {
+                put("upload_url", "$origin/api/attachments/upload/$token")
+                put("filename", filename)
+                put(
+                    "next",
+                    "Nothing is attached yet. Push the bytes at upload_url with a shell command, " +
+                        "for example: curl -sS --fail --data-binary @FILE -H 'Content-Type: " +
+                        "image/png' '$origin/api/attachments/upload/$token'. It answers with " +
+                        "attachment_id, url and renders_inline — then put the file into the body " +
+                        "text yourself as markdown using that url. Single use, expires in a few " +
+                        "minutes.",
+                )
+            }.toString(),
+        )
+    }
+
     // ── Attribution ──────────────────────────────────────────────────────────
 
     /**
      * Who a new row belongs to, and when it claims to have been written.
      *
-     * @property authorId what goes in `created_by`. Always a real `users.id` — the
-     *   column has a foreign key, and an id that is not one is a constraint
-     *   violation surfacing as a 500 rather than as a sentence. Defaulted to the
-     *   token's own user, which is the only value it ever has outside a backfill.
+     * @property author who wrote it. An [Author.Account] holds a real `users.id`,
+     *   resolved here rather than taken on trust — the column has a foreign key,
+     *   and an id that is not one is a constraint violation surfacing as a 500
+     *   rather than as a sentence. An [Author.External] holds a name with no
+     *   account behind it and no foreign key to satisfy; see Issues.sq. Defaulted
+     *   to the token's own user, which is the only value it ever has outside a
+     *   backfill.
      * @property at what goes in `created_at` — and, for an issue, `updated_at` too;
      *   they are one value. Null means now, decided at the store where it always
      *   was, rather than here.
      */
-    private class Attribution(val authorId: Long?, val at: Long?)
+    private class Attribution(val author: Author, val at: Long?)
 
     /**
      * Work out the author and timestamp for a row about to be created, or refuse.
@@ -763,20 +958,40 @@ class McpTools(private val deps: BoardDependencies) {
      * as if they had not asked. See this file's preamble for why that is the whole
      * feature: the alternative is an agent truthfully reporting a backfill that
      * silently went in under the wrong name.
+     *
+     * ── Why `author` and `author_external` are two parameters ─────────────────
+     *
+     * They are one question with two kinds of answer, and the caller has to say
+     * which kind it is giving. The tempting alternative — one `author` that means
+     * an account when it matches one and a bare name when it does not — fails in
+     * the case nobody sees: a typo in a real user's name matches nothing, so it
+     * would quietly file the row under an invented author that reads almost
+     * right. That is exactly the refusal [resolveAuthor] exists to give, and it
+     * would be gone precisely when it was needed. Two parameters keep
+     * [resolveAuthor] strict and make "this person has no account" a thing said
+     * out loud.
+     *
+     * Note what is deliberately NOT checked: whether an `author_external` name
+     * happens to match an account. It may. The caller said `author_external`, and
+     * second-guessing an explicit parameter is the same sin as guessing at an
+     * ambiguous one — a GitHub handle that collides with a display name here is
+     * still not that person.
      */
     private suspend fun resolveAttribution(user: UserRecord, arguments: JsonObject): Result<Attribution> {
         val wantsAuthor = arguments.isPresent(AUTHOR_ARGUMENT)
+        val wantsExternalAuthor = arguments.isPresent(AUTHOR_EXTERNAL_ARGUMENT)
         val wantsTimestamp = arguments.isPresent(CREATED_AT_ARGUMENT)
-        if (!wantsAuthor && !wantsTimestamp) {
+        if (!wantsAuthor && !wantsExternalAuthor && !wantsTimestamp) {
             // The ordinary path, and the overwhelmingly common one: authored by the
             // token's user, stamped by the store. Byte-for-byte what happened before
-            // either parameter existed.
-            return Result.success(Attribution(authorId = user.id, at = null))
+            // any of these parameters existed.
+            return Result.success(Attribution(author = Author.Account(user.id), at = null))
         }
 
         if (!deps.access.canAttributeWrites(user)) {
             val asked = listOfNotNull(
                 AUTHOR_ARGUMENT.takeIf { wantsAuthor },
+                AUTHOR_EXTERNAL_ARGUMENT.takeIf { wantsExternalAuthor },
                 CREATED_AT_ARGUMENT.takeIf { wantsTimestamp },
             ).joinToString(" and ")
             return Result.failure(
@@ -789,12 +1004,31 @@ class McpTools(private val deps: BoardDependencies) {
             )
         }
 
-        val authorId = if (wantsAuthor) {
-            val named = arguments.string(AUTHOR_ARGUMENT)
-                ?: return Result.failure(ResolutionRefusal("`$AUTHOR_ARGUMENT` was given as an empty name."))
-            resolveAuthor(named).getOrElse { return Result.failure(it) }
-        } else {
-            user.id
+        if (wantsAuthor && wantsExternalAuthor) {
+            return Result.failure(
+                ResolutionRefusal(
+                    "`$AUTHOR_ARGUMENT` and `$AUTHOR_EXTERNAL_ARGUMENT` are two answers to one " +
+                        "question, so this asks for a row with two authors and the database will " +
+                        "not hold one. Nothing was written. Use `$AUTHOR_ARGUMENT` when the person " +
+                        "has a Lunicle account and `$AUTHOR_EXTERNAL_ARGUMENT` when they do not.",
+                ),
+            )
+        }
+
+        val author = when {
+            wantsAuthor -> {
+                val named = arguments.string(AUTHOR_ARGUMENT)
+                    ?: return Result.failure(ResolutionRefusal("`$AUTHOR_ARGUMENT` was given as an empty name."))
+                Author.Account(resolveAuthor(named).getOrElse { return Result.failure(it) })
+            }
+            wantsExternalAuthor -> {
+                val named = arguments.string(AUTHOR_EXTERNAL_ARGUMENT)
+                    ?: return Result.failure(
+                        ResolutionRefusal("`$AUTHOR_EXTERNAL_ARGUMENT` was given as an empty name."),
+                    )
+                Author.External(named.trim())
+            }
+            else -> Author.Account(user.id)
         }
 
         val at = if (wantsTimestamp) {
@@ -803,7 +1037,7 @@ class McpTools(private val deps: BoardDependencies) {
             null
         }
 
-        return Result.success(Attribution(authorId = authorId, at = at))
+        return Result.success(Attribution(author = author, at = at))
     }
 
     /**
@@ -1033,7 +1267,7 @@ class McpTools(private val deps: BoardDependencies) {
 private const val MAX_MCP_TITLE_LENGTH = 300
 
 /**
- * The two backfill arguments, named once.
+ * The backfill arguments, named once.
  *
  * Constants rather than string literals because each name appears in the schema
  * the agent reads, in the permission check, and inside the refusals that quote it
@@ -1041,16 +1275,28 @@ private const val MAX_MCP_TITLE_LENGTH = 300
  * refusal an agent cannot act on.
  */
 private const val AUTHOR_ARGUMENT = "author"
+private const val AUTHOR_EXTERNAL_ARGUMENT = "author_external"
 private const val CREATED_AT_ARGUMENT = "created_at"
 
-/** Shared by both tools' schemas: one description of `author`, not two that drift. */
+/** Shared by every tool that takes it: one description of `author`, not several that drift. */
 private const val AUTHOR_PROP_DESCRIPTION =
     "ADMIN ONLY, for backfilling imported history. Who this should belong to: their " +
         "display name exactly as get_board and get_issue report it, or the email address on " +
         "their account when two people share a name. They must already have a Lunicle " +
         "account — naming somebody does not create one — and an ambiguous name is refused " +
-        "rather than guessed at. Refused, not ignored, if you are not an admin. Defaults to " +
-        "you."
+        "rather than guessed at. If they have no account, use author_external instead; do not " +
+        "pass both. Refused, not ignored, if you are not an admin. Defaults to you."
+
+/** As [AUTHOR_PROP_DESCRIPTION]: one description of `author_external`, shared. */
+private const val AUTHOR_EXTERNAL_PROP_DESCRIPTION =
+    "ADMIN ONLY, for backfilling imported history written by somebody with no Lunicle " +
+        "account — a GitHub handle, say, from a tracker being migrated. Recorded as the name " +
+        "itself and rendered as the author; it creates no account and grants nobody anything, " +
+        "so the row is unowned and only an admin can edit it afterwards. Use `author` instead " +
+        "when the person does have an account, and never pass both — they are two answers to " +
+        "one question and the pair is refused. Not checked against existing accounts: if you " +
+        "pass a name somebody here happens to share, you get an author who is not them. " +
+        "Refused, not ignored, if you are not an admin."
 
 /**
  * How far past this server's clock a backfilled timestamp may still land.

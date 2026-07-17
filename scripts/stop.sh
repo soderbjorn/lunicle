@@ -13,14 +13,14 @@
 # There are three ways to have a Lunicle listening on 8080, and they are stopped
 # in three different ways:
 #
-#   * ./scripts/dev-local.sh      → a JVM forked by the Gradle *daemon*. Ctrl-C
-#                                   on the script does not always take it with
-#                                   it, because it was never the script's child.
-#   * ./scripts/container-up.sh   → a Docker container, which outlives your
-#     (or run-standalone.sh,        terminal entirely and is still there after a
-#      or run-embedded.sh)          reboot if Docker starts on login.
-#   * ./scripts/dev-local.sh      → a python http.server for the lunamux site,
-#     --embed                       on SITE_PORT.
+#   * ./scripts/run-dev-*.sh        → a JVM forked by the Gradle *daemon*. Ctrl-C
+#                                     on the script does not always take it with
+#                                     it, because it was never the script's child.
+#   * ./scripts/run-container-*.sh  → a Docker container, which outlives your
+#     (or container-up.sh)            terminal entirely and is still there after
+#                                     a reboot if Docker starts on login.
+#   * ./scripts/run-*-embedded.sh   → a python http.server for the lunamux site,
+#                                     on SITE_PORT.
 #
 # Before this script, "something is already serving http://localhost:8080/" left
 # you to work out which of the three it was and which incantation stopped it.
@@ -38,19 +38,24 @@
 # the point of them. To wipe:
 #
 #   ./scripts/container-down.sh --wipe   # the container's volume
-#   ./scripts/local-db.sh wipe           # the dev-local database
+#   ./scripts/local-db.sh wipe           # the dev server's database
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/probe.sh
+source "$SCRIPT_DIR/lib/probe.sh"
+# DEV_SERVER_MARKER, so the marker this kills by is defined in exactly one place
+# — the same one the run scripts start with. Two scripts with their own idea of
+# which process is "ours" is one that eventually kills the wrong thing, or
+# nothing at all.
+# shellcheck source=lib/dev-server.sh
+source "$SCRIPT_DIR/lib/dev-server.sh"
+
 LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 SITE_PORT="${SITE_PORT:-8000}"
 CONTAINER="lunicle-local"
-
-# The same marker dev-local.sh uses to find its own orphans. It contains this
-# checkout's absolute path, so it cannot match another clone's server, another
-# project's JVM, or anything else on the machine.
-SERVER_MARKER="lunicle.webDist=$REPO_ROOT/web/build"
 
 status_only=0
 for arg in "$@"; do
@@ -60,16 +65,6 @@ for arg in "$@"; do
     *) echo "usage: $0 [--status]" >&2; exit 2 ;;
   esac
 done
-
-# What is listening on a port, as a human-readable line — or nothing.
-#
-# -sTCP:LISTEN matters: a bare `lsof -i :PORT` also matches CLIENTS with a
-# connection to that port, so an open browser tab pointing at localhost:8080
-# would count as "the port is taken". Only a listener holds it. Same reasoning
-# as container-up.sh's port check.
-port_holder() {
-  lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $1" (pid "$2")"; exit}'
-}
 
 docker_running() { docker info > /dev/null 2>&1; }
 
@@ -82,27 +77,27 @@ echo "==> Looking for a local Lunicle…"
 
 found=0
 
-# ---- 1. The dev-local.sh server ----
-if pgrep -f "$SERVER_MARKER" > /dev/null 2>&1; then
+# ---- 1. The dev server (run-dev-*.sh) ----
+if pgrep -f "$DEV_SERVER_MARKER" > /dev/null 2>&1; then
   found=1
-  pids="$(pgrep -f "$SERVER_MARKER" | tr '\n' ' ')"
+  pids="$(pgrep -f "$DEV_SERVER_MARKER" | tr '\n' ' ')"
   if [[ "$status_only" -eq 1 ]]; then
-    echo "    dev-local.sh server  — running (pid ${pids% })"
+    echo "    dev server        — running (pid ${pids% })"
   else
-    echo "    dev-local.sh server  — stopping (pid ${pids% })"
-    pkill -f "$SERVER_MARKER" 2>/dev/null || true
+    echo "    dev server        — stopping (pid ${pids% })"
+    pkill -f "$DEV_SERVER_MARKER" 2>/dev/null || true
   fi
 else
-  [[ "$status_only" -eq 1 ]] && echo "    dev-local.sh server  — not running"
+  [[ "$status_only" -eq 1 ]] && echo "    dev server        — not running"
 fi
 
 # ---- 2. The container ----
 if container_state; then
   found=1
   if [[ "$status_only" -eq 1 ]]; then
-    echo "    container            — running ($(docker ps --filter "name=^${CONTAINER}$" --format '{{.Status}}'))"
+    echo "    container         — running ($(docker ps --filter "name=^${CONTAINER}$" --format '{{.Status}}'))"
   else
-    echo "    container            — handing off to container-down.sh"
+    echo "    container         — handing off to container-down.sh"
     # Delegated rather than reimplemented as `docker rm -f`: container-down.sh
     # already owns the container's lifecycle, knows the volume's name, and says
     # the right things about keeping it. Two scripts that both know how to stop
@@ -110,25 +105,25 @@ if container_state; then
     "$REPO_ROOT/scripts/container-down.sh" | sed 's/^/       /'
   fi
 elif docker_running; then
-  [[ "$status_only" -eq 1 ]] && echo "    container            — not running"
+  [[ "$status_only" -eq 1 ]] && echo "    container         — not running"
 else
-  [[ "$status_only" -eq 1 ]] && echo "    container            — Docker isn't running, so neither is it"
+  [[ "$status_only" -eq 1 ]] && echo "    container         — Docker isn't running, so neither is it"
 fi
 
 # ---- 3. The embedded site's python server ----
 # Matched on the port as well as the command, because a bare `python3 -m
 # http.server` is a thing people run for all sorts of reasons and this must only
-# take the one dev-local.sh --embed started.
+# take the one a run-*-embedded.sh started.
 if pgrep -f "http.server $SITE_PORT" > /dev/null 2>&1; then
   found=1
   if [[ "$status_only" -eq 1 ]]; then
-    echo "    lunamux-web site     — running on :$SITE_PORT"
+    echo "    lunamux-web site  — running on :$SITE_PORT"
   else
-    echo "    lunamux-web site     — stopping (:$SITE_PORT)"
+    echo "    lunamux-web site  — stopping (:$SITE_PORT)"
     pkill -f "http.server $SITE_PORT" 2>/dev/null || true
   fi
 else
-  [[ "$status_only" -eq 1 ]] && echo "    lunamux-web site     — not running"
+  [[ "$status_only" -eq 1 ]] && echo "    lunamux-web site  — not running"
 fi
 
 if [[ "$status_only" -eq 1 ]]; then
@@ -148,19 +143,14 @@ fi
 
 # ---- Did it actually work? ----
 #
-# Verify rather than assume. `pkill` returning 0 means a signal was delivered,
-# not that the process is gone — a JVM takes a moment to die, and reporting
-# "stopped" while it still holds the port is exactly the lie that sends you back
-# to dev-local.sh only to meet the same error again.
-for _ in $(seq 1 20); do
-  [[ -z "$(port_holder "$LUNICLE_PORT")" ]] && break
-  sleep 0.25
-done
+# Verify rather than assume — see wait_for_port_free in lib/probe.sh for why a
+# successful `pkill` is not the same as a freed port.
+wait_for_port_free "$LUNICLE_PORT" || true
 
 holder="$(port_holder "$LUNICLE_PORT")"
 echo
 if [[ -z "$holder" ]]; then
-  echo "==> Port $LUNICLE_PORT is free. ./scripts/dev-local.sh will start cleanly."
+  echo "==> Port $LUNICLE_PORT is free. The run scripts will start cleanly."
   exit 0
 fi
 
@@ -169,5 +159,5 @@ fi
 echo "==> Port $LUNICLE_PORT is STILL held by: $holder" >&2
 echo "    That is not something this script started, so it has been left alone." >&2
 echo "    Either stop it yourself, or run the tracker elsewhere:" >&2
-echo "      LUNICLE_PORT=8081 ./scripts/dev-local.sh" >&2
+echo "      LUNICLE_PORT=8081 ./scripts/run-dev-standalone.sh" >&2
 exit 1
