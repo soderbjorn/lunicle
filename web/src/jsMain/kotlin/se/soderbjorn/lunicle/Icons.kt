@@ -1,18 +1,22 @@
 /**
- * The hand-drawn icons.
+ * The icons.
  *
- * Every path in this file was plotted by hand on a 24×24 grid rather than pulled
+ * Every path here but one was plotted by hand on a 24×24 grid rather than pulled
  * from an icon set, for the reason the rest of the CSS gives: this app is a
  * terminal, and an icon font or a Material glyph reads as a control borrowed from
  * somewhere else. The two that were emoji before (⚙, and no profile icon at all)
  * rendered in whatever the OS felt like — colour, weight and baseline all outside
- * our reach, which is exactly why the cogwheel never sat right in its button.
+ * our reach.
+ *
+ * The one exception is the gear, which is the darkness toolkit's; see [GEAR_SVG]
+ * for why an icon that also appears in the shell is not ours to redraw.
  *
  * The house style, matching the picker's chevron:
  *
  *  - Stroke, never fill. `stroke: currentColor`, so an icon takes its colour from
  *    the button around it and hover/disabled work with no extra rules.
  *  - `stroke-width: 1.5`, round caps and joins — the same weight as the chevron.
+ *    The gear is the exception at 2, which is the weight the toolkit drew it at.
  *  - A 24×24 `viewBox` regardless of the rendered size, so the numbers below can
  *    be read as a drawing rather than as a function of wherever it is used.
  *
@@ -25,35 +29,28 @@ import kotlinx.browser.document
 import org.w3c.dom.HTMLElement
 
 /**
- * The gear.
+ * The gear — the darkness toolkit's own, copied glyph-for-glyph.
  *
- * Drawn as a ring with eight radial teeth rather than the usual filled cog
- * outline, whose path is forty curves nobody can hand-check. Construction, all
- * about the centre (12, 12):
+ * The exception to this file's hand-drawn rule, and the reason is that this icon
+ * is not ours to draw. The toolkit paints a cog in the topbar for its App
+ * Settings sidebar (`ICON_APP_SETTINGS` in the toolkit's `TopBarActions.kt`), and
+ * a *second*, differently-drawn cog two inches below it in the board pane reads
+ * as two different controls rather than one idea. Ours was the ring-and-spokes
+ * construction; the toolkit's is the classic notched cog. Whatever the merits,
+ * matching the shell beats agreeing with this file's other paths.
  *
- *  - the hub, r = 2.75
- *  - the ring, r = 7.5
- *  - eight teeth, r 7.5 → 10, every 45°
- *
- * The tooth coordinates are the 45° ones rounded to 2dp — 12 ± 7.5·cos45 = 17.30
- * / 6.70 at the ring, 12 ± 10·cos45 = 19.07 / 4.93 at the tip. They are written
- * out rather than computed because an SVG path is data, and a reader checking
- * this against the render needs the numbers, not the arithmetic.
+ * Copied rather than imported because the toolkit's constant is `private`. That
+ * means it can drift: if the shell's cog changes, this one has to be re-copied by
+ * hand. The paths are identical today, down to the stroke width of 2 — which is
+ * heavier than the 1.5 the rest of this file uses, and is kept because the drawing
+ * was tuned at that weight.
  */
 private const val GEAR_SVG = """
 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
-     fill="none" stroke="currentColor" stroke-width="1.5"
+     fill="none" stroke="currentColor" stroke-width="2"
      stroke-linecap="round" stroke-linejoin="round">
-  <circle cx="12" cy="12" r="7.5"/>
-  <circle cx="12" cy="12" r="2.75"/>
-  <path d="M19.5 12 L22 12
-           M17.30 17.30 L19.07 19.07
-           M12 19.5 L12 22
-           M6.70 17.30 L4.93 19.07
-           M4.5 12 L2 12
-           M6.70 6.70 L4.93 4.93
-           M12 4.5 L12 2
-           M17.30 6.70 L19.07 4.93"/>
+  <circle cx="12" cy="12" r="3"/>
+  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
 </svg>
 """
 
@@ -117,10 +114,31 @@ private const val LOGO_SVG = """
 </svg>
 """
 
+/**
+ * The check mark flagging the current project in the picker's menu — the
+ * toolkit's, copied for the same reason as the gear.
+ *
+ * The world switcher's popover marks its live row with exactly this glyph, and
+ * the project picker's popover is that popover: same chrome, same classes, same
+ * job. A check drawn to our 1.5 house weight beside rows the toolkit's CSS is
+ * painting would be a hairline where the shell's is not.
+ *
+ * Markup rather than an element, unlike everything else here: it goes into the
+ * row's check slot as `innerHTML`, so a `span` around it would be a span too many
+ * — the slot IS the span. See [BoardWindow].
+ */
+const val CHECK_SVG = """
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="2.2"
+     stroke-linecap="round" stroke-linejoin="round">
+  <polyline points="20 6 9 17 4 12"/>
+</svg>
+"""
+
 /** The cogwheel, for the project-settings button. */
 fun gearIcon(): HTMLElement = icon(GEAR_SVG, "icon-gear")
 
-/** The Lunicle mark, for the footer. */
+/** The Lunicle mark, for the topbar brand line. */
 fun logoIcon(): HTMLElement = icon(LOGO_SVG, "icon-logo")
 
 /** The profile mark, shown beside the signed-in user's name. */

@@ -566,9 +566,9 @@ class McpBackfillTest {
     /**
      * The year 3000, refused.
      *
-     * The board's secondary sort is `updated_at DESC`, so this row would be one
-     * card pinned to the top of its column forever, with nothing in the UI saying
-     * why and no tool able to move it. Admin or not, this is not a thing to store.
+     * A date the UI would render as a thousand years out, on a column no tool here
+     * can rewrite once it is stored. Admin or not, this is not a thing to store.
+     * See McpTools' `resolveTimestamp`.
      */
     @Test
     fun `a far-future created_at is refused even for an admin`(): Unit = runBlocking {

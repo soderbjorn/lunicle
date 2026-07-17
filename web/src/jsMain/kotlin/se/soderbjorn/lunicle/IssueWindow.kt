@@ -24,7 +24,6 @@ import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
-import org.w3c.dom.HTMLSelectElement
 import se.soderbjorn.darkness.web.DialogChoice
 import se.soderbjorn.darkness.web.showChoiceDialog
 import se.soderbjorn.lunicle.client.renderMarkdown
@@ -53,11 +52,11 @@ class IssueWindow(
     private lateinit var titleField: HTMLInputElement
     private lateinit var readTitle: HTMLElement
     private lateinit var byline: HTMLElement
-    private lateinit var statusSelect: HTMLSelectElement
+    private lateinit var statusSelect: Dropdown
     private lateinit var statusRead: HTMLElement
-    private lateinit var prioritySelect: HTMLSelectElement
+    private lateinit var prioritySelect: Dropdown
     private lateinit var priorityRead: HTMLElement
-    private lateinit var resolutionSelect: HTMLSelectElement
+    private lateinit var resolutionSelect: Dropdown
     private lateinit var resolutionRead: HTMLElement
     private lateinit var resolutionCell: HTMLElement
     private lateinit var labelBox: HTMLElement
@@ -76,6 +75,7 @@ class IssueWindow(
     private lateinit var editor: MarkdownEditor
 
     private var confirm: ConfirmDialog? = null
+    private var commentConfirm: ConfirmDialog? = null
 
     /**
      * Whether the Save/Discard/Keep-editing dialog is currently on screen.
@@ -88,22 +88,18 @@ class IssueWindow(
      */
     private var choiceShowing = false
 
-    private var renderedStatusIds: List<Long> = emptyList()
-    private var renderedPriorityIds: List<Long> = emptyList()
-    private var renderedResolutionIds: List<Long> = emptyList()
-
     fun mount(host: HTMLElement) {
         readTitle = element("h3", "issue-title")
         byline = element("p", "issue-byline")
         titleField = textField("Short description") { viewModel.onTitleChanged(it) }
 
-        statusSelect = select { value -> value.toLongOrNull()?.let(viewModel::onStatusChanged) }
+        statusSelect = Dropdown("field") { viewModel.onStatusChanged(it) }
         statusRead = element("span", "tag tag-status")
 
-        prioritySelect = select { value -> value.toLongOrNull()?.let(viewModel::onPriorityChanged) }
+        prioritySelect = Dropdown("field") { viewModel.onPriorityChanged(it) }
         priorityRead = element("span", "tag tag-priority")
 
-        resolutionSelect = select { value -> value.toLongOrNull()?.let(viewModel::onResolutionChanged) }
+        resolutionSelect = Dropdown("field") { viewModel.onResolutionChanged(it) }
         resolutionRead = element("span", "tag tag-resolution")
 
         labelBox = element("div", "chip-row")
@@ -134,21 +130,21 @@ class IssueWindow(
         val statusCell = element("div", "field-cell")
         statusCell.children(
             element("label", "field-label field-label-edit", "Status"),
-            statusSelect,
+            statusSelect.element,
             element("span", "tag-caption", "Status"),
             statusRead,
         )
         val priorityCell = element("div", "field-cell")
         priorityCell.children(
             element("label", "field-label field-label-edit", "Priority"),
-            prioritySelect,
+            prioritySelect.element,
             element("span", "tag-caption", "Priority"),
             priorityRead,
         )
         resolutionCell = element("div", "field-cell")
         resolutionCell.children(
             element("label", "field-label field-label-edit", "Resolution"),
-            resolutionSelect,
+            resolutionSelect.element,
             element("span", "tag-caption", "Resolution"),
             resolutionRead,
         )
@@ -262,7 +258,7 @@ class IssueWindow(
         val showComments = !state.isDraft && !state.isEditing
         renderComments(state)
         commentsHeading.visible(showComments)
-        commentsElement.visible(showComments)
+        commentsElement.visible(showComments, displayValue = "flex")
         addCommentButton.visible(state.canComment && showComments, displayValue = "inline-flex")
 
         validationElement.setTextIfChanged(state.validationMessage ?: "")
@@ -280,70 +276,37 @@ class IssueWindow(
         saveButton.disabled = !state.isOkEnabled
 
         renderDeleteConfirm(state)
+        renderDeleteCommentConfirm(state)
         renderCloseConfirm(state)
     }
 
     private fun renderStatuses(state: IssueBackingViewModel.State) {
-        val ids = state.statuses.map { it.id }
-        if (ids != renderedStatusIds) {
-            renderedStatusIds = ids
-            statusSelect.clear()
-            state.statuses.forEach { status ->
-                statusSelect.appendChild(
-                    (kotlinx.browser.document.createElement("option") as org.w3c.dom.HTMLOptionElement).apply {
-                        value = status.id.toString()
-                        textContent = status.name
-                    },
-                )
-            }
-        }
-        statusSelect.value = state.statusId.toString()
-        statusSelect.visible(state.isEditing, displayValue = "block")
+        statusSelect.render(
+            items = state.statuses.map { DropdownItem(it.id, it.name) },
+            selectedId = state.statusId,
+        )
+        statusSelect.element.visible(state.isEditing, displayValue = "block")
     }
 
     private fun renderPriorities(state: IssueBackingViewModel.State) {
-        val ids = state.priorities.map { it.id }
-        if (ids != renderedPriorityIds) {
-            renderedPriorityIds = ids
-            prioritySelect.clear()
-            state.priorities.forEach { priority ->
-                prioritySelect.appendChild(
-                    (kotlinx.browser.document.createElement("option") as org.w3c.dom.HTMLOptionElement).apply {
-                        value = priority.id.toString()
-                        textContent = priority.name
-                    },
-                )
-            }
-        }
-        prioritySelect.value = state.priorityId.toString()
-        prioritySelect.visible(state.isEditing, displayValue = "block")
+        prioritySelect.render(
+            items = state.priorities.map { DropdownItem(it.id, it.name) },
+            selectedId = state.priorityId,
+        )
+        prioritySelect.element.visible(state.isEditing, displayValue = "block")
     }
 
     private fun renderResolutions(state: IssueBackingViewModel.State) {
-        val ids = state.resolutions.map { it.id }
-        if (ids != renderedResolutionIds) {
-            renderedResolutionIds = ids
-            resolutionSelect.clear()
-            // A blank first option, only here of the three dropdowns: a
-            // resolution starts as null and the user must choose. See the old
-            // dialog's comment.
-            resolutionSelect.appendChild(
-                (kotlinx.browser.document.createElement("option") as org.w3c.dom.HTMLOptionElement).apply {
-                    value = ""
-                    textContent = "Choose…"
-                },
-            )
-            state.resolutions.forEach { resolution ->
-                resolutionSelect.appendChild(
-                    (kotlinx.browser.document.createElement("option") as org.w3c.dom.HTMLOptionElement).apply {
-                        value = resolution.id.toString()
-                        textContent = resolution.name
-                    },
-                )
-            }
-        }
-        resolutionSelect.value = state.resolutionId?.toString() ?: ""
-        resolutionSelect.visible(state.isEditing, displayValue = "block")
+        // The placeholder — "Choose…" — is only ever seen here of the three
+        // dropdowns: a resolution starts null and the user must pick one, where a
+        // status and a priority always arrive already set. See the old dialog's
+        // comment.
+        resolutionSelect.render(
+            items = state.resolutions.map { DropdownItem(it.id, it.name) },
+            selectedId = state.resolutionId,
+            placeholder = "Choose…",
+        )
+        resolutionSelect.element.visible(state.isEditing, displayValue = "block")
     }
 
     private fun renderChips(
@@ -413,6 +376,21 @@ class IssueWindow(
         } else if (!state.isConfirmingDelete && confirm != null) {
             confirm?.dismiss()
             confirm = null
+        }
+    }
+
+    private fun renderDeleteCommentConfirm(state: IssueBackingViewModel.State) {
+        if (state.confirmingDeleteCommentId != null && commentConfirm == null) {
+            commentConfirm = ConfirmDialog(
+                title = "Delete comment",
+                message = state.confirmDeleteCommentMessage,
+                destructiveLabel = "Delete",
+                onConfirm = { viewModel.onDeleteCommentConfirmed() },
+                onCancel = { viewModel.onDeleteCommentCancelled() },
+            ).also { it.mount(dialogHost) }
+        } else if (state.confirmingDeleteCommentId == null && commentConfirm != null) {
+            commentConfirm?.dismiss()
+            commentConfirm = null
         }
     }
 

@@ -333,7 +333,7 @@ class ProjectDialog(
             addButton.disabled = !section.isAddEnabled
 
             val next = section.rows.joinToString("|") { row ->
-                "${row.id}:${row.name}:${row.requiresResolution}:${row.usageNote}:" +
+                "${row.id}:${row.name}:${row.requiresResolution}:" +
                     "${row.isDeletable}/${row.deleteBlockedReason}:${row.canMoveUp}/${row.canMoveDown}"
             }
             if (next == signature) return
@@ -366,8 +366,6 @@ class ProjectDialog(
                 flag.checked = row.requiresResolution
                 container.appendChild(toggleRow(flag, "needs a resolution", "vocab-flag"))
             }
-
-            row.usageNote?.let { container.appendChild(element("span", "vocab-uses", it)) }
 
             if (section.isOrdered) {
                 container.appendChild(

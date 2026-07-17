@@ -60,8 +60,6 @@ import se.soderbjorn.lunicle.clientserver.VocabularyKind
  * because its links cascade — and a view that worked them out from `usageCount`
  * would be a second, silent implementation of the server's rules.
  *
- * @property usageNote what to show beside the name, or null for a row nothing
- *   uses. "Used by 3 issues" — not a bare number, which reads as an id.
  * @property isDeletable whether to offer the delete button at all. An affordance;
  *   the server refuses regardless. See the server's VocabularyRepository.
  * @property deleteBlockedReason why it is not offered, for the view to hang off
@@ -77,7 +75,6 @@ data class VocabularyRowState(
     val id: Long,
     val name: String,
     val requiresResolution: Boolean,
-    val usageNote: String?,
     val isDeletable: Boolean,
     val deleteBlockedReason: String?,
     val canMoveUp: Boolean,
@@ -434,9 +431,6 @@ class EditProjectBackingViewModel(
                 id = id,
                 name = name,
                 requiresResolution = requiresResolution,
-                usageNote = usageCount.takeIf { it > 0 }?.let {
-                    "Used by $it ${if (it == 1) "issue" else "issues"}"
-                },
                 isDeletable = !isLastOfAKindThatMatters && !isBlockedByUse && !isBusy,
                 deleteBlockedReason = when {
                     isLastOfAKindThatMatters ->

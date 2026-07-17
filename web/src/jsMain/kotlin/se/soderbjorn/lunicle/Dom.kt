@@ -11,11 +11,13 @@
 package se.soderbjorn.lunicle
 
 import kotlinx.browser.document
+import kotlinx.browser.window
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
-import org.w3c.dom.HTMLSelectElement
 import org.w3c.dom.HTMLTextAreaElement
+import org.w3c.dom.events.Event
+import org.w3c.dom.events.KeyboardEvent
 
 /** Create an element with a class, and optionally some text. */
 fun element(tag: String, className: String = "", text: String? = null): HTMLElement {
@@ -139,12 +141,151 @@ fun textArea(placeholder: String = "", onInput: (String) -> Unit): HTMLTextAreaE
     return el
 }
 
-/** Create a select. */
-fun select(onChange: (String) -> Unit): HTMLSelectElement {
-    val el = document.createElement("select") as HTMLSelectElement
-    el.className = "field"
-    el.onchange = { onChange(el.value); Unit }
-    return el
+/** One row of a [Dropdown]: the id reported on select, and the text shown. */
+data class DropdownItem(val id: Long, val label: String)
+
+/**
+ * A dropdown — a button that opens a themed menu.
+ *
+ * Lunicle's replacement for `<select>`, and it replaced every one of them. The
+ * closed control was never the problem: `appearance: none` takes the platform's
+ * chrome off and the CSS puts ours on. The problem is the *open* list, which the
+ * operating system draws — an Aqua popup with a system-blue selection, in nobody's
+ * palette but the OS's, and the one surface in this app a stylesheet cannot reach.
+ * It read as a control borrowed from somewhere else because it was.
+ *
+ * What opens instead is the darkness toolkit's menu: `.dt-hover-menu` chrome,
+ * `.dt-world-row` rows, a checkmark on the live one — the same popover the shell's
+ * "+" button and world switcher open, reached by reusing the classes rather than
+ * restyling a copy. So it matches the shell under every theme, and follows the
+ * toolkit's next restyle for free. The toolkit's own builder is private and
+ * hardwired to worlds, which is why the chrome is rebuilt here and only the rows
+ * differ.
+ *
+ * The menu exists only while it is open, which is what makes this simpler than the
+ * `<select>` it replaced rather than more complicated. A `<select>` had to be
+ * guarded against re-rendering — rebuild its options while the user has the list
+ * down and it shuts in their face — so every caller carried a "have the ids
+ * changed?" field. A menu that is built at open time and thrown away on close
+ * cannot be rebuilt underneath anybody, so [render] is free to run on every
+ * emission and the guards are gone.
+ *
+ * @param className extra classes for the closed control — `picker` in the board
+ *   toolbar, `field` in a dialog. Both are only about the surface it sits on.
+ * @param onSelect fires with the chosen row's id. A click on the live row still
+ *   reports: it is the user saying so, and the view models already treat a
+ *   no-change as a no-op.
+ */
+class Dropdown(
+    className: String = "",
+    private val onSelect: (Long) -> Unit,
+) {
+    /** The closed control. Append this; the menu mounts on the body. */
+    val element: HTMLButtonElement = button("", ("dropdown $className").trim()) {}
+
+    private var items: List<DropdownItem> = emptyList()
+    private var selectedId: Long? = null
+    private var menu: HTMLElement? = null
+    private var dismiss: (() -> Unit)? = null
+
+    init {
+        element.setAttribute("aria-haspopup", "menu")
+        element.onclick = { if (menu != null) close() else open(); Unit }
+    }
+
+    /**
+     * Render the closed control, and say what the menu will hold when opened.
+     *
+     * @param items the rows, in the order they should read.
+     * @param selectedId the live row, or null for none — a resolution starts
+     *   unset and the user must choose.
+     * @param placeholder what the control reads while [selectedId] is null.
+     */
+    fun render(items: List<DropdownItem>, selectedId: Long?, placeholder: String = "") {
+        this.items = items
+        this.selectedId = selectedId
+        val label = items.firstOrNull { it.id == selectedId }?.label ?: placeholder
+        element.setTextIfChanged(label)
+    }
+
+    /** Tears the menu down, listeners included. A no-op when already closed. */
+    fun close() {
+        menu?.remove()
+        menu = null
+        dismiss?.invoke()
+        dismiss = null
+    }
+
+    private fun open() {
+        if (items.isEmpty()) return
+
+        val box = element("div", "dropdown-menu dt-hover-menu")
+        box.setAttribute("role", "menu")
+        items.forEach { item -> box.appendChild(row(item)) }
+
+        // Under the control's left edge, clamped to the viewport — the toolkit's
+        // own popover math (WorldSwitcher.anchorPopover), so this lands where the
+        // shell's menus land. Mounted first because the width the clamp needs is
+        // the width the box has once laid out, and an unmounted box has none.
+        document.body?.appendChild(box)
+        val anchor = element.getBoundingClientRect()
+        // At least as wide as the control it drops out of: the toolkit's 180px
+        // floor is tuned for a topbar icon's menu, and a menu narrower than its
+        // own button reads as a different control's.
+        box.style.minWidth = "${anchor.width}px"
+        val width = box.getBoundingClientRect().width
+        val left = anchor.left.coerceAtMost(window.innerWidth - width - 4.0).coerceAtLeast(4.0)
+        box.style.left = "${left}px"
+        box.style.top = "${anchor.bottom + 4}px"
+
+        menu = box
+        installDismissal(box)
+    }
+
+    private fun row(item: DropdownItem): HTMLElement {
+        val active = item.id == selectedId
+        val row = element("div", "dt-hover-menu-item dt-world-row" + if (active) " dt-active" else "")
+        row.setAttribute("role", "menuitem")
+
+        val check = element("span", "dt-hover-menu-icon dt-world-check")
+        // Sanctioned innerHTML, on Icons.kt's terms: the argument is that file's
+        // own constant, so there is no input to escape and no caller to pass one.
+        if (active) check.innerHTML = CHECK_SVG
+
+        row.children(check, element("span", "dt-hover-menu-label", item.label))
+        row.onclick = {
+            close()
+            onSelect(item.id)
+            Unit
+        }
+        return row
+    }
+
+    /**
+     * Closes on Escape, or on a click outside.
+     *
+     * The outside handler ignoring clicks on the control is not a nicety: this
+     * listener is installed during the very click that opened the menu, and that
+     * click is still bubbling. Without the guard the menu would close on the way
+     * up from the button that just opened it, and the control would look dead.
+     * The control's own handler is what toggles it shut.
+     */
+    private fun installDismissal(box: HTMLElement) {
+        val outside: (Event) -> Unit = handler@{ event ->
+            val target = event.target as? HTMLElement ?: return@handler
+            if (box.contains(target) || element.contains(target)) return@handler
+            close()
+        }
+        val escape: (Event) -> Unit = { event ->
+            if ((event as? KeyboardEvent)?.key == "Escape") close()
+        }
+        document.addEventListener("click", outside)
+        document.addEventListener("keydown", escape)
+        dismiss = {
+            document.removeEventListener("click", outside)
+            document.removeEventListener("keydown", escape)
+        }
+    }
 }
 
 /** Remove every child. */

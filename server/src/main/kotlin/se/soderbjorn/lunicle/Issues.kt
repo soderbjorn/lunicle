@@ -155,7 +155,10 @@ class IssueStore(
      *
      * From 1, not 0: 0 is reserved for "never ranked", and a new issue arrives
      * with it. That is what floats a new card to the top of a group somebody has
-     * already arranged, which is the behaviour the board had before ranks existed.
+     * already arranged — an arrangement cannot have an opinion about a card that
+     * did not exist when it was made, and the top is where it will be noticed.
+     * Note this differs from a group nobody has ranked, where everything is 0 and
+     * a new card lands at the bottom on `number`.
      *
      * In one transaction. A half-renumbered group is a group with two cards
      * claiming rank 3, which the board would order by a tie-break nobody asked

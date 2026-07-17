@@ -13,6 +13,11 @@
  * from whatever state it is handed. The one thing it knows that the view model
  * does not is how to drag — see [makeDraggable].
  *
+ * The switcher is a [Dropdown] — a button opening a themed menu — rather than a
+ * `<select>`, whose open list only the operating system may draw. See [Dropdown]
+ * for that story; it is not this view's to tell, and the issue editor's three
+ * dropdowns are the same control.
+ *
  * @see MainScreenBackingViewModel
  */
 package se.soderbjorn.lunicle
@@ -20,12 +25,14 @@ package se.soderbjorn.lunicle
 import kotlinx.browser.document
 import org.w3c.dom.DragEvent
 import org.w3c.dom.HTMLElement
-import org.w3c.dom.HTMLSelectElement
 import org.w3c.dom.asList
 import org.w3c.dom.events.Event
 import se.soderbjorn.lunicle.client.viewmodel.BoardColumn
 import se.soderbjorn.lunicle.client.viewmodel.MainScreenBackingViewModel
 import se.soderbjorn.lunicle.clientserver.IssueSummary
+
+/** What the picker reads before a board has loaded, and when the user has no projects. */
+private const val NO_PROJECT = "No project"
 
 /**
  * Renders the board window.
@@ -38,22 +45,10 @@ class BoardWindow(
     /** The pane content element the shell mounts. Built eagerly, filled by [render]. */
     val root: HTMLElement = element("div", "board-pane")
 
-    private val picker: HTMLSelectElement
+    private val picker = Dropdown("picker") { viewModel.onProjectSelected(it) }
     private val settingsButton: HTMLElement
     private val boardElement: HTMLElement
     private val emptyElement: HTMLElement
-
-    /**
-     * What the picker's option list is derived from, so it is rebuilt when —
-     * and only when — it changes. A `<select>` rebuilt on every emission
-     * closes itself the instant the user opens it.
-     */
-    private data class PickerContents(
-        val ids: List<Long>,
-        val hasCurrentProject: Boolean,
-    )
-
-    private var renderedContents: PickerContents? = null
 
     /**
      * The board object the columns were last built from — by IDENTITY, which is
@@ -69,17 +64,12 @@ class BoardWindow(
     private var renderedBoard: se.soderbjorn.lunicle.clientserver.BoardState? = null
 
     init {
-        picker = select { value ->
-            value.toLongOrNull()?.let(viewModel::onProjectSelected)
-        }
-        picker.className = "picker"
-
         settingsButton = button("", "icon-btn") { viewModel.onProjectSettingsTapped() }
         settingsButton.appendChild(gearIcon())
         settingsButton.title = "Project settings"
 
         val toolbar = element("div", "board-toolbar")
-        toolbar.children(picker, settingsButton)
+        toolbar.children(picker.element, settingsButton)
 
         boardElement = element("div", "board")
         emptyElement = element("p", "board-empty")
@@ -89,41 +79,17 @@ class BoardWindow(
 
     /** Apply a state snapshot. Called for every emission of the state flow. */
     fun render(state: MainScreenBackingViewModel.State) {
-        renderPicker(state)
+        picker.render(
+            items = state.projects.map { DropdownItem(it.id, it.name) },
+            selectedId = state.currentProject?.id,
+            placeholder = NO_PROJECT,
+        )
         settingsButton.visible(state.canEditCurrentProject, displayValue = "inline-flex")
 
         emptyElement.setTextIfChanged(state.emptyMessage ?: "")
         emptyElement.visible(state.emptyMessage != null)
 
         renderBoard(state)
-    }
-
-    private fun renderPicker(state: MainScreenBackingViewModel.State) {
-        val contents = PickerContents(
-            ids = state.projects.map { it.id },
-            hasCurrentProject = state.currentProject != null,
-        )
-        if (contents != renderedContents || picker.options.length == 0) {
-            renderedContents = contents
-            picker.clear()
-            if (state.currentProject == null) {
-                picker.appendChild(
-                    (document.createElement("option") as org.w3c.dom.HTMLOptionElement).apply {
-                        value = ""
-                        textContent = "No project"
-                    },
-                )
-            }
-            state.projects.forEach { project ->
-                picker.appendChild(
-                    (document.createElement("option") as org.w3c.dom.HTMLOptionElement).apply {
-                        value = project.id.toString()
-                        textContent = project.name
-                    },
-                )
-            }
-        }
-        picker.value = state.currentProject?.id?.toString() ?: ""
     }
 
     private fun renderBoard(state: MainScreenBackingViewModel.State) {

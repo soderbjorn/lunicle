@@ -150,6 +150,14 @@ class IssueBackingViewModel(
         val canComment: Boolean = false,
         val isConfirmingDelete: Boolean = false,
         /**
+         * The comment whose deletion is being asked about, or null.
+         *
+         * An id rather than a flag because the question names one comment out
+         * of a list, and the answer has to reach that same one. Rendered by the
+         * view exactly as [isConfirmingDelete] is.
+         */
+        val confirmingDeleteCommentId: Long? = null,
+        /**
          * The unanswered Save / Discard / Keep-editing question, or null.
          * Set by [onCloseRequested] and the Edit toggle; answered by
          * [onCloseSaveTapped] / [onCloseDiscardTapped] /
@@ -234,6 +242,8 @@ class IssueBackingViewModel(
         val isOkEnabled: Boolean get() = !isBusy && validationMessage == null
 
         val confirmDeleteMessage: String get() = "Delete $ticket? This cannot be undone."
+
+        val confirmDeleteCommentMessage: String get() = "Delete this comment? This cannot be undone."
 
         /** The status's name, for the read-only view. */
         val statusName: String get() = statuses.firstOrNull { it.id == statusId }?.name ?: "—"
@@ -632,7 +642,18 @@ class IssueBackingViewModel(
     }
 
     fun onDeleteCommentTapped(commentId: Long) {
-        _stateFlow.value = _stateFlow.value.copy(isBusy = true)
+        val comment = _stateFlow.value.comments.firstOrNull { it.id == commentId } ?: return
+        if (!comment.canEdit) return
+        _stateFlow.value = _stateFlow.value.copy(confirmingDeleteCommentId = commentId)
+    }
+
+    fun onDeleteCommentCancelled() {
+        _stateFlow.value = _stateFlow.value.copy(confirmingDeleteCommentId = null)
+    }
+
+    fun onDeleteCommentConfirmed() {
+        val commentId = _stateFlow.value.confirmingDeleteCommentId ?: return
+        _stateFlow.value = _stateFlow.value.copy(isBusy = true, confirmingDeleteCommentId = null)
         scope.launch {
             runCatching { storage.deleteComment(commentId) }
                 .onFailure { t ->

@@ -432,10 +432,11 @@ private suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: U
         resolutions = resolutions.forProject(project.id).map { StatusItem(it.id, it.name, it.position.toInt()) },
         labels = labels.forProject(project.id).map { VocabularyItem(it.id, it.name) },
         components = components.forProject(project.id).map { VocabularyItem(it.id, it.name) },
-        // Already ordered — priority first, then most recently touched. The order
-        // comes out of SQL (see Issues.sq's `forProject`) and is preserved by this
-        // map, so nothing downstream needs to sort. A client that re-sorts gets
-        // the same answer from priorityId and updatedAt.
+        // Already ordered — priority first, then the group's own arrangement:
+        // manual rank, then issue number. The order comes out of SQL (see
+        // Issues.sq's `forProject`) and is preserved by this map, so nothing
+        // downstream needs to sort — nor could it, since `sort_order` is not a
+        // field on IssueSummary.
         issues = issueRows.map { issue ->
             IssueSummary(
                 id = issue.id,

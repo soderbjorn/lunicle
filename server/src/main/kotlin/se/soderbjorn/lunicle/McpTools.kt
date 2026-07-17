@@ -1157,11 +1157,11 @@ class McpTools(private val deps: BoardDependencies) {
      * ── The two bounds, and why the future one is the one that matters ────────
      *
      * A negative value is nonsense outright. A far-future one is worse than
-     * nonsense: the board's secondary sort is `updated_at DESC`, so an issue
-     * stamped in the year 3000 is one card pinned to the top of its column forever,
-     * with nothing in the UI to explain why and no tool able to change it back.
-     * Refusing costs a round-trip; storing it costs somebody an afternoon with a
-     * SQLite shell.
+     * nonsense: a comment stamped in the year 3000 sits at the bottom of its
+     * thread forever (Comments.sq orders by `created_at`), and both columns render
+     * as a date nobody can explain from the UI. Neither is reachable by any tool
+     * here — there is no edit for a comment's `created_at`. Refusing costs a
+     * round-trip; storing it costs somebody an afternoon with a SQLite shell.
      *
      * A day of slack rather than a hard `<= now`, because "now" is the agent's
      * clock and this server's, and they are not the same clock. An agent stamping a

@@ -203,10 +203,8 @@ UPDATE issues SET status_id = ?, resolution_id = ?, updated_at = ? WHERE id = ?;
 --
 -- Every other write here stamps it, because every other write changes what the
 -- issue *is*. Reordering changes where it sits, which is a fact about the board
--- rather than about the issue. Stamping it would also be self-defeating: recency
--- is the sort this rank sits above, so tidying a column would reshuffle the very
--- column being tidied — the card just dragged to the bottom would be the most
--- recently touched thing in the group.
+-- rather than about the issue — tidying a column should not make every card in
+-- it claim to have been edited just now.
 setSortOrder:
 UPDATE issues SET sort_order = ? WHERE id = ?;
 
@@ -260,7 +258,12 @@ GROUP BY resolution_id;
 -- already knows — and every other client would have to re-implement it
 -- identically.
 --
--- ── The three-level sort ────────────────────────────────────────────────────
+-- ── The sort ────────────────────────────────────────────────────────────────
+--
+-- Levels 1–2 sort issues into groups; levels 3–4 order each group, and do it
+-- only by facts the group's own arrangement decides. Nothing about an issue's
+-- content reaches the ordering once it has landed in its group, so editing a
+-- card never moves it.
 --
 --  1. `r.position` — the resolution. NULLs sort FIRST in SQLite's ASC, which is
 --     exactly right by luck and by intent: an unresolved issue has no resolution
@@ -274,13 +277,17 @@ GROUP BY resolution_id;
 --     evaluates to NULL for every resolved row, which makes it a no-op there
 --     rather than a second grouping inside each resolution.
 --  3. `sort_order` — the manual rank, when a group has been dragged into shape.
---     0 for everything otherwise, so it does nothing at all in a group nobody has
---     touched and every such group falls straight through to recency below.
---  4. `updated_at DESC`, then `number` — most recently touched first, with the
---     number as the tie-break. Two issues can share a millisecond (the seed
---     script makes four in one statement), and without a total order SQLite may
---     return them differently between runs — which reads as cards shuffling for
---     no reason.
+--     0 for everything otherwise, so it does nothing at all in a group nobody
+--     has touched and every such group falls straight through to the number
+--     below.
+--  4. `number` — the natural order: the order the issues were created in, which
+--     is where an unranked group settles. It is also a total order on its own
+--     (numbers are unique per project), so there is no tie left for SQLite to
+--     break arbitrarily and no run-to-run shuffling.
+--
+-- Recency deliberately is NOT a level here. Sorting by `updated_at` meant any
+-- edit — a typo fix, a label — dragged a card to the top of its group, which
+-- reads as the board rearranging itself while you work.
 --
 -- LEFT JOIN on resolutions, not JOIN: resolution_id is null for most issues, and
 -- an inner join would return an empty board.
@@ -295,5 +302,4 @@ WHERE i.project_id = ? AND i.is_draft = 0
 ORDER BY r.position,
          CASE WHEN i.resolution_id IS NULL THEN p.position END,
          i.sort_order,
-         i.updated_at DESC,
          i.number;

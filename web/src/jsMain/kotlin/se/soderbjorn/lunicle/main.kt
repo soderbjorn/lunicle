@@ -11,9 +11,11 @@
  * tab strip (one implicit tab exists), no 3D, no bell/info/cogwheel. The "+"
  * menu holds New issue and — permission-gated — New project. The window layout,
  * dark/light, theme and appearance controls stay. The sign-in/profile corner
- * rides in the trailing custom slot; the "simple issue tracker" footer rides in
- * the bottom bar. Nothing is persisted: an in-memory persister makes every
- * reload land on the default layout and the Lunamux Dark theme.
+ * rides in the trailing custom slot; the "issue tracker" brand line rides on
+ * the topbar's leading edge, which the minimal chrome would otherwise leave
+ * empty, and there is no bottom bar. Nothing is persisted: an in-memory
+ * persister makes every reload land on the default layout and the Lunamux
+ * Dark theme.
  *
  * Window model: the board is a non-closable pane that opens maximised; every
  * open issue is its own closable pane. The pane list is pushed to the toolkit
@@ -348,19 +350,19 @@ private fun start() {
         // the redesign keeps.
         showSidebar = false,
         showTabStrip = false,
-        // The bottom bar carries what the old footer said.
-        showBottomBar = true,
-        bottomBarLeading = {
-            val footer = element("div", "footer-brand")
-            footer.children(
+        // No bottom bar: the brand line was the only thing in it, and it now
+        // rides the topbar's leading edge, which the minimal chrome leaves
+        // empty (no sidebar toggle, no world switcher). A bar with nothing in
+        // it is a draggable edge and a strip of chrome for no content.
+        showBottomBar = false,
+        topbarLeading = {
+            val brand = element("div", "topbar-brand")
+            brand.children(
                 logoIcon(),
-                element("span", "footer-name", "Lunicle — a simple issue tracker by Robert Söderbjörn"),
+                element("span", "topbar-brand-name", "Lunicle — an issue tracker by Robert Söderbjörn"),
             )
-            footer
+            brand
         },
-        // An empty trailing slot: the leading brand line already names the app,
-        // and the toolkit's fallback would print "Lunicle" a second time.
-        bottomBarTrailing = { element("span") },
         // Close is intercepted by the host (unsaved-changes question), so the
         // toolkit's own close-confirm dialog must not also ask.
         confirmPaneClose = false,
