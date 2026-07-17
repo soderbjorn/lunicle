@@ -1,0 +1,273 @@
+-- The payload. Per project, and structurally so.
+
+CREATE TABLE issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Per project, and not merely by convention: every label, component and
+    -- status this issue can reach is constrained against THIS column via the
+    -- composite foreign keys below and in IssueLabels.sq. An issue cannot leak
+    -- into another project's vocabulary because the database will not store the
+    -- row.
+    project_id INTEGER NOT NULL,
+
+    -- The per-project number: the 123 in FOO-123. Distinct from the id, which
+    -- is global and an implementation detail.
+    number INTEGER NOT NULL,
+
+    -- The issue's short description. Named `title` rather than `label` because
+    -- `labels` is already a table, and `issue.label` beside `issue.labels`
+    -- differing by one character while meaning entirely unrelated things is a
+    -- bug generator. The UI may still call it whatever it likes.
+    title TEXT NOT NULL,
+
+    -- Markdown, produced by the WYSIWYG editor — plus allow-listed inline HTML
+    -- for <u>, which no markdown flavour has. The renderer must never pass raw
+    -- HTML through; see MarkdownView.kt.
+    description TEXT NOT NULL DEFAULT '',
+
+    status_id INTEGER NOT NULL,
+
+    -- How urgent, on the project's own scale. NOT NULL and composite-keyed for
+    -- exactly status_id's reasons: an issue always has a priority (the seed's
+    -- middle one, if nobody chose — see Priorities.defaultForProject), and it
+    -- cannot be another project's priority because the database will not store
+    -- the row.
+    --
+    -- This is why 2.sqm rebuilds the table rather than running ALTER TABLE ADD
+    -- COLUMN: SQLite cannot add a *composite* foreign key that way, and a
+    -- nullable single-column reference would have been a weaker guarantee than
+    -- the column beside it. See 2.sqm.
+    priority_id INTEGER NOT NULL,
+
+    -- Why this issue was closed, or NULL because it is not.
+    --
+    -- The one NULLABLE reference on this table, and the null means something
+    -- precise: this issue is not in a status that demands a resolution. It is not
+    -- "unknown" or "not set yet" — an issue in a requires_resolution column
+    -- always has one, and an issue anywhere else never does. BoardRoutes enforces
+    -- both halves; see Statuses.sq's requires_resolution for why that rule cannot
+    -- be a CHECK.
+    --
+    -- Composite-keyed like the other two, and nullable at the same time: SQLite
+    -- treats a composite foreign key as satisfied when ANY of its columns is
+    -- NULL, so an issue with no resolution passes without the constraint being
+    -- weakened for the issues that do have one.
+    resolution_id INTEGER,
+
+    -- Hidden until the editor's OK. "New issue" inserts the row straight away
+    -- so that an inline image upload has an issue to attach to — but an
+    -- unfinished issue must not appear on anyone's board. Cancel deletes the
+    -- row outright; this flag covers the crash/closed-tab case, where the draft
+    -- simply stays invisible.
+    is_draft INTEGER NOT NULL DEFAULT 1,
+
+    created_at INTEGER NOT NULL,
+
+    -- Last touched. The board's secondary sort, newest first, within a priority.
+    --
+    -- NOT NULL and set to created_at on insert, rather than nullable-until-first-
+    -- edit with a COALESCE in the sort. A never-edited issue IS at its most
+    -- recent moment — the moment it was written — so there is nothing to fall
+    -- back to, and a nullable column here would put a COALESCE in every ORDER BY
+    -- that touches it forever.
+    updated_at INTEGER NOT NULL,
+
+    -- Manual rank within this issue's group on the board, ascending. 0 means
+    -- "never ranked".
+    --
+    -- ── Why a rank at all, when there is already an order ──────────────────
+    --
+    -- Because `updated_at DESC` is an order nobody chose. It is a fine default and
+    -- a useless instruction: you cannot say "this one first" to it except by
+    -- touching the issue, and touching an issue in order to move it is how you end
+    -- up editing something to reorder it.
+    --
+    -- ── The rule ──────────────────────────────────────────────────────────
+    --
+    -- 0 is the default and means unranked. A group where everything is 0 sorts
+    -- entirely by `updated_at DESC` — exactly as it did before this column
+    -- existed, and as most groups always will. Dragging one card renumbers that
+    -- whole group 1..n in its new visual order, so a group is either untouched or
+    -- fully ranked, never half of each. A new issue arrives at 0 and therefore
+    -- sorts above a ranked group, which is the behaviour that was already there:
+    -- newest first.
+    --
+    -- Reordering does NOT bump `updated_at` — see setSortOrder. That is the whole
+    -- reason this is a column of its own.
+    sort_order INTEGER NOT NULL DEFAULT 0,
+
+    -- Nullable + SET NULL: deleting a user must not delete their issues. The
+    -- issue outlives the account; the board would otherwise lose history every
+    -- time someone left. AccessControl reads this for ownership, so a null
+    -- author is an issue only an admin or a change_unowned_issues holder can
+    -- edit — which is correct.
+    created_by INTEGER,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    -- Composite: a status must belong to THIS issue's project. No ON DELETE —
+    -- a status still holding issues must not be deletable, and SQLite's default
+    -- RESTRICT is exactly right.
+    FOREIGN KEY (status_id, project_id) REFERENCES statuses(id, project_id),
+    -- Same shape, same reasoning, for the same reasons. See priority_id above.
+    FOREIGN KEY (priority_id, project_id) REFERENCES priorities(id, project_id),
+    FOREIGN KEY (resolution_id, project_id) REFERENCES resolutions(id, project_id),
+
+    UNIQUE (project_id, number),
+    -- The target of the join tables' composite foreign keys. See IssueLabels.sq.
+    UNIQUE (id, project_id)
+);
+
+-- Allocate the number and insert, in one statement.
+--
+-- MAX+1, not COUNT+1: numbers are never reused after a delete. COUNT would hand
+-- FOO-12 to a second issue the moment the first was deleted, and every link and
+-- commit message naming FOO-12 would silently point at the wrong thing.
+-- UNIQUE(project_id, number) is the backstop if this is ever wrong.
+--
+-- The consequence worth naming: opening "New issue" and cancelling burns a
+-- number, so a board can go FOO-12, FOO-14. That is the correct trade — gaps
+-- are cosmetic, reused numbers are corruption.
+-- `updated_at` is bound to the same value the caller passes for `created_at`,
+-- rather than defaulting: a draft has been "touched" at the moment it was made,
+-- and its position on the board — once published — is decided by that. See the
+-- column's comment.
+-- No resolution_id: a draft lands in the leftmost column, which is never the
+-- one that demands a resolution. It defaults to NULL, which is the correct
+-- answer for every issue that is not closed.
+insert:
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by)
+VALUES (
+    ?,
+    (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project_id = ?),
+    ?, ?, ?, ?, 1, ?, ?, ?
+)
+RETURNING id, number;
+
+-- Publish the draft and write the editor's fields. One statement, so an issue
+-- cannot become visible carrying the placeholder title it was created with.
+publish:
+UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, updated_at = ?, is_draft = 0
+WHERE id = ?;
+
+update:
+UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, updated_at = ? WHERE id = ?;
+
+-- Drag-and-drop between columns. A status_id write like any other, gated by the
+-- same canEditIssue the editor uses — see AccessControl. The composite foreign
+-- key means a status from another project cannot land here even if a caller
+-- asks for one.
+--
+-- It bumps updated_at, and that is a real decision rather than housekeeping: a
+-- drag IS an edit — it is the most common one there is — and a board sorted on
+-- "last touched" that ignored the one gesture the board itself offers would
+-- leave a card you just moved sitting at the bottom of the column you moved it
+-- to.
+-- The resolution moves WITH the status, and is written in the same statement.
+--
+-- Both directions matter. Dragging INTO the closed column carries the resolution
+-- the user just picked; dragging back OUT of it carries null, which CLEARS the
+-- old one. Two statements would leave a window where an issue is closed with no
+-- resolution, or open with a stale one — and the second is worse, because the
+-- board would keep grouping a reopened issue under "Will not fix".
+setStatus:
+UPDATE issues SET status_id = ?, resolution_id = ?, updated_at = ? WHERE id = ?;
+
+-- Manual rank, and deliberately the ONE write on this table that leaves
+-- `updated_at` alone.
+--
+-- Every other write here stamps it, because every other write changes what the
+-- issue *is*. Reordering changes where it sits, which is a fact about the board
+-- rather than about the issue. Stamping it would also be self-defeating: recency
+-- is the sort this rank sits above, so tidying a column would reshuffle the very
+-- column being tidied — the card just dragged to the bottom would be the most
+-- recently touched thing in the group.
+setSortOrder:
+UPDATE issues SET sort_order = ? WHERE id = ?;
+
+delete:
+DELETE FROM issues WHERE id = ?;
+
+findById:
+SELECT id, project_id, number, title, description, status_id, priority_id, resolution_id,
+       is_draft, created_at, updated_at, sort_order, created_by
+FROM issues WHERE id = ?;
+
+-- How many issues hold each of this project's statuses — the count the settings
+-- dialog needs to say "3 issues still have that status" *before* the delete, and
+-- the count VocabularyRepository refuses on.
+--
+-- ── Drafts are counted, and that is not an oversight ────────────────────────
+--
+-- Every other query on this table excludes `is_draft = 1`, because a half-written
+-- issue is nobody's business but its author's. This one cannot: a draft row holds
+-- a status_id like any other, so it is a draft that will make SQLite's RESTRICT
+-- refuse the delete. Filtering them out here would produce the worst possible
+-- answer — a dialog that says "nothing uses this, go ahead" followed by a
+-- constraint violation nobody can explain from the UI.
+--
+-- One grouped query per kind rather than one count per row: a project has a
+-- handful of statuses today and this is not the place to teach it to cost a
+-- round-trip each.
+usageByStatus:
+SELECT status_id, COUNT(*) AS uses FROM issues WHERE project_id = ? GROUP BY status_id;
+
+-- See usageByStatus. Drafts count here too, for the same reason.
+usageByPriority:
+SELECT priority_id, COUNT(*) AS uses FROM issues WHERE project_id = ? GROUP BY priority_id;
+
+-- `resolution_id IS NOT NULL` rather than a plain GROUP BY: the null group is
+-- every open issue in the project, which is not a resolution anybody could
+-- delete, and it would arrive as a count keyed on nothing.
+usageByResolution:
+SELECT resolution_id, COUNT(*) AS uses FROM issues
+WHERE project_id = ? AND resolution_id IS NOT NULL
+GROUP BY resolution_id;
+
+-- The board. Drafts excluded: a half-written issue is nobody's business but its
+-- author's, and the author is looking at it in a modal rather than on the
+-- board.
+--
+-- Ordered here rather than in the view model, because the ordering is over
+-- columns this SELECT does not return: `priorities.position` and
+-- `resolutions.position`. Sorting client-side would mean shipping both positions
+-- with every issue purely so the browser could re-derive an order the database
+-- already knows — and every other client would have to re-implement it
+-- identically.
+--
+-- ── The three-level sort ────────────────────────────────────────────────────
+--
+--  1. `r.position` — the resolution. NULLs sort FIRST in SQLite's ASC, which is
+--     exactly right by luck and by intent: an unresolved issue has no resolution
+--     to group under, and every issue in a given lane agrees about this, because
+--     having a resolution is a property of the lane's status. So this line does
+--     nothing at all in an ordinary lane, and groups the closed lane by
+--     "Done" then "Will not fix".
+--  2. The CASE — the priority, *for unresolved issues only*. This is
+--     "primarily order by resolution instead": once an issue is closed, how
+--     urgent it was is history, so priority stops being a sort key. The CASE
+--     evaluates to NULL for every resolved row, which makes it a no-op there
+--     rather than a second grouping inside each resolution.
+--  3. `sort_order` — the manual rank, when a group has been dragged into shape.
+--     0 for everything otherwise, so it does nothing at all in a group nobody has
+--     touched and every such group falls straight through to recency below.
+--  4. `updated_at DESC`, then `number` — most recently touched first, with the
+--     number as the tie-break. Two issues can share a millisecond (the seed
+--     script makes four in one statement), and without a total order SQLite may
+--     return them differently between runs — which reads as cards shuffling for
+--     no reason.
+--
+-- LEFT JOIN on resolutions, not JOIN: resolution_id is null for most issues, and
+-- an inner join would return an empty board.
+forProject:
+SELECT i.id, i.project_id, i.number, i.title, i.description, i.status_id, i.priority_id,
+       i.resolution_id, i.is_draft, i.created_at, i.updated_at, i.sort_order, i.created_by
+FROM issues i
+JOIN priorities p ON p.id = i.priority_id
+LEFT JOIN resolutions r ON r.id = i.resolution_id
+WHERE i.project_id = ? AND i.is_draft = 0
+ORDER BY r.position,
+         CASE WHEN i.resolution_id IS NULL THEN p.position END,
+         i.sort_order,
+         i.updated_at DESC,
+         i.number;

@@ -38,6 +38,12 @@ node_modules/
 !.claude/skills/
 .mcp.json
 
+# The local stand-in for Railway's volume: the SQLite file and the attachment
+# bytes a local run writes. Real data you typed in, and never something to
+# commit. Wipe it deliberately with ./scripts/local-db.sh wipe — note it is NOT
+# under build/, precisely so that `./gradlew clean` cannot take it with it.
+.localdata/
+
 # Secrets — the local OAuth credentials the dev scripts source. The committed
 # template is .env.example; the filled-in file never leaves this machine.
 # Negation is explicit rather than relying on the pattern not matching, because

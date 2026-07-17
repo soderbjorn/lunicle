@@ -1,0 +1,50 @@
+this is what i want for the actual issue tracker. we skip your previous ideas in features.html.
+
+* i need a way for my local tests to be able to access a local volume for test purposes. explain how that would work and make scripts to help me, so I can test run everything locally and iterate on this solution quickly and easily. Maybe you can augment the existing scripts or make new ones.
+* when we embed it, it defaults to a project specified somehow in the embed IF that is provided, it's optional.
+* the first used signed in becomes the admin user. This means we must have a database table for users if we don't already. Each user in the table should have a column which is a JSON blob for easy iterations. the user should also have info on whether he signed in with google or github, and their email and name, i guess this could be dedicated columns or something.
+* To the right we have a sidebar with menu options.
+* The first thing in the sidebar (at the top) is either "Signed in via (Github/Google) as <github-username/Google-name>" or "Sign in with Github" followed by "Sign in with Google" buttons (we have them already but we move them).
+* We have a top bar which says the current project we are in in a dropdown chooser. We might not be in any project. Regardless we can switch using the picker. Any user can see all projects.
+* To the right of the project picker is a cogwheel icon for access settings for that project. the settings open as a modal dialog. draw inspiration from the look of modal dialogs in lunamux.
+* The picker has all listed projects followed by some spacing and then New project...
+* if we press New project we get the same modal dialog for editing an existing project.
+* Therefor we need a projects list in the DB, and each project can have a bunch of different settings.
+* To make things simple and make migrations easier, each project has a JSON settings blob with it. as a dedicated field in the DB the project has a unique ID (as normal), also the project name as one column, and the settings blob i mentioned.
+* In the edit project dialog we can rename the project (or assign the name if it does not have one already). the dialog has OK and Cancel but OK will be disabled if we did not fill in a unique project name, or if we try to rename a project to a name that already exists.
+* in the edit project dialog we can also delete the project. That gets us a confirmation dialog. check lunamux for inspiration about confirmation dialogs.
+* The "global" screen (call it MainScreen) (which has the project picker) has a dedicated backingviewmodel on the KMP side, following the framnafolk pattern. the viewmodel in turn has a StorageRepository (like Android convention) and it tn turns accesses utility classes (maybe a DatabaseService or whatever) that can read and write to/from DB.
+* The edit project dialog also has its own viewmodel in kmp.
+* Both the MainScreen and the EditProjectScreen (let's call it that) get from their backingviewmodel a single StateFlow of a data class holding everything the screen needs. We should have as little business logic as possible in the views themselves.
+* User must be able to sign out.
+* One of the settings on a project (checkbox in the edit project dialog) is whether it's public or not. that stores as a setting in the JSON blob. If it is, that means users must NOT be signed in to browse issues and stuff. But we haven't implemented issues yet so let's worry about that later.
+
+CLARIFICATIONS #1
+
+* It's important to clarify we are still iterating. As such we don't yet have to care about migrations. In fact you can wipe the database table for this rework. Maybe after this version we might need migrations after I decide things have settled a bit.
+* I decided to skip JSON blobs for now. Let's go with regular columns. Hence skip settings blob.
+We add roles table, which contains hardcoded list which the user cannot edit like "create_issue", "comment_on_issue", "change_unowned_issues" (change anything on issues they did not create).
+We have project_roles table which associates users with a role in a specific project, they can have many roles. 
+* In users table, display_name should be a nullable text that the user can optionally set to override their display name. It should not carry anything from the account.
+* We add provider_name instead for the name retrieved from Github/Google.
+* In projects table, skip name_folded. The user should not be able to create two projects with same name that differ only be casing. Skip settings blob too. Add a column "name_prefix", this is what gets appended before issue names in an issue name like FOO-123.
+* Defaults in tables get added on first creation of database.
+* We add a table "labels". It holds a list of labels, with one column the ID of the project for which it applies. It can have duplicates (for different projects). By default we add "Bug", "Feature", "Improvement", "Codebase". 
+* We add a table "components". It holds a list of components, with one column the ID of the project for which it applies. It can have duplicates (for different projects). By default we add "Desktop", "Server", "Android and "iOS".
+ * We add a table "status". It holds a list of statuses, with one column the ID of the project for which it applies. It can have duplicates (for different projects). By default we add "New", "Backlog", "Ready for development", "In progress", "Ready for test", "Testing", "Completed", "Closed".
+ * We add a table "issues". Each issue has reference to its project, one or more labels, one or more components, and a status. Default status is "New". It also has a number (in addition to the ID). The project's prefix combines with "-" to produce the displayed ticket number like FOO-123. It also has a label, which is the short description. It also has a description, which is the long description in markup format. It also may have multiple comments inside of it. It also has a date timestamp and the id of the user who made it. can have multiple binary/image attachments associated with it also, you propose how to store those.
+* We have comment table, which has datetimestamp, user id, markdown, and can have multiple binary/image attachments associated with it.
+
+ To make these relationships like "one issue can have many labels assigned, out of the labels available to the project" perhaps you need trickery like additional decided. Up to you to decide.
+
+The admin role can do everything. That's all we need to know for now. We don't have to care so much about roles yet.
+* in the main content area, if a project is selected, we see a Issues list arranged by Status (each column represents a status). Each issue is listed with its prefix and number like "LMX-123: Unable to remove user". We can click an issue to open it in a modal dialog where the user can either read it, or if they have permission change it also. There is a button to add a new issue. Inside the issue modal dialog user can delete it also.
+* all changes persist immediately.
+
+CLARIFICATIONS #2
+* Server is who enforces security (the right to do something), never client side.
+* Server may also have its own repositories like StorageRepository - not the same as on the client - which collects logic that should neither be in the API nor elsewhere. Just like client has StorageRepository in KMP (maybe other repositories too) which collect stuff that is too business logic like for the backingviewmodel, or which needs to wire up multiple APIs or other data sources.
+* Clarification that issues are also per project.
+* I accept all your suggestions in the schema.html. Don't start building yet, update the schema with the points above.
+
+

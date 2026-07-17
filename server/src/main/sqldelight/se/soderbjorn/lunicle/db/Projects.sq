@@ -1,0 +1,56 @@
+-- Projects: a name, a ticket prefix, and whether the world may read it.
+
+CREATE TABLE projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- COLLATE NOCASE on the column makes both the UNIQUE index and every `=`
+    -- against it case-insensitive. Trimmed server-side first — "Lunamux " and
+    -- "Lunamux" are the same project to a human, and a trailing space is
+    -- invisible in the very UI that would show the clash.
+    --
+    -- The guarantee is ~95% structural: NOCASE folds ASCII A–Z only, so
+    -- Ärenden/ärenden would both get in on the constraint alone.
+    -- ProjectRepository runs a Unicode-aware lowercase() comparison before
+    -- insert and rename to catch the rest. See its nameIsTaken().
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+
+    -- The "FOO" in FOO-123. Unique across all projects, not merely non-null: if
+    -- two projects shared a prefix, FOO-123 would name two different issues and
+    -- every ticket reference in every commit message would be ambiguous.
+    -- Upper-cased server-side by convention.
+    name_prefix TEXT NOT NULL COLLATE NOCASE UNIQUE,
+
+    -- The one read gate that says yes to a caller with no session at all.
+    -- Enforced in AccessControl.canReadProject, never in the browser.
+    is_public INTEGER NOT NULL DEFAULT 0,
+
+    created_at INTEGER NOT NULL
+);
+
+insert:
+INSERT INTO projects (name, name_prefix, is_public, created_at)
+VALUES (?, ?, ?, ?)
+RETURNING id, name, name_prefix, is_public, created_at;
+
+update:
+UPDATE projects SET name = ?, name_prefix = ?, is_public = ? WHERE id = ?;
+
+delete:
+DELETE FROM projects WHERE id = ?;
+
+findById:
+SELECT id, name, name_prefix, is_public, created_at FROM projects WHERE id = ?;
+
+-- Name lookup for the embed's ?project= parameter. NOCASE on the column makes
+-- this case-insensitive without a function on either side, so the UNIQUE index
+-- is still usable.
+findByName:
+SELECT id, name, name_prefix, is_public, created_at FROM projects WHERE name = ?;
+
+-- Every project, for the picker and for the Unicode-fold uniqueness check.
+--
+-- Unfiltered on purpose: filtering by readability is AccessControl's job and it
+-- needs the whole list to do it. A store makes no decisions. See §2 — the route
+-- is what must never ship a private project's name to a signed-out visitor.
+selectAll:
+SELECT id, name, name_prefix, is_public, created_at FROM projects ORDER BY name;

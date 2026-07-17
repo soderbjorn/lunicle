@@ -1,0 +1,185 @@
+-- Access and refresh tokens: what an agent actually holds.
+--
+-- ── Opaque and hashed, never a JWT ──────────────────────────────────────────
+--
+-- A JWT would let /mcp validate a token without touching the database, and that
+-- is precisely what we do not want. We have one container and one SQLite file,
+-- so "look it up" costs a primary-key read — and in exchange, revocation is a
+-- DELETE rather than a blocklist we would have to invent, keep, and check on
+-- every request anyway. A self-describing token that cannot be un-issued is a
+-- worse trade at this size.
+--
+-- Hashed at rest for the reason OAuthAuthCodes.sq gives, with one addition that
+-- makes it sharper here: unlike a session id, which lives in a browser jar and
+-- dies in thirty days, these values are written into config files on developer
+-- laptops and sit there for a month. This table must not be a set of live
+-- credentials if it is ever copied.
+--
+-- ── Refresh families, and why they are the best part of this design ─────────
+--
+-- Every access+refresh pair issued together shares a `family_id`. Rotating a
+-- refresh token marks the old row `consumed` and mints a new pair in the SAME
+-- family. So a family is one continuous grant, and the chain of rotations
+-- through it is a history.
+--
+-- The property that buys: if an already-consumed refresh token is EVER presented
+-- again, there is no innocent explanation. The legitimate holder moved on to the
+-- new token; only a copy that was made before rotation could still be presenting
+-- the old one. So a replay is a theft signal, and the response is to revoke the
+-- whole family — both the thief's tokens and the victim's. That is deliberately
+-- harsh: it turns a silent, permanent compromise into a visible "you have been
+-- signed out", which the user notices and can act on.
+--
+-- See OAuthTokenStore.rotateRefresh.
+
+CREATE TABLE oauth_tokens (
+    -- SHA-256(token), hex.
+    token_hash TEXT PRIMARY KEY NOT NULL,
+
+    user_id INTEGER NOT NULL,
+    client_id TEXT NOT NULL,
+
+    -- "access" | "refresh". A string rather than a boolean because there are
+    -- already two and a third (an ID token, say) would otherwise be a schema
+    -- change instead of a value. Checked on every lookup: an access token
+    -- presented at the refresh endpoint, or vice versa, is refused before
+    -- anything else happens.
+    type TEXT NOT NULL,
+
+    scope TEXT NOT NULL,
+
+    -- RFC 8707, carried from the code. What this token was minted FOR.
+    resource TEXT NOT NULL,
+
+    -- The grant this token belongs to. See the preamble.
+    family_id TEXT NOT NULL,
+
+    -- Refresh tokens only, in practice: an access token is never rotated, it
+    -- simply expires. Kept on the shared row rather than in a refresh-only table
+    -- because splitting one lookup into two tables to save one integer per
+    -- access token would be a worse trade than the column costs.
+    consumed INTEGER NOT NULL DEFAULT 0,
+
+    created_at INTEGER NOT NULL,
+
+    -- Null until the token is first presented. Feeds the "last used 2 min ago"
+    -- line in the Connections list, which is the thing that makes that list worth
+    -- opening — "you connected Cursor in July and it has not spoken since" is the
+    -- fact a user acts on.
+    last_used_at INTEGER,
+
+    -- access: 60 min. refresh: 30 days. Enforced in every SELECT's WHERE clause
+    -- rather than by the caller — see OAuthLoginState.sq's `find`.
+    expires_at INTEGER NOT NULL,
+
+    -- Both cascades are load-bearing. Deleting a user must not leave live tokens
+    -- pointing at nobody — a token row that outlived its user would authenticate
+    -- as a user id that no longer resolves, and every lookup downstream assumes
+    -- that cannot happen. See Database.kt's preamble on why these are enforced
+    -- at all.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+);
+
+-- Revoking a family, sweeping, and listing a user's grants all filter on these.
+-- Without them each is a full scan of every token in the instance.
+CREATE INDEX oauth_tokens_family ON oauth_tokens(family_id);
+CREATE INDEX oauth_tokens_user ON oauth_tokens(user_id);
+
+insert:
+INSERT INTO oauth_tokens (
+    token_hash, user_id, client_id, type, scope, resource, family_id,
+    consumed, created_at, last_used_at, expires_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?);
+
+-- The /mcp hot path. Type and expiry are both in the WHERE clause, so a wrong-type
+-- or stale token is simply not found — there is no branch downstream that could
+-- forget to check.
+findValid:
+SELECT token_hash, user_id, client_id, type, scope, resource, family_id, consumed,
+       created_at, last_used_at, expires_at
+FROM oauth_tokens
+WHERE token_hash = ? AND type = ? AND expires_at > ?;
+
+-- Revocation (RFC 7009) looks up without the expiry or type filter on purpose:
+-- revoking an expired token must still succeed, and a client revoking "a token"
+-- does not have to tell us which kind it is.
+findAny:
+SELECT token_hash, user_id, client_id, type, scope, resource, family_id, consumed,
+       created_at, last_used_at, expires_at
+FROM oauth_tokens
+WHERE token_hash = ?;
+
+markConsumed:
+UPDATE oauth_tokens SET consumed = 1 WHERE token_hash = ?;
+
+touch:
+UPDATE oauth_tokens SET last_used_at = ? WHERE token_hash = ?;
+
+-- The theft response, and what Revoke in the Connections list is built on.
+deleteFamily:
+DELETE FROM oauth_tokens WHERE family_id = ?;
+
+deleteByHash:
+DELETE FROM oauth_tokens WHERE token_hash = ?;
+
+deleteExpired:
+DELETE FROM oauth_tokens WHERE expires_at <= ?;
+
+-- Every agent this user has connected, one row per agent.
+--
+-- Grouped by client rather than by family because that is the unit a human
+-- thinks in: "Claude Code is connected" is one line, however many times it has
+-- rotated its refresh token or re-run the browser flow. Revoke works on the same
+-- grouping, so what the list shows and what the button kills are the same thing.
+--
+-- MIN(created_at) rather than MAX: rotation mints new rows in the same family, so
+-- MAX would report "connected 4 minutes ago" for an agent connected in July —
+-- every refresh would reset the date. The oldest surviving row is the closest
+-- honest answer to "when did this start".
+--
+-- Refresh tokens only. An access token lives 60 minutes, so counting them would
+-- make a connected agent vanish from this list an hour after its last call and
+-- reappear when it next refreshed. The refresh token IS the grant.
+--
+-- last_used_at is MAX across the whole client, including access tokens, which is
+-- why the join is on the client rather than the type — see `lastUsedFor`.
+listGrantsFor:
+SELECT c.client_id AS client_id,
+       c.client_name AS client_name,
+       MIN(t.created_at) AS connected_at
+FROM oauth_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
+WHERE t.user_id = ? AND t.type = 'refresh'
+GROUP BY c.client_id, c.client_name
+ORDER BY connected_at;
+
+-- When this user's tokens for this client were last presented, or null if never.
+--
+-- Separate from `listGrantsFor` rather than another aggregate in it, because the
+-- two count different rows: a grant is a refresh token, but "last used" is
+-- overwhelmingly an ACCESS token being presented at /mcp — that is what an agent
+-- actually does all day. One query would have to either restrict to refresh rows
+-- and report "last used" as "last refreshed" (wrong by up to an hour), or drop
+-- the type filter and count an hour-old access token as a live grant.
+lastUsedFor:
+SELECT MAX(last_used_at) FROM oauth_tokens WHERE user_id = ? AND client_id = ?;
+
+-- Revoke one agent, for one user. The Connections list's button.
+--
+-- Scoped by user_id as well as client_id, and that is not redundant: one client
+-- row is shared by every user who connected that agent, since DCR registers the
+-- software, not the person. Without the user filter, one person revoking Claude
+-- Code would disconnect it for everyone on the instance.
+deleteForUserAndClient:
+DELETE FROM oauth_tokens WHERE user_id = ? AND client_id = ?;
+
+-- Every token belonging to a user, whatever the client. What turning the MCP
+-- toggle off does NOT do — see McpRoutes. Here because revoking a user outright
+-- is the obvious next thing someone will need, and because it is one line.
+deleteForUser:
+DELETE FROM oauth_tokens WHERE user_id = ?;
+
+countAll:
+SELECT count(*) FROM oauth_tokens;

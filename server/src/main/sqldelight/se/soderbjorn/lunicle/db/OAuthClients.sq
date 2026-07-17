@@ -1,0 +1,119 @@
+-- Agents that have registered themselves to act on a user's behalf.
+--
+-- ── Why this table is written by strangers ──────────────────────────────────
+--
+-- RFC 7591 Dynamic Client Registration is unauthenticated by design, and that is
+-- not an oversight to be corrected here: it is the entire reason `claude mcp add`
+-- needs no secret. An agent posts its name and its callback URL, gets a
+-- client_id, and starts the browser flow. Nobody types anything.
+--
+-- The consequence is that anyone on the internet can INSERT here. That is
+-- tolerable only because a row in this table grants nothing at all — it is a
+-- name and a callback address. To become a token it must survive a real Lunicle
+-- sign-in and a human clicking Approve on the consent page. The consent page is
+-- the security boundary; this table is a phone book.
+--
+-- What it does cost is disk, on a volume with a half-gigabyte trial ceiling. See
+-- `deleteStale` at the bottom, and Sessions.sq's preamble, which worries about
+-- exactly this class of unbounded growth.
+
+CREATE TABLE oauth_clients (
+    -- "lun_client_" + 16 random bytes hex. Prefixed like every other opaque
+    -- identifier in this design so that a value in a log or a config file says
+    -- what it is without being looked up.
+    client_id TEXT PRIMARY KEY NOT NULL,
+
+    -- What the client calls itself at registration — and therefore a string a
+    -- stranger chose. NEVER TRUSTED. Anyone may register a client named
+    -- "Claude Code"; this is a real, if minor, spoofing surface. Escaped on
+    -- render everywhere it appears (the consent page, the Connections list), and
+    -- deliberately never the only thing a user is shown before approving.
+    client_name TEXT NOT NULL,
+
+    -- Space-separated, as they arrive on the wire. A list in a column rather
+    -- than a child table because — unlike redirect_uris — nothing ever queries
+    -- for one: they are echoed back at registration and never matched against.
+    -- The moment something needs `WHERE grant_type = ?`, this becomes a table.
+    grant_types TEXT NOT NULL,
+
+    created_at INTEGER NOT NULL,
+
+    -- Bumped at /authorize, which is the only moment a client proves it is still
+    -- in use by something. Feeds the "last used" line in the Connections list,
+    -- and gives `deleteStale` something to measure.
+    last_used_at INTEGER NOT NULL
+);
+
+-- The callback addresses this client registered, one per row.
+--
+-- A child table rather than a JSON blob in the row above, for one concrete
+-- reason: the exact-match lookup at /authorize is a real query. A blob would
+-- make it a LIKE over serialized text, or a parse-then-scan in Kotlin — and this
+-- is the check that stops an open redirector, so it should be the database's
+-- job, not string handling's.
+CREATE TABLE oauth_client_redirect_uris (
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+
+    PRIMARY KEY (client_id, redirect_uri),
+
+    -- ON DELETE CASCADE: a client that is swept must not leave its callbacks
+    -- behind. Enforced only because Database.kt sets `foreign_keys` as a
+    -- connection PROPERTY — see that file's preamble, where the bug that made
+    -- every cascade in this schema decoration is documented.
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+);
+
+registerClient:
+INSERT INTO oauth_clients (client_id, client_name, grant_types, created_at, last_used_at)
+VALUES (?, ?, ?, ?, ?);
+
+addRedirectUri:
+INSERT INTO oauth_client_redirect_uris (client_id, redirect_uri)
+VALUES (?, ?);
+
+findClient:
+SELECT client_id, client_name, grant_types, created_at, last_used_at
+FROM oauth_clients
+WHERE client_id = ?;
+
+redirectUrisFor:
+SELECT redirect_uri FROM oauth_client_redirect_uris WHERE client_id = ?;
+
+-- The exact-match gate, as a query rather than a scan.
+--
+-- Exact, and deliberately so. An earlier draft of the plan worried that Claude
+-- Code's loopback callback port varies and advised matching scheme/host/path
+-- while ignoring the port. That was wrong, and acting on it would have been a
+-- real weakening for no gain: the client registers its actual redirect URI via
+-- DCR before it ever uses one, so the value presented at /authorize is a value
+-- this table already holds, port and all.
+isRegisteredRedirectUri:
+SELECT EXISTS(
+    SELECT 1 FROM oauth_client_redirect_uris
+    WHERE client_id = ? AND redirect_uri = ?
+);
+
+touchClient:
+UPDATE oauth_clients SET last_used_at = ? WHERE client_id = ?;
+
+-- Sweep registrations that never became anything.
+--
+-- The counterweight to unauthenticated registration: a client that registered
+-- before the cutoff, was never used since, and holds no tokens is a row somebody
+-- created and walked away from. Requiring BOTH timestamps to be old is what
+-- keeps this from deleting a live-but-quiet agent's client mid-flow — a client
+-- is touched at every /authorize, so anything a user still has connected is
+-- recent by definition.
+--
+-- The NOT EXISTS is the real guard: a client with a live token is in use no
+-- matter what the timestamps say, and deleting it would cascade its redirect
+-- URIs away and break a refresh the user never asked to lose.
+deleteStale:
+DELETE FROM oauth_clients
+WHERE created_at < ?
+  AND last_used_at < ?
+  AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE oauth_tokens.client_id = oauth_clients.client_id);
+
+countAll:
+SELECT count(*) FROM oauth_clients;

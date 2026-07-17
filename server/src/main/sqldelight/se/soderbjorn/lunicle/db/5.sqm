@@ -1,0 +1,93 @@
+-- Schema 5 → 6. Lunicle becomes an OAuth authorization server.
+--
+-- Five new tables and one new column on `users`. Every table is new, so there is
+-- nothing to preserve in any of them; the only existing table touched is `users`,
+-- and it is touched in the one way SQLite allows in place.
+--
+-- ── Why this one does NOT rebuild anything ──────────────────────────────────
+--
+-- 2.sqm and 3.sqm rebuilt `issues` the long way — new table, copy, drop, rename —
+-- because they added columns with COMPOSITE foreign keys, which ALTER TABLE
+-- cannot express. This migration adds no constraint to any existing table.
+-- `mcp_enabled` is a plain integer with a non-null default, which is exactly the
+-- shape SQLite permits ALTER TABLE ADD COLUMN to take. So there is no copy, no
+-- DROP, and none of the cascade danger that forced the foreign-keys-off migration
+-- path in the first place. See Database.kt.
+--
+-- It still runs on that foreign-keys-off connection, because openDatabase() does
+-- all schema work there unconditionally. It simply does not need it — and the
+-- PRAGMA foreign_key_check that follows has nothing to catch here, because every
+-- new table starts empty and the one backfilled column references nothing.
+--
+-- ── Why every existing user starts with mcp_enabled = 0 ─────────────────────
+--
+-- Because the alternative is unthinkable: DEFAULT 1 would silently grant every
+-- account on the instance the ability to have agents act for it, as a side effect
+-- of a deploy nobody read. Off is the only defensible backfill for a new
+-- capability, and it means this migration changes the behaviour of nothing. The
+-- first person to turn the toggle on is the first person for whom any of this is
+-- reachable at all.
+
+CREATE TABLE oauth_clients (
+    client_id TEXT PRIMARY KEY NOT NULL,
+    client_name TEXT NOT NULL,
+    grant_types TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL
+);
+
+CREATE TABLE oauth_client_redirect_uris (
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    PRIMARY KEY (client_id, redirect_uri),
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE oauth_login_state (
+    id TEXT PRIMARY KEY NOT NULL,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    client_state TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE oauth_auth_codes (
+    code_hash TEXT PRIMARY KEY NOT NULL,
+    user_id INTEGER NOT NULL,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE oauth_tokens (
+    token_hash TEXT PRIMARY KEY NOT NULL,
+    user_id INTEGER NOT NULL,
+    client_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    family_id TEXT NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE INDEX oauth_tokens_family ON oauth_tokens(family_id);
+
+CREATE INDEX oauth_tokens_user ON oauth_tokens(user_id);
+
+ALTER TABLE users ADD COLUMN mcp_enabled INTEGER NOT NULL DEFAULT 0;

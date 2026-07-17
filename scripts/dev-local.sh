@@ -81,11 +81,24 @@ server_marker="lunicle.webDist=$REPO_ROOT/web/build"
 # Same reasoning at the readiness loop below and in container-up.sh.
 if curl -sf -o /dev/null "http://localhost:$LUNICLE_PORT/api/session" 2>/dev/null; then
   echo "error: something is already serving http://localhost:$LUNICLE_PORT/" >&2
+  # Say WHICH of the three it is. There are three ways to have a Lunicle on this
+  # port — this script's server, the Docker container, or something unrelated —
+  # and they are stopped three different ways. "Stop it" without saying what
+  # "it" is leaves you to work that out every time, which is a papercut whose
+  # answer is never interesting. See scripts/stop.sh.
   if pgrep -f "$server_marker" > /dev/null 2>&1; then
-    echo "       It looks like an orphaned tracker from an earlier run. Stop it with:" >&2
-    echo "         pkill -f '$server_marker'" >&2
+    echo "       It's an orphaned tracker from an earlier run of this script." >&2
+    echo "       Stop it with:  ./scripts/stop.sh" >&2
+  elif docker ps --filter "name=^lunicle-local$" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+    echo "       It's the 'lunicle-local' Docker container (./scripts/container-up.sh)." >&2
+    echo "       Stop it with:  ./scripts/stop.sh          # keeps its data" >&2
+    echo "       Note it runs the image you last BUILT, not your working tree." >&2
   else
-    echo "       Stop it, or re-run with LUNICLE_PORT=<other port>." >&2
+    holder="$(lsof -nP -iTCP:"$LUNICLE_PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $1" (pid "$2")"; exit}')"
+    if [[ -n "$holder" ]]; then
+      echo "       It's: $holder — not something these scripts started." >&2
+    fi
+    echo "       Stop it yourself, or re-run with LUNICLE_PORT=<other port>." >&2
   fi
   exit 1
 fi
@@ -138,7 +151,14 @@ if [[ "${#oauth_props[@]}" -gt 0 ]]; then
   )"
 fi
 
-"$REPO_ROOT/gradlew" -p "$REPO_ROOT" "-PframeAncestors=$frame_ancestors" \
+# The port is passed as a -P property, not left to the environment. LUNICLE_PORT
+# used to be honoured by this script's health checks and by nothing else: the
+# server reads PORT from its environment, and a Gradle JavaExec inherits the
+# *daemon's* environment rather than this shell's — so `LUNICLE_PORT=9000
+# ./scripts/dev-local.sh` started a server on 8080 and then waited two minutes
+# for it to answer on 9000 before declaring that it never came up. Same
+# -P-not-environment reasoning as everything else here.
+"$REPO_ROOT/gradlew" -p "$REPO_ROOT" "-PframeAncestors=$frame_ancestors" "-Pport=$LUNICLE_PORT" \
   ${oauth_props[@]+"${oauth_props[@]}"} :server:run &
 gradle_pid=$!
 

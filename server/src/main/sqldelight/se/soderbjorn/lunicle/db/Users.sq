@@ -2,7 +2,7 @@
 --
 -- A row is created on first sign-in and then found again on every later one, so
 -- the identity here outlives any single session and any redeploy. That is what
--- lets a counter belong to someone.
+-- lets an issue belong to someone.
 
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,12 +25,49 @@ CREATE TABLE users (
     -- providers promise not to reuse.
     provider_id TEXT NOT NULL,
 
-    -- What to render. Refreshed on every sign-in, so a rename upstream follows
-    -- the user here rather than pinning them to whatever they were called the
-    -- first time.
-    display_name TEXT NOT NULL,
+    -- The name the provider gave us, refreshed on every sign-in. The sidebar
+    -- shows "Signed in via GitHub as <login>" but "via Google as <name>" — two
+    -- different upstream fields, resolved per provider in OAuthProviders.kt.
+    -- NOT NULL because every branch of that resolution terminates in something,
+    -- so a blank name here reads as a bug rather than as a user who has none.
+    provider_name TEXT NOT NULL,
 
+    -- The user's own override, and nothing else. Null means "no override"
+    -- rather than "no name", which is why it is nullable rather than defaulted
+    -- to the provider's — copying the account name in here once would freeze
+    -- it, and a later rename upstream would never follow. The UI shows
+    -- `display_name ?: provider_name`, so the override stays purely additive.
+    display_name TEXT,
+
+    -- Nullable, and that is a fact rather than an oversight: GitHub's /user
+    -- returns null for a private address. NULL means "we do not know" —
+    -- different from "" and different from "they have none".
+    --
+    -- Carries no UNIQUE constraint on purpose. The same human signing in via
+    -- both Google and GitHub is two accounts by design, and they will share an
+    -- address. Never an identity key; see provider_id above.
+    email TEXT,
+
+    is_admin INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
+
+    -- Whether this user lets AI agents act on their behalf over MCP.
+    --
+    -- Off by default, and the default is the point: MCP is a capability nobody
+    -- gets until they ask for it, so every existing account and every future one
+    -- starts closed. 5.sqm adds this with DEFAULT 0, which backfills every row
+    -- that already existed to exactly the same answer.
+    --
+    -- A real kill switch, not a UI flag. While this is 0, /oauth/authorize
+    -- refuses to start a flow for this user and /mcp rejects their tokens even
+    -- though the rows are still there and still valid — see McpServer. Turning it
+    -- off does NOT delete grants; turning it back on restores them. Deleting is
+    -- what Revoke is for, and conflating the two would surprise people.
+    --
+    -- A column here rather than a row in `roles` for the same reason `is_admin`
+    -- is: it is global to the account, not scoped to a project, and there is no
+    -- project it could hang off.
+    mcp_enabled INTEGER NOT NULL DEFAULT 0,
 
     -- The identity, as far as this server is concerned. Scoped by provider, not
     -- global: nothing stops Google and GitHub from handing out the same id
@@ -38,29 +75,72 @@ CREATE TABLE users (
     UNIQUE (provider, provider_id)
 );
 
--- Find an existing identity. The hot path — this runs on every sign-in.
-findByProviderIdentity:
-SELECT id, provider, provider_id, display_name
-FROM users
-WHERE provider = ? AND provider_id = ?;
-
-findById:
-SELECT id, provider, provider_id, display_name
-FROM users
-WHERE id = ?;
-
 -- Create-or-refresh, in one statement.
 --
 -- The UPSERT matters: two sign-ins racing for the same new account would both
 -- see "no such user" on a find-then-insert and one would fail the UNIQUE
--- constraint. ON CONFLICT makes the second a rename instead of an error, which
--- is also exactly the behaviour we want for the display name on every ordinary
--- repeat sign-in.
+-- constraint. ON CONFLICT makes the second a refresh instead of an error, which
+-- is also exactly the behaviour we want on every ordinary repeat sign-in.
 --
 -- RETURNING avoids a second round-trip for the id, and works because the
 -- 3.38 dialect is declared in server/build.gradle.kts.
 upsert:
-INSERT INTO users (provider, provider_id, display_name, created_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (provider, provider_id) DO UPDATE SET display_name = excluded.display_name
-RETURNING id, provider, provider_id, display_name;
+INSERT INTO users (provider, provider_id, provider_name, email, is_admin, created_at)
+VALUES (
+    ?, ?, ?, ?,
+    -- The first user to sign in becomes the instance admin.
+    --
+    -- Evaluated before this row lands, so it is 1 only on a genuinely empty
+    -- table. EXISTS rather than count(*) — it stops at the first row.
+    --
+    -- Inside the INSERT rather than a separate `SELECT count(*)` then insert,
+    -- because that races: two people signing in at once on a fresh database
+    -- would both see zero and both become admin. DatabaseDispatcher already
+    -- serializes every query to one thread so this cannot bite today; this is
+    -- belt to that brace, and it costs one subquery on a statement that runs
+    -- once per sign-in.
+    (SELECT CASE WHEN EXISTS(SELECT 1 FROM users) THEN 0 ELSE 1 END),
+    ?
+)
+ON CONFLICT (provider, provider_id) DO UPDATE SET
+    provider_name = excluded.provider_name,
+    -- COALESCE, not assignment: GitHub stops returning an email the moment a
+    -- user flips it private, and a later sign-in must not erase what an earlier
+    -- one learned. Absent means "no news", not "gone".
+    email = COALESCE(excluded.email, users.email)
+    -- is_admin, display_name and mcp_enabled are deliberately absent.
+    -- Recomputing admin on every sign-in would be a bug with teeth; display_name
+    -- is the user's — the provider has no business overwriting it — and
+    -- mcp_enabled is a setting the user chose, which signing in again is not a
+    -- request to revisit. Resetting it here would silently disconnect every agent
+    -- the moment its owner opened the web app.
+RETURNING id, provider, provider_id, provider_name, display_name, email, is_admin, mcp_enabled;
+
+findById:
+SELECT id, provider, provider_id, provider_name, display_name, email, is_admin, mcp_enabled
+FROM users
+WHERE id = ?;
+
+-- Every account, for the admin's impersonation menu — and for nothing else.
+--
+-- The route that calls this is the only one, and it refuses anyone whose session
+-- is not an admin's. Worth saying here because a `selectAll` on `users` is the
+-- kind of query that gets reused casually: this table holds an email per row, so
+-- anything reaching for it must decide what it is allowed to send onward. See
+-- AuthRoutes' impersonation routes, which map to UserOption — a name and an id.
+--
+-- Ordered by the name the menu shows, not by id: the menu is a list a human
+-- scans, and insertion order is meaningless to them.
+selectAll:
+SELECT id, provider, provider_id, provider_name, display_name, email, is_admin, mcp_enabled
+FROM users
+ORDER BY COALESCE(display_name, provider_name) COLLATE NOCASE;
+
+-- The user's own display-name override. Null clears it, falling the UI back to
+-- provider_name.
+setDisplayName:
+UPDATE users SET display_name = ? WHERE id = ?;
+
+-- The MCP kill switch. See the column's comment for what it does and does not do.
+setMcpEnabled:
+UPDATE users SET mcp_enabled = ? WHERE id = ?;

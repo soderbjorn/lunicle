@@ -1,0 +1,111 @@
+-- Schema 2 → 3. Priorities, and a last-touched stamp.
+--
+-- The first migration that has to PRESERVE data — 1.sqm was a purge, and said in
+-- its own comments that it was the last one allowed to be. The volume now holds
+-- issues somebody wrote. Nothing below drops a row.
+--
+-- ── Why `issues` is rebuilt rather than ALTERed ──────────────────────────────
+--
+-- `priority_id` is NOT NULL with a COMPOSITE foreign key — the same guarantee
+-- `status_id` has, which is what stops an issue carrying another project's
+-- priority. SQLite's ALTER TABLE ADD COLUMN cannot produce either half of that:
+--
+--   * A composite FK is a *table* constraint. ADD COLUMN adds a column, and the
+--     column-level REFERENCES it accepts names one column.
+--   * "If a NOT NULL constraint is specified, the column must have a non-NULL
+--     default" — and, separately, "if foreign key constraints are enabled and a
+--     column with a REFERENCES clause is added, the default must be NULL." Those
+--     two cannot both be satisfied. NOT NULL + REFERENCES is unreachable.
+--
+-- So: the 12-step procedure from SQLite's own ALTER TABLE docs. New table, copy,
+-- drop, rename.
+--
+-- ── The part that would eat the database ────────────────────────────────────
+--
+-- `DROP TABLE issues` with foreign keys ON performs an implicit DELETE FROM
+-- first. `issue_labels`, `issue_components`, `comments` and `attachments` all
+-- reference issues ON DELETE CASCADE — so that implicit delete would cascade,
+-- and the drop would take every label, every comment and every attachment with
+-- it. Silently, and reported as a successful migration.
+--
+-- This file therefore REQUIRES foreign keys to be off while it runs, which is
+-- why openDatabase() now does the schema work on a dedicated connection with
+-- `foreign_keys=false` and runs `PRAGMA foreign_key_check` afterwards before
+-- letting anything else near the file. See Database.kt.
+--
+-- A `PRAGMA foreign_keys=OFF` *here* would not work, and would not say so: this
+-- driver hands out a fresh connection per statement, so the pragma would land on
+-- a throwaway connection and the DROP would run with them still on. That is the
+-- same trap Database.kt's connectionProperties() comment documents.
+
+-- Step 1: the new vocabulary. Seeded per project from the scale in
+-- ProjectRepository.DEFAULT_PRIORITIES — kept in step with it by hand, exactly
+-- as local-db.sh's status list is.
+CREATE TABLE priorities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    position INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+-- Every existing project gets the scale. A cross join against `projects`, so
+-- this is correct for none, one, or a hundred of them.
+INSERT INTO priorities (project_id, name, position)
+SELECT id, value, pos FROM projects, (
+    SELECT 'Very high' AS value, 0 AS pos UNION ALL
+    SELECT 'High', 1 UNION ALL
+    SELECT 'Normal', 2 UNION ALL
+    SELECT 'Low', 3 UNION ALL
+    SELECT 'Very low', 4
+);
+
+-- Step 2: `issues`, as Issues.sq now declares it.
+CREATE TABLE issues_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status_id INTEGER NOT NULL,
+    priority_id INTEGER NOT NULL,
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    created_by INTEGER,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (status_id, project_id) REFERENCES statuses(id, project_id),
+    FOREIGN KEY (priority_id, project_id) REFERENCES priorities(id, project_id),
+    UNIQUE (project_id, number),
+    UNIQUE (id, project_id)
+);
+
+-- Step 3: carry every row across.
+--
+-- `id` is copied explicitly, not re-allocated. Everything else in the database
+-- points at these ids — issue_labels, comments, attachments — and those tables
+-- are not being touched, so a re-numbered issue would silently re-parent every
+-- one of its children to whichever issue inherited its id.
+--
+-- Backfill:
+--   * priority_id → this project's 'Normal'. The scale was just inserted above,
+--     so it is guaranteed to exist for every project that has issues. The
+--     subquery is correlated on project_id, which is what keeps each issue's
+--     priority inside its own project — the very constraint being added.
+--   * updated_at → created_at. The honest answer: an issue nobody has edited was
+--     last touched when it was written. Fabricating "now" would sort the whole
+--     backlog as if it had all just been worked on, which is the one thing the
+--     new sort is for.
+INSERT INTO issues_new (id, project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by)
+SELECT i.id, i.project_id, i.number, i.title, i.description, i.status_id,
+       (SELECT p.id FROM priorities p WHERE p.project_id = i.project_id AND p.name = 'Normal'),
+       i.is_draft, i.created_at, i.created_at, i.created_by
+FROM issues i;
+
+-- Steps 4 and 5. The implicit DELETE FROM this DROP performs is why the whole
+-- file runs with foreign keys off; see the preamble.
+DROP TABLE issues;
+ALTER TABLE issues_new RENAME TO issues;

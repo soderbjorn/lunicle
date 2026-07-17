@@ -39,8 +39,10 @@ import io.ktor.util.date.GMTDate
 import org.slf4j.LoggerFactory
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.GoogleCodeRequest
+import se.soderbjorn.lunicle.clientserver.ImpersonateRequest
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SignedInUser
+import se.soderbjorn.lunicle.clientserver.UserOption
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -100,8 +102,20 @@ private fun codeChallengeFor(verifier: String): String =
  * speaks plain HTTP to the container: without it every deployed request looks
  * like `http://` and Google rejects the exchange. That failure only ever appears
  * in production, which is the worst place to first meet it.
+ *
+ * ── Why this is `internal` rather than private ──────────────────────────────
+ *
+ * Because the authorization server needs the same answer, and there must be
+ * exactly one function that computes it. [oauthRoutes] publishes this origin as
+ * the `issuer` in its discovery metadata and binds it into every token as the
+ * `resource`; an MCP client compares those byte for byte, and two functions that
+ * agree today are two functions that can disagree after one edit.
+ *
+ * Framnaflow re-implements base-URL resolution in two files and recomposes
+ * scheme + host + port to do it. Do not copy that — see the authority comment
+ * below for the production-only failure that produces.
  */
-private fun ApplicationCall.serverOrigin(): String {
+internal fun ApplicationCall.serverOrigin(): String {
     // Scheme must come from the forwarded header: Railway terminates TLS at its
     // edge and speaks plain HTTP to the container, so request.local.scheme is
     // "http" on every deployed request and Google would reject the exchange
@@ -179,6 +193,36 @@ private fun sessionStateFor(user: SignedInUser?, config: OAuthConfig): SessionSt
     )
 
 /**
+ * The caller's current [SessionState], resolved through impersonation.
+ *
+ * The one builder every route that can *see* an impersonation uses. The plain
+ * [sessionStateFor] above stays for the routes that cannot — a sign-out and a
+ * fresh sign-in both produce a session that is definitionally not impersonating
+ * anyone.
+ *
+ * The user list is fetched only for an admin, and reduced to [UserOption] — a
+ * name and an id — before it leaves. `users.selectAll()` returns whole records
+ * with emails on them; those must not cross the wire, and the narrowing happens
+ * here rather than being left to the client.
+ */
+private suspend fun impersonationAwareState(
+    caller: Caller,
+    users: UserStore,
+    config: OAuthConfig,
+): SessionState {
+    val base = sessionStateFor(caller.effective?.toSignedInUser(), config)
+    if (!caller.canImpersonate) return base
+    val realId = caller.real?.id
+    return base.copy(
+        isImpersonating = caller.isImpersonating,
+        canImpersonate = true,
+        impersonatableUsers = users.selectAll().map {
+            UserOption(id = it.id, name = it.resolvedName, isSelf = it.id == realId)
+        },
+    )
+}
+
+/**
  * Mount the sign-in routes.
  *
  * @param config which providers are live; an absent provider's endpoints 400
@@ -189,11 +233,16 @@ private fun sessionStateFor(user: SignedInUser?, config: OAuthConfig): SessionSt
  * @param users the users table. Every completed exchange goes through it: an
  *   identity becomes an account before it becomes a session, which is what
  *   gives the session a user id to point at.
+ * @param impersonations who each session is acting as. Shared with the board
+ *   routes rather than owned here — an impersonation started at these routes has
+ *   to be visible to the ones that enforce permissions, or it would be a costume
+ *   with nothing behind it. See Impersonations.
  */
 fun Route.authRoutes(
     config: OAuthConfig,
     sessions: SessionStore,
     users: UserStore,
+    impersonations: Impersonations,
     httpClient: HttpClient = createProviderHttpClient(),
 ) {
     val pending = PendingGitHubAuths()
@@ -202,13 +251,89 @@ fun Route.authRoutes(
     // handles — and an endpoint the whole UI depends on should not have a
     // failure mode for the most common case.
     get(ApiRoutes.SESSION) {
-        call.respond(sessionStateFor(sessions.lookup(call.sessionId())?.toSignedInUser(), config))
+        val caller = call.resolveCaller(sessions, users, impersonations)
+        call.respond(impersonationAwareState(caller, users, config))
     }
 
     post(ApiRoutes.SIGN_OUT) {
+        // Drop the impersonation with the session. It is keyed by session id, and
+        // leaving it behind would mean a signed-out session id still had an
+        // opinion about who it was.
+        impersonations.clear(call.sessionId())
         sessions.destroy(call.sessionId())
         call.clearSessionCookie()
         call.respond(sessionStateFor(null, config))
+    }
+
+    /**
+     * Become somebody else. Admin only.
+     *
+     * The authorization is on `caller.real`, never `caller.effective`. Using the
+     * effective user would let an admin impersonate a user and then, as that
+     * user, impersonate a *third* — the check would be asking permission of the
+     * identity that was just borrowed.
+     *
+     * The 404-shaped 400 for an unknown id is deliberate in the same way the
+     * board's 404s are: this route is admin-only, so there is nothing to withhold
+     * from the caller — they can read the user list anyway. It is a plain "that
+     * is not a user".
+     */
+    post(ApiRoutes.IMPERSONATE) {
+        val caller = call.resolveCaller(sessions, users, impersonations)
+        if (!caller.canImpersonate) {
+            // 403 and not 404: the route's existence is not a secret, and an
+            // admin debugging a failed impersonation deserves to know it was
+            // refused rather than misrouted.
+            call.respond(HttpStatusCode.Forbidden, "Only an admin may impersonate.")
+            return@post
+        }
+        val request = runCatching { call.receive<ImpersonateRequest>() }.getOrNull()
+        if (request == null) {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        val target = users.findById(request.userId)
+        if (target == null) {
+            call.respond(HttpStatusCode.BadRequest, "No such user.")
+            return@post
+        }
+
+        val sessionId = call.sessionId() ?: run {
+            // Unreachable in practice — canImpersonate above required a session to
+            // resolve a real user from. Handled rather than asserted because the
+            // cost is three lines and the alternative is a crash on a path nobody
+            // has a reproduction for.
+            call.respond(HttpStatusCode.Forbidden, "Only an admin may impersonate.")
+            return@post
+        }
+        if (target.id == caller.real?.id) {
+            // Impersonating yourself is "stop", not a self-referential entry that
+            // resolveCaller would then have to treat as a special case forever.
+            impersonations.stop(sessionId)
+        } else {
+            impersonations.start(sessionId, target.id)
+            logger.info("Impersonation: ${caller.real?.resolvedName} is now acting as ${target.resolvedName}")
+        }
+        call.respond(impersonationAwareState(call.resolveCaller(sessions, users, impersonations), users, config))
+    }
+
+    /**
+     * Stop, and be yourself again.
+     *
+     * Gated on `canImpersonate` — the real user being an admin — for the reason
+     * ApiRoutes.STOP_IMPERSONATING gives: the effective user is deliberately not
+     * an admin while this is in force, so checking them would trap the caller in
+     * the identity they borrowed.
+     */
+    post(ApiRoutes.STOP_IMPERSONATING) {
+        val caller = call.resolveCaller(sessions, users, impersonations)
+        if (!caller.canImpersonate) {
+            call.respond(HttpStatusCode.Forbidden, "Only an admin may impersonate.")
+            return@post
+        }
+        impersonations.stop(call.sessionId())
+        logger.info("Impersonation: ${caller.real?.resolvedName} stopped impersonating")
+        call.respond(impersonationAwareState(call.resolveCaller(sessions, users, impersonations), users, config))
     }
 
     post(ApiRoutes.AUTH_GOOGLE) {
@@ -227,10 +352,10 @@ fun Route.authRoutes(
             val identity = exchangeGoogleCode(httpClient, credentials, request.code, call.serverOrigin())
             // Find-or-create the account, then point a session at it. On a
             // returning user this finds the row written the first time — which
-            // is what reunites them with their counter.
+            // is what reunites them with their issues, and their admin bit.
             val user = users.upsert(identity)
             call.setSessionCookie(sessions.create(user.id))
-            logger.info("Signed in via Google: ${user.displayName} (user ${user.id})")
+            logger.info("Signed in via Google: ${user.resolvedName} (user ${user.id})")
             call.respond(sessionStateFor(user.toSignedInUser(), config))
         } catch (failure: SignInFailure) {
             call.respond(HttpStatusCode.BadGateway, failure.userMessage)
@@ -285,7 +410,7 @@ fun Route.authRoutes(
             )
             val user = users.upsert(identity)
             call.setSessionCookie(sessions.create(user.id))
-            logger.info("Signed in via GitHub: ${user.displayName} (user ${user.id})")
+            logger.info("Signed in via GitHub: ${user.resolvedName} (user ${user.id})")
             call.respondText(popupClosingPage(error = null), ContentType.Text.Html)
         } catch (f: SignInFailure) {
             call.respondText(popupClosingPage(error = f.userMessage), ContentType.Text.Html)

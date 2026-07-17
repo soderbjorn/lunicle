@@ -1,0 +1,243 @@
+/**
+ * The profile modal, opened by clicking the account corner.
+ *
+ * It holds the **Connections** section: whether AI agents may act as you, the
+ * server URL to paste into one, and the list of what is currently connected.
+ *
+ * What it is *not* is the account menu. Sign out and impersonation live on hover
+ * — see SignInView — and must not be duplicated here; two ways to sign out is two
+ * things to keep in step.
+ *
+ * ── The one thing this dialog must never grow ───────────────────────────────
+ *
+ * A "Connect to Claude Code" button. The OAuth flow is always initiated by the
+ * **agent**: the agent has to be the OAuth client, hold the PKCE verifier, and
+ * receive the authorization code at its own redirect URI. This dialog only ever
+ * *displays the URL and lists the result*. A connect button here cannot work, and
+ * proposing one means someone has misunderstood which direction the protocol runs
+ * in. See the server's McpRoutes.
+ *
+ * A dumb renderer, like every view here: every string and every decision comes
+ * from [ConnectionsBackingViewModel], including the copy on the toggle and the
+ * confirmation's wording.
+ *
+ * @see ConnectionsBackingViewModel
+ * @see SignInView
+ */
+package se.soderbjorn.lunicle
+
+import kotlinx.browser.window
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import org.w3c.dom.HTMLElement
+import org.w3c.dom.HTMLInputElement
+import se.soderbjorn.lunicle.client.viewmodel.CONNECTIONS_TITLE
+import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.ENABLE_EXPLANATION
+import se.soderbjorn.lunicle.client.viewmodel.ENABLE_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
+
+/**
+ * Renders the profile modal.
+ *
+ * @param viewModel owns the Connections round-trips.
+ * @param scope collects the view model's state flow; cancelled by the caller when
+ *   the dialog closes.
+ * @param onDismiss the user closed it.
+ */
+class ProfileDialog(
+    private val viewModel: ConnectionsBackingViewModel,
+    private val scope: CoroutineScope,
+    private val onDismiss: () -> Unit,
+) {
+    private val modal = Modal("Profile", onDismiss = { onDismiss() })
+
+    private lateinit var nameElement: HTMLElement
+    private lateinit var enableBox: HTMLInputElement
+    private lateinit var explanation: HTMLElement
+    private lateinit var setupSection: HTMLElement
+    private lateinit var serverUrlValue: HTMLElement
+    private lateinit var commandValue: HTMLElement
+    private lateinit var followUp: HTMLElement
+    private lateinit var connectionsSection: HTMLElement
+    private lateinit var connectionsList: HTMLElement
+    private lateinit var errorElement: HTMLElement
+
+    private var confirmDialog: ConfirmDialog? = null
+
+    /** Where the confirmation mounts. The same host the modal itself is on. */
+    private var host: HTMLElement? = null
+
+    fun mount(host: HTMLElement) {
+        this.host = host
+        nameElement = element("p", "modal-message")
+
+        enableBox = checkbox { viewModel.onEnabledToggled(it) }
+        val enableRow = element("label", "checkbox-row")
+        enableRow.children(enableBox, element("span", "", ENABLE_LABEL))
+        explanation = element("p", "field-hint", ENABLE_EXPLANATION)
+
+        // ── State B: on, with the things nobody types correctly ──────────────
+        serverUrlValue = element("code", "copy-value")
+        commandValue = element("code", "copy-value")
+        followUp = element(
+            "p",
+            "field-hint",
+            "Then run /mcp in Claude Code and choose Authenticate. " +
+                "Other agents: add a custom connector with the server URL above.",
+        )
+        setupSection = element("div", "connections-setup")
+        setupSection.children(
+            element("label", "field-label", "Server URL"),
+            copyRow(serverUrlValue) { viewModel.stateFlow.value.serverUrl },
+            element("label", "field-label", "Claude Code"),
+            copyRow(commandValue) { viewModel.stateFlow.value.claudeCodeCommand },
+            followUp,
+        )
+
+        // ── State C: on, with connections. The point of the screen. ──────────
+        connectionsList = element("div", "connections-list")
+        connectionsSection = element("div", "")
+        connectionsSection.children(
+            element("label", "field-label", "Connected agents"),
+            connectionsList,
+        )
+
+        errorElement = element("p", "modal-error")
+        errorElement.setAttribute("role", "status")
+
+        modal.body.children(
+            nameElement,
+            element("h3", "section-title", CONNECTIONS_TITLE),
+            enableRow,
+            explanation,
+            setupSection,
+            connectionsSection,
+            errorElement,
+        )
+        modal.footer.children(
+            element("div", "modal-footer-spacer"),
+            button("Close", "btn btn-quiet") { onDismiss() },
+        )
+        modal.mount(host)
+
+        scope.launch { viewModel.stateFlow.collect { render(it) } }
+        viewModel.start()
+    }
+
+    /**
+     * A value with a copy button beside it.
+     *
+     * The value is read through a lambda at click time rather than captured, so
+     * the button copies what is on screen now — the URL arrives from the server
+     * after this row is built, and a captured empty string would copy nothing
+     * while looking like it worked.
+     */
+    private fun copyRow(value: HTMLElement, text: () -> String): HTMLElement {
+        val row = element("div", "copy-row")
+        row.children(
+            value,
+            button("Copy", "btn btn-quiet btn-small") {
+                // navigator.clipboard is unavailable on an insecure origin, which
+                // is every local run over plain http. Failing silently there would
+                // present as "the copy button does nothing" on the one machine a
+                // developer tests on, so say so instead — the text is on screen
+                // and selectable regardless.
+                val clipboard = window.navigator.asDynamic().clipboard
+                if (clipboard == null || clipboard == undefined) {
+                    errorElement.setTextIfChanged("Copying needs a secure connection — select the text instead.")
+                    errorElement.visible(true)
+                } else {
+                    clipboard.writeText(text())
+                }
+            },
+        )
+        return row
+    }
+
+    /**
+     * Apply the session snapshot.
+     *
+     * Names the **effective** user, which is a useful thing to be able to check
+     * while impersonating — and is honest, because the connections listed below
+     * are that same user's. See the server's McpRoutes.
+     */
+    fun render(state: SessionBackingViewModel.State) {
+        nameElement.setTextIfChanged("Signed in as ${state.displayName ?: "you"}.")
+    }
+
+    /** Apply the Connections snapshot. */
+    private fun render(state: ConnectionsBackingViewModel.State) {
+        // Nothing until the first fetch returns: an unchecked toggle rendered at
+        // somebody who has agents connected would be a lie about the one thing
+        // this section exists to report.
+        enableBox.checked = state.isEnabled
+        enableBox.disabled = state.isBusy || !state.isLoaded
+        setupSection.visible(state.isLoaded && state.isSetupVisible)
+        connectionsSection.visible(state.isLoaded && state.hasConnections)
+
+        serverUrlValue.setTextIfChanged(state.serverUrl)
+        commandValue.setTextIfChanged(state.claudeCodeCommand)
+
+        renderConnections(state)
+        renderConfirmation(state)
+
+        errorElement.setTextIfChanged(state.errorMessage ?: "")
+        errorElement.visible(state.errorMessage != null)
+    }
+
+    private fun renderConnections(state: ConnectionsBackingViewModel.State) {
+        connectionsList.clear()
+        state.connections.forEach { connection ->
+            val row = element("div", "connection-row")
+            val text = element("div", "connection-text")
+            // element(text = …) sets textContent, never innerHTML. That is what
+            // makes the self-reported client name safe to render: anyone may
+            // register a client called "<img onerror=…>", and this puts it on the
+            // page as characters rather than as markup. See McpConnection.
+            text.children(
+                element("div", "connection-name", connection.name),
+                element("div", "connection-detail", connection.detail),
+            )
+            val revoke = button("Revoke", "btn btn-danger-quiet btn-small") {
+                viewModel.onRevokeTapped(connection.clientId)
+            }
+            revoke.disabled = state.isBusy
+            row.children(text, revoke)
+            connectionsList.appendChild(row)
+        }
+    }
+
+    /**
+     * Put the "this will stop N agents" confirmation up, or take it down.
+     *
+     * Turning the toggle off is the one action here whose cost is invisible: the
+     * agents that stop are not on screen at the moment of the click, and they are
+     * somebody's working setup. Revoke needs no confirmation for the opposite
+     * reason — see the view model.
+     */
+    private fun renderConfirmation(state: ConnectionsBackingViewModel.State) {
+        if (state.pendingDisableConfirmation && confirmDialog == null) {
+            confirmDialog = ConfirmDialog(
+                title = "Turn off agent access?",
+                message = state.disableConfirmationMessage,
+                // Not "OK": the button says what it does, which is the last
+                // chance to notice. And not "Delete" either — nothing is deleted,
+                // and saying so would misdescribe a reversible action as the
+                // irreversible one beside it.
+                destructiveLabel = "Turn off",
+                onConfirm = { viewModel.onDisableConfirmed() },
+                onCancel = { viewModel.onDisableCancelled() },
+            ).also { it.mount(host ?: return) }
+        } else if (!state.pendingDisableConfirmation && confirmDialog != null) {
+            confirmDialog?.dismiss()
+            confirmDialog = null
+        }
+    }
+
+    fun dismiss() {
+        confirmDialog?.dismiss()
+        confirmDialog = null
+        modal.dismiss()
+    }
+}

@@ -1,0 +1,99 @@
+-- Schema 3 → 4. Resolutions, and the flag that says which column demands one.
+--
+-- Preserves data, as everything after 1.sqm must. Nothing below drops a row.
+--
+-- It runs with foreign keys OFF, like 2.sqm and for the same reason: `issues` is
+-- rebuilt to gain a composite foreign key, and `DROP TABLE` with the constraints
+-- on would cascade an implicit DELETE FROM into issue_labels, issue_components,
+-- comments and attachments — silently, reporting success. openDatabase() does
+-- the schema work on a dedicated connection and runs PRAGMA foreign_key_check
+-- afterwards. See Database.kt's migrateSchema.
+
+-- ── 1. The vocabulary ───────────────────────────────────────────────────────
+-- Keep in step with DEFAULT_RESOLUTIONS in ProjectRepository.kt.
+CREATE TABLE resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    position INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+INSERT INTO resolutions (project_id, name, position)
+SELECT id, value, pos FROM projects, (
+    SELECT 'Done' AS value, 0 AS pos UNION ALL
+    SELECT 'Will not fix', 1
+);
+
+-- ── 2. The magic flag ───────────────────────────────────────────────────────
+-- ALTER TABLE ADD COLUMN is enough here, unlike on `issues`: this column has a
+-- non-null default and references nothing, which is exactly the case SQLite
+-- allows to be added in place.
+ALTER TABLE statuses ADD COLUMN requires_resolution INTEGER NOT NULL DEFAULT 0;
+
+-- Name-matching, exactly once, and only here.
+--
+-- Statuses.sq argues at length that the *running server* must not key this rule
+-- on the name, because a project may rename its columns. That argument does not
+-- apply to a migration: this is the one moment where the name is known to be the
+-- seeded one, because every row in this table was written by
+-- ProjectRepository.create or by 1.sqm and nothing has been able to rename a
+-- status into or out of "Closed" without this flag existing to be maintained.
+-- After this statement, the flag is the truth and the name is decoration.
+UPDATE statuses SET requires_resolution = 1 WHERE name = 'Closed';
+
+-- ── 3. issues, rebuilt for the composite foreign key ────────────────────────
+CREATE TABLE issues_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status_id INTEGER NOT NULL,
+    priority_id INTEGER NOT NULL,
+    resolution_id INTEGER,
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    created_by INTEGER,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (status_id, project_id) REFERENCES statuses(id, project_id),
+    FOREIGN KEY (priority_id, project_id) REFERENCES priorities(id, project_id),
+    FOREIGN KEY (resolution_id, project_id) REFERENCES resolutions(id, project_id),
+    UNIQUE (project_id, number),
+    UNIQUE (id, project_id)
+);
+
+-- `id` is copied explicitly, never re-allocated: issue_labels, issue_components,
+-- comments and attachments all point at these ids and are not being touched, so
+-- a renumbered issue would silently re-parent every one of its children.
+--
+-- The backfill: every issue already sitting in a requires_resolution column gets
+-- "Done".
+--
+-- This invents a fact, and it is worth being honest that it does. Some of those
+-- issues were abandoned rather than finished, and nothing in the database
+-- remembers which — the information was never captured, so there is no migration
+-- that recovers it. "Done" is the majority case and the one someone correcting it
+-- by hand would expect to find. The alternative, leaving them null, would create
+-- a state the new rule says cannot exist (closed with no resolution) and every
+-- screen would need a branch for it forever.
+--
+-- Keyed on the FLAG, not on `name = 'Closed'` — the flag was set two statements
+-- ago and is now the truth. Correlated on project_id so each issue gets its own
+-- project's "Done".
+INSERT INTO issues_new (id, project_id, number, title, description, status_id, priority_id, resolution_id, is_draft, created_at, updated_at, created_by)
+SELECT i.id, i.project_id, i.number, i.title, i.description, i.status_id, i.priority_id,
+       CASE
+           WHEN (SELECT s.requires_resolution FROM statuses s WHERE s.id = i.status_id) = 1
+           THEN (SELECT r.id FROM resolutions r WHERE r.project_id = i.project_id AND r.name = 'Done')
+           ELSE NULL
+       END,
+       i.is_draft, i.created_at, i.updated_at, i.created_by
+FROM issues i;
+
+DROP TABLE issues;
+ALTER TABLE issues_new RENAME TO issues;

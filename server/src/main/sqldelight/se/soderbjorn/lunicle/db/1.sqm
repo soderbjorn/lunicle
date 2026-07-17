@@ -1,0 +1,183 @@
+-- Schema 1 → 2. A PURGE, not a migration: everything from the counter-era
+-- schema goes, and the MVP's tables are created from nothing.
+--
+-- Authorised while the design is still moving. It is also the LAST time that is
+-- true: once things settle, 2.sqm and everything after it has to preserve data,
+-- because by then the volume holds issues somebody wrote.
+--
+-- Why the version is bumped at all, given that we are wiping: "just redefine
+-- version 1" does not work, and fails SILENTLY IN PRODUCTION ONLY. The deployed
+-- volume already has user_version = 1 written into its header.
+-- createOrMigrateSchema() reads that, compares it to the new schema's version,
+-- finds 1 == 1, logs "schema is current" and creates nothing. The container then
+-- starts happily and every query against `projects` fails at runtime, against a
+-- database that believes it is up to date. No local test reproduces it, because
+-- a local volume gets wiped and takes the `create` path. Bumping to 2 with a
+-- destructive 1.sqm makes the wipe automatic and idempotent: the deployed volume
+-- purges itself, and there is no Railway button to remember.
+--
+-- Sessions are dropped too, which signs everyone out. Worth saying out loud,
+-- since Stage 2's whole exit criterion was that a redeploy no longer signs you
+-- out: this deploy will. `sessions` has a foreign key to `users`, and `users` is
+-- being recreated, so the rows cannot survive. Every browser's cookie will name
+-- a session that no longer exists, which lookup() already handles correctly — it
+-- returns null and the user sees the sign-in buttons. Nothing breaks; people
+-- just sign in again. AND THE FIRST PERSON TO DO SO BECOMES THE ADMIN, which is
+-- worth knowing before you tell anyone the deploy is up.
+--
+-- Order matters: children before parents, or the foreign keys refuse the drop.
+DROP TABLE IF EXISTS counters;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;
+
+-- …and now every table, in dependency order. These are the CREATE statements
+-- from the .sq files, verbatim minus their commentary — verifyMigrations
+-- compares the result of applying this file to 1.db against what the .sq files
+-- declare, so any drift between the two is a failed build rather than a
+-- production surprise.
+
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    provider_name TEXT NOT NULL,
+    display_name TEXT,
+    email TEXT,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    UNIQUE (provider, provider_id)
+);
+
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role_key TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL
+);
+
+CREATE TABLE projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    name_prefix TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    is_public INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE project_roles (
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, project_id, role_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+CREATE TABLE components (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+CREATE TABLE statuses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    position INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+CREATE TABLE issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status_id INTEGER NOT NULL,
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (status_id, project_id) REFERENCES statuses(id, project_id),
+    UNIQUE (project_id, number),
+    UNIQUE (id, project_id)
+);
+
+CREATE TABLE issue_labels (
+    issue_id INTEGER NOT NULL,
+    label_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, label_id),
+    FOREIGN KEY (issue_id, project_id) REFERENCES issues(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (label_id, project_id) REFERENCES labels(id, project_id) ON DELETE CASCADE
+);
+
+CREATE TABLE issue_components (
+    issue_id INTEGER NOT NULL,
+    component_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, component_id),
+    FOREIGN KEY (issue_id, project_id) REFERENCES issues(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (component_id, project_id) REFERENCES components(id, project_id) ON DELETE CASCADE
+);
+
+CREATE TABLE comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER,
+    comment_id INTEGER,
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1)
+);
+
+-- The `roles` seed is deliberately NOT here.
+--
+-- The schema doc put it in this file *and* in createOrMigrateSchema()'s create
+-- branch, so that a fresh volume and a purged one both end up with the rows.
+-- That is two places that have to agree forever, and the failure when they
+-- drift is silent: an instance where nobody can be granted a role, because
+-- AccessControl's hasRole() joins against a table that is simply empty.
+--
+-- RoleStore.seed() runs unconditionally at startup instead, using
+-- INSERT OR IGNORE (see Roles.sq). One code path covers the fresh volume, the
+-- purged one, and the one that has been serving for a month — with no branch to
+-- get wrong and nothing to keep in step.

@@ -1,0 +1,40 @@
+-- Per-project label vocabulary. Duplicated across projects by design.
+
+CREATE TABLE labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    -- Unique *within* a project. "It can have duplicates (for different
+    -- projects)" is exactly this constraint and no other.
+    UNIQUE (project_id, name),
+    -- Not redundant with the primary key: it is the target the composite
+    -- foreign key in issue_labels needs, and SQLite requires a UNIQUE index on
+    -- precisely the referenced column pair. See IssueLabels.sq.
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO labels (project_id, name) VALUES (?, ?);
+
+-- Renaming, not re-projecting: `project_id` is deliberately absent from the SET
+-- list. A label that could change projects would take its `issue_labels` rows
+-- with it, and those rows carry the project_id that the composite keys above
+-- check against — so the move would either be refused halfway or leave an issue
+-- carrying a label from somewhere else. A label belongs to the project it was
+-- made in, for life.
+update:
+UPDATE labels SET name = ? WHERE id = ?;
+
+delete:
+DELETE FROM labels WHERE id = ?;
+
+-- Scoped by project, not by id alone, and every vocabulary table below repeats
+-- the shape. It is what lets a route prove the row it was handed is really this
+-- project's before it writes: `/projects/7/vocabulary/label/42` naming label 42
+-- from project 9 answers 404 rather than editing another project's vocabulary.
+findByIdInProject:
+SELECT id, project_id, name FROM labels WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name FROM labels WHERE project_id = ? ORDER BY name;

@@ -1,0 +1,29 @@
+-- Identical in shape and reasoning to issue_labels. See IssueLabels.sq for why
+-- project_id is carried redundantly and why the foreign keys are composite.
+
+CREATE TABLE issue_components (
+    issue_id INTEGER NOT NULL,
+    component_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, component_id),
+    FOREIGN KEY (issue_id, project_id) REFERENCES issues(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (component_id, project_id) REFERENCES components(id, project_id) ON DELETE CASCADE
+);
+
+insert:
+INSERT OR IGNORE INTO issue_components (issue_id, component_id, project_id) VALUES (?, ?, ?);
+
+deleteForIssue:
+DELETE FROM issue_components WHERE issue_id = ?;
+
+forIssue:
+SELECT component_id FROM issue_components WHERE issue_id = ?;
+
+forProject:
+SELECT issue_id, component_id FROM issue_components WHERE project_id = ?;
+
+-- See IssueLabels.sq's usageByLabel: a cascade, so this is the confirm's
+-- sentence rather than a gate.
+usageByComponent:
+SELECT component_id, COUNT(*) AS uses FROM issue_components WHERE project_id = ?
+GROUP BY component_id;

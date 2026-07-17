@@ -1,0 +1,102 @@
+-- An authorization request that has started but not finished.
+--
+-- The durable twin of AuthRoutes.kt's PendingGitHubAuths, and the comparison is
+-- the useful way to read this table. That one is a ConcurrentHashMap, on the
+-- reasoning that a sign-in in flight is a thing you are *doing* and a restart
+-- mid-popup is a sign-in you retry. The same argument does not survive here, for
+-- a reason that has nothing to do with taste:
+--
+--   The agent is not watching. A human whose popup dies retries in three
+--   seconds. An agent that opened a browser tab and is waiting on its loopback
+--   callback has no idea a deploy happened, and would sit there until it timed
+--   out — with the user staring at a consent page whose Approve button now leads
+--   to "Login session expired".
+--
+-- Ten minutes because it has to span both halves of the worst case: a signed-out
+-- user meeting the Google/GitHub popup for the first time, and then reading the
+-- consent page. Short enough that abandoned rows do not accumulate; see
+-- `deleteExpired`.
+
+CREATE TABLE oauth_login_state (
+    -- "ls_" + random. Handed to the browser in a URL and posted back from the
+    -- consent form, so it is a bearer credential for one pending authorization:
+    -- holding it is what lets the consent POST claim to be this flow.
+    id TEXT PRIMARY KEY NOT NULL,
+
+    client_id TEXT NOT NULL,
+
+    -- Carried through from /authorize, where it was checked against
+    -- oauth_client_redirect_uris. Stored rather than re-read at consent time so
+    -- the value that was validated is the value that gets used — re-deriving it
+    -- from the request at the far end would be a second chance to get it wrong.
+    redirect_uri TEXT NOT NULL,
+
+    -- The agent's PKCE challenge, held until the code is minted and checked at
+    -- /token against the verifier. Never the verifier itself: the whole point of
+    -- PKCE is that only the client holds that, so a server that stored it would
+    -- have rebuilt the problem PKCE solves.
+    code_challenge TEXT NOT NULL,
+
+    -- RFC 8707. Which resource the token is being minted for; carried through to
+    -- the token unchanged so /mcp can confirm a token was issued for it and not
+    -- for something else wearing our issuer.
+    resource TEXT NOT NULL,
+
+    -- The agent's own `state`, echoed back verbatim on the redirect. Ours is the
+    -- `id` above; this is theirs, and conflating the two would break CSRF
+    -- protection on the client's side of the flow.
+    client_state TEXT NOT NULL,
+
+    scope TEXT NOT NULL,
+
+    -- Who is authorizing. Bound when the row is created, and NOT NULL — which is
+    -- a deliberate departure from Framnaflow, and from the plan that described
+    -- this table.
+    --
+    -- Framnaflow's equivalent is nullable "until sign-in completes", because it
+    -- creates the row and *then* redirects to Google: the state has to exist
+    -- across a federation round-trip that has not happened yet. Lunicle never
+    -- does that. It reuses the session cookie (the one place the plan says to
+    -- diverge, and why), so by the time there is anything to remember, the user
+    -- is already known — a signed-out visitor is sent to sign in and comes back
+    -- to a fresh /oauth/authorize, creating no row at all.
+    --
+    -- So the nullable column is Framnaflow's shape, and it does not survive that
+    -- divergence. NOT NULL is the honest one: it makes "an authorization with
+    -- nobody behind it" unrepresentable rather than merely refused downstream.
+    user_id INTEGER NOT NULL,
+
+    expires_at INTEGER NOT NULL,
+
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+    -- Deleting a user takes their pending authorizations with them. Without the
+    -- cascade a deleted account could still be mid-flow toward a token.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+create:
+INSERT INTO oauth_login_state (
+    id, client_id, redirect_uri, code_challenge, resource, client_state, scope, user_id, expires_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Expiry is in the WHERE clause, not checked by the caller.
+--
+-- This is the rule the whole OAuth half of this schema follows, and it is where
+-- it departs from SessionStore. Sessions.kt candidly documents that `lookup`
+-- does not check expiry and that an old session stays usable until a restart —
+-- "the next thing to fix if sessions ever carry more than a user id". A row here
+-- that outlived its expiry and still worked would be that same bug, except the
+-- credential is sitting in a config file on a laptop rather than in a browser
+-- jar. So: the query refuses it, and a missed sweep is a disk-space question
+-- rather than a security one.
+find:
+SELECT id, client_id, redirect_uri, code_challenge, resource, client_state, scope, user_id, expires_at
+FROM oauth_login_state
+WHERE id = ? AND expires_at > ?;
+
+delete:
+DELETE FROM oauth_login_state WHERE id = ?;
+
+deleteExpired:
+DELETE FROM oauth_login_state WHERE expires_at <= ?;

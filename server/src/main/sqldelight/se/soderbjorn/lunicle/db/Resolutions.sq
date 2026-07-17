@@ -1,0 +1,39 @@
+-- Why an issue was closed. Per project, ordered — statuses' and priorities' twin.
+
+CREATE TABLE resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- Ordered, and the order is what the board groups by: "Done" is 0 and shows
+    -- first. Same convention as statuses and priorities — 0 first, ascending, no
+    -- DESC anywhere.
+    position INTEGER NOT NULL,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    -- The target of issues' composite foreign key. See Issues.sq.
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO resolutions (project_id, name, position) VALUES (?, ?, ?);
+
+update:
+UPDATE resolutions SET name = ? WHERE id = ?;
+
+setPosition:
+UPDATE resolutions SET position = ? WHERE id = ?;
+
+-- `issues.resolution_id` is NULLABLE, unlike status_id and priority_id — but it
+-- is still composite-keyed with no ON DELETE clause, so RESTRICT refuses this
+-- for a resolution any closed issue holds. Nullable buys the issues that have no
+-- resolution a pass; it does not turn the reference into a SET NULL.
+delete:
+DELETE FROM resolutions WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, position FROM resolutions WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name, position FROM resolutions WHERE project_id = ? ORDER BY position;

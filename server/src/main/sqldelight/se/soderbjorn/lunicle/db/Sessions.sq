@@ -23,7 +23,8 @@ CREATE TABLE sessions (
 -- Every authenticated request goes through this, so it is the single hottest
 -- query in the server.
 findUser:
-SELECT users.id, users.provider, users.provider_id, users.display_name
+SELECT users.id, users.provider, users.provider_id, users.provider_name,
+       users.display_name, users.email, users.is_admin, users.mcp_enabled
 FROM sessions
 JOIN users ON users.id = sessions.user_id
 WHERE sessions.id = ?;

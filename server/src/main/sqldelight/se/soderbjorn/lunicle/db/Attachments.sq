@@ -1,0 +1,98 @@
+-- Attachment metadata. The bytes live on the volume, not here.
+--
+-- Files rather than BLOBs, for three reasons in order of how much they bite:
+-- heap (SQLDelight maps BLOB to ByteArray, so every read of a 10 MB screenshot
+-- is a 10 MB array through a free-trial-sized JVM, where a file streams and
+-- never lands in heap); the local loop (a database carrying every screenshot
+-- ever pasted is slow to copy and unpleasant to dump); and because it is the
+-- same volume anyway, so the BLOB's "one thing to back up" advantage is mostly
+-- notional.
+--
+-- The cost, honestly: writes stop being atomic. A file written whose row fails
+-- to insert leaks disk; a row deleted whose file fails to unlink does the same.
+-- Neither loses data. Handled the way the session sweep already is — a startup
+-- pass deleting files with no matching storage_key. See AttachmentRepository.
+
+CREATE TABLE attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Exactly one owner, enforced by the CHECK below. Two nullable columns
+    -- rather than an (owner_type, owner_id) pair, because that pair cannot
+    -- carry a foreign key at all — and losing FK cascade is how you end up with
+    -- attachments pointing at deleted issues.
+    issue_id INTEGER,
+    comment_id INTEGER,
+
+    filename TEXT NOT NULL,      -- as uploaded, for the download name
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+
+    -- The file's name on the volume. Random, not derived from filename: a
+    -- user-supplied name reaching the filesystem is a path-traversal bug
+    -- waiting for "../../lunicle.db". This column is the ONLY thing that ever
+    -- names a path, and nothing a user types reaches it.
+    storage_key TEXT NOT NULL UNIQUE,
+
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    -- SQLite counts a true condition as 1, so this reads "exactly one owner is
+    -- set". An orphan attachment and a doubly-owned one are both now
+    -- unrepresentable rather than merely unlikely.
+    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1)
+);
+
+insertForIssue:
+INSERT INTO attachments (issue_id, filename, mime_type, byte_size, storage_key, created_at, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+insertForComment:
+INSERT INTO attachments (comment_id, filename, mime_type, byte_size, storage_key, created_at, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+findById:
+SELECT id, issue_id, comment_id, filename, mime_type, byte_size, storage_key, created_at, created_by
+FROM attachments WHERE id = ?;
+
+delete:
+DELETE FROM attachments WHERE id = ?;
+
+-- Every key the volume is allowed to hold. Read by the startup sweep, which
+-- deletes any file under $VOLUME/attachments/ that is not in this set — the
+-- files behind cancelled drafts and failed inserts.
+allStorageKeys:
+SELECT storage_key FROM attachments;
+
+-- Every file an issue owns, directly or through one of its comments.
+--
+-- Read *before* the issue is deleted, because afterwards nothing can name these
+-- files: the rows go by ON DELETE CASCADE, and SQLite has no way to reach the
+-- filesystem. Getting that order backwards leaves the volume holding every
+-- screenshot of every deleted issue, growing forever, with nothing able to
+-- identify them. See IssueRepository.delete.
+keysForIssue:
+SELECT storage_key FROM attachments
+WHERE issue_id = ?
+   OR comment_id IN (SELECT id FROM comments WHERE issue_id = ?);
+
+-- Every file one comment owns. Read before the comment is deleted, for the
+-- reason above.
+keysForComment:
+SELECT storage_key FROM attachments WHERE comment_id = ?;
+
+-- The same, one level up: every file under any issue in a project. Read before
+-- the project is deleted, for the reason above.
+keysForProject:
+SELECT storage_key FROM attachments
+WHERE issue_id IN (SELECT id FROM issues WHERE project_id = ?)
+   OR comment_id IN (
+       SELECT comments.id FROM comments
+       JOIN issues ON issues.id = comments.issue_id
+       WHERE issues.project_id = ?
+   );

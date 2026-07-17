@@ -83,6 +83,8 @@ private data class GitHubUser(
     val id: Long,
     val name: String? = null,
     val login: String,
+    /** Null whenever the user has made their address private. */
+    val email: String? = null,
 )
 
 /**
@@ -111,12 +113,18 @@ class SignInFailure(val userMessage: String, cause: Throwable? = null) :
  * @property providerId the provider's stable id — Google's `sub`, GitHub's
  *   numeric `id`. Stable and never reused, which is the entire reason the users
  *   table keys on it rather than on an email or a name.
- * @property displayName what to render. Never blank; see [displayName].
+ * @property providerName what this provider calls them, resolved per provider —
+ *   GitHub's `login`, Google's `name`. Never blank; see [resolveProviderName].
+ * @property email what the provider told us, or null when it would not say.
+ *   Null means "we do not know", which is different from "" and different from
+ *   "they have none" — GitHub returns null for a private address. Stored, never
+ *   sent to a client, and never an identity key.
  */
 data class ProviderIdentity(
     val provider: AuthProvider,
     val providerId: String,
-    val displayName: String,
+    val providerName: String,
+    val email: String?,
 )
 
 /**
@@ -127,8 +135,11 @@ data class ProviderIdentity(
  * types, GitHub's is null whenever the user never filled in their profile —
  * which is extremely common. So: the provider's name, else the local part of
  * the email, else the caller's fallback.
+ *
+ * Every branch terminates, which is what lets `users.provider_name` be NOT NULL
+ * and no reader ever have to handle a nameless user.
  */
-private fun displayName(name: String?, email: String?, fallback: String): String =
+private fun resolveProviderName(name: String?, email: String?, fallback: String): String =
     name?.takeIf { it.isNotBlank() }
         ?: email?.substringBefore('@')?.takeIf { it.isNotBlank() }
         ?: fallback
@@ -182,10 +193,13 @@ suspend fun exchangeGoogleCode(
         throw SignInFailure("Signed in with Google, but could not read the profile.", t)
     }
 
+    // The sidebar says "Signed in via Google as <Google-name>", so the name is
+    // the field that matters here — unlike GitHub below, where it is the login.
     return ProviderIdentity(
         provider = AuthProvider.GOOGLE,
         providerId = info.sub,
-        displayName = displayName(info.name, info.email, fallback = "Google user"),
+        providerName = resolveProviderName(info.name, info.email, fallback = "Google user"),
+        email = info.email,
     )
 }
 
@@ -245,16 +259,23 @@ suspend fun exchangeGitHubCode(
         throw SignInFailure("Signed in with GitHub, but could not read the profile.", t)
     }
 
-    // `login` is the fallback rather than the email: unlike Google, GitHub's
-    // /user does not reliably carry one — a private address comes back null,
-    // and the real addresses need a second call to /user/emails with the
-    // user:email scope. That call belongs with the users table, which needs an
-    // email to store; a display name doesn't. See docs/oauth-instructions.html.
     return ProviderIdentity(
         provider = AuthProvider.GITHUB,
         // Long → String: the users table stores every provider's id as TEXT,
         // because Google's is not a number. See provider_id in Users.sq.
         providerId = user.id.toString(),
-        displayName = displayName(user.name, email = null, fallback = user.login),
+        // `login`, flatly — not the profile `name`, and not a fallback chain.
+        // The sidebar says "Signed in via GitHub as <github-username>", and the
+        // username *is* the login. GitHub's `name` is the human's real name,
+        // which is a different fact and very often null. `login` is always
+        // present, so this branch cannot fail to produce something.
+        providerName = user.login,
+        // Null is the common case, not an error: /user returns no email for a
+        // private address. Reading the real ones needs a second call to
+        // /user/emails with the user:email scope — which the start route does
+        // request, so this is where to reach for it if an email ever becomes
+        // load-bearing. It is not today: nothing keys on it and it never
+        // crosses the wire. See docs/oauth-instructions.html.
+        email = user.email,
     )
 }

@@ -1,0 +1,938 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunicle — MVP schema &amp; design (rev 3)</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.65 var(--mono);
+  padding:48px 24px 120px;
+}
+.wrap{max-width:920px;margin:0 auto}
+
+header.top{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+.eyebrow{color:var(--green-dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+h1{color:var(--head);font-size:30px;line-height:1.25;margin:0 0 14px;font-weight:600}
+h1 .glow{color:var(--green-hi);text-shadow:0 0 18px var(--glow)}
+.lede{color:var(--green-dim);margin:0;max-width:70ch}
+
+h2{
+  color:var(--head);font-size:19px;margin:0 0 6px;font-weight:600;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2 .num{
+  color:var(--green);font-size:12px;letter-spacing:.12em;
+  border:1px solid var(--border-hi);border-radius:3px;padding:3px 8px;
+  text-shadow:0 0 12px var(--glow);flex:none;
+}
+h3{color:var(--green-hi);font-size:14px;letter-spacing:.04em;margin:32px 0 10px;font-weight:600}
+p{margin:0 0 14px;max-width:74ch}
+small{color:var(--green-dim)}
+code{
+  background:var(--panel-2);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px;color:var(--green-hi);font-size:.9em;
+}
+strong{color:var(--head);font-weight:600}
+em{color:var(--green-hi);font-style:normal}
+a{color:var(--green-hi)}
+
+section.stage{
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  padding:28px 30px;margin:0 0 26px;
+}
+.subtitle{color:var(--green-dim);margin:0 0 22px;font-size:13px}
+
+ul,ol{margin:0 0 14px;padding-left:0;list-style:none}
+li{position:relative;padding-left:22px;margin-bottom:9px;max-width:74ch}
+li::before{content:"›";position:absolute;left:4px;color:var(--green);opacity:.75}
+ol{counter-reset:step}
+ol>li{counter-increment:step}
+ol>li::before{content:counter(step) ".";color:var(--green);font-size:12px;left:0;opacity:1}
+li ul,li ol{margin-top:9px}
+
+pre{
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;
+  padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:13px;line-height:1.6;
+  color:var(--body);
+}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+.box{border-radius:5px;padding:16px 18px;margin:18px 0;border:1px solid var(--border)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;margin:0 0 8px;font-weight:600}
+.warn{background:rgba(254,188,46,.05);border-color:rgba(254,188,46,.35)}
+.warn .lbl{color:var(--yellow)}
+.stop{background:rgba(255,95,87,.05);border-color:rgba(255,95,87,.35)}
+.stop .lbl{color:var(--red)}
+.ok{background:rgba(40,200,64,.05);border-color:rgba(40,200,64,.3)}
+.ok .lbl{color:var(--traffic-g)}
+.note{background:var(--panel-2)}
+.note .lbl{color:var(--blue)}
+
+table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:13px}
+th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel-2);color:var(--green-hi);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+td.yes{color:var(--traffic-g)}
+td.no{color:var(--red)}
+td.new{color:var(--green-hi)}
+
+.d{border-top:1px dashed var(--green-dimmer);margin-top:22px;padding-top:18px}
+.d .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--traffic-g);margin:0 0 10px;font-weight:600}
+.d:first-of-type{border-top:none;margin-top:0;padding-top:0}
+
+footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color:var(--green-dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Lunamux / Lunicle</p>
+  <h1>MVP — <span class="glow">schema &amp; design</span>, rev 3</h1>
+  <p class="lede">Adopts CLARIFICATIONS #2: the server is the only thing that enforces security,
+  repositories exist on both sides of the wire and are not the same thing, and issues are per project.
+  All six open questions from rev 2 are accepted and are now recorded as decisions at the end. Twelve
+  tables, schema version 2, purge-not-migrate. Nothing is built yet.</p>
+</header>
+
+<!-- ═══════════════════════════ CHANGES ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Rev 3</span> What changed</h2>
+  <p class="subtitle">Rev 2 folded in CLARIFICATIONS #1. This folds in #2. Reasoning kept so it is not relitigated.</p>
+
+  <table>
+    <tr><th>Change</th><th>Rev</th><th>Note</th></tr>
+    <tr>
+      <td>Security is enforced server-side only</td>
+      <td class="new">3</td>
+      <td>Was implied in rev 2's "affordance, not enforcement" asides. Now §2, stated once and properly.</td>
+    </tr>
+    <tr>
+      <td>Repositories on the server too</td>
+      <td class="new">3</td>
+      <td>New §1. Distinct from the client's, and not the same layer.</td>
+    </tr>
+    <tr>
+      <td>Issues are per project</td>
+      <td class="yes">3</td>
+      <td>Already true in rev 2 — <code>project_id NOT NULL</code>, and the composite FKs make it structural. Confirmed, not changed.</td>
+    </tr>
+    <tr>
+      <td>Q1–Q6</td>
+      <td class="yes">3</td>
+      <td>All accepted as proposed. Now §14, as decisions.</td>
+    </tr>
+    <tr>
+      <td>JSON blobs, <code>name_folded</code>, <code>counters</code></td>
+      <td class="no">2</td>
+      <td>Dropped per CLARIFICATIONS #1. Columns instead; <code>NOCASE</code> + a Unicode check; the counter has nothing left to prove.</td>
+    </tr>
+    <tr>
+      <td>Real migration → purge</td>
+      <td class="new">2</td>
+      <td>Version 1 → 2, <code>1.sqm</code> drops and recreates. Still iterating.</td>
+    </tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════ SCOPE ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">0</span> Scope</h2>
+  <p class="subtitle">Accumulated across both clarification rounds.</p>
+
+  <ul>
+    <li><strong>Local volume</strong> — augment <code>dev-local.sh</code>: stable DB path outside
+    <code>build/</code>, plus wipe/seed/inspect.</li>
+    <li><strong>Shell</strong> — right sidebar (sign-in state at top), top bar with project picker and
+    cogwheel, project modal, delete confirmation.</li>
+    <li><strong>Issue board</strong> — one column per status, cards labelled <code>LMX-123:
+    …</code>, drag-and-drop between columns for anyone with edit rights.</li>
+    <li><strong>Issue modal</strong> — create, read, edit, delete. Created immediately as a hidden
+    draft; Cancel deletes it.</li>
+    <li><strong>Comments</strong> — posted in a modal like the issue editor.</li>
+    <li><strong>WYSIWYG editor</strong> — bold, italic, underline, strikethrough, headings, links,
+    inline image upload. Stores markdown.</li>
+    <li><strong>KMP view models</strong> — every screen <em>and dialog</em> gets a backing view model
+    with one <code>StateFlow</code>; views hold no business logic.</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════ ARCHITECTURE ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">1</span> Layering — two sides, two kinds of repository</h2>
+  <p class="subtitle">CLARIFICATIONS #2: the server has repositories too, and they are not the client's.</p>
+
+<pre><span class="c">╔═ :client (KMP — browser today, iOS later) ═══════════════════╗</span>
+  View  <span class="c">(DOM; renders State, forwards intent, no logic)</span>
+    │
+  BackingViewModel  <span class="c">(one immutable State over one StateFlow)</span>
+    │
+  StorageRepository  <span class="c">(too business-y for the view model; fans out</span>
+    │                 <span class="c">across several APIs / sources; caches)</span>
+    │
+  LunicleApi  <span class="c">(typed HTTP, nothing else)</span>
+<span class="c">╚══════════════════════════════════════════════════════════════╝</span>
+                           │  HTTP
+<span class="c">╔═ :server (JVM) ══════════════════════════════════════════════╗</span>
+  Routes  <span class="c">(parse, AUTHORIZE, respond — see §2)</span>
+    │
+  *Repository  <span class="c">(server-side: multi-store transactions, filesystem</span>
+    │           <span class="c">+ database together, the rules)</span>
+    │
+  *Store  <span class="c">("DatabaseService": SQL and nothing else)</span>
+    │
+  SQLDelight → SQLite on the volume
+<span class="c">╚══════════════════════════════════════════════════════════════╝</span></pre>
+
+  <div class="box note">
+    <p class="lbl">The two <code>StorageRepository</code>s share a name and nothing else</p>
+    <p>Worth being blunt about, because the name collides and the collision is the whole point of the
+    clarification. The <strong>client's</strong> repository sits above HTTP and cannot see a database
+    — it exists so a view model never mentions transport, and so that logic which spans several calls
+    (load the project list <em>and</em> the session before MainScreen can render) has somewhere to live
+    that isn't the view model. The <strong>server's</strong> repositories sit below HTTP and above SQL
+    — they exist so a route never mentions a transaction, and so that logic spanning several stores
+    has somewhere to live that isn't the route handler.</p>
+    <p>Same motivation, opposite side of the wire, no shared code. <code>mvp.txt</code>'s
+    "StorageRepository → DatabaseService" is the client half and the server half of one chain, not one
+    object.</p>
+  </div>
+
+  <h3>The server-side repositories the MVP actually needs</h3>
+  <p>Not speculative — each one exists because there is a specific piece of logic that belongs in
+  neither the route nor a store:</p>
+  <table>
+    <tr><th>Repository</th><th>The logic it owns</th></tr>
+    <tr>
+      <td><code>ProjectRepository</code></td>
+      <td>Create = insert the project <em>and</em> seed its labels, components and statuses, in one
+      transaction (§13). Rename = trim, upper-case the prefix, Unicode-fold the uniqueness check
+      (§6). None of that is SQL, and none of it is HTTP.</td>
+    </tr>
+    <tr>
+      <td><code>IssueRepository</code></td>
+      <td>Publish = write the issue, its labels and its components together or not at all. Delete =
+      rows cascade, then the attachment <em>files</em> have to go too — database and filesystem in one
+      operation, which is exactly "wires up multiple data sources".</td>
+    </tr>
+    <tr>
+      <td><code>AttachmentRepository</code></td>
+      <td>The volume and the table, kept in step: write file → insert row, unlink on delete, sweep
+      orphans at startup (§10).</td>
+    </tr>
+    <tr>
+      <td><code>AccessControl</code></td>
+      <td>Every permission question, in one place. See §2 — this one is load-bearing.</td>
+    </tr>
+  </table>
+
+  <p>The <code>*Store</code> classes stay exactly what <code>UserStore</code> and
+  <code>SessionStore</code> already are: one class per table, SQL in, data class out, no decisions.
+  That is the "DatabaseService" <code>mvp.txt</code> asks for, and it already exists in this shape —
+  which is why the naming here follows the code rather than the memo.</p>
+</section>
+
+<!-- ═══════════════════════════ SECURITY ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">2</span> Security — the server decides, always</h2>
+  <p class="subtitle">CLARIFICATIONS #2, first line. The most important paragraph in this document.</p>
+
+  <div class="box stop">
+    <p class="lbl">The client is a renderer of permissions, never a source of them</p>
+    <p>Everything the browser knows about what it may do — <code>isAdmin</code> on the wire, a
+    greyed-out delete button, a card that will not drag — is an <strong>affordance</strong>: it exists
+    so a user is not invited to do something that will fail. None of it is enforcement. The bundle is
+    JavaScript on someone else's machine; every flag in it is editable, every disabled button is
+    re-enablable from the console, and every request it declines to send can be sent by hand with
+    <code>curl</code>. A permission that lives in the client is not a permission.</p>
+    <p>So <strong>every mutating route re-derives the answer server-side, from the session, before it
+    touches a store</strong> — not from anything the request body claims. A client that lies to itself
+    gets a 403; it does not get a deleted project.</p>
+  </div>
+
+  <h3>One place, one function</h3>
+  <p>The rules are small enough to fit in one class, and that is precisely why they should not be
+  scattered across route handlers — a check that exists in six places is a check that is missing from
+  the seventh.</p>
+
+<pre><span class="c">// AccessControl — the ONLY thing that answers a permission question.</span>
+<span class="c">// Takes the caller from the session, never from the request body.</span>
+
+<span class="k">fun</span> canEditIssue(user: UserRecord?, issue: IssueRecord): Boolean =
+    user != <span class="k">null</span> && (
+        user.isAdmin ||
+        issue.createdBy == user.id ||
+        hasRole(user, issue.projectId, <span class="k">"change_unowned_issues"</span>)
+    )
+
+<span class="k">fun</span> canCreateIssue(user, projectId) = user?.isAdmin == <span class="k">true</span> || hasRole(user, projectId, <span class="k">"create_issue"</span>)
+<span class="k">fun</span> canComment(user, projectId)    = user?.isAdmin == <span class="k">true</span> || hasRole(user, projectId, <span class="k">"comment_on_issue"</span>)
+
+<span class="c">// Projects are admin-only to mutate; see §14 D7.</span>
+<span class="k">fun</span> canEditProject(user)  = user?.isAdmin == <span class="k">true</span>
+<span class="k">fun</span> canDeleteProject(user) = user?.isAdmin == <span class="k">true</span>
+
+<span class="c">// Reading. The public flag is a READ gate, and it is the one rule that</span>
+<span class="c">// says yes to a caller with no session at all.</span>
+<span class="k">fun</span> canReadProject(user, project) = project.isPublic || user != <span class="k">null</span></pre>
+
+  <div class="box warn">
+    <p class="lbl">Drag-and-drop is not a special case, and must not become one</p>
+    <p>Moving a card between columns is a <code>status_id</code> write on an issue, so it goes through
+    <code>canEditIssue</code> — the same function the editor uses. Worth stating because a board
+    invites a shortcut: a "just move it" endpoint that skips the check because dragging feels lighter
+    than editing. It is not lighter. It is the same write, and an unchecked one would let anyone drag
+    anything to Closed.</p>
+  </div>
+
+  <h3>Filtering reads, not just refusing writes</h3>
+  <p>The other half of "the server enforces" is that it must not <em>send</em> what the caller may not
+  see. Refusing a write is the obvious half; quietly shipping a private project's name to a
+  signed-out visitor and trusting the bundle to hide it is the half that gets forgotten. So:</p>
+  <ul>
+    <li>Signed out → the project list contains public projects only. Not "all projects, hidden in the
+    UI".</li>
+    <li>Signed out → issues, comments and attachments are readable only under a public project.</li>
+    <li><code>?project=</code> naming a private project, signed out → resolves to no project, exactly
+    as if the name did not exist. Answering "that project is private" would confirm it exists, which
+    is the thing being withheld.</li>
+    <li><code>email</code> never crosses the wire at all (§4).</li>
+  </ul>
+
+  <div class="box note">
+    <p class="lbl">Attachments are behind the same gate as the issue they hang on</p>
+    <p><code>GET /api/attachments/&lt;id&gt;</code> is a URL that appears inside rendered markdown, so
+    it is trivially shareable and will end up pasted places. It resolves the owning issue and runs
+    <code>canReadProject</code> before streaming a byte. The <code>storage_key</code> is random and
+    never appears in a URL, so guessing one buys nothing either — but the route checking is what makes
+    that a second line of defence rather than the only one.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ OVERVIEW ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">3</span> The tables</h2>
+  <p class="subtitle">Twelve. Schema version 2.</p>
+
+  <table>
+    <tr><th>Table</th><th>Purpose</th><th>Seeded</th></tr>
+    <tr><td><code>users</code></td><td>Identity. First one is admin.</td><td>—</td></tr>
+    <tr><td><code>roles</code></td><td>The hardcoded permission list.</td><td class="new">at DB creation</td></tr>
+    <tr><td><code>project_roles</code></td><td>Which user has which role, per project.</td><td>—</td></tr>
+    <tr><td><code>projects</code></td><td>Name, prefix, public flag.</td><td>—</td></tr>
+    <tr><td><code>labels</code></td><td>Per-project label vocabulary.</td><td class="new">per project</td></tr>
+    <tr><td><code>components</code></td><td>Per-project component vocabulary.</td><td class="new">per project</td></tr>
+    <tr><td><code>statuses</code></td><td>Per-project board columns, ordered.</td><td class="new">per project</td></tr>
+    <tr><td><code>issues</code></td><td>The payload. Per project.</td><td>—</td></tr>
+    <tr><td><code>issue_labels</code></td><td>Join. Cross-project assignment made impossible.</td><td>—</td></tr>
+    <tr><td><code>issue_components</code></td><td>Join, same shape.</td><td>—</td></tr>
+    <tr><td><code>comments</code></td><td>Markdown, per issue.</td><td>—</td></tr>
+    <tr><td><code>attachments</code></td><td>Metadata; bytes on the volume.</td><td>—</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════ USERS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">4</span> users</h2>
+  <p class="subtitle">Two names now, and they mean different things.</p>
+
+<pre>CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    provider TEXT NOT NULL,             <span class="c">-- AuthProvider.name: GOOGLE | GITHUB</span>
+    provider_id TEXT NOT NULL,          <span class="c">-- Google's `sub`, GitHub's numeric `id`</span>
+
+    <span class="c">-- The name the provider gave us, refreshed on every sign-in. Per</span>
+    <span class="c">-- bullet 7 this is what the sidebar shows: the GitHub *username*, or</span>
+    <span class="c">-- the Google *name*. NOT NULL because the server always resolves</span>
+    <span class="c">-- something (see the box below) — a blank name reads as a bug.</span>
+    provider_name TEXT NOT NULL,
+
+    <span class="c">-- The user's own override, and nothing else. Null means "no override"</span>
+    <span class="c">-- rather than "no name", which is why it is nullable rather than</span>
+    <span class="c">-- defaulted to the provider's — copying the account name in here once</span>
+    <span class="c">-- would freeze it, and a later rename upstream would never follow.</span>
+    display_name TEXT,
+
+    <span class="c">-- Nullable, and that is a fact: GitHub's /user returns null for a</span>
+    <span class="c">-- private address. NULL means "we do not know" — different from "" and</span>
+    <span class="c">-- different from "they have none". Never an identity key; see below.</span>
+    email TEXT,
+
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+
+    UNIQUE (provider, provider_id)
+);</pre>
+
+  <div class="box note">
+    <p class="lbl">How <code>provider_name</code> is resolved, and why it can't be null</p>
+    <p>Bullet 7 wants "<em>Signed in via GitHub as &lt;github-username&gt;</em>" but
+    "<em>…via Google as &lt;Google-name&gt;</em>" — two different fields. So the server resolves per
+    provider, reusing the fallback chain <code>OAuthProviders.kt</code> already has: <strong>GitHub</strong>
+    → <code>login</code>, which is always present. <strong>Google</strong> → <code>name</code>, else the
+    email's local part, else <code>"Google user"</code>. Every branch terminates, so the column is
+    <code>NOT NULL</code> and no reader ever has to handle a nameless user.</p>
+    <p>What the UI shows is then <code>display_name ?: provider_name</code> — total, one line, and
+    the override stays purely additive.</p>
+  </div>
+
+  <div class="box warn">
+    <p class="lbl">Email is not a key, and must never become one</p>
+    <p>The existing <code>Users.sq</code> argues this and it survives intact: an email is mutable and
+    recyclable, so matching on it would either fork an account on rename or hand one person another's
+    row when a provider frees an old address. <code>UNIQUE (provider, provider_id)</code> stays the
+    only identity. <code>email</code> carries <em>no</em> constraint on purpose — the same human
+    signing in via both Google and GitHub is two accounts by design, and they will share an address.</p>
+  </div>
+
+  <h3>First user becomes admin — in one statement</h3>
+
+<pre>upsert:
+INSERT INTO users (provider, provider_id, provider_name, email, is_admin, created_at)
+VALUES (
+    ?, ?, ?, ?,
+    <span class="c">-- Evaluated before this row lands, so it is 1 only on a genuinely</span>
+    <span class="c">-- empty table. EXISTS rather than count(*) — it stops at the first row.</span>
+    (SELECT CASE WHEN EXISTS(SELECT 1 FROM users) THEN 0 ELSE 1 END),
+    ?
+)
+ON CONFLICT (provider, provider_id) DO UPDATE SET
+    provider_name = excluded.provider_name,
+    <span class="c">-- COALESCE, not assignment: GitHub stops returning an email the moment</span>
+    <span class="c">-- a user flips it private, and a later sign-in must not erase what an</span>
+    <span class="c">-- earlier one learned. Absent means "no news", not "gone".</span>
+    email = COALESCE(excluded.email, users.email)
+    <span class="c">-- is_admin and display_name are deliberately absent. Recomputing admin</span>
+    <span class="c">-- on every sign-in would be a bug with teeth, and display_name is the</span>
+    <span class="c">-- user's — the provider has no business overwriting it.</span>
+RETURNING id, provider, provider_id, provider_name, display_name, email, is_admin;</pre>
+
+  <p>The naive reading of "first user signed in becomes the admin" is <code>SELECT count(*)</code>
+  then insert, which races: two people signing in at once on a fresh database both see zero and both
+  become admin. Doing it inside the <code>INSERT</code> closes it. <code>DatabaseDispatcher</code>
+  already serializes every query to one thread so this cannot bite today — this is belt to that
+  brace, and it costs one subquery on a statement that runs once per sign-in.</p>
+</section>
+
+<!-- ═══════════════════════════ ROLES ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">5</span> roles &amp; project_roles</h2>
+  <p class="subtitle">A fixed vocabulary, granted per project. Read only by §2.</p>
+
+<pre><span class="c">-- Hardcoded and not user-editable. Rows are seeded at database creation</span>
+<span class="c">-- and there is no route that writes here.</span>
+CREATE TABLE roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    <span class="c">-- `key` is a keyword in enough dialects to be worth dodging.</span>
+    role_key TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL
+);
+
+<span class="c">-- A user may hold many roles in a project, hence the composite key rather</span>
+<span class="c">-- than a role column on some membership row.</span>
+CREATE TABLE project_roles (
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, project_id, role_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+);</pre>
+
+  <p>The seeded rows, from the clarification:</p>
+  <table>
+    <tr><th>role_key</th><th>Grants</th></tr>
+    <tr><td><code>create_issue</code></td><td>Create issues in this project.</td></tr>
+    <tr><td><code>comment_on_issue</code></td><td>Post comments on this project's issues.</td></tr>
+    <tr><td><code>change_unowned_issues</code></td><td>Edit issues they did not create.</td></tr>
+  </table>
+
+  <div class="box note">
+    <p class="lbl">Admin is a column, not a role — and that is deliberate</p>
+    <p>"The admin role can do everything" could be a fourth row here, but it should not be. Admin is
+    <em>global</em> — bullet 5 makes the first user to sign in the admin of the whole instance,
+    before any project exists to grant a role in. A row in <code>project_roles</code> is by
+    definition per-project, so it cannot express that. <code>users.is_admin</code> can, and every
+    check in §2 reads <code>user.isAdmin || hasRole(…)</code> — one branch, server-side.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ PROJECTS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">6</span> projects</h2>
+  <p class="subtitle">Name, prefix, public flag. No blob.</p>
+
+<pre>CREATE TABLE projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    <span class="c">-- COLLATE NOCASE on the column makes both the UNIQUE index and every</span>
+    <span class="c">-- `=` against it case-insensitive. Trimmed server-side first —</span>
+    <span class="c">-- "Lunamux " and "Lunamux" are the same project to a human, and</span>
+    <span class="c">-- trailing space is invisible in the UI that would show the clash.</span>
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+
+    <span class="c">-- The "FOO" in FOO-123. Unique across all projects, not just non-null:</span>
+    <span class="c">-- if two projects shared a prefix, FOO-123 would name two different</span>
+    <span class="c">-- issues and every ticket reference in every commit message would be</span>
+    <span class="c">-- ambiguous. Upper-cased server-side by convention.</span>
+    name_prefix TEXT NOT NULL COLLATE NOCASE UNIQUE,
+
+    is_public INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+
+    <span class="c">-- So the join tables can point at the (id, project_id) pair. See §8.</span>
+    UNIQUE (id)
+);</pre>
+
+  <div class="box warn">
+    <p class="lbl">The casing guarantee is ~95% structural, and the rest is a check — accepted, D1</p>
+    <p><code>COLLATE NOCASE</code> folds <strong>ASCII A–Z only</strong>, so
+    <code>Ärenden</code>/<code>ärenden</code> would both get in on the constraint alone. So
+    <code>ProjectRepository</code> also runs a Unicode-aware <code>lowercase()</code> comparison before
+    insert and rename, which catches åäö in practice. It is a check rather than a constraint, so it
+    races in theory — and does not in fact, because <code>DatabaseDispatcher</code> pins every query
+    to one thread. If that ever changes, this is on the list of things that quietly stop being true.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ VOCABULARIES ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">7</span> labels, components, statuses</h2>
+  <p class="subtitle">Three identical shapes. Per project, duplicated across projects by design.</p>
+
+<pre>CREATE TABLE labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    <span class="c">-- Unique *within* a project. "It can have duplicates (for different</span>
+    <span class="c">-- projects)" is exactly this constraint and no other.</span>
+    UNIQUE (project_id, name),
+    <span class="c">-- Not redundant with the PK: it is the target the composite FK in</span>
+    <span class="c">-- issue_labels needs. SQLite requires a UNIQUE index on precisely the</span>
+    <span class="c">-- referenced column pair. See §8.</span>
+    UNIQUE (id, project_id)
+);
+
+CREATE TABLE components (   <span class="c">-- identical shape</span>
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+CREATE TABLE statuses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    <span class="c">-- The board is "each column represents a status", so the columns need</span>
+    <span class="c">-- an order. Without this they'd come back in rowid order, which is</span>
+    <span class="c">-- insertion order, which is right by luck until someone adds one.</span>
+    position INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);</pre>
+
+  <p>The seeds, verbatim from the clarification:</p>
+  <table>
+    <tr><th>Table</th><th>Defaults</th></tr>
+    <tr><td><code>labels</code></td><td>Bug, Feature, Improvement, Codebase</td></tr>
+    <tr><td><code>components</code></td><td>Desktop, Server, Android, iOS</td></tr>
+    <tr><td><code>statuses</code></td><td>New, Backlog, Ready for development, In progress, Closed <small>(position 0–4)</small></td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════ ISSUES ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">8</span> issues — per project</h2>
+  <p class="subtitle">CLARIFICATIONS #2 confirms it; the composite FKs make it structural rather than conventional.</p>
+
+<pre>CREATE TABLE issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    <span class="c">-- Per project, and not merely by convention: every label, component</span>
+    <span class="c">-- and status this issue can reach is constrained against THIS column</span>
+    <span class="c">-- via the composite FKs below. An issue cannot leak into another</span>
+    <span class="c">-- project's vocabulary because the database will not store the row.</span>
+    project_id INTEGER NOT NULL,
+
+    <span class="c">-- The per-project number: the 123 in FOO-123. Distinct from the id,</span>
+    <span class="c">-- which is global and an implementation detail.</span>
+    number INTEGER NOT NULL,
+
+    <span class="c">-- The clarification calls this the issue's "label", meaning its short</span>
+    <span class="c">-- description. Named `title` here because `labels` is already a table</span>
+    <span class="c">-- and `issue.label` vs `issue.labels` differing by one character while</span>
+    <span class="c">-- meaning entirely unrelated things is a bug generator. See D3.</span>
+    title TEXT NOT NULL,
+
+    <span class="c">-- Markdown, produced by the WYSIWYG editor. See §11.</span>
+    description TEXT NOT NULL DEFAULT '',
+
+    status_id INTEGER NOT NULL,
+
+    <span class="c">-- Hidden until the editor's OK. "New issue" inserts the row straight</span>
+    <span class="c">-- away so that an inline image upload has an issue to attach to —</span>
+    <span class="c">-- but an unfinished issue must not appear on anyone's board. Cancel</span>
+    <span class="c">-- deletes the row outright; this flag covers the crash/closed-tab</span>
+    <span class="c">-- case, where the draft simply stays invisible.</span>
+    is_draft INTEGER NOT NULL DEFAULT 1,
+
+    created_at INTEGER NOT NULL,
+    <span class="c">-- Nullable + SET NULL: deleting a user must not delete their issues.</span>
+    <span class="c">-- The issue outlives the account; the board would otherwise lose</span>
+    <span class="c">-- history every time someone left. Note §2 reads this for ownership,</span>
+    <span class="c">-- so a null author is an issue only an admin or a</span>
+    <span class="c">-- change_unowned_issues holder can edit — which is correct.</span>
+    created_by INTEGER,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    <span class="c">-- Composite: a status must belong to THIS issue's project. No ON</span>
+    <span class="c">-- DELETE — a status still holding issues must not be deletable, and</span>
+    <span class="c">-- SQLite's default RESTRICT is exactly right.</span>
+    FOREIGN KEY (status_id, project_id) REFERENCES statuses(id, project_id),
+
+    UNIQUE (project_id, number),
+    UNIQUE (id, project_id)
+);</pre>
+
+  <div class="box ok">
+    <p class="lbl">The trickery: cross-project assignment made unrepresentable</p>
+    <p>The clarification asks how to express "one issue can have many labels, <em>out of the labels
+    available to the project</em>", and guesses it needs trickery. It does, and SQLite has it built
+    in. A plain <code>label_id</code> foreign key would happily let a Project A issue carry a
+    Project B label — the constraint you actually want spans two tables. Carrying
+    <code>project_id</code> redundantly on the join and pointing <em>composite</em> foreign keys at
+    both parents makes the mismatch impossible to write down:</p>
+<pre>CREATE TABLE issue_labels (
+    issue_id INTEGER NOT NULL,
+    label_id INTEGER NOT NULL,
+    <span class="c">-- Redundant on purpose. It is what ties the two FKs to one project:</span>
+    <span class="c">-- both must agree on this single column, so a label from another</span>
+    <span class="c">-- project cannot satisfy them at the same time.</span>
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, label_id),
+    FOREIGN KEY (issue_id, project_id) REFERENCES issues(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (label_id, project_id) REFERENCES labels(id, project_id) ON DELETE CASCADE
+);
+
+CREATE TABLE issue_components (  <span class="c">-- identical shape</span>
+    issue_id INTEGER NOT NULL,
+    component_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, component_id),
+    FOREIGN KEY (issue_id, project_id) REFERENCES issues(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (component_id, project_id) REFERENCES components(id, project_id) ON DELETE CASCADE
+);</pre>
+    <p>The alternative — validating it in Kotlin on every write — is a check you can forget to make
+    on the seventh route. This one cannot be forgotten, because the database refuses the row. All of
+    it rests on <code>PRAGMA foreign_keys = ON</code>, which <code>Database.kt</code> already sets and
+    already documents as the line that makes every FK in the schema mean anything.</p>
+  </div>
+
+  <h3>Allocating the number</h3>
+<pre>insert:
+INSERT INTO issues (project_id, number, title, description, status_id, is_draft, created_at, created_by)
+VALUES (
+    ?,
+    <span class="c">-- MAX+1, not COUNT+1: numbers are never reused after a delete.</span>
+    <span class="c">-- COUNT would hand FOO-12 to a second issue the moment the first was</span>
+    <span class="c">-- deleted, and every link and commit message naming FOO-12 would</span>
+    <span class="c">-- silently point at the wrong thing. UNIQUE(project_id, number) is</span>
+    <span class="c">-- the backstop if this is ever wrong.</span>
+    (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project_id = ?),
+    ?, ?, ?, 1, ?, ?
+)
+RETURNING id, number;</pre>
+  <p>A consequence worth naming: opening "New issue" and cancelling burns a number, so the board can
+  go FOO-12, FOO-14. That is the correct trade — gaps are cosmetic, reused numbers are corruption.</p>
+</section>
+
+<!-- ═══════════════════════════ COMMENTS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">9</span> comments</h2>
+  <p class="subtitle">Posted from a modal like the issue editor's.</p>
+
+<pre>CREATE TABLE comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL,
+    body TEXT NOT NULL,          <span class="c">-- markdown, same editor as the issue</span>
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,          <span class="c">-- SET NULL, same reasoning as issues</span>
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);</pre>
+
+  <p><code>is_draft</code> for the same reason as issues: the comment modal supports inline image
+  upload, so the row must exist before the image does. Cancel deletes it; the flag covers the crash.
+  No <code>project_id</code> — a comment reaches its project through its issue, and duplicating it
+  here would be a second source of truth for a fact that already has one.</p>
+</section>
+
+<!-- ═══════════════════════════ ATTACHMENTS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">10</span> attachments</h2>
+  <p class="subtitle">Metadata in SQLite, bytes on the volume. Accepted per D4.</p>
+
+<pre>CREATE TABLE attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    <span class="c">-- Exactly one owner, enforced below. Two nullable columns rather than</span>
+    <span class="c">-- an (owner_type, owner_id) pair, because that pair cannot carry a</span>
+    <span class="c">-- foreign key at all — and losing FK cascade is how you end up with</span>
+    <span class="c">-- attachments pointing at deleted issues.</span>
+    issue_id INTEGER,
+    comment_id INTEGER,
+
+    filename TEXT NOT NULL,      <span class="c">-- as uploaded, for the download name</span>
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+
+    <span class="c">-- The file's name on the volume. Random, not derived from filename:</span>
+    <span class="c">-- a user-supplied name reaching the filesystem is a path-traversal</span>
+    <span class="c">-- bug waiting for "../../lunicle.db". This column is the ONLY thing</span>
+    <span class="c">-- that ever names a path, and nothing a user types reaches it.</span>
+    storage_key TEXT NOT NULL UNIQUE,
+
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    <span class="c">-- SQLite counts a true condition as 1, so this reads "exactly one</span>
+    <span class="c">-- owner is set". An orphan attachment and a doubly-owned one are both</span>
+    <span class="c">-- now unrepresentable rather than merely unlikely.</span>
+    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1)
+);</pre>
+
+  <p>Files rather than BLOBs, for three reasons in order of how much they bite: <strong>heap</strong>
+  (SQLDelight maps BLOB to <code>ByteArray</code>, so every read of a 10 MB screenshot is a 10 MB
+  array through a free-trial-sized JVM, where a file streams and never lands in heap);
+  <strong>your local loop</strong> (you asked for scripts that inspect the database — one carrying
+  every screenshot ever pasted is slow to copy and unpleasant to dump); and because
+  <strong>it is the same volume anyway</strong>, so the BLOB's "one thing to back up" advantage is
+  mostly notional.</p>
+
+  <p><strong>The cost, honestly:</strong> writes stop being atomic. A file written whose row fails to
+  insert leaks disk; a row deleted whose file fails to unlink does the same. Neither loses data.
+  Handled the way the session sweep already is — a startup pass deleting files under
+  <code>$VOLUME/attachments/</code> with no matching <code>storage_key</code>, logged. That sweep
+  earns its keep twice: it also collects the files behind cancelled drafts (§11).</p>
+
+  <div class="box note">
+    <p class="lbl">One path resolution, not two</p>
+    <p><code>$RAILWAY_VOLUME_MOUNT_PATH/attachments/&lt;storage_key&gt;</code>, derived from the same
+    <code>DatabaseLocation</code> the database uses rather than from a second setting. One resolution
+    means attachments cannot land on a different disk from the rows describing them — which is exactly
+    the failure <code>Database.kt</code>'s preamble is about: it works perfectly until the container is
+    replaced.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ EDITOR ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">11</span> The WYSIWYG editor</h2>
+  <p class="subtitle">No schema impact — <code>description</code> and <code>body</code> are markdown TEXT either way.</p>
+
+  <table>
+    <tr><th>Button</th><th>Markdown</th></tr>
+    <tr><td>Bold</td><td><code>**text**</code></td></tr>
+    <tr><td>Italic</td><td><code>*text*</code></td></tr>
+    <tr><td>Strikethrough</td><td><code>~~text~~</code></td></tr>
+    <tr><td>Headings</td><td><code>#</code> … <code>######</code></td></tr>
+    <tr><td>Link</td><td><code>[text](url)</code></td></tr>
+    <tr><td>Inline image</td><td><code>![filename](/api/attachments/&lt;id&gt;)</code></td></tr>
+    <tr><td>Underline</td><td><code>&lt;u&gt;text&lt;/u&gt;</code> <small>— see below, D5</small></td></tr>
+  </table>
+
+  <div class="box warn">
+    <p class="lbl">Underline is the one button that changes what the stored format is</p>
+    <p>No flavour of markdown has underline, deliberately — underlined text on the web means "link".
+    Accepted resolution is inline <code>&lt;u&gt;</code>, which every renderer passes through. The
+    consequence is that the stored document is markdown <em>plus a little HTML</em>, so the renderer
+    must <strong>allow-list tags</strong> rather than pass raw HTML through. A markdown renderer with
+    HTML passthrough, on a field any signed-in user can write and every other user will read, is
+    stored XSS — and this is the decision that puts HTML in that field in the first place.</p>
+  </div>
+
+  <p><strong>Inline image flow</strong>, given that "New issue" creates the row immediately:
+  toolbar → file picker → <code>POST /api/issues/&lt;id&gt;/attachments</code> → returns an id →
+  editor inserts <code>![name](/api/attachments/&lt;id&gt;)</code>. The issue already exists, so the
+  attachment always has an owner and the <code>CHECK</code> in §10 always holds. Cancel deletes the
+  issue; the cascade takes the rows and the sweep takes the files. Upload is gated by
+  <code>canEditIssue</code> like every other write (§2) — an upload endpoint that only checks "are
+  you signed in" is an open file host.</p>
+</section>
+
+<!-- ═══════════════════════════ MIGRATION ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">12</span> The purge — <code>1.sqm</code></h2>
+  <p class="subtitle">Version 1 → 2. Not a real migration, and deliberately so.</p>
+
+  <div class="box stop">
+    <p class="lbl">Why the version must still be bumped, even though we are wiping</p>
+    <p>"We can wipe the database, so just redefine version 1" does not work, and fails <em>silently in
+    production only</em>. The deployed volume already has <code>user_version = 1</code> written into
+    its header. <code>createOrMigrateSchema()</code> reads that, compares it to the new schema's
+    version, finds <code>1 == 1</code>, logs <em>"schema is current"</em> and creates nothing. The
+    container then starts happily and every query against <code>projects</code> fails at runtime,
+    against a database that believes it is up to date. No local test reproduces it, because your local
+    volume gets wiped and takes the <code>create</code> path.</p>
+    <p>Bumping to 2 with a destructive <code>1.sqm</code> makes the wipe <em>automatic and
+    idempotent</em>: the deployed volume purges itself, and there is no Railway button to remember.</p>
+  </div>
+
+<pre><span class="c">-- src/main/sqldelight/se/soderbjorn/lunicle/db/1.sqm</span>
+<span class="c">-- Schema 1 → 2. A PURGE, not a migration: everything from the counter-era</span>
+<span class="c">-- schema goes, and the MVP's tables are created from nothing.</span>
+<span class="c">--</span>
+<span class="c">-- Authorised while the design is still moving. It is also the LAST time</span>
+<span class="c">-- that is true: once things settle, 2.sqm and everything after it has to</span>
+<span class="c">-- preserve data, because by then the volume holds issues somebody wrote.</span>
+<span class="c">--</span>
+<span class="c">-- Order matters: children before parents, or the FKs refuse the drop.</span>
+DROP TABLE IF EXISTS counters;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;
+
+<span class="c">-- …then every CREATE TABLE from §4–§10, in dependency order:</span>
+<span class="c">--   users, roles, projects, project_roles,</span>
+<span class="c">--   labels, components, statuses,</span>
+<span class="c">--   issues, issue_labels, issue_components,</span>
+<span class="c">--   comments, attachments</span>
+<span class="c">-- …plus the roles seed (§5), which is part of "creation" per §13.</span></pre>
+
+  <div class="box warn">
+    <p class="lbl">Sessions are dropped too, which signs everyone out</p>
+    <p>Worth saying out loud, since Stage 2's whole exit criterion was that a redeploy no longer signs
+    you out: this deploy will. <code>sessions</code> has a foreign key to <code>users</code>, and
+    <code>users</code> is being recreated, so the rows cannot survive. Every browser's cookie will name
+    a session that no longer exists, which <code>lookup()</code> already handles correctly — it returns
+    null and the user sees the sign-in buttons. Nothing breaks; people just sign in again.
+    <strong>And the first person to do so becomes the admin</strong>, which is worth knowing before you
+    tell anyone the deploy is up.</p>
+  </div>
+
+  <div class="box note">
+    <p class="lbl">The workflow, as <code>server/build.gradle.kts</code> documents it</p>
+    <ol>
+      <li>Rewrite the <code>.sq</code> files.</li>
+      <li>Add <code>1.sqm</code> above.</li>
+      <li><code>./gradlew :server:generateMainLunicleDatabaseSchema</code> → writes
+      <code>databases/2.db</code>, committed beside the existing <code>1.db</code>.</li>
+    </ol>
+    <p>Skip step 3 and <code>verifyMigrations</code> fails the build, which is the feature. Both paths
+    are then testable locally: wipe the volume for <code>create</code>, or bring the container up on
+    the current build first and <em>then</em> rebuild for <code>migrate 1 → 2</code>. The second one is
+    the deploy, rehearsed.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ SEEDING ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">13</span> Seeding</h2>
+  <p class="subtitle">Two moments, not one. Accepted per D2.</p>
+
+  <ul>
+    <li><strong>At database creation</strong> — the three <code>roles</code>. Global, no project to
+    belong to, hardcoded. Runs in <code>createOrMigrateSchema()</code>'s <code>create</code> branch
+    <em>and</em> in <code>1.sqm</code>, so a fresh volume and a purged one both end up with them.</li>
+    <li><strong>At project creation</strong> — that project's labels, components and statuses, in one
+    transaction with the <code>INSERT</code> into <code>projects</code>, owned by
+    <code>ProjectRepository</code> (§1). A project that half-exists — a row with no board columns —
+    would be a project you cannot file an issue in and cannot fix from the UI.</li>
+  </ul>
+
+  <p>The clarification says "defaults get added on first creation of database", but labels, components
+  and statuses all carry a <code>project_id</code> — at database creation there is no project to hang
+  them on, and the first project anyone made would come up with no board columns at all. The split
+  above is the only reading that works.</p>
+</section>
+
+<!-- ═══════════════════════════ DECISIONS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">14</span> Decisions</h2>
+  <p class="subtitle">Rev 2's six open questions, accepted per CLARIFICATIONS #2. Recorded so the
+  reasoning survives the next person to wonder why.</p>
+
+  <div class="d">
+    <p class="lbl">D1 — casing: NOCASE + a Unicode check</p>
+    <p><code>COLLATE NOCASE</code> for the constraint, plus a <code>lowercase()</code> comparison in
+    <code>ProjectRepository</code> for åäö. Structural for ASCII, checked for the rest. §6.</p>
+  </div>
+
+  <div class="d">
+    <p class="lbl">D2 — seeding: roles at DB creation, vocabularies at project creation</p>
+    <p>A literal departure from the clarification's wording, because the literal reading cannot work.
+    §13.</p>
+  </div>
+
+  <div class="d">
+    <p class="lbl">D3 — the issue's short description is <code>title</code></p>
+    <p>The UI may still call it whatever you like. <code>issue.label</code> beside
+    <code>issue.labels</code> is a bug generator. §8.</p>
+  </div>
+
+  <div class="d">
+    <p class="lbl">D4 — attachments: files on the volume, metadata in rows, orphan sweep</p>
+    <p>Heap and your local loop beat atomicity here. BLOBs stay a defensible fallback if the sweep
+    ever proves annoying. §10.</p>
+  </div>
+
+  <div class="d">
+    <p class="lbl">D5 — underline: inline <code>&lt;u&gt;</code>, allow-listed renderer</p>
+    <p>The stored format becomes markdown-plus-a-little-HTML, so the renderer must never pass raw HTML
+    through. §11.</p>
+  </div>
+
+  <div class="d">
+    <p class="lbl">D6 — labels and components are optional</p>
+    <p>"One or more" read as zero-or-more. The editor offers them; nothing rejects an issue without
+    them. SQL cannot express a join-table minimum anyway, so the strict reading would be a server
+    check on every write — and a rule that feels tidy on Monday gets sworn at on Friday.</p>
+  </div>
+
+  <div class="d">
+    <p class="lbl">D7 — projects are admin-only to mutate</p>
+    <p>Carried from rev 1 and never contradicted: any signed-in user may create a project; only an
+    admin renames, changes settings, or deletes one. The three seeded roles are all issue-scoped, so
+    they have nothing to say about projects — which leaves admin as the only answer the schema can
+    give. Flagging it here because it is the one decision that was never explicitly confirmed, and it
+    is one line in <code>AccessControl</code> to change. §2.</p>
+  </div>
+</section>
+
+<footer>
+  Lunicle — MVP schema &amp; design, rev 3. Drafted against <code>docs/mvp.txt</code> including
+  CLARIFICATIONS #1 and #2. Schema 1 → 2, purge.
+  <strong>Not yet compiled.</strong> The composite foreign keys (§8), the <code>CHECK</code> with
+  boolean arithmetic (§10), the <code>upsert</code> subquery (§4) and the column name
+  <code>number</code> all want <code>./gradlew :server:compileKotlin</code> to confirm the SQLite 3.38
+  dialect accepts them before any of this is believed.
+</footer>
+
+</div>
+</body>
+</html>

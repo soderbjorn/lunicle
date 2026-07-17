@@ -45,16 +45,36 @@ sqldelight {
             // error names the missing .db file rather than the missing setting.
             schemaOutputDirectory.set(file("src/main/sqldelight/databases"))
 
-            // Fail the build if a .sq schema change lands without a matching
-            // .sqm migration. The volume is the point of this half of the
-            // stage: from the first deploy there is data on it that a careless
-            // schema edit would silently destroy, and this is the only thing
-            // that would notice.
+            // OFF, and replaced — not abandoned. MigrationTest does this job
+            // instead; see server/src/test/kotlin/…/MigrationTest.kt.
             //
-            // The workflow this imposes, for later: change a .sq, add a
-            // `<n>.sqm` describing how to get there from version n, then re-run
-            // `generateMainLunicleDatabaseSchema` to snapshot the new version.
-            verifyMigrations.set(true)
+            // This task cannot complete on this schema. It compares the two
+            // catalogs with java-object-diff, which walks *paths* through an
+            // object graph rather than nodes — and schemacrawler's catalog is
+            // cyclic (a table holds its columns, a column points back at its
+            // table, a foreign key points at both). With the three loosely
+            // coupled tables this schema used to have, that was fine. With
+            // thirteen densely cross-referenced ones — projects ← labels,
+            // components, statuses, issues, project_roles; issues ←
+            // issue_labels, issue_components, comments, attachments — the path
+            // count explodes and the task runs for tens of minutes without
+            // finishing. Verified by thread dump: hundreds of frames deep in
+            // de.danielbechler.diff, at a steady 100% of one core.
+            //
+            // Leaving it on would be worse than useless: `check` depends on it,
+            // so `./gradlew build` would hang rather than fail — the one
+            // outcome nobody investigates, because it looks like a slow build.
+            //
+            // The workflow is unchanged and still enforced, just by a test:
+            // change a .sq, add a `<n>.sqm` describing how to get there from
+            // version n, then re-run `generateMainLunicleDatabaseSchema` to
+            // snapshot the new version. Skip any of that and MigrationTest
+            // fails, naming what drifted.
+            //
+            // NOTE: this flag alone is not enough — see the task-disabling block
+            // at the bottom of this file. The plugin registers and wires up the
+            // verify task regardless of what this is set to.
+            verifyMigrations.set(false)
         }
     }
 }
@@ -143,17 +163,39 @@ tasks.named<JavaExec>("run") {
         .getOrElse("https://lunamux.dev")
     systemProperty("lunicle.frameAncestors", frameAncestors)
 
-    // Where a local run keeps its SQLite file. Under build/ so that `./gradlew
-    // clean` discards it: a local database is scratch data, and the ability to
-    // throw it away and watch the schema get created from nothing is worth
-    // having — it is the one code path production runs exactly once, on a fresh
-    // volume, where getting it wrong is most expensive.
+    // Which port a local run binds, as `-Pport=9000`. Only forwarded when
+    // given, so the unset case stays resolvePort()'s own default rather than
+    // being decided twice in two files.
     //
-    // Deliberately NOT the deployed default (/data/lunicle.db): a developer
-    // machine has no such directory, and silently creating one at the
-    // filesystem root would be rude. See resolveDatabasePath() in Database.kt.
+    // A property rather than the PORT environment variable, for the reason
+    // resolvePort() documents: a JavaExec inherits the Gradle *daemon's*
+    // environment, so `PORT=9000 ./gradlew :server:run` is silently ignored.
+    // The deployed container still uses PORT — Railway sets it, and there is no
+    // daemon there.
+    providers.gradleProperty("port").orNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { systemProperty("lunicle.port", it) }
+
+    // Where a local run keeps its SQLite file, and — beside it — its
+    // attachments. This is the local stand-in for Railway's mounted volume:
+    // the server derives the attachment directory from the database's own path
+    // (see DatabaseLocation.attachmentsDirectory), so naming this one path is
+    // all it takes to get the same layout locally as in the container.
+    //
+    // `.localdata/` at the repo root, gitignored, and deliberately NOT under
+    // build/ any more. It used to be, so that `./gradlew clean` discarded it —
+    // which was right when the payload was a counter and wiping cost nothing.
+    // It is wrong now: `clean` is what you run to fix a *build* problem, and it
+    // would take every issue you had typed in with it, silently, as a side
+    // effect of an unrelated command. Wiping is now something you ask for by
+    // name: ./scripts/local-db.sh wipe.
+    //
+    // Also deliberately NOT the deployed default (/data/lunicle.db): a
+    // developer machine has no such directory, and silently creating one at the
+    // filesystem root would be rude. See resolveDatabaseLocation() in
+    // Database.kt.
     val databasePath = providers.gradleProperty("databasePath")
-        .getOrElse(layout.buildDirectory.file("lunicle.db").get().asFile.absolutePath)
+        .getOrElse(rootProject.layout.projectDirectory.file(".localdata/lunicle.db").asFile.absolutePath)
     systemProperty("lunicle.databasePath", databasePath)
 
     // OAuth credentials, passed by scripts/dev-local.sh from a gitignored .env
@@ -177,4 +219,28 @@ tasks.named<JavaExec>("run") {
         val value = providers.gradleProperty(name).getOrElse("")
         if (value.isNotBlank()) systemProperty("lunicle.$name", value)
     }
+}
+
+// Take SQLDelight's migration verifier out of `check`, and therefore out of
+// `./gradlew build`.
+//
+// `verifyMigrations.set(false)` above is NOT sufficient and this is the trap:
+// the plugin registers `verifyMainLunicleDatabaseMigration` whenever
+// `schemaOutputDirectory` is set — which it must be, since that is also what
+// registers `generateMainLunicleDatabaseSchema` — and wires it into `check`
+// regardless of the flag. So the flag reads like it turns the check off, and
+// `./gradlew build` still runs it.
+//
+// That matters here because the task cannot *finish* on this schema: it diffs
+// the two catalogs with java-object-diff, which walks paths through a cyclic
+// object graph, and thirteen densely cross-referenced tables make that
+// explode. The failure mode is the worst available — `build` hangs at 100% of
+// one core rather than failing, which reads as a slow build rather than a
+// broken one, and nobody investigates a slow build for eight minutes before
+// giving up.
+//
+// MigrationTest checks the same fact in milliseconds. See its preamble, and the
+// verifyMigrations comment above.
+tasks.matching { it.name == "verifyMainLunicleDatabaseMigration" }.configureEach {
+    enabled = false
 }

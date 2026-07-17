@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunicle — MCP support, and the OAuth server underneath it</title>
+<style>
+:root{
+  --bg:#04090f; --panel:#070f1a; --panel-2:#0b1626;
+  --green:#4dc8f5; --green-hi:#66d9ff; --green-dim:#5f7590; --green-dimmer:#24384f;
+  --border:rgba(77,200,245,.20); --border-hi:rgba(77,200,245,.45); --glow:rgba(77,200,245,.35);
+  --red:#ff5f57; --yellow:#febc2e; --traffic-g:#28c840; --blue:#5fa8ff;
+  --head:#eaf3fb; --body:#cfe0ee;
+  --mono: ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.65 var(--mono);
+  padding:48px 24px 120px;
+}
+.wrap{max-width:920px;margin:0 auto}
+
+header.top{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+.eyebrow{color:var(--green-dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+h1{color:var(--head);font-size:30px;line-height:1.25;margin:0 0 14px;font-weight:600}
+h1 .glow{color:var(--green-hi);text-shadow:0 0 18px var(--glow)}
+.lede{color:var(--green-dim);margin:0;max-width:70ch}
+
+h2{
+  color:var(--head);font-size:19px;margin:0 0 6px;font-weight:600;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2 .num{
+  color:var(--green);font-size:12px;letter-spacing:.12em;
+  border:1px solid var(--border-hi);border-radius:3px;padding:3px 8px;
+  text-shadow:0 0 12px var(--glow);flex:none;
+}
+h3{color:var(--green-hi);font-size:14px;letter-spacing:.04em;margin:32px 0 10px;font-weight:600}
+p{margin:0 0 14px;max-width:74ch}
+small{color:var(--green-dim)}
+code{
+  background:var(--panel-2);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px;color:var(--green-hi);font-size:.9em;
+}
+strong{color:var(--head);font-weight:600}
+a{color:var(--green-hi)}
+
+section.stage{
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  padding:28px 30px;margin:0 0 26px;
+}
+.subtitle{color:var(--green-dim);margin:0 0 22px;font-size:13px}
+
+ul,ol{margin:0 0 14px;padding-left:0;list-style:none}
+li{position:relative;padding-left:22px;margin-bottom:9px;max-width:74ch}
+li::before{content:"›";position:absolute;left:4px;color:var(--green);opacity:.75}
+ol{counter-reset:step}
+ol>li{counter-increment:step}
+ol>li::before{content:counter(step) ".";color:var(--green);font-size:12px;left:0;opacity:1}
+li ul,li ol{margin-top:9px}
+
+pre{
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;
+  padding:14px 16px;overflow-x:auto;margin:0 0 16px;font-size:13px;line-height:1.6;
+  color:var(--body);
+}
+pre .c{color:var(--green-dim)}
+pre .k{color:var(--green-hi)}
+
+.box{border-radius:5px;padding:16px 18px;margin:18px 0;border:1px solid var(--border)}
+.box p:last-child{margin-bottom:0}
+.box .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;margin:0 0 8px;font-weight:600}
+.warn{background:rgba(254,188,46,.05);border-color:rgba(254,188,46,.35)}
+.warn .lbl{color:var(--yellow)}
+.stop{background:rgba(255,95,87,.05);border-color:rgba(255,95,87,.35)}
+.stop .lbl{color:var(--red)}
+.ok{background:rgba(40,200,64,.05);border-color:rgba(40,200,64,.3)}
+.ok .lbl{color:var(--traffic-g)}
+.note{background:var(--panel-2)}
+.note .lbl{color:var(--blue)}
+
+table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:13px}
+th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel-2);color:var(--green-hi);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+td.yes{color:var(--traffic-g)}
+td.no{color:var(--red)}
+
+.exit{border-top:1px dashed var(--green-dimmer);margin-top:26px;padding-top:20px}
+.exit .lbl{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--traffic-g);margin:0 0 10px;font-weight:600}
+
+footer{border-top:1px solid var(--border);margin-top:44px;padding-top:22px;color:var(--green-dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Lunamux / Lunicle</p>
+  <h1>MCP support — and the <span class="glow">OAuth server</span> underneath it</h1>
+  <p class="lede">The goal is one sentence: an agent — Claude Code, Claude Cowork, Cursor, anything —
+  connects to Lunicle and can do exactly what the signed-in user can do, no more, acting on their
+  behalf. Everything in this document exists because that sentence requires a real OAuth flow, and a
+  real OAuth flow requires Lunicle to become something it currently is not. The good news is that
+  Framnaflow already built this, in Kotlin, on Ktor, and it is running in production. This is a port,
+  not a design.</p>
+</header>
+
+<!-- ═══════════════════════════ READ FIRST ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">Read first</span> The one realization this all hangs on</h2>
+  <p class="subtitle">If you take nothing else from this document, take this.</p>
+
+  <p><strong>Lunicle is currently an OAuth <em>client</em>. It must become an OAuth <em>server</em>.</strong>
+  Today, Google and GitHub are the authorization servers and <code>AuthRoutes.kt</code> consumes their
+  authorization codes. That is the client role. MCP needs the opposite: Lunicle becomes an OAuth 2.1
+  <em>resource server</em> at <code>/mcp</code>, and something must be its <em>authorization server</em>
+  — minting tokens whose audience is Lunicle itself.</p>
+
+  <p>This is not a technicality that can be worked around. The MCP specification says a client
+  <strong>MUST NOT</strong> send a token to a server that the server's own authorization server did not
+  issue, and a server <strong>MUST</strong> validate that a token was issued for it specifically. So none
+  of the following can work, and none of them should be attempted:</p>
+
+  <ul>
+    <li>Handing the agent a Google or GitHub access token. Wrong audience; the spec forbids accepting it.</li>
+    <li>Handing the agent the <code>lunicle_session</code> cookie value. Not a bearer token, no expiry
+      check on read, no scope, no revocation story, and no client identity — you would never know
+      <em>which</em> agent was acting.</li>
+    <li>A pasted personal access token as the primary path. See §4 — Framnaflow built exactly this,
+      shipped it, and then turned it off.</li>
+  </ul>
+
+  <div class="ok">
+    <p class="lbl">The half you already own</p>
+    <p>An authorization server's hard problem is "who is this human?" — and Lunicle answers it today.
+    <code>users.upsert(identity)</code> → <code>sessions.create(user.id)</code> is working federated
+    identity, in production, over two providers. The new code is the <strong>token</strong> half, not
+    the login half. That is why this is roughly 700 lines and not a quarter.</p>
+  </div>
+
+  <div class="note">
+    <p class="lbl">The principle that makes the whole thing safe</p>
+    <p>An access token resolves to a <code>UserRecord</code> — the <em>same</em> type a session cookie
+    resolves to. That gives <code>ApplicationCall.caller()</code> a second implementation and changes
+    nothing else. Every route, every <code>AccessControl</code> rule, every filtered read applies to the
+    agent unchanged, because the agent is just another caller. Read <code>AccessControl.kt</code>'s
+    preamble — "the client is a renderer of permissions, never a source of them" — and note that this
+    design is what makes that sentence literally true for a second transport. Framnaflow states the
+    same rule in <code>auth/AccessControl.kt:6</code>: <em>"Transport-agnostic authorization, shared by
+    the Ktor /api routes and the MCP server so the two can never drift apart."</em></p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ THE REFERENCE ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§1</span> The reference implementation — read it before writing anything</h2>
+  <p class="subtitle">Same author, same stack, same idiom, already in production. Paths are relative to
+  <code>/Users/soderbjorn/repo/framnaflow/main</code>.</p>
+
+  <table>
+    <thead><tr><th>File</th><th>Lines</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><code>server/…/oauth/OAuthServer.kt</code></td><td>356</td>
+        <td>The whole authorization server: discovery metadata, DCR, <code>/authorize</code>, federation
+          callback, consent page, <code>/token</code> with PKCE + refresh, revocation.</td></tr>
+      <tr><td><code>server/…/repository/OAuthRepositories.kt</code></td><td>377</td>
+        <td><code>OAuthCrypto</code> plus four stores: clients, auth codes, tokens, login state. This is
+          the file to port most closely.</td></tr>
+      <tr><td><code>server/…/mcp/McpServer.kt</code></td><td>285</td>
+        <td>The Streamable HTTP / JSON-RPC transport at <code>/mcp</code>. Stateless.</td></tr>
+      <tr><td><code>server/…/mcp/McpTools.kt</code></td><td>1292</td>
+        <td>The tool table. Lunicle's will be far smaller — Framnaflow drives physical devices.</td></tr>
+      <tr><td><code>server/…/auth/AccessControl.kt</code></td><td>61</td>
+        <td>The transport-agnostic authorization rule. Lunicle's equivalent already exists.</td></tr>
+      <tr><td><code>docs/mcp-server-setup.md</code></td><td>96</td>
+        <td>The user-facing writeup. Good model for Lunicle's eventual one.</td></tr>
+    </tbody>
+  </table>
+
+  <p>Two things in there are worth more than the rest of the file combined, because they are bugs
+  someone already paid for. Both are in §8.</p>
+</section>
+
+<!-- ═══════════════════════════ ARCHITECTURE ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§2</span> The flow, end to end</h2>
+  <p class="subtitle">What actually happens when a user types <code>claude mcp add</code>.</p>
+
+  <pre><span class="c">  1.</span>  Agent  →  POST /mcp  (no token)
+<span class="c">  2.</span>  Lunicle →  401 + WWW-Authenticate: Bearer resource_metadata="https://…/.well-known/oauth-protected-resource"
+<span class="c">  3.</span>  Agent  →  GET  /.well-known/oauth-protected-resource        <span class="c">→ names the authorization server</span>
+<span class="c">  4.</span>  Agent  →  GET  /.well-known/oauth-authorization-server      <span class="c">→ names /oauth/authorize, /oauth/token, …</span>
+<span class="c">  5.</span>  Agent  →  POST /oauth/register                              <span class="c">→ client_id  (DCR, unauthenticated)</span>
+<span class="c">  6.</span>  Agent  →  opens the user's BROWSER at /oauth/authorize?client_id=…&amp;code_challenge=…&amp;resource=…
+<span class="c">  7.</span>  Lunicle →  reads lunicle_session cookie
+                 <span class="k">signed in?</span>    → render consent page
+                 <span class="k">signed out?</span>   → existing Google/GitHub sign-in first, then consent
+<span class="c">  8.</span>  User   →  clicks Approve  →  POST /oauth/consent
+<span class="c">  9.</span>  Lunicle →  302 back to the agent's redirect_uri with ?code=lun_code_…
+<span class="c"> 10.</span>  Agent  →  POST /oauth/token  (code + code_verifier + resource)
+<span class="c"> 11.</span>  Lunicle →  { access_token: lun_at_…, refresh_token: lun_rt_…, expires_in: 3600 }
+<span class="c"> 12.</span>  Agent  →  POST /mcp  with Authorization: Bearer lun_at_…    <span class="c">→ works, as that user, forever after</span></pre>
+
+  <p>Steps 3–5 and 10–12 are machine-to-machine and invisible. The user sees exactly one thing: a
+  browser tab at step 6–8 asking "Claude Code wants to act as you on Lunicle." That is the entire UX of
+  connecting, and it is why no secret is ever pasted.</p>
+</section>
+
+<!-- ═══════════════════════════ DECISIONS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§3</span> Decisions taken</h2>
+  <p class="subtitle">These are settled. Each one has a rejected alternative, recorded so nobody
+  relitigates it in three weeks.</p>
+
+  <h3>Build the authorization server; don't buy one</h3>
+  <p>WorkOS, Stytch, Auth0 and Descope all sell MCP-shaped OAuth. <strong>Rejected</strong>, because the
+  identity half already works here, an external AS would still need a way to resolve its users back to
+  our <code>users</code> rows, and — decisively — a working reference in this exact stack already
+  exists. The honest counterweight: token endpoints punish cleverness. Do not be clever. Port.</p>
+
+  <h3>Reuse the session cookie at <code>/authorize</code>; do not re-federate</h3>
+  <p>This is the <strong>one place Lunicle must deliberately diverge from Framnaflow.</strong>
+  Framnaflow's <code>/oauth/authorize</code> redirects straight to Google
+  (<code>OAuthServer.kt:172</code>) because Google is its only provider. Lunicle has two, so it cannot
+  blindly pick one — it would have to render a provider chooser and add a second federation callback,
+  with a new redirect URI to register in Google's console.</p>
+  <p>Instead: read <code>lunicle_session</code>. If it resolves to a <code>UserRecord</code>, go
+  straight to consent. If not, show the existing sign-in, then consent. Less code, better UX, no new
+  provider configuration.</p>
+  <div class="ok">
+    <p class="lbl">Why the cookie is actually readable here</p>
+    <p><code>/oauth/authorize</code> is a <strong>top-level browser navigation</strong>, not a framed or
+    cross-site fetch. In production the cookie is <code>SameSite=None; Secure</code> and rides along.
+    Locally it is <code>SameSite=Lax</code>, and Lax sends on top-level GET navigation. Both work with
+    no change to cookie policy. The CSP <code>frame-ancestors</code> header is irrelevant — it governs
+    who may embed a page, and nobody is embedding this one.</p>
+  </div>
+
+  <h3>One flat <code>mcp</code> scope. No granular scopes.</h3>
+  <p>An earlier draft of this plan proposed <code>lunicle:read</code> / <code>lunicle:write</code> /
+  <code>lunicle:admin</code>. <strong>Rejected</strong> — it is more than the requirement needs.
+  Framnaflow is explicit (<code>auth/AccessControl.kt:9</code>): <em>"there is no token-level scope
+  mechanism"</em>, and its consent page says "It will have the same rights you do in the web app."
+  That <em>is</em> the requirement, stated exactly. The token says who you are; <code>AccessControl</code>
+  says what that means. One mechanism, not two that can disagree.</p>
+
+  <h3>Admin operations are not exposed over MCP at all</h3>
+  <p>Rather than an admin scope, follow Framnaflow's instinct: some tools simply do not exist. No
+  <code>delete_project</code>, no <code>create_project</code>, no role granting, no impersonation. A
+  capability that has no tool cannot be abused by a confused agent, and this is the cheapest possible
+  form of that guarantee. Revisit only when someone actually asks.</p>
+
+  <h3>Opaque, prefixed, hashed tokens — never JWTs</h3>
+  <p>We have a database and one container. Opaque means revocation is a <code>DELETE</code> rather than
+  a blocklist we would have to invent. Prefixes (<code>lun_at_</code>, <code>lun_rt_</code>,
+  <code>lun_code_</code>) let validation reject a wrong-type token before touching storage. Hashed at
+  rest because — unlike session ids, which live only in a browser jar — these will sit in config files
+  on developer laptops.</p>
+
+  <h3>No personal access tokens</h3>
+  <p>Framnaflow built a self-service <code>fmcp_…</code> token, shipped it, and then disabled it:
+  <code>McpServer.kt:107</code> reads <code>ACCEPT_MCP_ACCESS_TOKENS = false</code>, with the whole
+  repository kept intact behind the flag and the UI hidden. They retreated to OAuth-only. Take the
+  result and skip the detour.</p>
+</section>
+
+<!-- ═══════════════════════════ UX ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§4</span> The settings dialog — this is the part to build</h2>
+  <p class="subtitle">Assume the settings dialog and its section scaffolding exist. This describes the
+  MCP section inside it. This is the piece Framnaflow does <em>not</em> have, and where Lunicle should
+  be better than its reference.</p>
+
+  <div class="note">
+    <p class="lbl">What Framnaflow's UI actually is</p>
+    <p>Nothing, for the user. The token UI is hidden and disabled. The only surface is admin-only —
+    "Settings → Users → OAuth connections". <strong>There is no way for a user to see or revoke their
+    own connections.</strong> The server-side support is already written and simply has no screen:
+    <code>OAuthTokenRepository.listGrants()</code> and <code>revokeForUser(email, clientId)</code>
+    (<code>OAuthRepositories.kt:293</code> and <code>:306</code>). Lunicle should build the screen.</p>
+  </div>
+
+  <h3>Section title: <em>Connections</em>, not "MCP"</h3>
+  <p>The toggle is the least interesting thing in the section after the first day. What the user comes
+  back for is the list of what is connected and the ability to cut it off. Name the section for that.</p>
+
+  <h3>Three states</h3>
+
+  <p><strong>State A — off (the default).</strong> A single toggle, a one-line explanation, nothing
+  else. The explanation must say what the feature <em>is</em> in plain words, because "MCP" means
+  nothing to most people:</p>
+  <pre>  [ ] <span class="k">Let AI agents act on your behalf</span>
+      Connect Claude Code, Claude Cowork, or another AI agent to Lunicle.
+      It will be able to do exactly what you can — nothing more.</pre>
+
+  <p><strong>State B — on, nothing connected yet.</strong> Reveal the server URL and a ready-to-paste
+  command. Both need a copy button; nobody types these correctly.</p>
+  <pre>  [x] <span class="k">Let AI agents act on your behalf</span>
+
+      Server URL
+      https://lunicle.lunamux.dev/mcp                          [copy]
+
+      Claude Code
+      claude mcp add --transport http lunicle \
+        https://lunicle.lunamux.dev/mcp                        [copy]
+
+      Then run /mcp in Claude Code and choose Authenticate.
+      Other agents: add a custom connector with the server URL above.</pre>
+
+  <p><strong>State C — on, with connections.</strong> The list is the point of the screen.</p>
+  <pre>  <span class="k">Connected agents</span>
+
+    Claude Code        connected 3 days ago · last used 2 min ago    [Revoke]
+    Cursor             connected 1 Jul                · last used 4 Jul  [Revoke]</pre>
+
+  <h3>Behaviour notes for whoever builds it</h3>
+  <ul>
+    <li><strong>The toggle defaults off</strong> and is a real kill switch: while off,
+      <code>/oauth/authorize</code> refuses and <code>/mcp</code> rejects that user's tokens. Turning it
+      off does <em>not</em> delete grants — turning it back on restores them. Deleting is what Revoke is
+      for, and conflating the two would surprise people.</li>
+    <li><strong>Turning it off while agents are connected needs a confirm.</strong> "2 connected agents
+      will stop working. They'll work again if you turn this back on."</li>
+    <li><strong>Revoke is immediate and irreversible.</strong> It kills the whole refresh family, so
+      the agent cannot silently refresh its way back in. The agent must redo the browser flow.</li>
+    <li><strong>Client names come from DCR</strong> and are therefore <em>self-reported by the client</em>.
+      Anyone can register a client called "Claude Code". Escape the name on render — never trust it —
+      and do not let it be the only thing the user sees. This is a real, if minor, spoofing surface.</li>
+    <li><strong>The consent page is the actual security boundary</strong>, not the toggle. The toggle is
+      an affordance and a comfort. Worth being honest about that in review.</li>
+  </ul>
+
+  <div class="warn">
+    <p class="lbl">The one thing the dialog must not do</p>
+    <p>Do not render a "connect" button that starts the OAuth flow from inside Lunicle. The flow is
+    always <em>initiated by the agent</em> — the agent needs to be the OAuth client, hold the PKCE
+    verifier, and receive the code at its own redirect URI. Lunicle's UI only ever <em>displays the
+    URL</em> and <em>lists the result</em>. A "Connect to Claude Code" button cannot exist and would
+    mean someone has misunderstood the direction of the protocol.</p>
+  </div>
+
+  <h3>Wire types — add to <code>clientServer/…/clientserver/</code></h3>
+  <pre><span class="k">@Serializable</span> data class McpState(
+      val isEnabled: Boolean = false,
+      val serverUrl: String,                       <span class="c">// absolute, derived from serverOrigin()</span>
+      val connections: List&lt;McpConnection&gt; = emptyList(),
+  )
+
+  <span class="k">@Serializable</span> data class McpConnection(
+      val clientId: String,
+      val clientName: String,                      <span class="c">// self-reported at DCR — escape on render</span>
+      val connectedAt: Long,
+      val lastUsedAt: Long?,
+  )</pre>
+
+  <p>New routes in <code>ApiRoutes</code>, all session-cookie authenticated like every other
+  <code>/api</code> route:</p>
+  <table>
+    <thead><tr><th>Route</th><th>Verb</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td><code>/api/mcp</code></td><td>GET</td><td>The caller's <code>McpState</code>.</td></tr>
+      <tr><td><code>/api/mcp/enabled</code></td><td>POST</td><td>Set the toggle. Returns the new <code>McpState</code>.</td></tr>
+      <tr><td><code>/api/mcp/connections/{clientId}</code></td><td>DELETE</td><td>Revoke one agent. Returns the new <code>McpState</code>.</td></tr>
+    </tbody>
+  </table>
+  <p>Each returns the whole <code>McpState</code> rather than a fragment, matching how
+  <code>SESSION</code> and <code>SIGN_OUT</code> already both return a full <code>SessionState</code>.
+  The client re-renders from one object and never has to merge.</p>
+</section>
+
+<!-- ═══════════════════════════ SCHEMA ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§5</span> Schema</h2>
+  <p class="subtitle">Five new tables and one new column. Framnaflow's are Firestore documents; ours are
+  SQLDelight, which is strictly better here — <code>consume()</code> and <code>rotateRefresh()</code> are
+  read-then-delete races in Firestore, and transactions on a serialized dispatcher for us.</p>
+
+  <div class="warn">
+    <p class="lbl">Migration mechanics — get this right or the build fails confusingly</p>
+    <p>Current schema version is <strong>3</strong> (<code>databases/1.db</code>, <code>2.db</code>,
+    <code>3.db</code> are committed; <code>1.sqm</code> and <code>2.sqm</code> exist). So this work adds
+    <code>3.sqm</code> and generates <code>databases/4.db</code>. <code>MigrationTest.kt</code> is what
+    verifies the two agree — SQLDelight's own <code>verifyMigrations</code> is deliberately off, and
+    <code>server/build.gradle.kts</code> explains at length why. Run the test.</p>
+  </div>
+
+  <h3>The tables</h3>
+  <pre><span class="k">oauth_clients</span>
+    client_id      TEXT PRIMARY KEY    <span class="c">-- "lun_client_" + 16 random bytes hex</span>
+    client_name    TEXT NOT NULL       <span class="c">-- self-reported at DCR. Never trusted.</span>
+    grant_types    TEXT NOT NULL       <span class="c">-- space-separated</span>
+    created_at     INTEGER NOT NULL
+    last_used_at   INTEGER NOT NULL
+
+<span class="k">oauth_client_redirect_uris</span>              <span class="c">-- child table, not a JSON blob: matches house style,</span>
+    client_id      TEXT NOT NULL       <span class="c">-- and the exact-match lookup in §8 is a real query.</span>
+    redirect_uri   TEXT NOT NULL
+    PRIMARY KEY (client_id, redirect_uri)
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+
+<span class="k">oauth_login_state</span>                       <span class="c">-- the durable twin of AuthRoutes.kt's PendingGitHubAuths</span>
+    id             TEXT PRIMARY KEY    <span class="c">-- "ls_" + random</span>
+    client_id      TEXT NOT NULL
+    redirect_uri   TEXT NOT NULL
+    code_challenge TEXT NOT NULL
+    resource       TEXT NOT NULL       <span class="c">-- RFC 8707; carried through to the token</span>
+    client_state   TEXT NOT NULL       <span class="c">-- the agent's own `state`, echoed back verbatim</span>
+    scope          TEXT NOT NULL
+    user_id        INTEGER             <span class="c">-- null until sign-in completes</span>
+    expires_at     INTEGER NOT NULL    <span class="c">-- 10 min: spans sign-in + consent</span>
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+    FOREIGN KEY (user_id)   REFERENCES users(id) ON DELETE CASCADE
+
+<span class="k">oauth_auth_codes</span>
+    code_hash      TEXT PRIMARY KEY    <span class="c">-- SHA-256(code). The raw code is never stored.</span>
+    user_id        INTEGER NOT NULL
+    client_id      TEXT NOT NULL
+    redirect_uri   TEXT NOT NULL
+    code_challenge TEXT NOT NULL
+    resource       TEXT NOT NULL
+    scope          TEXT NOT NULL
+    expires_at     INTEGER NOT NULL    <span class="c">-- 2 min</span>
+    FOREIGN KEY (user_id)   REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+
+<span class="k">oauth_tokens</span>
+    token_hash     TEXT PRIMARY KEY    <span class="c">-- SHA-256(token)</span>
+    user_id        INTEGER NOT NULL
+    client_id      TEXT NOT NULL
+    type           TEXT NOT NULL       <span class="c">-- "access" | "refresh"</span>
+    scope          TEXT NOT NULL
+    resource       TEXT NOT NULL
+    family_id      TEXT NOT NULL       <span class="c">-- see the reuse-detection note below</span>
+    consumed       INTEGER NOT NULL DEFAULT 0
+    created_at     INTEGER NOT NULL
+    expires_at     INTEGER NOT NULL    <span class="c">-- access: 60 min. refresh: 30 days.</span>
+    FOREIGN KEY (user_id)   REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE</pre>
+
+  <p>Plus one column on <code>users</code>, for the toggle:</p>
+  <pre>  ALTER TABLE users ADD COLUMN mcp_enabled INTEGER NOT NULL DEFAULT 0;</pre>
+
+  <p>Every <code>ON DELETE CASCADE</code> above is load-bearing and works only because
+  <code>Database.kt</code> sets <code>foreign_keys</code> as a connection <em>property</em> and
+  <code>verifyPragmas()</code> refuses to start otherwise. Deleting a user must not leave live tokens
+  pointing at nobody. Read that file's preamble before assuming a cascade works.</p>
+
+  <h3>Refresh families and reuse detection</h3>
+  <p>Port this exactly (<code>OAuthRepositories.kt:245</code>). Every access+refresh pair shares a
+  <code>family_id</code>. Rotating a refresh token marks the old one <code>consumed</code> and issues a
+  new pair <em>in the same family</em>. If an already-consumed refresh token is ever presented again,
+  the only explanation is theft — <strong>revoke the entire family</strong> and log it. It is about
+  fifteen lines and it is the best security property in the design.</p>
+
+  <h3>Housekeeping</h3>
+  <p>Two mechanisms, and they are not the same one.</p>
+  <ul>
+    <li><strong>Expiry is checked on read.</strong> Non-negotiable, and this is where we depart from
+      <code>SessionStore</code>. <code>Sessions.kt</code> candidly documents that <code>lookup</code>
+      does <em>not</em> check expiry and that an old session stays usable until a restart — "the next
+      thing to fix if sessions ever carry more than a user id." A token that outlives its advertised
+      <code>expires_in</code> while sitting in a file on a laptop is that bug with teeth. Put
+      <code>expires_at &gt; ?</code> in the query.</li>
+    <li><strong>Sweeping is startup housekeeping only.</strong> Follow the existing convention: add the
+      code/token/login-state sweeps to the same <code>launch{}</code> in <code>Application.module</code>
+      that already calls <code>sessions.deleteExpired()</code>. Framnaflow runs a 6-hourly reaper
+      (<code>Application.kt:392</code>) because Cloud Run instances are long-lived; Railway replaces our
+      container on every deploy, and — critically — because expiry is checked on read, a missed sweep
+      is a disk-space question, never a security one.</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════ ENDPOINTS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§6</span> Endpoints</h2>
+  <p class="subtitle">All of the OAuth routes are unauthenticated by design. Security rests on PKCE,
+  exact redirect-URI matching, a real Lunicle sign-in, and the consent click.</p>
+
+  <table>
+    <thead><tr><th>Route</th><th>Verb</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>/.well-known/oauth-protected-resource</code></td><td>GET</td>
+        <td rowspan="2">RFC 9728. Names the AS. <strong>Serve at both paths</strong> — clients probe differently.</td></tr>
+      <tr><td><code>/.well-known/oauth-protected-resource/mcp</code></td><td>GET</td></tr>
+      <tr><td><code>/.well-known/oauth-authorization-server</code></td><td>GET</td>
+        <td rowspan="3">RFC 8414. Same body from all three. The <code>openid-configuration</code> alias
+          costs one line and saves a client that only speaks OIDC discovery.</td></tr>
+      <tr><td><code>/.well-known/oauth-authorization-server/mcp</code></td><td>GET</td></tr>
+      <tr><td><code>/.well-known/openid-configuration</code></td><td>GET</td></tr>
+      <tr><td><code>/oauth/register</code></td><td>POST</td><td>RFC 7591 DCR. Unauthenticated — see §8.</td></tr>
+      <tr><td><code>/oauth/authorize</code></td><td>GET</td><td>Session cookie → consent, or sign-in → consent.</td></tr>
+      <tr><td><code>/oauth/consent</code></td><td>POST</td><td>Approve/deny. Issues the code.</td></tr>
+      <tr><td><code>/oauth/token</code></td><td>POST</td><td><code>authorization_code</code> + <code>refresh_token</code> grants.</td></tr>
+      <tr><td><code>/oauth/revoke</code></td><td>POST</td><td>RFC 7009. <strong>Always 200</strong>, even for an unknown token.</td></tr>
+      <tr><td><code>/mcp</code></td><td>POST</td><td>The JSON-RPC endpoint. Stateless.</td></tr>
+      <tr><td><code>/mcp</code></td><td>GET</td><td>405. <strong>See §8 — this one is a trap.</strong></td></tr>
+    </tbody>
+  </table>
+
+  <p>Metadata bodies: copy <code>OAuthServer.kt:63–88</code> field for field, substituting Lunicle's
+  paths. Note <code>token_endpoint_auth_methods_supported: ["none"]</code> — every MCP client is a
+  public client; there are no client secrets anywhere in this design.</p>
+
+  <div class="note">
+    <p class="lbl">Deriving the issuer</p>
+    <p>Framnaflow re-implements base-URL resolution in two files
+    (<code>OAuthServer.kt:31</code>, <code>McpServer.kt:110</code>). <strong>Do not copy that.</strong>
+    Lunicle already has <code>ApplicationCall.serverOrigin()</code> in <code>AuthRoutes.kt</code>, and
+    it is better — it handles <code>X-Forwarded-Proto</code> and takes the authority verbatim from the
+    <code>Host</code> header rather than recomposing scheme + host + port. Read its comment: recomposing
+    yields <code>https://lunicle.lunamux.dev:80</code> in production, and no local run can reproduce
+    that. Promote <code>serverOrigin()</code> to <code>internal</code> and use it everywhere. The
+    <code>issuer</code> in the metadata and the <code>resource</code> in the token must agree byte for
+    byte, so there must be exactly one function that computes them.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ TOOLS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§7</span> The tools</h2>
+  <p class="subtitle">Each maps 1:1 onto a route in <code>BoardRoutes.kt</code>. No new capability — the
+  MCP surface is a second front door onto code that has already been reasoned about.</p>
+
+  <table>
+    <thead><tr><th>Tool</th><th>Maps to</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td><code>list_projects</code></td><td><code>GET /api/projects</code></td><td><code>canReadProject</code> filter</td></tr>
+      <tr><td><code>get_board</code></td><td><code>GET /api/projects/{id}/board</code></td><td><code>canReadProject</code></td></tr>
+      <tr><td><code>get_issue</code></td><td><code>GET /api/issues/{id}</code></td><td><code>canReadProject</code></td></tr>
+      <tr><td><code>create_issue</code></td><td><code>POST</code> + <code>PUT /api/issues/{id}</code></td><td><code>canCreateIssue</code></td></tr>
+      <tr><td><code>update_issue</code></td><td><code>PUT /api/issues/{id}</code></td><td><code>canEditIssue</code></td></tr>
+      <tr><td><code>move_issue</code></td><td><code>POST /api/issues/{id}/status</code></td><td><code>canEditIssue</code></td></tr>
+      <tr><td><code>add_comment</code></td><td><code>POST</code> + <code>PUT /api/comments/{id}</code></td><td><code>canComment</code></td></tr>
+    </tbody>
+  </table>
+
+  <p><code>create_issue</code> and <code>add_comment</code> both hide a two-step draft dance in the HTTP
+  API (create hidden draft → publish). The tool must present that as one call — an agent should not have
+  to know about drafts, and a half-created draft left behind by an agent that stopped thinking is
+  litter. One tool call, both steps, or neither.</p>
+
+  <h3>The <code>instructions</code> field is not optional</h3>
+  <p><code>McpServer.kt:242</code> returns a large <code>instructions</code> string in the
+  <code>initialize</code> response, and it is worth understanding what that does: <strong>it lands in
+  the agent's system prompt.</strong> It is how an agent knows what a Lunicle project <em>is</em>,
+  that boards have statuses, that issues carry labels and components, and what good use looks like.
+  Cross-cutting orientation goes there; per-tool mechanics go in tool descriptions. Framnaflow's is 50
+  lines and earns every one.</p>
+</section>
+
+<!-- ═══════════════════════════ TRAPS ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§8</span> Traps</h2>
+  <p class="subtitle">Two of these are bugs Framnaflow already paid for. One is a correction to an
+  earlier draft of this plan. The rest are ordinary.</p>
+
+  <div class="stop">
+    <p class="lbl">1 — GET /mcp must bypass ContentNegotiation, or every client fails to connect</p>
+    <p>Read <code>McpServer.kt:128</code>. The <code>GET /mcp</code> handler returns 405 via
+    <code>respondText</code> — <strong>not</strong> <code>respond(status, body)</code> — deliberately.
+    When an MCP client opens the optional SSE stream it sends <code>Accept: text/event-stream</code>.
+    Negotiating a JSON body against that Accept produces <strong>406</strong>, and clients treat 406 as
+    a fatal connection error rather than "this optional stream isn't offered." A plain 405 tells the
+    client to carry on.</p>
+    <p>Lunicle installs <code>ContentNegotiation { json() }</code> at <code>Application.kt:139</code>.
+    <strong>It will hit this exactly.</strong> The symptom is "the server doesn't work in Cursor" with
+    nothing useful in the log.</p>
+  </div>
+
+  <div class="stop">
+    <p class="lbl">2 — Serve the well-known documents at every path clients probe</p>
+    <p><code>OAuthServer.kt:90–94</code> registers five discovery routes, not two. Different clients
+    append <code>/mcp</code> to the well-known path, or ask for
+    <code>openid-configuration</code> instead. Each alias is one line. Skipping them produces a client
+    that silently cannot discover the AS, which looks identical to the server being down.</p>
+  </div>
+
+  <div class="warn">
+    <p class="lbl">3 — Correction: the loopback-port problem is not real</p>
+    <p>An earlier draft warned that exact <code>redirect_uri</code> matching would break Claude Code
+    because its callback port varies, and advised matching scheme/host/path while ignoring the port.
+    <strong>That was wrong.</strong> Framnaflow exact-matches against the URIs the client registered via
+    DCR (<code>OAuthServer.kt:139</code>) and it works, because the client registers its actual redirect
+    URI before ever using it. <code>isAllowedRedirectUri</code> (<code>OAuthServer.kt:49</code>) only
+    gates the <em>shape</em> at registration time: https, <code>http://localhost</code>,
+    <code>http://127.0.0.1</code>, or a custom app scheme like <code>cursor://</code>. Do exact matching.
+    Do not invent port-insensitive comparison — it would be a real weakening for no gain.</p>
+  </div>
+
+  <div class="warn">
+    <p class="lbl">4 — Validate the client and redirect_uri BEFORE redirecting anywhere</p>
+    <p><code>OAuthServer.kt:137</code> makes the ordering explicit, and it matters: if
+    <code>client_id</code> or <code>redirect_uri</code> is bad you must render a plain error page, not
+    redirect. Redirecting an error to an unvalidated <code>redirect_uri</code> is an open redirector.
+    Only once the URI is confirmed to be one this client registered may errors be sent there.</p>
+  </div>
+
+  <div class="warn">
+    <p class="lbl">5 — POST /oauth/register is unauthenticated, on a half-gigabyte volume</p>
+    <p>That is by design — it is what lets Claude Code self-register. It also means anyone on the
+    internet can write rows to <code>oauth_clients</code>. Rate-limit it, and sweep registrations that
+    never completed an authorization. Framnaflow runs on Cloud Run and does not worry; Lunicle's volume
+    has a trial ceiling and <code>Sessions.kt</code>'s preamble already worries about exactly this class
+    of unbounded growth.</p>
+  </div>
+
+  <div class="note">
+    <p class="lbl">6 — Things that fall out for free (notice them, don't rebuild them)</p>
+    <p><strong>Role changes propagate instantly.</strong> Because every request re-derives permissions
+    through <code>AccessControl</code> rather than baking them into the token, an admin removing
+    someone's role immediately narrows their agent too. No token invalidation needed.</p>
+    <p><strong>Revocation is instant</strong> because <code>/mcp</code> is stateless — every POST is
+    authenticated independently, so there is no session to outlive a deleted row.</p>
+    <p><strong>Re-check on refresh.</strong> One thing that does <em>not</em> fall out: mirror
+    <code>OAuthServer.kt:291</code> and re-verify at rotation that the user still exists and still has
+    <code>mcp_enabled</code>. Otherwise a 30-day refresh token outlives the toggle.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STAGES ═══════════════════════════ -->
+<section class="stage">
+  <h2><span class="num">§9</span> Stages</h2>
+  <p class="subtitle">Four, each independently verifiable. Do not start the next until the previous one
+  is observably working — this is a protocol, and protocols fail silently.</p>
+
+  <h3>Stage 1 — the transport, with no OAuth at all</h3>
+  <p><code>POST /mcp</code>, the JSON-RPC dispatch (<code>initialize</code>, <code>ping</code>,
+  <code>tools/list</code>, <code>tools/call</code>), the <code>GET</code> → 405 handler, and two
+  read-only tools (<code>list_projects</code>, <code>get_board</code>). Authenticate with a hardcoded
+  token read from a system property. This proves the transport and the tool layer before any OAuth
+  exists to confuse the diagnosis.</p>
+  <div class="exit">
+    <p class="lbl">Exit</p>
+    <p><code>claude mcp add --transport http lunicle http://localhost:8080/mcp</code> with the token in a
+    header, and <code>/mcp</code> in Claude Code lists two tools and calls them.</p>
+  </div>
+
+  <h3>Stage 2 — the authorization server</h3>
+  <p>Schema (<code>3.sqm</code> + <code>4.db</code>), the four stores, discovery documents, DCR,
+  <code>/authorize</code> with cookie reuse, the consent page, <code>/token</code> with PKCE, refresh
+  rotation with family reuse detection, and revocation. Delete the hardcoded token from Stage 1.</p>
+  <div class="exit">
+    <p class="lbl">Exit</p>
+    <p>Add the server by URL only, with no secret anywhere. <code>/mcp</code> → Authenticate → a browser
+    opens → consent → tools work. Then: restart the server and confirm the agent is still connected
+    (persistence), and delete the token row and confirm the next call 401s (statelessness).</p>
+  </div>
+
+  <h3>Stage 3 — the Connections section</h3>
+  <p>The <code>mcp_enabled</code> column, the three <code>/api/mcp</code> routes, the wire types, and the
+  settings section described in §4. This is where the other agent's dialog work lands.</p>
+  <div class="exit">
+    <p class="lbl">Exit</p>
+    <p>Connect an agent, see it appear in the list by name, revoke it, watch the very next tool call
+    401. Toggle off with a live connection and confirm the confirm dialog, then that the agent stops,
+    then that toggling back on restores it without re-consent.</p>
+  </div>
+
+  <h3>Stage 4 — write tools</h3>
+  <p><code>create_issue</code>, <code>update_issue</code>, <code>move_issue</code>,
+  <code>add_comment</code>, and the <code>instructions</code> block. Then <code>docs/mcp-setup.html</code>
+  for users, modelled on Framnaflow's <code>docs/mcp-server-setup.md</code>.</p>
+  <div class="exit">
+    <p class="lbl">Exit</p>
+    <p>The real test, and it must be run deliberately: sign in as a <strong>non-admin with no roles</strong>,
+    connect an agent, and confirm every write tool returns a clean permission error rather than working.
+    Then grant <code>create_issue</code> and confirm exactly that one starts working. If an agent can do
+    something its user cannot, the entire premise of this document has failed, and it will have failed
+    quietly.</p>
+  </div>
+</section>
+
+<footer>
+  <p>Reference implementation: <code>/Users/soderbjorn/repo/framnaflow/main</code> — see
+  <code>server/…/oauth/OAuthServer.kt</code>, <code>server/…/repository/OAuthRepositories.kt</code>,
+  <code>server/…/mcp/McpServer.kt</code>, and <code>docs/mcp-server-setup.md</code>.</p>
+  <p>Spec: <a href="https://modelcontextprotocol.io/specification/draft/basic/authorization">MCP
+  Authorization</a> — OAuth 2.1, RFC 9728 (protected resource metadata), RFC 8414 (AS metadata),
+  RFC 7591 (DCR), RFC 8707 (resource indicators), RFC 7009 (revocation). Note that RFC 7591 DCR is now
+  formally deprecated in favour of Client ID Metadata Documents, and retained for compatibility — it
+  remains the path shipping clients actually take, and it is what Framnaflow implements. CIMD is a
+  later addition, not a Stage 2 concern.</p>
+</footer>
+
+</div>
+</body>
+</html>

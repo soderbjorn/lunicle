@@ -3,6 +3,7 @@ kotlin = "2.3.20"
 ktor = "3.4.1"
 kotlinx-coroutines = "1.10.2"
 kotlinx-serialization = "1.9.0"
+kotlinx-datetime = "0.7.0"
 logback = "1.5.32"
 sqldelight = "2.1.0"
 
@@ -11,6 +12,11 @@ kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotl
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+# Multiplatform date/time. Here so the view models can turn an epoch millis into
+# the sentence the view shows — the alternative was `Date(ms).toLocaleString()`
+# in the JS view, which is a label decided outside a view model and would have to
+# be written a second time for iOS. See client/…/Dates.kt.
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
 logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 ktor-serverCore = { module = "io.ktor:ktor-server-core-jvm", version.ref = "ktor" }
 ktor-serverNetty = { module = "io.ktor:ktor-server-netty-jvm", version.ref = "ktor" }

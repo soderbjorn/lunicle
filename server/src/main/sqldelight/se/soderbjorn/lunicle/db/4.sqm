@@ -1,0 +1,25 @@
+-- Schema 4 → 5. A manual rank for the cards inside one board group.
+--
+-- Preserves data, as everything after 1.sqm must. This one preserves it the easy
+-- way: it adds nothing but a column with a default.
+--
+-- ── Why this one does NOT rebuild `issues` ──────────────────────────────────
+--
+-- 2.sqm and 3.sqm both did, and both had to: they added columns with COMPOSITE
+-- foreign keys, which ALTER TABLE cannot express. `sort_order` references
+-- nothing. It is a plain integer with a non-null default, which is exactly the
+-- shape SQLite allows to be added in place — so there is no new table, no copy,
+-- no DROP, and therefore none of the cascade danger that forced the
+-- foreign-keys-off migration path in the first place. See Database.kt.
+--
+-- (It still runs on that connection, because openDatabase does the schema work
+-- there unconditionally. It simply does not need it.)
+--
+-- ── Why every row starts at 0 ───────────────────────────────────────────────
+--
+-- 0 means "never ranked", and a group in which everything is 0 sorts by
+-- `updated_at DESC` alone — which is precisely what every board did before this
+-- column existed. So this migration changes the order of nothing: it makes a new
+-- order *possible* without imposing one. The first drag on a group is what gives
+-- that group ranks 1..n. See Issues.sq's sort_order.
+ALTER TABLE issues ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;

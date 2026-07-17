@@ -20,7 +20,9 @@
   --border-hi: rgba(77, 200, 245, .45);
   --glow:      rgba(77, 200, 245, .35);
   --red:       #ff5f57;
-  --head:      #eaf3fb;
+  --yellow:    #febc2e;   /* validation — "you have not filled this in yet" */
+  --head:      #eaf3fb;   /* headings and field text */
+  --body:      #cfe0ee;   /* running text: issue descriptions, comments, cards */
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
 
@@ -41,158 +43,1512 @@ body {
 
 html { background: var(--bg); }
 
-/* Fill the frame and centre the panel in it. min-height rather than height so
-   a short viewport scrolls instead of clipping the panel. */
+/* ============================================================
+   Shell — the board, with the footer stuck under it.
+
+   One column. There was a sidebar on the right holding sign-in;
+   sign-in is a button in the top bar now, and a 260px column
+   holding nothing else was 260px of the board's width spent on
+   a border.
+
+   Rows rather than a plain block so the footer can be pinned to
+   the bottom of a SHORT page without being pinned over a long
+   one: `1fr auto` makes .main absorb the slack, so the footer is
+   pushed to the viewport's bottom when there is little content
+   and sits after the board when there is a lot.
+   ============================================================ */
+
 #app {
   min-height: 100vh;
   min-height: 100dvh;
+}
+
+.layout {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.main {
+  padding: 20px 24px 20px;
+  min-width: 0; /* without this a wide board stretches the grid track instead of scrolling */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Sticky, not fixed. `fixed` would take it out of flow and let the board scroll
+   underneath it — which means the last row of every column ends up behind the
+   footer, reachable only by a scroll that has nowhere left to go. Sticky keeps
+   it in the grid, so it occupies real height that the board is laid out around,
+   and still pins to the viewport's bottom edge while you scroll. */
+.footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 5; /* over the board, under .modal-backdrop's 10 */
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 32px 20px;
-}
-
-.counter {
+  gap: 8px;
+  padding: 10px 24px;
+  border-top: 1px solid var(--border);
+  /* Opaque, not a tint: the board scrolls under it and a translucent footer
+     would show cards sliding through the wordmark. */
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 40px 44px;
-  text-align: center;
-  max-width: 420px;
-  width: 100%;
 }
 
-.counter-eyebrow {
+.footer-name {
   color: var(--green-dim);
-  font-size: 12px;
-  letter-spacing: .14em;
+  font-size: 11px;
+  letter-spacing: .08em;
   text-transform: uppercase;
-  margin: 0 0 20px;
-}
-
-.counter-value {
-  color: var(--green-hi);
-  text-shadow: 0 0 18px var(--glow);
-  font-size: 72px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums; /* the digits must not jitter on change */
-  margin: 0 0 24px;
-}
-
-.counter-btn {
-  font-family: inherit;
-  font-size: 14px;
-  color: var(--green-hi);
-  background: var(--panel-2);
-  border: 1px solid var(--border-hi);
-  border-radius: 4px;
-  padding: 10px 22px;
-  cursor: pointer;
-  transition: background .15s, box-shadow .15s;
-}
-
-.counter-btn:hover:not(:disabled) {
-  background: #10203a;
-  box-shadow: 0 0 14px var(--glow);
-}
-
-.counter-btn:disabled {
-  opacity: .5;
-  cursor: default;
-}
-
-.counter-note {
-  color: var(--green-dim);
-  font-size: 12px;
-  margin: 22px 0 0;
-}
-
-/* Reserves no space when empty, so the panel does not jump when an error
-   appears and clears. */
-.counter-error {
-  color: var(--red);
-  font-size: 12px;
-  margin: 12px 0 0;
-  min-height: 1.6em;
-}
-
-/* Why the button is inert, shown only while signed out. Same min-height
-   reservation as .counter-error and for the same reason: this text appears and
-   disappears on sign-in, and without it the panel jumps. */
-.counter-prompt {
-  color: var(--green-dim);
-  font-size: 12px;
-  margin: 12px 0 0;
-  min-height: 1.6em;
-}
-
-/* Signed out: the counter is visible but plainly not yours yet.
-
-   Dimming the value and not the whole panel is deliberate — the sign-in
-   buttons live inside .counter (see the sign-in row below), and dimming those
-   would mute the one control that is actually actionable. */
-.counter-signed-out .counter-value {
-  color: var(--green-dim);
-  text-shadow: none;
-  opacity: .55;
 }
 
 /* ============================================================
-   Sign-in row — Stage 2.
-
-   Sits inside .counter, below the note, separated by a rule: the
-   identity belongs to the same card as the thing it owns, and a
-   second floating panel would imply the two are unrelated.
+   Top bar
    ============================================================ */
 
-.signin {
-  border-top: 1px solid var(--border);
-  margin: 24px 0 0;
-  padding: 20px 0 0;
-  /* Reserve the row's height before the first session fetch returns. The view
-     toggles visibility rather than display for the same reason: a card that
-     grows a centimetre once the server answers reads as a glitch. */
-  min-height: 76px;
+/* A grid, not a flex row with spacers. "New issue" is meant to be CENTRED, and
+   two flex:1 spacers only centre it when the stuff either side happens to weigh
+   the same — the picker is 200px+ and the account corner is a name of unknown
+   length, so it would sit centred only by coincidence and drift every time the
+   name changed. `1fr auto 1fr` centres the middle track against the BAR, which
+   is what centred means here, and it holds regardless of what is beside it. */
+.topbar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 18px;
 }
 
-.signin-greeting {
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0; /* or a long project name pushes the centre track off-centre */
+}
+
+/* The centre track's wrapper, and it must ALWAYS be in the DOM — see MainView's
+   comment where it is built. "New issue" is hidden for anyone without create
+   rights, and a `display: none` grid item is removed from the grid rather than
+   merely made invisible: with the button as the middle child, hiding it left two
+   items for three tracks and the account corner slid into the centre of the bar.
+   Empty, this collapses to zero width and the `auto` track vanishes, which is
+   what an absent button should look like. */
+.topbar-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Pushed to the bar's right edge. Its 1fr track is as wide as the left one, so
+   without this the account would sit at the track's start — floating in the
+   middle-right with a gap after it. */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* The one native form control we keep. `appearance: none` is load-bearing:
+   without it the platform paints its own arrow *and* its own focus ring (a
+   system-blue halo, in nobody's palette but the OS's) over the top of these
+   rules, so the closed picker read as a stray macOS control dropped into the
+   terminal. Stripping the native look means supplying the arrow ourselves —
+   hence the inline SVG below, in --green-hi, and the right padding that
+   reserves room for it.
+
+   The arrow's inset and the right padding are one measurement made twice, and
+   they have to agree: `background-position` decides where the arrow sits and
+   `padding-right` decides where the text stops, so a padding smaller than
+   inset + arrow width lets a long project name run under the arrow. Keep
+   padding-right >= 14 + 12 + a few px of air. */
+/* Deliberately no background-COLOR here, only the arrow image. The two dropdowns
+   live in different surfaces and are meant to: .picker sits in the top bar on
+   --panel-2, and select.field sits in a modal beside text inputs on --bg. This
+   selector out-specifies plain `.field`, so a background-color here would win
+   over .field's and paint the status dropdown a shade its neighbours are not.
+   Each sets its own below; only the arrow is shared. */
+.picker,
+select.field {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
   color: var(--head);
-  font-size: 13px;
-  margin: 0 0 14px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2366d9ff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px 8px;
+  cursor: pointer;
 }
 
-.signin-btn {
+.picker {
+  font-size: 14px;
+  background-color: var(--panel-2);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  padding: 8px 38px 8px 12px;
+  min-width: 200px;
+}
+
+/* The status dropdown in the issue dialog. It is a <select> with .field, so it
+   used to get the text-input styling and the *platform's* arrow — the one
+   `appearance: none` exists to remove — jammed against its right edge. The
+   shared rule above now covers both; this only has to reserve the room, since
+   .field brings its own border, radius and padding. */
+select.field {
+  padding-right: 38px;
+}
+
+.picker:focus { outline: none; border-color: var(--green-hi); box-shadow: 0 0 10px var(--glow); }
+
+/* The open popup is drawn by the browser, not by us, and only these two
+   properties reliably cross into it. Without them the list falls back to a
+   light popup — white rows against everything else here being near-black. */
+.picker option {
+  background: var(--panel-2);
+  color: var(--head);
+}
+
+.picker option:disabled { color: var(--green-dim); }
+
+.icon-btn {
+  font-family: inherit;
+  line-height: 1;
+  color: var(--green-hi);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.icon-btn:hover { box-shadow: 0 0 12px var(--glow); }
+
+/* ============================================================
+   Icons — the hand-drawn SVGs. See Icons.kt.
+
+   The span is what gets sized; the svg fills it. Sizing the svg
+   from outside means every caller repeats a width AND a height,
+   and one of them eventually gets forgotten.
+
+   `stroke: currentColor` in the markup is the whole trick: an
+   icon takes the colour of the button around it, so hover,
+   :disabled and the palette all reach it with no rules here.
+   ============================================================ */
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none; /* or a flex parent squashes the icon before it wraps the text */
+}
+
+.icon > svg {
+  width: 100%;
+  height: 100%;
+  display: block; /* an inline svg sits on the text baseline and adds descender space */
+}
+
+/* 20 in a 36px button. The emoji this replaced was set at font-size 15px and
+   drew nothing like 15px — a glyph's ink fills whatever fraction of its em box
+   the font decided, which is why the cogwheel read as small in a box that was
+   already the right size. A vector has no such gap: 20px of viewBox is 20px of
+   drawing. */
+.icon-gear { width: 20px; height: 20px; }
+.icon-profile { width: 22px; height: 22px; }
+.icon-logo { width: 18px; height: 18px; color: var(--green-hi); }
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+
+/* The centring is load-bearing, not decoration. A button's text centres itself
+   only while the button is a *button* box; the moment the views show one with
+   `visible(displayValue = "inline-flex")` it becomes a flex container, and a
+   flex container ignores text-align and packs its line box at flex-start. With
+   .modal-footer's min-width the box is wider than the word, so "OK" sat left of
+   centre while "Cancel" — never toggled, so never inline-flex — stayed centred.
+   Declaring the flex box here means every .btn is the same box whether or not a
+   view has toggled it, and justify-content is what centres a flex line. */
+.btn {
   font-family: inherit;
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--green-hi);
   background: var(--panel-2);
   border: 1px solid var(--border-hi);
   border-radius: 4px;
   padding: 9px 16px;
-  margin: 0 4px;
   cursor: pointer;
   transition: background .15s, box-shadow .15s;
 }
 
-.signin-btn:hover:not(:disabled) {
-  background: #10203a;
-  box-shadow: 0 0 14px var(--glow);
-}
+.btn:hover:not(:disabled) { background: #10203a; box-shadow: 0 0 14px var(--glow); }
+.btn:disabled { opacity: .5; cursor: default; }
 
-.signin-btn:disabled {
-  opacity: .5;
-  cursor: default;
-}
+.btn-primary { border-color: var(--green-hi); color: var(--head); }
+.btn-quiet { color: var(--green-dim); border-color: var(--border); }
+.btn-danger { color: var(--red); border-color: rgba(255, 95, 87, .5); }
+.btn-danger:hover:not(:disabled) { background: rgba(255, 95, 87, .12); box-shadow: none; }
+.btn-danger-quiet { color: var(--red); border-color: rgba(255, 95, 87, .3); background: transparent; }
+.btn-danger-quiet:hover:not(:disabled) { background: rgba(255, 95, 87, .1); box-shadow: none; }
 
-/* Sign out is not a call to action — it should be findable, not inviting. */
-.signin-btn-quiet {
+/* A button that reads as a link — for per-comment actions, which must be
+   available without competing with the dialog's real buttons. */
+.link-btn {
+  font-family: inherit;
+  font-size: 11px;
   color: var(--green-dim);
-  border-color: var(--border);
+  background: none;
+  border: none;
+  padding: 0 6px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn:hover { color: var(--green-hi); }
+.link-btn-danger:hover { color: var(--red); }
+
+/* ============================================================
+   Board
+   ============================================================ */
+
+.board {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  /* The columns scroll sideways rather than squeezing. The default board is five
+     statuses and a project can add more, so the count is not ours to bound —
+     and narrowing columns to fit whatever it is makes every card unreadable. */
+  overflow-x: auto;
+  padding-bottom: 20px;
+  flex: 1;
 }
 
-.signin-error {
-  color: var(--red);
-  font-size: 12px;
-  margin: 12px 0 0;
-  min-height: 1.6em;
+/* `flex: 1 1 220px` — grow to share the width, but never shrink below 220px.
+
+   The three parts each do a job, and the middle one is the one worth naming:
+     - grow 1: the columns divide whatever width is left between them, so a wide
+       monitor gets wide columns rather than a 1100px board and a lake of empty
+       space to its right.
+     - shrink 1 with min-width: they may not squeeze past 220px. Without the
+       min-width, `flex-shrink` would happily compress eight columns into a
+       phone's width and every card would be one word per line.
+     - basis 220px: the width they start from, and therefore the width they all
+       agree on before any growing happens.
+
+   Below that floor .board's `overflow-x: auto` takes over and the board scrolls,
+   which is the behaviour that was here before — it is now the fallback rather
+   than the norm. */
+.column {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  min-width: 220px;
+  flex: 1 1 220px;
+  transition: border-color .12s, background .12s;
 }
+
+/* The drop target, while something is over it. Without this, dragging is
+   guesswork — nothing else tells you which column will take the card. */
+.column-drop {
+  border-color: var(--green-hi);
+  background: #0a1524;
+}
+
+.column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.column-name {
+  color: var(--green-hi);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.column-count { color: var(--green-dim); font-size: 11px; }
+
+.column-list { display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
+
+/* The header over each run of cards — a priority's name, or a resolution's in a
+   closing column. See BoardColumn.groups.
+
+   Quieter than .column-name, and that hierarchy is the point: the column head is
+   the thing you navigate by, and a group header that shouted as loudly would make
+   a five-column board read as fifteen. Same uppercase letterspacing so they read
+   as the same *kind* of thing, two steps down in weight.
+
+   The negative top margin pulls each header closer to the cards under it than to
+   the ones above, against .column-list's uniform 8px gap. Without it the header
+   floats equidistant between two groups and stops belonging to either — the
+   oldest bug in list typography. First-child is exempt: there is nothing above
+   it to pull away from. */
+.group-head {
+  margin: 6px 0 -2px;
+  padding: 0 2px;
+  color: var(--green-dim);
+  font-size: 9.5px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.group-head:first-child { margin-top: 0; }
+
+/* The resolution picker's buttons, stacked full width — the same shape as the
+   provider picker's, for the same reason: they are the choice, not a preview of
+   it. See ResolutionDialog. */
+.resolution-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.resolution-choice { width: 100%; padding: 11px 16px; }
+
+.card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  cursor: pointer;
+  transition: border-color .12s;
+}
+
+.card:hover { border-color: var(--border-hi); }
+.card-dragging { opacity: .4; }
+
+/* Where the card will land. A line above or below the card under the pointer,
+   decided by which half of it the pointer is in — see makeReorderTarget.
+
+   An inset box-shadow rather than a border: a border would change the card's
+   height by 2px and nudge every card below it down as the pointer crossed the
+   midpoint, so the list would twitch under the drag. An inset shadow paints
+   inside the existing box and moves nothing.
+
+   Cyan, matching .column-drop's border: both answer "where does this land?", and
+   they are frequently on screen together — the column lights up while a card in
+   it shows the line. */
+.card-drop-before { box-shadow: inset 0 2px 0 0 var(--green-hi); }
+.card-drop-after { box-shadow: inset 0 -2px 0 0 var(--green-hi); }
+
+/* Still clickable — a reader may open it — but it does not offer to move. */
+.card-readonly { cursor: pointer; }
+
+/* Three lines, then an ellipsis. A title is free text and someone will paste a
+   paragraph into one; a card that grows to fit pushes every card below it down
+   and turns the column into a wall.
+
+   `-webkit-line-clamp` with `display: -webkit-box` is the only thing that clamps
+   by LINE rather than by height, and despite the prefix it is not a WebKit
+   quirk — Firefox and Chrome both implement it under these exact names, which is
+   why the prefixed spelling is the portable one here. Clamping by `max-height`
+   instead would cut the fourth line in half rather than removing it, and would
+   have to be kept in step with line-height by hand.
+
+   The full title is in the tooltip and in the issue dialog, so nothing is
+   unreachable — see .card-title's title attribute in MainView. */
+.card-title {
+  margin: 0;
+  color: var(--body);
+  font-size: 12.5px;
+  line-height: 1.45;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+.tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--green-dim);
+}
+
+.tag-label { border-color: rgba(77, 200, 245, .4); color: var(--green-hi); }
+.tag-component { border-color: rgba(95, 168, 255, .4); color: #5fa8ff; }
+.tag-status { border-color: var(--border-hi); color: var(--green-hi); }
+/* Yellow, alone among the tags. It is the one that carries urgency, and the
+   palette already uses --yellow for "pay attention" (see .field-validation). */
+.tag-priority { border-color: rgba(240, 200, 90, .4); color: var(--yellow); }
+/* Dimmer than the rest. A resolution only exists on a closed issue, and a closed
+   issue is finished business — it should not be the brightest thing on the
+   card. */
+.tag-resolution { border-color: var(--border); color: var(--green-dim); }
+
+.board-empty { color: var(--green-dim); font-size: 13px; }
+
+/* ============================================================
+   Modals
+   ============================================================ */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 12, .75);
+  display: flex;
+  justify-content: center;
+  /* flex-start, deliberately, even though the modal is centred — see .modal's
+     `margin: auto` below. */
+  align-items: flex-start;
+  padding: 40px 20px;
+  overflow-y: auto;
+  z-index: 10;
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border-hi);
+  border-radius: 6px;
+  box-shadow: 0 0 40px rgba(0, 0, 0, .6);
+  width: 100%;
+  max-width: 640px;
+  /* Centres vertically, and this is the reason it is not `align-items: center`
+     on the backdrop: a flex item centred that way and taller than the viewport
+     overflows *both* ends, and the top half becomes unreachable — the scroll
+     container will not scroll above its content's start. Auto margins collapse
+     to zero instead of going negative, so a tall modal (the issue dialog, with
+     its 180px description box and a run of comments) pins to the top and
+     scrolls normally, while a short one sits in the middle.
+
+     Position is fixed to the iframe's own viewport, which lunamux-web sizes to
+     exactly the visible area (`.issues iframe { height: 100% }`) rather than
+     letting it grow tall — so "centre" here is the centre of what the visitor
+     is actually looking at, embedded or standalone. */
+  margin: auto;
+}
+
+/* The prose dialogs — an issue with its comments, and a comment being written.
+
+   They differ from the default panel in two ways, and the second is the point:
+   they are WIDER, and they do not GROW. The default panel is fit-content and
+   lets the backdrop scroll, which is right for a form of six fields and wrong
+   for a thread: the panel got taller with every comment, so the title scrolled
+   off the top and the OK button sat somewhere below the fold, and reaching
+   either meant scrolling the whole dialog rather than the thing you were
+   reading.
+
+   Fixed height instead, with the body scrolling inside it. `height` and not
+   `max-height`: at max-height a short issue still produces a short panel, so the
+   dialog changes size as you click between issues — and the buttons move under
+   the cursor. A constant panel is worth more than a snug one here.
+
+   dvh, not vh: on a mobile browser vh counts the URL bar's space even while the
+   bar is covering it, which puts the footer under it. The 80px is the backdrop's
+   40px padding, twice. */
+.modal-large {
+  max-width: 880px;
+  height: calc(100dvh - 80px);
+  /* Beyond this the measure gets unreadable and the buttons end up a long way
+     from the text, on a desktop monitor in particular. */
+  max-height: 860px;
+  /* So .modal-body can be the flex child that takes the slack and scrolls. */
+  display: flex;
+  flex-direction: column;
+}
+
+/* The body is the flex child that takes the slack — but it does NOT scroll.
+   Its children do, and which one depends on the face being shown: the editor's
+   surface while editing, .issue-scroll while reading. See below.
+
+   min-height: 0 is load-bearing, not defensive. A flex item's default
+   `min-height: auto` refuses to shrink below its content, so any overflow-y
+   below this would never engage — the body would size to its whole content and
+   push the footer out of the panel, which is the bug this section fixes. It has
+   to be repeated on every nested flex child for the same reason; that is why it
+   appears four times between here and .editor-surface. */
+.modal-large .modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The issue's identity: title, status, priority, labels. Fixed — it does not
+   scroll away.
+
+   This is the whole point of the three-band split. Before it, the modal body
+   scrolled as one, so typing into a long description pushed the title, the
+   status and the priority off the top of the dialog: the fields describing the
+   thing you were editing were only visible when you were not editing it. */
+.issue-fields { flex: none; }
+
+/* The reading face — rendered description plus the comment thread — scrolling as
+   one. The fields above it stay put. */
+.issue-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Emptying it is not enough. Every child of the reading face hides itself while
+   editing, but the box stays, and `flex: 1` on an empty box still claims its
+   half of the slack next to .editor-host — which is why the editor stopped
+   halfway down the dialog with nothing under it. */
+.modal-body.editing .issue-scroll { display: none; }
+
+/* The editor fills the rest of the dialog while editing, and its SURFACE is what
+   scrolls. The chain of `flex: 1; min-height: 0` from .modal-body down to
+   .editor-surface is what carries the height: break it at any link and the
+   editor either collapses to nothing or grows until the footer is gone. */
+.editor-host {
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-host .editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-host .editor-toolbar { flex: none; }
+
+.editor-host .editor-surface {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Status and priority share a row — but the two faces of the dialog want
+   genuinely different rows, and giving them the same one was a bug worth naming.
+
+   READING is the default here: two tags, side by side, sized to their words. The
+   grid below applied to read mode too, which put "New" in a half-width track and
+   "Normal" marooned at the midpoint of the dialog with a hand's width of nothing
+   between them — two labels pretending to be columns of a table that does not
+   exist. */
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* EDITING wants the grid: two full-width selects sized to their content would
+   jump between "New" and "Ready for development" as the value changed, so the
+   tracks are equal and fixed. */
+/* auto-fit with a floor, not a fixed `1fr 1fr` or `1fr 1fr 1fr`: the row holds
+   two cells or three depending on whether the chosen status demands a resolution,
+   and the resolution cell appears and disappears as the status changes. A fixed
+   three-track grid would leave a hole where it was; a fixed two-track one would
+   wrap it to a second line. This sizes to whatever is actually there, and drops
+   to fewer columns rather than crushing them when the dialog is narrow. */
+/* The row owes its cells the 16px their labels cannot claim: a cell's <label> is
+   its first child, so `.field-label:first-child` zeroes the margin every other
+   label in the dialog uses to stand off the field above it. Without this, STATUS
+   sits on top of the title input. */
+.modal-body.editing .field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+.field-cell { min-width: 0; }
+
+/* Reading, the row is two or three cells of "CAPTION Tag" sitting next to each
+   other, so the space BETWEEN cells has to beat the space inside one — at the
+   8px the row uses by default, "PRIORITY" was as close to the status tag on its
+   left as to the priority tag it names on its right, which is precisely the
+   ambiguity the captions exist to remove. */
+.modal-body:not(.editing) .field-row { gap: 20px; }
+
+/* The read face's answer to .field-label-edit: the <label> above each select
+   names it while editing, this names the tag while reading. Neither is ever
+   visible at the same time as the other. Kept `inline` rather than made a flex
+   row on .field-cell on purpose — the resolution cell's display is driven by an
+   inline style (see render()), which no rule here can outrank. An inline caption
+   next to an inline-block tag flows onto one line inside a plain block cell, so
+   the layout does not depend on the cell's display at all. */
+.tag-caption { display: none; }
+
+.modal-body:not(.editing) .tag-caption {
+  display: inline;
+  margin-right: 7px;
+  color: var(--green-dim);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+/* Against a caption the tag's baseline sits low — it is an inline-block with
+   its own padding, so its baseline is its last line's, not its box's centre. */
+.issue-fields .field-cell .tag { vertical-align: middle; }
+
+/* Sized for a dialog, not for a card. .tag's 10px is right on a board where a
+   card carries four of them and the title is what matters; here they are two of
+   the six facts about the issue you are reading, and they were rendering as
+   fine print. */
+.issue-fields .tag {
+  font-size: 11px;
+  padding: 3px 8px;
+  line-height: 1.5;
+}
+
+/* The label above the FIRST field, which sits directly under the title bar and
+   needs no separation from it.
+
+   `:first-of-type` rather than `:first-child`, because in edit mode the first
+   child is the read-mode <h3> — hidden, but still first — so `:first-child`
+   matched nothing and the gap stayed.
+
+   The `>` is load-bearing and was missing. `:first-of-type` is scoped to an
+   element's own PARENT, not to the ancestor named on the left of the selector, so
+   without the child combinator this also matched the first label inside each
+   `.field-cell` — which is every one of them, since a cell holds exactly one
+   label. STATUS and PRIORITY lost their 16px and sat jammed under the title
+   field. The rule is about one label at the top of the dialog; the combinator is
+   what says so. */
+.issue-fields > label.field-label:first-of-type { margin-top: 0; }
+
+.modal-title {
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  color: var(--head);
+  font-size: 14px;
+  letter-spacing: .04em;
+}
+
+.modal-body { padding: 20px; }
+.modal-message { margin: 0; color: var(--body); font-size: 13px; }
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* A floor, not a fixed width. The footer buttons already share .btn's padding,
+   so they agree on height; what they disagreed on was width, because that came
+   from the text and "OK" is two characters against "Cancel"'s six. The dismissal
+   thereby ended up the bigger target of the pair, which is backwards. A min-width
+   evens the common cases without truncating a longer label like "Delete project",
+   which simply grows past it. */
+.modal-footer .btn { min-width: 92px; }
+
+.modal-footer-spacer { flex: 1; }
+.modal-error { color: var(--red); font-size: 12px; margin: 12px 0 0; }
+
+/* ============================================================
+   Fields
+   ============================================================ */
+
+.field-label {
+  display: block;
+  color: var(--green-dim);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin: 16px 0 6px;
+}
+
+.field-label:first-child { margin-top: 0; }
+
+/* Everything that only belongs in edit mode rides on one class on the body,
+   rather than being toggled element by element — there are six of them, and
+   forgetting one leaves a stray "Components" heading over a read-only issue. */
+.field-label-edit { display: none; }
+.modal-body.editing .field-label-edit { display: block; }
+
+.field {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--head);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 9px 11px;
+}
+
+.field:focus { outline: none; border-color: var(--green-hi); box-shadow: 0 0 10px var(--glow); }
+
+/* Ghost text, and it has to *look* ghosted. Unstyled, Chrome picks its own grey
+   — tuned for a white page, and bright enough against this near-black --bg that
+   a placeholder read as a filled-in value: the project dialog appeared to come
+   pre-filled with "Lunamux" / "LMX". --green-dim is what every other piece of
+   secondary text here uses (.field-hint, .field-label), so an example now reads
+   as an example. */
+.field::placeholder { color: var(--green-dim); opacity: 1; }
+.field-multiline { min-height: 180px; resize: vertical; line-height: 1.6; }
+
+.field-hint { color: var(--green-dim); font-size: 11px; margin: 6px 0 0; }
+.field-validation { color: var(--yellow); font-size: 12px; margin: 12px 0 0; }
+
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 18px 0 0;
+  color: var(--body);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.checkbox { margin: 3px 0 0; accent-color: var(--green-hi); }
+
+/* Label/component pickers. Buttons rather than a multi-select, which is
+   unusable on touch and invisible about what is selected. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.chip {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--green-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.chip-on { color: var(--head); border-color: var(--green-hi); background: #10203a; }
+
+/* ============================================================
+   Editor
+   ============================================================ */
+
+.editor { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-btn {
+  font-family: inherit;
+  font-size: 11px;
+  min-width: 26px;
+  color: var(--green-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.editor-btn:hover { color: var(--green-hi); border-color: var(--border); }
+
+/* The formatting the caret is currently inside. See refreshToolbar().
+
+   This has to out-shout :hover, and it is the same treatment .chip-on uses for
+   the same reason — "this is on" and "your mouse is here" are different claims,
+   and the first one has to survive the second. Filled and bordered rather than
+   only re-coloured: hover already re-colours, so a colour-only "on" state is
+   indistinguishable from hovering, and the button would go back to looking off
+   the moment you moved the mouse to read it. */
+.editor-btn-on {
+  color: var(--head);
+  border-color: var(--green-hi);
+  background: #10203a;
+}
+
+.editor-btn-on:hover { color: var(--head); border-color: var(--green-hi); }
+
+/* The way out of every other button, so it is set apart from the set it undoes.
+   A margin alone would read as a gap rather than as a division, hence the rule.
+
+   The rule is a pseudo-element and NOT the button's own right border, which is
+   what this was first: a border-right in --border, restated at higher
+   specificity so it would survive .editor-btn-on recolouring the other three.
+   That worked exactly as written and looked broken — Plain lights up whenever
+   the caret is in ordinary text, so most of the time it drew three --green-hi
+   edges and one dim one, which does not read as "separator", it reads as a
+   border that got cut off. The divider is not part of the button, so it is not
+   drawn as part of the button. */
+.editor-btn-plain {
+  position: relative;
+  margin-right: 9px;
+}
+
+.editor-btn-plain::after {
+  content: "";
+  position: absolute;
+  /* Centred in the 9px margin: 4px of gap either side of a 1px rule. */
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  /* Short of full height, so it reads as a divider between buttons rather than
+     as an edge belonging to one of them. */
+  height: 60%;
+  border-right: 1px solid var(--border);
+}
+
+/* The toolbar buttons look like what they do — the conventional cue, and the
+   only thing that makes a one-letter button readable. */
+.editor-btn-bold { font-weight: 700; }
+.editor-btn-italic { font-style: italic; }
+.editor-btn-underline { text-decoration: underline; }
+.editor-btn-strike { text-decoration: line-through; }
+
+.editor-btn:disabled { opacity: .4; cursor: default; }
+.editor-btn:disabled:hover { color: var(--green-dim); border-color: transparent; }
+
+/* The editable surface. It carries .markdown too, so what is being typed is
+   drawn by the very same rules that draw the issue once it is saved — which is
+   the entire claim a WYSIWYG editor makes, and it only holds while there is one
+   stylesheet for both. */
+.editor-surface {
+  padding: 12px;
+  min-height: 180px;
+  background: var(--bg);
+  outline: none;
+  overflow-wrap: break-word;
+}
+
+.editor-surface:focus { box-shadow: inset 0 0 0 1px var(--border-hi); }
+
+/* contenteditable has no placeholder attribute, so this draws one. :empty is
+   true only with no child nodes at all, which is exactly the state the surface
+   is in before the first keystroke. */
+.editor-surface:empty::before {
+  content: attr(data-placeholder);
+  color: var(--green-dim);
+  opacity: .6;
+}
+
+.editor-disabled .editor-surface { opacity: .5; }
+
+.editor-link-row {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-link-row .field { flex: 1; }
+
+/* ============================================================
+   Rendered markdown
+
+   Everything in here was produced by renderMarkdown, which emits
+   only tags it built itself. See client/Markdown.kt.
+   ============================================================ */
+
+.markdown { color: var(--body); font-size: 13px; }
+.markdown p { margin: 0 0 10px; }
+.markdown h1, .markdown h2, .markdown h3,
+.markdown h4, .markdown h5, .markdown h6 {
+  color: var(--head);
+  margin: 16px 0 8px;
+  font-size: 14px;
+}
+.markdown h1 { font-size: 18px; }
+.markdown h2 { font-size: 16px; }
+.markdown ul { margin: 0 0 10px; padding-left: 18px; }
+.markdown a { color: var(--green-hi); }
+.markdown code {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: .9em;
+}
+/* An oversized screenshot must not blow out the modal. */
+/* Scaled down to a thumbnail, not shown at whatever size the camera produced.
+
+   A screenshot pasted into an issue is routinely 2000px tall, and at full size it
+   *is* the issue — the description above it and the comments below it are a
+   scroll away in either direction. The height cap is what keeps an image an
+   illustration rather than the page. `width: auto` with `max-height` preserves
+   the aspect ratio; setting both dimensions would squash it.
+
+   The full-size view is a click away — see .lightbox, and Lightbox.kt. That is
+   what makes capping the height honest rather than lossy: nothing is hidden, it
+   is one click away instead of thirty centimetres of scroll. */
+.markdown img {
+  max-width: 100%;
+  max-height: 260px;
+  width: auto;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+  /* An image is inline by default, so it sits on the text baseline and drags a
+     descender's worth of gap under itself — visible as a stray few pixels inside
+     the border. */
+  display: block;
+}
+
+/* Inside the editor a click means "put the caret here", so the cursor must not
+   promise a viewer that deliberately does not open there. See Lightbox.kt. */
+.editor-surface img { cursor: default; }
+
+/* A file that is not an image — a PDF, a zip of logs, a screen recording.
+
+   Drawn as a box rather than as underlined blue text because it is not a link,
+   whatever its markup says: clicking it does not take you anywhere, it puts a
+   file on your disk. Something that looks like a link and behaves like a button
+   is the sort of thing people click once and then never trust again.
+
+   The label already carries the filename and the size — the renderer puts them
+   there, because markdown has nowhere else to keep them; see attachmentMarkdown.
+   So this adds only the one thing the label cannot say, which is what will
+   happen when you click it: the arrow, and the frame around it that says the
+   whole thing is one target.
+
+   `display: inline-flex` and not `block`: the anchor sits inside whatever
+   paragraph the editor dropped it in, and a block-level anchor inside a <p> is
+   invalid markup the browser then re-parents, which moves the caret. */
+.markdown a.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--body);
+  text-decoration: none;
+  font-size: 12px;
+  /* A long filename must not push the dialog wider than the screen. It wraps
+     rather than being clipped: the end of a filename is where the extension is,
+     which is the part a reader is looking for. */
+  overflow-wrap: anywhere;
+}
+
+.markdown a.attachment:hover {
+  border-color: var(--green-hi);
+  color: var(--head);
+}
+
+/* The download arrow, drawn in CSS rather than shipped as an icon: it is two
+   characters, and an <img> here would be a network request — and, in the editor's
+   surface, a second element for the serialiser to have opinions about. ::before
+   is not in the DOM at all, so it cannot end up in the stored markdown. */
+.markdown a.attachment::before {
+  content: "↓";
+  flex: none;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--green-hi);
+}
+
+/* ============================================================
+   Lightbox — the full-size image viewer
+   ============================================================ */
+
+/* z-index 20: above .modal-backdrop's 10. An image is almost always opened from
+   inside a modal — an issue's description, a comment — and a viewer that
+   appeared behind the dialog it was opened from would look like nothing
+   happened. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px;
+  /* Darker than .modal-backdrop's .75: this one is showing a picture, and the
+     less of the page bleeding through the better. */
+  background: rgba(2, 6, 12, .92);
+  cursor: zoom-out;
+}
+
+/* Bounded by the VIEWPORT, not by the image's own size. `object-fit: contain`
+   keeps the aspect ratio while fitting inside both bounds — without it a tall
+   image would be squashed to the height cap. A small image is left at its own
+   size rather than blown up: there is nothing to reveal, and upscaling it would
+   just make it blurry. */
+.lightbox-image {
+  max-width: 92vw;
+  max-height: 84vh;
+  object-fit: contain;
+  border-radius: 4px;
+  border: 1px solid var(--border-hi);
+}
+
+.lightbox-hint {
+  margin: 0;
+  color: var(--green-dim);
+  font-size: 11px;
+  letter-spacing: .06em;
+}
+
+.issue-title { color: var(--head); font-size: 15px; margin: 0 0 4px; }
+.issue-byline { color: var(--green-dim); font-size: 11px; margin: 0 0 14px; }
+.issue-description { margin-top: 12px; }
+
+/* ============================================================
+   Comments
+   ============================================================ */
+
+.comments-heading {
+  color: var(--green-dim);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin: 24px 0 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.comments { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.comments-empty { color: var(--green-dim); font-size: 12px; margin: 0; }
+
+.comment { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 10px; }
+.comment-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+.comment-author { color: var(--green-hi); font-size: 11px; flex: 1; }
+.comment-body p:last-child { margin-bottom: 0; }
+
+/* ============================================================
+   The account corner — far right of the top bar.
+
+   Was a 260px sidebar with two stacked provider buttons. It is
+   now one button: "Sign in…", which opens the picker, or the
+   user's name and mark, which open a menu holding sign-out. The
+   provider buttons moved into the modal (see .signin-option),
+   where there is room to say what choosing one costs.
+   ============================================================ */
+
+.account {
+  /* The anchor for .account-menu, which is absolutely positioned. Without a
+     positioned ancestor the menu would hang off the viewport's top-left rather
+     than off the name it belongs to. */
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Reserve the row before the first session fetch returns. The view toggles
+     `visibility` rather than `display` for the same reason: a top bar that grows
+     a button's width once the server answers shoves the whole row sideways, and
+     that reads as a glitch. */
+  min-height: 36px;
+}
+
+/* Name and mark are one button. */
+.account-btn {
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--green-hi);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.account-btn:hover { border-color: var(--border); background: var(--panel-2); }
+
+.account-name {
+  font-size: 12px;
+  color: var(--head);
+  /* A display name is whatever the provider had on file — it can be a sentence.
+     Truncate rather than wrap: the top bar is one row, and a name that wraps
+     takes the whole bar's height with it. */
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-signin { font-size: 12px; }
+
+/* The menu. Right-aligned to the corner it hangs from — `left: auto; right: 0`
+   rather than a left offset, because it is wider than the button above it and
+   growing leftward is the only direction with room.
+
+   Opened by HOVER, in CSS, with no state in the view model behind it. That is
+   why there is no `.account-menu-open` class: a hover menu driven by JS needs
+   mouseenter/mouseleave plus a close timer to survive the pointer crossing the
+   gap, and every one of those is a way to strand the menu open.
+
+   Keyboard access is `:has(:focus-visible)` and NOT `:focus-within`, which is a
+   distinction with a bug behind it. :focus-within is true for a MOUSE click too
+   — clicking the account button focuses it — so the menu stayed open after the
+   pointer had left and nothing but a click elsewhere would dismiss it. It read as
+   a menu that never goes away. :focus-visible is set only when the browser judges
+   focus should be *shown*, which is keyboard navigation and not a click, so the
+   two cases stop fighting: hover governs the mouse, focus-visible governs the
+   keyboard, and neither strands the other. */
+.account-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 6; /* over .footer's 5, under .modal-backdrop's 10 */
+  display: none;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+}
+
+/* The bridge across the 6px gap above.
+
+   Without it the menu is unreachable: the pointer leaves the button, crosses six
+   pixels of nothing, :hover goes false, and the menu vanishes before it can be
+   entered. Invisible and unclickable, purely a hover surface — the alternative,
+   removing the gap, glues the menu to the button and reads as one shape. */
+.account-menu::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -7px; /* the 6px gap, plus this element's own 1px border */
+  height: 7px;
+}
+
+.account-signed-in:hover .account-menu,
+.account-signed-in:has(:focus-visible) .account-menu { display: flex; }
+
+.account-menu-item {
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--green-dim);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  padding: 8px 10px;
+  cursor: pointer;
+  /* The buttons are <button> and the submenu parent is a <div>; without this the
+     two sit at different widths and the hover highlight is visibly ragged. */
+  width: 100%;
+}
+
+.account-menu-item:hover:not(:disabled) { background: #10203a; color: var(--green-hi); }
+.account-menu-item:disabled { opacity: .5; cursor: default; }
+
+/* ── The impersonation submenu ──────────────────────────────────────────────
+
+   "Impersonate ▸" with the user list folding out of it. The submenu is a CHILD
+   of this item rather than a sibling, which is what makes the hover survive the
+   pointer travelling into it — a sibling would drop :hover the moment the
+   pointer left the parent's box. */
+.account-menu-parent {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-menu-label { flex: 1; }
+.account-menu-arrow { color: var(--green-dim); font-size: 10px; }
+
+/* Leftward, not rightward. The account corner is already at the right edge of
+   the viewport, so a submenu opening to the right would open off-screen —
+   `right: 100%` hangs it off the menu's left edge instead.
+
+   `right: 100%` — the boxes TOUCH. No gap, and therefore no bridge.
+
+   This took three goes and the history is worth keeping, because the obvious fix
+   is the one that does not work. A gap of any size is dead space: crossing it
+   leaves .account-menu-parent, :hover goes false, and the submenu closes under
+   the pointer on its way to being used. The first attempt left 4px while claiming
+   the boxes touched. The second bridged the gap with an ::after — which was
+   invisible for a reason that has nothing to do with hover: `overflow-y: auto`
+   below establishes a clipping box, and a pseudo-element positioned OUTSIDE its
+   own element's padding box is clipped by it. The bridge was never on screen.
+
+   Touching sidesteps both. Nested menus that share an edge are what every desktop
+   menu bar does, and the 1px borders read as a seam rather than a mistake. */
+.account-submenu {
+  position: absolute;
+  top: -5px; /* aligns the first row with the parent, allowing for padding */
+  right: 100%;
+  display: none;
+  flex-direction: column;
+  min-width: 170px;
+  max-height: 320px;
+  /* A long user list must not run off the bottom of the viewport. It scrolls
+     inside itself, like every other overflow in this app. */
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+}
+
+.account-menu-parent:hover .account-submenu,
+.account-menu-parent:has(:focus-visible) .account-submenu { display: flex; }
+
+.account-submenu-empty {
+  color: var(--green-dim);
+  font-size: 11px;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+/* ============================================================
+   The provider picker's options — inside the modal.
+   ============================================================ */
+
+.signin-option {
+  /* Not a flex row: the explanation belongs UNDER its button, close enough to
+     read as that button's consequence rather than as a caption for the pair. */
+  margin-bottom: 18px;
+}
+
+.signin-option:last-of-type { margin-bottom: 0; }
+
+/* Full width and stacked, so the two providers are the same target. They are not
+   equal in *emphasis* — GitHub is .btn-primary and Google is not, because
+   contributing needs GitHub — but a wider button would say that with the one
+   property that also means "easier to hit", which is not the difference being
+   drawn. */
+.signin-provider-btn {
+  display: flex;
+  width: 100%;
+  padding: 11px 16px;
+}
+
+.signin-option-why {
+  color: var(--green-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 8px 2px 0;
+}
+
+/* ── The profile modal's Connections section ────────────────────────────────
+   The toggle is the least interesting thing here after the first day; the list
+   of what is connected is what people come back for. Styled so the list reads
+   as the subject and the setup instructions read as reference material. */
+
+.section-title {
+  color: var(--head);
+  font-size: 13px;
+  margin: 20px 0 0;
+}
+
+/* A value nobody should be asked to type: the server URL, and the command.
+   The value wraps rather than truncating — a URL cut off at the panel edge is
+   one somebody will copy by hand and get wrong, which is the whole failure this
+   row exists to prevent. */
+.copy-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.copy-value {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--body);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  /* anywhere, not break-word: these have no spaces to break at, so break-word
+     would leave the line overflowing exactly as if nothing had been set. */
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.btn-small { font-size: 11px; padding: 6px 10px; }
+
+.connections-setup { margin-top: 4px; }
+
+.connections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.connection-text { flex: 1; min-width: 0; }
+
+/* The agent's self-reported name. Truncated rather than wrapped: it is chosen
+   by whoever registered the client, so a long one is as likely to be someone
+   pushing at the layout as it is to be honest. The row must stay one row. */
+.connection-name {
+  color: var(--head);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-detail {
+  color: var(--green-dim);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* ============================================================
+   The project dialog's settings sections — vocabularies and
+   privileges.
+
+   These only appear when EDITING a project, which is why they
+   share the dialog rather than getting one of their own: what an
+   admin actually wants is "configure this project", and a name,
+   its board columns and who may post on it are all that one
+   thing. The panel is .modal-large in that mode — see
+   .settings-body below for the one thing that borrows from the
+   issue modal and must not.
+   ============================================================ */
+
+/* This dialog's body scrolls as ONE column, and has to say so.
+   `.modal-large .modal-body` above is `overflow: hidden` on purpose — the issue
+   modal is a three-band split whose MIDDLE band scrolls, so a scrolling body
+   there would scroll the title out from over the description. This dialog has no
+   inner band to hand the job to: it is a form, then five vocabularies, then a
+   privileges table, all of it one continuous read.
+
+   Without this rule the body inherits that `overflow: hidden` and simply clips.
+   Found by opening the dialog and finding the privileges section unreachable —
+   1300 of 2035 pixels of content, below the fold of a panel that would not
+   scroll, with no scrollbar to suggest anything was missing. `display: block`
+   goes with it: the inherited flex column is the shape the three bands need, and
+   this content is not three bands. */
+.modal-large .modal-body.settings-body {
+  display: block;
+  overflow-y: auto;
+}
+
+.project-settings {
+  margin-top: 24px;
+  /* A rule, not a gap: everything above is a form that saves on OK, everything
+     below writes the moment you touch it. That is a real difference in
+     behaviour and the eye should be told about it. */
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+
+.vocab-section { margin-top: 20px; }
+
+/* The rows, and then the add field under them — in that order because the list
+   is the subject. An add field above its list reads as a search box. */
+.vocab-rows { margin-top: 10px; }
+
+.vocab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* The name takes the room and everything else takes what it needs. Without this
+   the field collapses to its content width and five rows of different-length
+   names become a ragged left edge on every control after them. */
+.vocab-row .field { flex: 1; min-width: 0; }
+
+/* Reset .checkbox-row's stacked-form margins: inside a row it is one control
+   among several, not a paragraph. */
+.vocab-flag {
+  margin: 0;
+  flex: none;
+  white-space: nowrap;
+  font-size: 11px;
+  align-items: center;
+}
+
+.vocab-flag .checkbox { margin: 0; }
+
+/* "Used by 3 issues" — the count that decides whether Delete is even live, so it
+   sits next to the button it explains. Dim: it is context, not a control. */
+.vocab-uses {
+  color: var(--green-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  flex: none;
+}
+
+/* Square, so the two arrows read as one pair of nudges rather than as two
+   buttons with words missing. */
+.vocab-move {
+  flex: none;
+  padding: 6px 9px;
+  line-height: 1;
+}
+
+.vocab-delete { flex: none; }
+
+/* A disabled control still has to look like it exists, and — for Delete — still
+   has to be hoverable: its title says WHY it is dead ("3 issues are in this
+   status"), and a control with pointer-events off never shows a tooltip. That
+   is the whole reason this sets opacity rather than pointer-events. */
+.vocab-row .btn:disabled,
+.vocab-add .btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.vocab-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.vocab-add .field { flex: 1; min-width: 0; }
+.vocab-add .btn { flex: none; }
+
+/* ── Privileges ─────────────────────────────────────────────────────────────
+   One block per account rather than a grid with role columns. A grid is the
+   obvious shape and the wrong one here: the roles are sentences ("Edit issues
+   they did not create"), not words, so a header row would either truncate them
+   or be three columns wide on a phone. Stacked, each checkbox carries its own
+   explanation and the row reads as a person. */
+
+.member-row {
+  border-top: 1px solid var(--border);
+  padding: 12px 0;
+}
+
+.member-row:last-child { padding-bottom: 0; }
+
+.member-name {
+  color: var(--head);
+  font-size: 13px;
+}
+
+.role-row { margin-top: 4px; }
+
+/* Tighter than a standalone .checkbox-row: these come in threes under one name,
+   and the default 18px would make one person's privileges a screenful. */
+.role-row .checkbox-row { margin-top: 6px; }

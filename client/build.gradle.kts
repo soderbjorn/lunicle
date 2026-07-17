@@ -24,6 +24,11 @@ kotlin {
             // public surface.
             api(projects.clientServer)
             api(libs.kotlinx.coroutines.core)
+            // `implementation`, not `api`: the timestamps cross this module's
+            // boundary as already-formatted strings, so :web never names a
+            // datetime type and has no business seeing this on its compile
+            // classpath. See Dates.kt.
+            implementation(libs.kotlinx.datetime)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

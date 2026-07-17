@@ -81,8 +81,12 @@ class SessionStore(
     suspend fun lookup(id: String?): UserRecord? {
         if (id == null) return null
         return withContext(DatabaseDispatcher) {
-            database.sessionsQueries.findUser(id).executeAsOneOrNull()
-                ?.let { userRecordOf(it.id, it.provider, it.provider_id, it.display_name) }
+            database.sessionsQueries.findUser(id).executeAsOneOrNull()?.let {
+                userRecordOf(
+                    it.id, it.provider, it.provider_id, it.provider_name,
+                    it.display_name, it.email, it.is_admin, it.mcp_enabled,
+                )
+            }
         }
     }
 
