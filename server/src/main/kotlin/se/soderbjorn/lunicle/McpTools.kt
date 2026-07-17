@@ -223,6 +223,15 @@ internal val MCP_INSTRUCTIONS = """
     the future. None of them can be changed afterwards by any tool, so get them
     right on the way in.
 
+    `created_at` also sets the issue's last-touched time, which is what the board
+    sorts on — but only at creation. Every later edit re-stamps that column with
+    the wall clock, and an import usually ends in an edit: an inline image can only
+    be attached once the issue exists, so the description has to be rewritten
+    afterwards to point at the uploaded file. Done naively that lands a years-old
+    issue at the top of the board dated today. `update_issue` therefore takes an
+    admin-only `updated_at` — pass the date the imported history actually ended.
+    It cannot be in the future, and cannot precede the issue's own `created_at`.
+
     An issue or comment filed under `author_external` is unowned: nobody can edit
     it afterwards except an admin. That is a consequence of there being no account
     to own it, not an oversight, and it applies to imported attachments too.
@@ -375,6 +384,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "resolution" to stringProp("Required if the resulting status has requiresResolution."),
                 "labels" to stringArrayProp("The full set of label names this issue should have."),
                 "components" to stringArrayProp("The full set of component names this issue should have."),
+                "updated_at" to integerProp(UPDATED_AT_PROP_DESCRIPTION),
                 required = listOf("issue_id"),
             ),
         ),
@@ -730,6 +740,40 @@ class McpTools(private val deps: BoardDependencies) {
         val issue = readableIssue(user, arguments) ?: return noSuchIssue()
         if (!deps.access.canEditIssue(user, issue)) return refuse("You cannot edit this issue.")
 
+        // Before any vocabulary is resolved, for the reason createIssue states: a
+        // refusal must cost nothing. Unlike there, this is its own check rather
+        // than resolveAttribution's — an edit has no author to settle, only a
+        // stamp, and `canEditIssue` above is not `canAttributeWrites`. An editor
+        // may rewrite an issue they own; deciding when it was rewritten is the
+        // admin-only half.
+        val updatedAt = if (arguments.isPresent(UPDATED_AT_ARGUMENT)) {
+            if (!deps.access.canAttributeWrites(user)) {
+                return refuse(
+                    "Only an admin can set $UPDATED_AT_ARGUMENT, and you are not acting as one. " +
+                        "Nothing was written. Remove $UPDATED_AT_ARGUMENT and the edit will be " +
+                        "stamped now — but that is a different thing from what you asked for, so " +
+                        "decide rather than assume.",
+                )
+            }
+            resolveTimestamp(arguments, UPDATED_AT_ARGUMENT)
+                .getOrElse { return refuse(it.message ?: "That timestamp cannot be used.") }
+                // The straddle insertDraft refuses to create by hand, refused here
+                // too: created_at and updated_at are one value at birth, and the
+                // only way back to disagreement is an edit claiming to predate the
+                // row it edits. Issues.sq's `updated_at` comment forbids it.
+                .also { at ->
+                    if (at < issue.createdAt) {
+                        return refuse(
+                            "`$UPDATED_AT_ARGUMENT` ($at) is before this issue's created_at " +
+                                "(${issue.createdAt}), so it would claim to have been edited " +
+                                "before it existed. Nothing was written.",
+                        )
+                    }
+                }
+        } else {
+            null
+        }
+
         val title = arguments.string("title") ?: issue.title
         if (title.length > MAX_MCP_TITLE_LENGTH) return refuse("That title is too long.")
 
@@ -780,6 +824,7 @@ class McpTools(private val deps: BoardDependencies) {
             resolutionId = resolutionId,
             labelIds = labelIds,
             componentIds = componentIds,
+            updatedAt = updatedAt,
         )
         return ok("Updated issue ${issue.id}.")
     }
@@ -1128,25 +1173,33 @@ class McpTools(private val deps: BoardDependencies) {
      * we could pick as a floor is precisely the job, and a seconds-shaped value is
      * a legal 1970 date — the guess would be right often and wrong unrecoverably,
      * which is a bad trade against a parameter documented as milliseconds twice.
+     *
+     * @param argument which parameter is being read, so the refusals quote the name
+     *   the caller actually sent. Both bounds are properties of the column rather
+     *   than of `created_at`, so `updated_at` gets them by passing its own name
+     *   rather than by a second copy of this function drifting from this one.
      */
-    private fun resolveTimestamp(arguments: JsonObject): Result<Long> {
-        val at = arguments.long(CREATED_AT_ARGUMENT)
+    private fun resolveTimestamp(
+        arguments: JsonObject,
+        argument: String = CREATED_AT_ARGUMENT,
+    ): Result<Long> {
+        val at = arguments.long(argument)
             ?: return Result.failure(
                 ResolutionRefusal(
-                    "`$CREATED_AT_ARGUMENT` must be a number of milliseconds since the Unix " +
-                        "epoch, which \"${arguments[CREATED_AT_ARGUMENT]}\" is not.",
+                    "`$argument` must be a number of milliseconds since the Unix " +
+                        "epoch, which \"${arguments[argument]}\" is not.",
                 ),
             )
         if (at < 0) {
             return Result.failure(
-                ResolutionRefusal("`$CREATED_AT_ARGUMENT` cannot be negative; $at is before 1970."),
+                ResolutionRefusal("`$argument` cannot be negative; $at is before 1970."),
             )
         }
         val ceiling = System.currentTimeMillis() + MAX_MCP_BACKFILL_SKEW_MILLIS
         if (at > ceiling) {
             return Result.failure(
                 ResolutionRefusal(
-                    "`$CREATED_AT_ARGUMENT` is in the future ($at). Backfilling is for history " +
+                    "`$argument` is in the future ($at). Backfilling is for history " +
                         "that already happened, and a future timestamp would pin the row to the " +
                         "top of its column permanently. Note this is milliseconds since the epoch, " +
                         "not seconds.",
@@ -1277,6 +1330,7 @@ private const val MAX_MCP_TITLE_LENGTH = 300
 private const val AUTHOR_ARGUMENT = "author"
 private const val AUTHOR_EXTERNAL_ARGUMENT = "author_external"
 private const val CREATED_AT_ARGUMENT = "created_at"
+private const val UPDATED_AT_ARGUMENT = "updated_at"
 
 /** Shared by every tool that takes it: one description of `author`, not several that drift. */
 private const val AUTHOR_PROP_DESCRIPTION =
@@ -1297,6 +1351,23 @@ private const val AUTHOR_EXTERNAL_PROP_DESCRIPTION =
         "one question and the pair is refused. Not checked against existing accounts: if you " +
         "pass a name somebody here happens to share, you get an author who is not them. " +
         "Refused, not ignored, if you are not an admin."
+
+/**
+ * As [AUTHOR_PROP_DESCRIPTION]: one description of `updated_at`, shared.
+ *
+ * Says what it is *for* rather than only what it does. The tool that needs it is
+ * the one an importer reaches for last — after an attachment exists and the body
+ * has to be rewritten to point at it — and by then the reason the parameter is
+ * there at all is easy to miss.
+ */
+private const val UPDATED_AT_PROP_DESCRIPTION =
+    "ADMIN ONLY, for backfilling. When this issue was last touched, in epoch milliseconds. " +
+        "Cannot be in the future, and cannot be before the issue's own created_at — an issue " +
+        "edited before it existed is not a history anyone can read. Every edit stamps this " +
+        "column, so an import that uploads an attachment and then rewrites the description to " +
+        "point at it would otherwise drag a years-old issue to the top of the board, dated " +
+        "today: pass the date the history actually ended. Refused, not ignored, if you are not " +
+        "an admin. Defaults to now."
 
 /**
  * How far past this server's clock a backfilled timestamp may still land.

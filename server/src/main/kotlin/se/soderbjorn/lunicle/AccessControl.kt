@@ -141,12 +141,24 @@ class AccessControl(
      * have in the web app", because the web app has no way to say "Ada wrote this,
      * in 2019" either. It is not a capability an agent gained; it is one nobody had.
      *
-     * The exception is kept as small as it can be: three optional parameters —
-     * `author`, `author_external` and `created_at` — on the three tools that
-     * create things, no scope of its own, and no way to reach it that does not
-     * come through here. There is deliberately no backfill for *editing* — an
-     * existing issue's author and timestamps are not rewritable by anyone, agent
-     * or not.
+     * The exception is kept as small as it can be: `author`, `author_external` and
+     * `created_at` on the three tools that create things, plus `updated_at` on
+     * `update_issue`; no scope of its own, and no way to reach it that does not
+     * come through here.
+     *
+     * This paragraph used to end "there is deliberately no backfill for *editing* —
+     * an existing issue's author and timestamps are not rewritable by anyone", and
+     * `update_issue`'s `updated_at` is a backfill for editing, so the claim is
+     * retired rather than quietly left standing. It was drawn in the wrong place.
+     * What it was protecting is the part that survives: an existing row's *author*
+     * is still rewritable by nobody, and neither is its `created_at`. Those are
+     * claims about what happened. `updated_at` is not — it is the board's sort key,
+     * every edit stamps it whether the caller likes it or not, and the import that
+     * must rewrite a description to point at a just-uploaded attachment had no way
+     * to stop that edit from dragging a years-old issue to today. The choice was
+     * never "rewritable or not"; it was "rewritable to the truth, or to the wall
+     * clock". A parameter that cannot precede its own row's `created_at` and cannot
+     * reach the future buys back the only history it can express.
      *
      * This paragraph used to say "no tool of its own", and `start_attachment_upload`
      * is one, so the claim is retired rather than quietly left standing. What it

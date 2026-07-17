@@ -1,5 +1,6 @@
 /**
- * The admin-only backfill parameters on `create_issue` and `add_comment`.
+ * The admin-only backfill parameters on `create_issue`, `add_comment` and
+ * `update_issue`.
  *
  * ── Why these are worth a file ──────────────────────────────────────────────
  *
@@ -22,6 +23,14 @@
  *    imported issue above the real board. The test below asserts the two columns
  *    are equal rather than merely that `created_at` was stored, because storing
  *    `created_at` is exactly what the broken version also does.
+ *  - **The same drift, one edit later.** Getting creation right is not enough:
+ *    every *edit* stamps `updated_at` with the clock too, and an import ends in an
+ *    edit whenever an issue has an inline image — the file can only be attached
+ *    once the issue exists, so the description must be rewritten afterwards to
+ *    point at it. `update_issue`'s `updated_at` is the lever for that, and it is
+ *    the one backfill parameter that writes to an existing row, so it carries a
+ *    bound the others cannot need: it may not precede its own issue's
+ *    `created_at`.
  *  - **The default path quietly changing.** Two new optional parameters on the two
  *    most-used write tools; the regression that matters most is the one where
  *    nobody passes either.
@@ -111,6 +120,16 @@ class McpBackfillTest {
 
     /** A moment in 2019, and the whole point: it is not now, and no clock produces it. */
     private val backfilledAt = 1_550_000_000_000L
+
+    /**
+     * Three days after [backfilledAt]: when an import's history *ended*.
+     *
+     * A third value rather than reusing [backfilledAt], because the thing being
+     * tested is that `updated_at` carries what the caller said. A test that
+     * backdated an edit to the creation date would also pass against an
+     * implementation that ignored the parameter and copied `created_at`.
+     */
+    private val importEndedAt = backfilledAt + 3 * 24 * 60 * 60 * 1000L
 
     // ── A non-admin is refused, and nothing is written ───────────────────────
 
@@ -675,6 +694,162 @@ class McpBackfillTest {
         assertEquals(Author.Account(fixture.ordinaryId), issues.forProject(fixture.projectId).single().author)
     }
 
+    // ── update_issue's `updated_at` ──────────────────────────────────────────
+
+    /**
+     * The gate, on the tool that did not have one.
+     *
+     * The issue is authored by the ordinary user *deliberately*: `canEditIssue`
+     * says yes to whoever wrote it, so this isolates the `updated_at` check. An
+     * issue authored by the admin would be refused by the edit rule instead, and
+     * the test would pass green against a build with no gate at all — the seed()
+     * failure mode, one rule over.
+     */
+    @Test
+    fun `a non-admin setting updated_at is refused, and the issue is not touched`(): Unit = runBlocking {
+        val fixture = seed()
+        val issueId = imported(fixture, author = Author.Account(fixture.ordinaryId))
+        val before = issues.findById(issueId)!!.updatedAt
+        val token = tokenFor(fixture.ordinaryId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "update_issue",
+                """{"issue_id":$issueId,"title":"Rewritten","updated_at":$backfilledAt}""",
+            )
+            assertTrue(result.isError, "A non-admin backdated an edit.")
+            assertTrue(
+                result.text.contains("Only an admin"),
+                "The refusal must say who may do this. Got: ${result.text}",
+            )
+        }
+
+        val after = issues.findById(issueId)!!
+        assertEquals(before, after.updatedAt, "A refused update_issue stamped the issue anyway.")
+        assertEquals("Imported", after.title, "A refused update_issue wrote the title anyway.")
+    }
+
+    /**
+     * The bug this parameter exists for, end to end.
+     *
+     * An import creates the issue in 2019, uploads its screenshot, and must then
+     * rewrite the description to point at the uploaded file. That last edit is what
+     * used to drag the issue to today. [importEndedAt] is deliberately neither
+     * `created_at` nor now: echoing the creation date back would pass a test that
+     * only checked "not now", and the real answer is the date the history ended.
+     */
+    @Test
+    fun `an admin rewriting an imported issue keeps it out of today`(): Unit = runBlocking {
+        val fixture = seed()
+        val issueId = imported(fixture, author = Author.External("ottojaa"))
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "update_issue",
+                """{"issue_id":$issueId,"description":"![shot](/api/attachments/1)","updated_at":$importEndedAt}""",
+            )
+            assertTrue(!result.isError, "An admin's updated_at was refused: ${result.text}")
+        }
+
+        val after = issues.findById(issueId)!!
+        assertEquals(importEndedAt, after.updatedAt, "The edit was stamped with the clock, not the import's date.")
+        assertEquals(backfilledAt, after.createdAt, "The edit moved created_at, which nothing may do.")
+        assertEquals("![shot](/api/attachments/1)", after.description)
+        assertEquals(Author.External("ottojaa"), after.author, "The edit rewrote the author.")
+    }
+
+    /**
+     * The straddle, refused.
+     *
+     * Issues.sq forbids `updated_at` disagreeing with `created_at` at insert, and
+     * `insertDraft` binds one value to both so it cannot be built by hand. An edit
+     * claiming to predate its own row is the only way back to that disagreement,
+     * so it is the one bound this parameter adds over `created_at`'s.
+     */
+    @Test
+    fun `an updated_at before the issue's created_at is refused`(): Unit = runBlocking {
+        val fixture = seed()
+        val issueId = imported(fixture, author = Author.External("ottojaa"))
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "update_issue",
+                """{"issue_id":$issueId,"title":"Before it existed","updated_at":${backfilledAt - 1}}""",
+            )
+            assertTrue(result.isError, "An issue was edited before it existed.")
+            assertTrue(result.text.contains("before it existed"), result.text)
+        }
+        assertEquals(backfilledAt, issues.findById(issueId)!!.updatedAt, "A refused edit stamped it anyway.")
+    }
+
+    /** The same ceiling `created_at` has, for the same reason: the board's sort. */
+    @Test
+    fun `a far-future updated_at is refused even for an admin`(): Unit = runBlocking {
+        val fixture = seed()
+        val issueId = imported(fixture, author = Author.External("ottojaa"))
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "update_issue",
+                """{"issue_id":$issueId,"title":"Year 3000","updated_at":32503680000000}""",
+            )
+            assertTrue(result.isError, "An edit was stamped in the year 3000.")
+            assertTrue(result.text.contains("future"), result.text)
+        }
+        assertEquals(backfilledAt, issues.findById(issueId)!!.updatedAt)
+    }
+
+    /**
+     * The default path on the tool that grew the parameter: no `updated_at`, and
+     * the clock. This is the call every ordinary agent makes.
+     */
+    @Test
+    fun `an ordinary update_issue with no updated_at is stamped now`(): Unit = runBlocking {
+        val fixture = seed()
+        val issueId = imported(fixture, author = Author.Account(fixture.ordinaryId))
+        val before = System.currentTimeMillis()
+        val token = tokenFor(fixture.ordinaryId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "update_issue",
+                """{"issue_id":$issueId,"title":"Ordinary edit"}""",
+            )
+            assertTrue(!result.isError, "An ordinary edit was refused: ${result.text}")
+        }
+
+        val after = issues.findById(issueId)!!
+        assertTrue(
+            after.updatedAt >= before,
+            "An edit with no updated_at kept the imported stamp (${after.updatedAt}) instead of the clock.",
+        )
+    }
+
+    /** `null` is not asking — the rule [an explicit null author] states, on this tool. */
+    @Test
+    fun `an explicit null updated_at is treated as absent rather than as a request`(): Unit = runBlocking {
+        val fixture = seed()
+        val issueId = imported(fixture, author = Author.Account(fixture.ordinaryId))
+        val token = tokenFor(fixture.ordinaryId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                token,
+                "update_issue",
+                """{"issue_id":$issueId,"title":"Nulls","updated_at":null}""",
+            )
+            assertTrue(!result.isError, "A client that spelled out its nulls was refused: ${result.text}")
+        }
+    }
+
     // ── Fixture ──────────────────────────────────────────────────────────────
 
     private class Fixture(val adminId: Long, val ordinaryId: Long, val projectId: Long)
@@ -706,6 +881,33 @@ class McpBackfillTest {
         roles.grant(ordinary.id, project.id, Role.CREATE_ISSUE)
         roles.grant(ordinary.id, project.id, Role.COMMENT_ON_ISSUE)
         return Fixture(admin.id, ordinary.id, project.id)
+    }
+
+    /**
+     * A published issue that claims to be from 2019, as `create_issue` builds one.
+     *
+     * The same shape the backfill path produces and not a shortcut around it: one
+     * value bound to `created_at` at insert and handed to `save` again as
+     * `updatedAt`, exactly as [McpTools.createIssue] does it. A helper that let the
+     * clock stamp `updated_at` here would leave every test below asserting against
+     * an issue that was already "touched today", which is the very state they exist
+     * to rule out.
+     */
+    private suspend fun imported(fixture: Fixture, author: Author): Long {
+        val (issueId, _) = issueRepository.createDraft(fixture.projectId, author, backfilledAt)
+        val issue = issues.findById(issueId)!!
+        issueRepository.save(
+            issue = issue,
+            title = "Imported",
+            description = "",
+            statusId = statuses.forProject(fixture.projectId).first().id,
+            priorityId = priorities.defaultForProject(fixture.projectId)!!.id,
+            resolutionId = null,
+            labelIds = emptyList(),
+            componentIds = emptyList(),
+            updatedAt = backfilledAt,
+        )
+        return issueId
     }
 
     /** A published issue to hang comments off. */
