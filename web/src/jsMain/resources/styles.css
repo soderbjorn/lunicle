@@ -133,7 +133,12 @@ html { background: var(--bg); }
 .board-pane .board {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* The board scrolls sideways only; the vertical scroll belongs to each lane
+     (.column-list below). Scrolling the whole board vertically carried the
+     column heads off the top with the cards, so a long column left you reading
+     nameless lists — the heads have to stay put while their own cards move. */
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 /* An issue window's content: the body bands take the slack, the
@@ -470,13 +475,17 @@ html { background: var(--bg); }
 .board {
   display: flex;
   gap: 12px;
-  align-items: flex-start;
+  /* `stretch`, not `flex-start`: the columns fill the board's height so each can
+     own its own vertical scroll (see .column-list). Left at flex-start every
+     column shrank to its cards and the board itself had to scroll. */
+  align-items: stretch;
   /* The columns scroll sideways rather than squeezing. The default board is five
      statuses and a project can add more, so the count is not ours to bound —
      and narrowing columns to fit whatever it is makes every card unreadable. */
   overflow-x: auto;
   padding-bottom: 20px;
   flex: 1;
+  min-height: 0;
 }
 
 /* `flex: 1 1 220px` — grow to share the width, but never shrink below 220px.
@@ -505,6 +514,12 @@ html { background: var(--bg); }
   min-width: 220px;
   flex: 1 1 220px;
   transition: border-color .12s, background .12s;
+  /* A column of its own: the head pins, the list (below) takes the slack and
+     scrolls. `min-height: 0` lets that list actually shrink below its content
+     — without it a flex child refuses to, and the scroll never engages. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* The drop target, while something is over it. Without this, dragging is
@@ -539,7 +554,17 @@ html { background: var(--bg); }
 
 .column-count { color: var(--green-dim); font-size: 11px; }
 
-.column-list { display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
+/* Takes the column's slack and scrolls its own cards, so a long lane moves
+   under a head that stays put. `min-height: 0` for the same reason as .column:
+   a flex child needs it before `overflow-y: auto` will engage. */
+.column-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 40px;
+  flex: 1;
+  overflow-y: auto;
+}
 
 /* The header over each run of cards — a priority's name, or a resolution's in a
    closing column. See BoardColumn.groups.
@@ -991,7 +1016,13 @@ html { background: var(--bg); }
   font-family: inherit;
   font-size: 15px;
   color: var(--head);
-  background: var(--bg);
+  /* `background-color`, not the `background` shorthand: a .field is also worn by
+     the issue editor's dropdowns (.dropdown.field), and .dropdown draws its
+     chevron with `background-image`. The shorthand resets background-image to
+     none, and since this rule follows .dropdown at equal specificity it would
+     win and strip the arrow off every editor picker — which is exactly what it
+     did. The color longhand leaves the image alone. */
+  background-color: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 9px 11px;
@@ -1346,6 +1377,20 @@ html { background: var(--bg); }
   border-radius: 4px;
   border: 1px solid var(--border-hi);
 }
+
+/* The corner close button. Absolute, not a flex child: .lightbox centres its
+   column, and a button left in that flow would sit above the image rather than
+   over the corner. .lightbox's `position: fixed` is the positioned ancestor
+   this resolves against. `cursor: default` overrides the overlay's zoom-out so
+   the button reads as a button, not more backdrop. */
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  cursor: pointer;
+}
+
+.icon-close { width: 18px; height: 18px; }
 
 .lightbox-hint {
   margin: 0;

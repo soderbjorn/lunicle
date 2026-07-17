@@ -167,8 +167,29 @@ private const val BOT_SVG = """
 /** The agent mark, for the "made by an agent" badge on an issue or comment. */
 fun agentIcon(): HTMLElement = icon(BOT_SVG, "icon-agent")
 
+/**
+ * The close X — two strokes crossing, for the lightbox's corner button.
+ *
+ * Hand-drawn on the usual 24×24 grid at the file's 1.5 house weight, inset 6px
+ * from every edge so the cross sits comfortably inside a 36px .icon-btn. An
+ * element (via [closeIcon]), not a markup constant like [CHECK_SVG]: this one
+ * goes into a real button that wants a sized span around it, the same as the
+ * gear and profile marks.
+ */
+private const val CLOSE_SVG = """
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+  <line x1="6" y1="6" x2="18" y2="18"/>
+  <line x1="18" y1="6" x2="6" y2="18"/>
+</svg>
+"""
+
 /** The cogwheel, for the project-settings button. */
 fun gearIcon(): HTMLElement = icon(GEAR_SVG, "icon-gear")
+
+/** The close X, for the lightbox's corner button. */
+fun closeIcon(): HTMLElement = icon(CLOSE_SVG, "icon-close")
 
 /** The Lunicle mark, for the topbar brand line. */
 fun logoIcon(): HTMLElement = icon(LOGO_SVG, "icon-logo")

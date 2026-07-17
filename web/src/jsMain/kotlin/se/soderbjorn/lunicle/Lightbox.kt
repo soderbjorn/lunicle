@@ -88,9 +88,19 @@ class Lightbox(private val host: HTMLElement) {
         // whole content.
         image.alt = alt
 
+        // The explicit way out, pinned to the corner. The whole overlay already
+        // closes on a click, but a bare picture on a black field gives no sign of
+        // that — the X is the affordance that says the view can be left, and an
+        // icon-only button so it carries a spoken label. Its own click bubbles up
+        // to the overlay's close-on-click, which then closes an already-closed
+        // view: a harmless second call, not worth stopping the event to avoid.
+        val closeButton = button("", "icon-btn lightbox-close") { close() }
+        closeButton.setAttribute("aria-label", "Close")
+        closeButton.appendChild(closeIcon())
+
         val hint = element("p", "lightbox-hint", "Click anywhere, or press Escape, to close")
 
-        element.children(image, hint)
+        element.children(closeButton, image, hint)
         host.appendChild(element)
         backdrop = element
     }
