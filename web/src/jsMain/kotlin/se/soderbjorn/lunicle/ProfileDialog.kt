@@ -26,10 +26,13 @@
  */
 package se.soderbjorn.lunicle
 
+import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
+import org.w3c.dom.HTMLTextAreaElement
 import se.soderbjorn.lunicle.client.viewmodel.CONNECTIONS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.ENABLE_EXPLANATION
@@ -133,24 +136,83 @@ class ProfileDialog(
      */
     private fun copyRow(value: HTMLElement, text: () -> String): HTMLElement {
         val row = element("div", "copy-row")
-        row.children(
-            value,
-            button("Copy", "btn btn-quiet btn-small") {
-                // navigator.clipboard is unavailable on an insecure origin, which
-                // is every local run over plain http. Failing silently there would
-                // present as "the copy button does nothing" on the one machine a
-                // developer tests on, so say so instead — the text is on screen
-                // and selectable regardless.
-                val clipboard = window.navigator.asDynamic().clipboard
-                if (clipboard == null || clipboard == undefined) {
-                    errorElement.setTextIfChanged("Copying needs a secure connection — select the text instead.")
-                    errorElement.visible(true)
-                } else {
-                    clipboard.writeText(text())
-                }
-            },
-        )
+        lateinit var copyButton: HTMLButtonElement
+        // The value is read through the lambda at click time (see this function's
+        // doc), and the button is passed in so its label can flip to "Copied".
+        copyButton = button("Copy", "btn btn-quiet btn-small") { copy(text(), copyButton) }
+        row.children(value, copyButton)
         return row
+    }
+
+    /**
+     * Copy [value] to the clipboard, by whichever route this context allows.
+     *
+     * The async `navigator.clipboard` is the modern path, but it is not the only
+     * one that matters here: it is `undefined` on an insecure origin (a local
+     * http run), and — the bug this fixes — it *rejects* inside a cross-origin
+     * iframe that was not granted `clipboard-write`, which is exactly how this app
+     * runs, embedded in lunamux.dev. The old code called `writeText` and dropped
+     * the promise, so that rejection was silent: the button did nothing and said
+     * nothing.
+     *
+     * So: try the async API, but catch its rejection and fall back to
+     * [execCommandCopy], which is scoped to the click gesture rather than the
+     * permission and reaches the clipboard where the async API is refused. The
+     * "select it by hand" hint is now the genuine last resort it always claimed
+     * to be, shown only when both routes fail.
+     */
+    private fun copy(value: String, sourceButton: HTMLButtonElement) {
+        val clipboard = window.navigator.asDynamic().clipboard
+        if (clipboard != null && clipboard != undefined) {
+            clipboard.writeText(value)
+                .then({ confirmCopied(sourceButton) })
+                .catch({ fallbackCopy(value, sourceButton) })
+        } else {
+            fallbackCopy(value, sourceButton)
+        }
+    }
+
+    private fun fallbackCopy(value: String, sourceButton: HTMLButtonElement) {
+        if (execCommandCopy(value)) {
+            confirmCopied(sourceButton)
+        } else {
+            errorElement.setTextIfChanged("Couldn't copy automatically — select the text and copy it.")
+            errorElement.visible(true)
+        }
+    }
+
+    /**
+     * The legacy copy: drop the text into an off-screen textarea, select it, and
+     * ask the document to copy the selection.
+     *
+     * `execCommand` is deprecated, but it is gesture-scoped rather than
+     * permission-scoped, so it still reaches the clipboard from inside the iframe
+     * and on the http origin where the async API will not. Off-screen via
+     * `position: fixed`, not `display: none`: a hidden element has no selection to
+     * copy. Returns whether the copy took.
+     */
+    private fun execCommandCopy(value: String): Boolean {
+        val textArea = document.createElement("textarea") as HTMLTextAreaElement
+        textArea.value = value
+        textArea.setAttribute("aria-hidden", "true")
+        textArea.style.position = "fixed"
+        textArea.style.top = "-9999px"
+        document.body?.appendChild(textArea)
+        textArea.select()
+        val copied = try {
+            document.asDynamic().execCommand("copy") as? Boolean ?: false
+        } catch (e: Throwable) {
+            false
+        }
+        textArea.remove()
+        return copied
+    }
+
+    /** Flash "Copied" on the button and clear any prior error. */
+    private fun confirmCopied(sourceButton: HTMLButtonElement) {
+        errorElement.visible(false)
+        sourceButton.textContent = "Copied"
+        window.setTimeout({ sourceButton.textContent = "Copy" }, 1200)
     }
 
     /**
