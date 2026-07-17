@@ -13,6 +13,13 @@ WORKDIR /app
 COPY gradlew ./
 COPY gradle gradle
 COPY settings.gradle.kts build.gradle.kts gradle.properties ./
+
+# The darkness-toolkit artifacts. There is no sibling toolkit checkout in the
+# container, so the composite build in settings.gradle.kts never engages and
+# every toolkit dependency resolves out of this file-Maven-repo instead. It is
+# not optional: the toolkit is not published to Maven Central, so without this
+# the build fails at dependency resolution rather than at compile.
+COPY libs-repo libs-repo
 COPY clientServer/build.gradle.kts clientServer/
 COPY client/build.gradle.kts client/
 COPY server/build.gradle.kts server/
