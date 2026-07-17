@@ -143,25 +143,48 @@ class MarkdownEditor(
         surface.addEventListener("drop", { event ->
             root.classList.remove("editor-drop")
             if (surface.contentEditable != "true") return@addEventListener
-            val files = event.asDynamic().dataTransfer?.files
-            val count = files?.length as? Int ?: 0
+            val fileList = event.asDynamic().dataTransfer?.files
+            val count = fileList?.length as? Int ?: 0
             if (count == 0) return@addEventListener
             event.preventDefault()
+            // Snapshot the File handles NOW, synchronously, before the upload
+            // coroutine below runs. `dataTransfer` is only live during this event,
+            // but `launch` dispatches the upload to a later microtask, and by the
+            // time it reads back a FileList the browser has emptied, files[index]
+            // is `undefined` — the `as File` cast then throws into a coroutine
+            // nobody awaits and the failure is swallowed. The Attach button never
+            // hit this because <input>.files persists; copying the handles out
+            // here makes the drop path just as stable. A File, once held, reads
+            // fine asynchronously. (This is the second of two faults that made a
+            // drop do nothing — the caretRangeFromPoint guard just below threw
+            // first, on every drop, and hid this one behind it.)
+            val files = (0 until count).map { fileList[it] as File }
             // Drop the caret where the file was dropped, so the attachment
             // lands under the pointer rather than wherever the caret last was.
             // caretRangeFromPoint is non-standard-but-everywhere; when a
             // browser lacks it, the current caret (or the end) is still a
             // sane landing place.
+            //
+            // Guarded by hand, NOT with `?.let`: the receiver is `dynamic`, and on
+            // a dynamic value Kotlin compiles `.let` to a JS member call —
+            // `caretRangeFromPoint.let(...)` — which no function has, so the whole
+            // handler threw `TypeError: x.let is not a function` before the upload
+            // could even begin. That fired on EVERY drop; it is the real reason a
+            // drop did nothing. A plain null/undefined check reaches the same
+            // intent without routing through a stdlib extension that dynamic
+            // dispatch cannot see.
             val mouse = event.asDynamic()
-            savedRange = document.asDynamic().caretRangeFromPoint?.let { _ ->
+            val caretFromPoint = document.asDynamic().caretRangeFromPoint
+            savedRange = if (caretFromPoint != null && caretFromPoint != undefined) {
                 document.asDynamic().caretRangeFromPoint(mouse.clientX, mouse.clientY)
-            } ?: currentRange()
+            } else {
+                currentRange()
+            }
             // Sequentially, not in parallel: each insert lands at the caret the
             // previous one left behind, so several dropped files end up in
             // drop order rather than in whatever order their reads finished.
             scope.launch {
-                for (index in 0 until count) {
-                    val file = files[index] as File
+                for (file in files) {
                     val bytes = file.readBytes()
                     val markdown = onUpload(file.name, file.type, bytes) ?: continue
                     restoreRange()
