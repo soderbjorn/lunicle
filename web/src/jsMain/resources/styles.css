@@ -952,7 +952,13 @@ html { background: var(--bg); }
   font-family: inherit;
   font-size: 15px;
   color: var(--head);
-  background: var(--bg);
+  /* `background-color`, not the `background` shorthand: a .field is also worn by
+     the issue editor's dropdowns (.dropdown.field), and .dropdown draws its
+     chevron with `background-image`. The shorthand resets background-image to
+     none, and since this rule follows .dropdown at equal specificity it would
+     win and strip the arrow off every editor picker — which is exactly what it
+     did. The color longhand leaves the image alone. */
+  background-color: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 9px 11px;
