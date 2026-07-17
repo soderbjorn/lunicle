@@ -14,11 +14,24 @@
  * fails" against a database that believes it is up to date. No local run
  * reproduces it, because a local volume gets wiped and takes the `create` path.
  *
+ * ── The baseline reset ──────────────────────────────────────────────────────
+ *
+ * There are no .sqm files at the moment, so the migration half of this file
+ * currently proves nothing: the schema was collapsed to a version-1 baseline,
+ * every volume was wiped, and versions 1–6 and the five migrations between them
+ * were deleted rather than carried. That is deliberate and it is a one-off —
+ * everything from this baseline forward gets a migration, and the moment the
+ * first `1.sqm` lands, the test below has something to check again.
+ *
+ * The file stays as it is in the meantime. It is not dead: `the current snapshot
+ * matches the sq files` is what catches an edited .sq with no re-snapshot, which
+ * is the ordinary mistake and is live today.
+ *
  * What it compares is structure — columns, types, nullability, defaults, primary
  * keys, foreign keys (including their `ON DELETE` behaviour), and indexes — read
  * back out of SQLite via `PRAGMA`. Deliberately not the DDL *text*: the .sq
- * files carry their reasoning in comments and the .sqm does not, so the two
- * differ by several kilobytes of prose while describing identical tables. Text
+ * files carry their reasoning in comments and a .sqm does not, so the two differ
+ * by several kilobytes of prose while describing identical tables. Text
  * comparison would fail on every one of those and prove nothing.
  */
 package se.soderbjorn.lunicle
@@ -114,42 +127,22 @@ class MigrationTest {
     }
 
     /**
-     * The purge actually purges.
-     *
-     * Not implied by the comparison above: a migration that created every new
-     * table but forgot to `DROP` a retired one would still contain everything
-     * the .sq files declare — the schemas would differ only by a leftover table,
-     * and `counters` outliving the purge is exactly the sort of thing nobody
-     * notices until it turns up in a backup.
-     */
-    @Test
-    fun `the purge leaves nothing from the counter-era schema behind`() {
-        val target = LunicleDatabase.Schema.version
-        val tables = withSnapshot(1) { driver ->
-            LunicleDatabase.Schema.migrate(driver, 1, target).value
-            driver.tableNames()
-        }
-        assertTrue("counters" !in tables, "1.sqm left the counters table behind: $tables")
-        // Sessions must be back, though — it is dropped only because it has a
-        // foreign key into the users table being recreated, not because it is
-        // going away. Without this, signing in would fail at runtime and only
-        // in production, which is the exact class of bug this file exists for.
-        assertTrue("sessions" in tables, "1.sqm dropped sessions without recreating it: $tables")
-    }
-
-    /**
      * The `roles` table starts empty and is filled at startup.
      *
      * Pinned as a test because it is the one deliberate departure from the
-     * schema doc, which put the seed in 1.sqm *and* in the create branch. If
-     * someone later adds the INSERTs back to the .sqm, this fails and points at
+     * schema doc, which put the seed in the schema *and* in the create branch.
+     * If someone later adds the INSERTs back to a .sq, this fails and points at
      * RoleStore.seed — where the single, idempotent seed lives.
+     *
+     * Against `create` rather than against a migration, which is where it used
+     * to point: the .sqm that used to be the risk is gone, and `create` is now
+     * the only path that builds the table at all. The invariant is the same one
+     * and it is worth more here — every fresh volume takes this path.
      */
     @Test
-    fun `migrations do not seed roles`() {
-        val target = LunicleDatabase.Schema.version
-        val count = withSnapshot(1) { driver ->
-            LunicleDatabase.Schema.migrate(driver, 1, target).value
+    fun `creating the schema does not seed roles`() {
+        val count = withDriver { driver ->
+            LunicleDatabase.Schema.create(driver).value
             driver.executeQuery(
                 identifier = null,
                 sql = "SELECT count(*) FROM roles;",
@@ -157,7 +150,7 @@ class MigrationTest {
                 parameters = 0,
             ).value
         }
-        assertEquals(0L, count, "1.sqm seeds roles; RoleStore.seed() is the only place that should.")
+        assertEquals(0L, count, "The schema seeds roles; RoleStore.seed() is the only place that should.")
     }
 
     // ── Plumbing ─────────────────────────────────────────────────────────────

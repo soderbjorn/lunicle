@@ -9,7 +9,7 @@
  *
  * The format is fixed rather than locale-derived, and that is deliberate. A
  * tracker's timestamps are scanned in a column, not read as prose: "17 Jul 2026,
- * 14:32" is the same width and the same shape for every reader, where a locale
+ * 14.32" is the same width and the same shape for every reader, where a locale
  * format silently becomes 7/17/26 for one visitor and 17.07.2026 for another —
  * and the two disagree about what 07/08 means. 24-hour for the same reason.
  */
@@ -26,7 +26,7 @@ private val MONTHS = listOf(
 )
 
 /**
- * Format an epoch-millis timestamp as "17 Jul 2026, 14:32".
+ * Format an epoch-millis timestamp as "17 Jul 2026, 14.32".
  *
  * In the reader's own zone, not the server's. The server stores UTC millis and
  * has no idea where anyone is; `currentSystemDefault()` is the browser's zone on
@@ -49,8 +49,11 @@ fun formatTimestamp(millis: Long): String {
     // on the JVM. Enum ordinal is 0-based and identical on both, which is also
     // why MONTHS is indexed from 0 rather than offset by one.
     val month = MONTHS[local.month.ordinal]
-    // padStart on the minute only. An hour of "9" is unambiguous and reads fine;
-    // a minute of "9" is a lie — 14:9 is not a time anybody writes.
+    // Both fields padded. The minute must be — 14.9 is not a time anybody writes
+    // — and the hour must be for the reason the format exists at all: these are
+    // scanned down a column, and an unpadded "8.56" shifts every character after
+    // it half a step left of the "14.32" above.
+    val hour = local.hour.toString().padStart(2, '0')
     val minute = local.minute.toString().padStart(2, '0')
-    return "${local.day} $month ${local.year}, ${local.hour}:$minute"
+    return "${local.day} $month ${local.year}, $hour.$minute"
 }

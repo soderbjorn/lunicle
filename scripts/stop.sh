@@ -34,7 +34,7 @@
 # port is reported and left alone — a stop script that killed whatever it found
 # on 8080 would eventually take out something you cared about.
 #
-# It never deletes data. The Docker volume and .localdata/ both survive; that is
+# It never deletes data. The Docker volume and ~/.lunicle/ both survive; that is
 # the point of them. To wipe:
 #
 #   ./scripts/container-down.sh --wipe   # the container's volume

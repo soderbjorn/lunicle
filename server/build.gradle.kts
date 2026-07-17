@@ -182,20 +182,28 @@ tasks.named<JavaExec>("run") {
     // (see DatabaseLocation.attachmentsDirectory), so naming this one path is
     // all it takes to get the same layout locally as in the container.
     //
-    // `.localdata/` at the repo root, gitignored, and deliberately NOT under
-    // build/ any more. It used to be, so that `./gradlew clean` discarded it —
-    // which was right when the payload was a counter and wiping cost nothing.
-    // It is wrong now: `clean` is what you run to fix a *build* problem, and it
+    // `~/.lunicle/`, and the two things it is NOT are the point.
+    //
+    // Not under build/: `clean` is what you run to fix a *build* problem, and it
     // would take every issue you had typed in with it, silently, as a side
-    // effect of an unrelated command. Wiping is now something you ask for by
-    // name: ./scripts/local-db.sh wipe.
+    // effect of an unrelated command. Wiping is something you ask for by name:
+    // ./scripts/local-db.sh wipe.
+    //
+    // Not in the repo either, which is where it used to be (`.localdata/`).
+    // Real data you typed in has no business inside a checkout: it rides along
+    // with every `rm -rf` of a clone, every fresh clone starts empty, and a
+    // gitignore entry is the only thing standing between it and a commit. The
+    // home directory is where a developer's own data already lives, and it
+    // survives all of that. Two checkouts now share one database — deliberately;
+    // if you want them apart, pass -PdatabasePath (or LUNICLE_LOCAL_DATA to the
+    // script).
     //
     // Also deliberately NOT the deployed default (/data/lunicle.db): a
     // developer machine has no such directory, and silently creating one at the
     // filesystem root would be rude. See resolveDatabaseLocation() in
     // Database.kt.
     val databasePath = providers.gradleProperty("databasePath")
-        .getOrElse(rootProject.layout.projectDirectory.file(".localdata/lunicle.db").asFile.absolutePath)
+        .getOrElse(File(System.getProperty("user.home"), ".lunicle/lunicle.db").absolutePath)
     systemProperty("lunicle.databasePath", databasePath)
 
     // OAuth credentials, passed by scripts/dev-local.sh from a gitignored .env

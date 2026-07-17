@@ -38,10 +38,12 @@ node_modules/
 !.claude/skills/
 .mcp.json
 
-# The local stand-in for Railway's volume: the SQLite file and the attachment
-# bytes a local run writes. Real data you typed in, and never something to
-# commit. Wipe it deliberately with ./scripts/local-db.sh wipe — note it is NOT
-# under build/, precisely so that `./gradlew clean` cannot take it with it.
+# The local stand-in for Railway's volume — the SQLite file and the attachment
+# bytes a local run writes — now lives at ~/.lunicle/ and so needs no entry
+# here. This one is kept for the checkouts that predate the move: the directory
+# is still on those disks with real issues in it, and un-ignoring it would
+# present a developer's own data as a pile of untracked files to commit. Delete
+# this line once no clone you care about still has one.
 .localdata/
 
 # Secrets — the local OAuth credentials the dev scripts source. The committed

@@ -10,18 +10,27 @@
 #   ./scripts/local-db.sh admin             # make yourself the admin
 #   ./scripts/local-db.sh wipe              # delete it; next run recreates it
 #
-# ── Why the database lives outside build/ ────────────────────────────────────
+# ── Why the database lives at ~/.lunicle ─────────────────────────────────────
 #
-# It used to be at server/build/lunicle.db, so that `./gradlew clean` discarded
-# it. That was right when the payload was a counter and wiping cost nothing. It
-# is wrong now: `clean` is something you run to fix a build problem, and it
-# would take every issue you had typed in with it — silently, as a side effect
-# of an unrelated command.
+# It has run away from two homes, for two different reasons, and both are worth
+# knowing before you move it again.
 #
-# So it lives at .localdata/ (gitignored), and wiping is a thing you ask for by
-# name, with this script. The `create` path is still worth exercising — it is
-# the one code path production runs exactly once, on a fresh volume, where
-# getting it wrong is most expensive — which is what `wipe` is for.
+# It was at server/build/lunicle.db, so that `./gradlew clean` discarded it.
+# That was right when the payload was a counter and wiping cost nothing. It is
+# wrong now: `clean` is something you run to fix a build problem, and it would
+# take every issue you had typed in with it — silently, as a side effect of an
+# unrelated command.
+#
+# Then it was at .localdata/ in the repo root, gitignored. Better, but still
+# your real data sitting inside a checkout: it goes with any `rm -rf` of the
+# clone, a second clone starts empty, and one gitignore line is all that keeps
+# it out of a commit.
+#
+# So it lives in your home directory, where your data already lives, and wiping
+# is a thing you ask for by name, with this script. The `create` path is still
+# worth exercising — it is the one code path production runs exactly once, on a
+# fresh volume, where getting it wrong is most expensive — which is what `wipe`
+# is for.
 #
 # ── What this is standing in for ─────────────────────────────────────────────
 #
@@ -35,11 +44,12 @@
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-# Kept in step with dev-local.sh and server/build.gradle.kts. Override to keep
-# several databases around — say, one mid-migration and one fresh.
-LOCAL_DATA_DIR="${LUNICLE_LOCAL_DATA:-$REPO_ROOT/.localdata}"
+# Kept in step with the databasePath default in server/build.gradle.kts — this
+# script and the server must resolve the same directory or `inspect` reports on
+# a file the server has never opened. Override to keep several databases around
+# — say, one mid-migration and one fresh. Note the default is per-USER, not
+# per-checkout: two clones share it unless you say otherwise here.
+LOCAL_DATA_DIR="${LUNICLE_LOCAL_DATA:-$HOME/.lunicle}"
 DB_PATH="$LOCAL_DATA_DIR/lunicle.db"
 ATTACHMENTS_DIR="$LOCAL_DATA_DIR/attachments"
 
@@ -347,8 +357,13 @@ cmd_wipe() {
   echo "which is the code path a fresh Railway volume takes, so it is worth watching."
 }
 
+# The usage block only: line 2 down to the first `── section ──` heading, which
+# is where the rationale starts. It used to be the fixed range 2,28 — which
+# spilled paragraphs of history onto the terminal of anyone who typed --help,
+# and truncated mid-sentence the moment the header above was edited. A line
+# number cannot know where the usage ends; the heading does.
 usage() {
-  sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^# ──/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in

@@ -173,11 +173,10 @@ data class RoleDescription(
  * A name and an id, like [UserOption], and for the same reason — no email, no
  * provider. The id is unavoidable: it is what a grant has to name.
  *
- * @property isAdmin whether this account is the instance admin. Rendered because
- *   an admin's checkboxes are meaningless — [se.soderbjorn.lunicle.AccessControl]
- *   says yes to an admin before it ever looks at a role — and a row of unticked
- *   boxes beside someone who can already do everything is a lie about what is in
- *   force.
+ * @property isAdmin whether this account is the instance admin. Sent because an
+ *   admin's checkboxes would be meaningless — [se.soderbjorn.lunicle.AccessControl]
+ *   says yes to an admin before it ever looks at a role — so the dialog gives the
+ *   row a sentence instead of boxes, and sorts it to the top.
  * @property isSelf whether this is the caller. The dialog shows it, like the
  *   impersonation menu does, so the table matches the user list an admin is
  *   looking at.

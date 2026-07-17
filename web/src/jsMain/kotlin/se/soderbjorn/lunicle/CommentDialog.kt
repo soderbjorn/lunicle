@@ -25,7 +25,10 @@ class CommentDialog(
     private lateinit var cancelButton: HTMLButtonElement
 
     fun mount(host: HTMLElement) {
-        val editorHost = element("div", "")
+        // The same host class the issue dialog uses, and for the same reason:
+        // it is what hands the editor the dialog's leftover height so the
+        // surface scrolls and the toolbar stays put. See .editor-host.
+        val editorHost = element("div", "editor-host")
         editor = MarkdownEditor(
             scope = scope,
             onChange = { viewModel.onBodyChanged(it) },

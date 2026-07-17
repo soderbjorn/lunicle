@@ -241,6 +241,12 @@ class ProjectDialog(
         row.appendChild(element("div", "member-name", member.name))
         member.note?.let { row.appendChild(element("p", "field-hint", it)) }
 
+        // An admin's row has no toggles — the note is the whole row. Returning
+        // before the box, rather than appending an empty one: .role-row carries a
+        // margin, and an empty one leaves a gap under the note that reads as a
+        // checkbox that failed to render.
+        if (member.roles.isEmpty()) return row
+
         val roles = element("div", "role-row")
         member.roles.forEach { role ->
             val box = checkbox { viewModel.onRoleToggled(member.userId, role.key, it) }

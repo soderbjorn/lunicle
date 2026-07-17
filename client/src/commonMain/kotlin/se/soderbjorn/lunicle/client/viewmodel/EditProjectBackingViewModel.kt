@@ -112,11 +112,11 @@ data class VocabularySection(
 /**
  * One role checkbox against one user.
  *
- * @property isEnabled false for the instance admin's row. Ticking it would write
- *   a row that grants nothing — `AccessControl` says yes to an admin before it
- *   ever looks at a role — so the box would appear to do something and would not.
- *   The server allows the write (see projectSettingsRoutes); this declines to ask
- *   for it, which is what an affordance is.
+ * Never built for an instance admin — their row carries no toggles at all, only
+ * the note saying why. See [State.members].
+ *
+ * @property isEnabled false while a write is in flight, so a second click cannot
+ *   be sent from a state the first has already invalidated.
  */
 data class RoleToggle(
     val key: String,
@@ -128,10 +128,10 @@ data class RoleToggle(
 /**
  * One account, and what it may do here.
  *
- * @property note the sentence that replaces the checkboxes' meaning for this row
+ * @property note the sentence that stands in place of the checkboxes for this row
  *   — "Admin — can do everything in every project" — or null for an ordinary
- *   user. It is not decoration: a row of unticked boxes beside someone who can
- *   already do everything is a lie about what is in force.
+ *   user. Where there is a note, [roles] is empty: the note is not an annotation
+ *   on the boxes, it is what the row says instead of them.
  */
 data class MemberRowState(
     val userId: Long,
@@ -341,28 +341,43 @@ class EditProjectBackingViewModel(
             )
         }.orEmpty()
 
-        /** Every account, and what it holds here. */
+        /**
+         * Every account, and what it holds here.
+         *
+         * Admins first, and `sortedByDescending` because it is stable — the
+         * server's order survives among the rest. They lead because they are the
+         * answer to "who can do this?" that outranks every row below them: read
+         * top-down, the table now states the blanket permission before the
+         * granted ones, which is the order they actually apply in.
+         */
         val members: List<MemberRowState> get() = settings?.let { loaded ->
-            loaded.members.map { member ->
+            loaded.members.sortedByDescending { it.isAdmin }.map { member ->
                 MemberRowState(
                     userId = member.userId,
                     name = if (member.isSelf) "${member.name} (you)" else member.name,
                     note = when {
-                        member.isAdmin -> "Admin — can already do everything, everywhere. " +
-                            "These are what they would keep if that changed."
+                        member.isAdmin -> "Admin — can do everything in every project."
                         else -> null
                     },
-                    roles = loaded.roles.map { role ->
-                        RoleToggle(
-                            key = role.key,
-                            description = role.description,
-                            isOn = role.key in member.roleKeys,
-                            // Not the admin's own row, and not while a write is in
-                            // flight: two clicks on the same box before the first
-                            // answer arrives would send the second from a state
-                            // that is already stale.
-                            isEnabled = !member.isAdmin && !isBusy,
-                        )
+                    // No boxes at all on an admin's row, rather than boxes that
+                    // are ticked-and-dead or unticked-and-dead. Either way they
+                    // describe a grant that decides nothing: AccessControl says
+                    // yes to an admin before it looks at a role. The note is the
+                    // whole truth of the row, so it is the only thing on it.
+                    roles = if (member.isAdmin) {
+                        emptyList()
+                    } else {
+                        loaded.roles.map { role ->
+                            RoleToggle(
+                                key = role.key,
+                                description = role.description,
+                                isOn = role.key in member.roleKeys,
+                                // Not while a write is in flight: two clicks on the
+                                // same box before the first answer arrives would send
+                                // the second from a state that is already stale.
+                                isEnabled = !isBusy,
+                            )
+                        }
                     },
                 )
             }
