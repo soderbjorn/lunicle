@@ -1308,6 +1308,20 @@ html { background: var(--bg); }
   border: 1px solid var(--border-hi);
 }
 
+/* The corner close button. Absolute, not a flex child: .lightbox centres its
+   column, and a button left in that flow would sit above the image rather than
+   over the corner. .lightbox's `position: fixed` is the positioned ancestor
+   this resolves against. `cursor: default` overrides the overlay's zoom-out so
+   the button reads as a button, not more backdrop. */
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  cursor: pointer;
+}
+
+.icon-close { width: 18px; height: 18px; }
+
 .lightbox-hint {
   margin: 0;
   color: var(--green-dim);
