@@ -122,6 +122,7 @@ data class IssueSummary(
     val labelIds: List<Long> = emptyList(),
     val componentIds: List<Long> = emptyList(),
     val authorName: String? = null,
+    val agentName: String? = null,
     val createdAt: Long = 0,
     val updatedAt: Long = 0,
     val canEdit: Boolean = false,
@@ -158,6 +159,10 @@ data class BoardState(
  *   or null once the author's account is gone. The client never sees a user id —
  *   it has nothing to do with one, and it would be one more identifier on the
  *   wire for no benefit.
+ * @property agentName the agent that posted it on the author's behalf, or null
+ *   when a human did. Shown as a badge beside [authorName], never in place of it:
+ *   the comment is still the author's, and this says an agent held the pen. Only
+ *   the MCP tools ever set it.
  * @property canEdit whether this caller may change or delete it. Authorship or
  *   admin; see `AccessControl.canEditComment`.
  */
@@ -166,6 +171,7 @@ data class CommentView(
     val id: Long,
     val body: String,
     val authorName: String? = null,
+    val agentName: String? = null,
     val createdAt: Long = 0,
     val canEdit: Boolean = false,
 )
@@ -193,6 +199,7 @@ data class IssueDetail(
     val labelIds: List<Long> = emptyList(),
     val componentIds: List<Long> = emptyList(),
     val authorName: String? = null,
+    val agentName: String? = null,
     val createdAt: Long = 0,
     val updatedAt: Long = 0,
     val comments: List<CommentView> = emptyList(),

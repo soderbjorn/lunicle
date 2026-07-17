@@ -143,6 +143,8 @@ class IssueBackingViewModel(
         val labelIds: Set<Long> = emptySet(),
         val componentIds: Set<Long> = emptySet(),
         val authorName: String? = null,
+        /** The agent that filed this, or null when a human did. Rendered as a badge beside the byline. */
+        val agentName: String? = null,
         val createdAt: Long = 0,
         val comments: List<CommentView> = emptyList(),
         val canEdit: Boolean = false,
@@ -272,6 +274,17 @@ class IssueBackingViewModel(
             "${authorName ?: "A deleted account"} · ${formatTimestamp(createdAt)}"
 
         /**
+         * The agent badge's text, or null when a human filed the issue.
+         *
+         * Beside the byline, never inside it: the issue is still the author's, and
+         * this is the separate fact that an agent held the pen. The word "Agent"
+         * is in the text and not left to the icon alone — the requirement is that a
+         * reader can see *at a glance* a human did not type this, and an icon a
+         * reader has to learn is not at-a-glance. See [commentAgentBadge].
+         */
+        val agentBadge: String? get() = agentName?.let { "Agent · $it" }
+
+        /**
          * One comment's attribution line: "Robert · 17 Jul 2026, 14:32".
          *
          * A function on State rather than a property on [CommentView], because
@@ -286,6 +299,9 @@ class IssueBackingViewModel(
          */
         fun commentByline(comment: CommentView): String =
             "${comment.authorName ?: "A deleted account"} · ${formatTimestamp(comment.createdAt)}"
+
+        /** One comment's agent badge text, or null when a human wrote it. See [agentBadge]. */
+        fun commentAgentBadge(comment: CommentView): String? = comment.agentName?.let { "Agent · $it" }
     }
 
     /** Fetch the issue. Called once by the view when it mounts. */
@@ -323,6 +339,7 @@ class IssueBackingViewModel(
         labelIds = labelIds.toSet(),
         componentIds = componentIds.toSet(),
         authorName = authorName,
+        agentName = agentName,
         createdAt = createdAt,
         comments = comments,
         canEdit = canEdit,

@@ -448,6 +448,7 @@ private suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: U
                 labelIds = labelsByIssue[issue.id].orEmpty(),
                 componentIds = componentsByIssue[issue.id].orEmpty(),
                 authorName = issue.author.displayName(names),
+                agentName = issue.agentName,
                 createdAt = issue.createdAt,
                 updatedAt = issue.updatedAt,
                 canEdit = access.canEditIssue(user, issue),
@@ -695,6 +696,7 @@ private suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user:
         labelIds = issues.labelsFor(issue.id),
         componentIds = issues.componentsFor(issue.id),
         authorName = issue.author.displayName(names),
+        agentName = issue.agentName,
         createdAt = issue.createdAt,
         updatedAt = issue.updatedAt,
         comments = commentRows.map { comment ->
@@ -702,6 +704,7 @@ private suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user:
                 id = comment.id,
                 body = comment.body,
                 authorName = comment.author.displayName(names),
+                agentName = comment.agentName,
                 createdAt = comment.createdAt,
                 canEdit = access.canEditComment(user, comment),
             )

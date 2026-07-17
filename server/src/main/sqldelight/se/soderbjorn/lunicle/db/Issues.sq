@@ -118,6 +118,16 @@ CREATE TABLE issues (
     -- edit their own issue because there is no "they" here to be.
     created_by_external TEXT,
 
+    -- The agent that filed this on the author's behalf, or NULL when a human did
+    -- — a person typing in the web app is not one, and only the MCP tools ever
+    -- set it. Deliberately NOT a third kind of author: created_by still names
+    -- whose account the issue was filed under, and this is the orthogonal fact
+    -- that an agent held the pen for them. So it is exempt from the CHECK below
+    -- and rides alongside either author column — an agent acting for a real
+    -- account, or (on a backfill) for an imported external name. Rendered as a
+    -- badge beside the author, never in place of them; see BoardRoutes.
+    agent_name TEXT,
+
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
     -- Composite: a status must belong to THIS issue's project. No ON DELETE —
@@ -161,11 +171,11 @@ CREATE TABLE issues (
 -- one that demands a resolution. It defaults to NULL, which is the correct
 -- answer for every issue that is not closed.
 insert:
-INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by, created_by_external)
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by, created_by_external, agent_name)
 VALUES (
     ?,
     (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project_id = ?),
-    ?, ?, ?, ?, 1, ?, ?, ?, ?
+    ?, ?, ?, ?, 1, ?, ?, ?, ?, ?
 )
 RETURNING id, number;
 
@@ -213,7 +223,7 @@ DELETE FROM issues WHERE id = ?;
 
 findById:
 SELECT id, project_id, number, title, description, status_id, priority_id, resolution_id,
-       is_draft, created_at, updated_at, sort_order, created_by, created_by_external
+       is_draft, created_at, updated_at, sort_order, created_by, created_by_external, agent_name
 FROM issues WHERE id = ?;
 
 -- How many issues hold each of this project's statuses — the count the settings
@@ -294,7 +304,7 @@ GROUP BY resolution_id;
 forProject:
 SELECT i.id, i.project_id, i.number, i.title, i.description, i.status_id, i.priority_id,
        i.resolution_id, i.is_draft, i.created_at, i.updated_at, i.sort_order, i.created_by,
-       i.created_by_external
+       i.created_by_external, i.agent_name
 FROM issues i
 JOIN priorities p ON p.id = i.priority_id
 LEFT JOIN resolutions r ON r.id = i.resolution_id

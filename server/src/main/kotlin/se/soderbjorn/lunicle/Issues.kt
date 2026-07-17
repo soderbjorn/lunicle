@@ -44,6 +44,14 @@ data class IssueRecord(
     /** Manual rank within this issue's board group; 0 means unranked. See Issues.sq. */
     val sortOrder: Long,
     val author: Author,
+    /**
+     * The agent that filed this on the author's behalf, or null when a human did.
+     *
+     * Orthogonal to [author], not a fourth kind of it: the issue is still the
+     * author's, and this records only that an agent held the pen for them. Set by
+     * the MCP tools; a person filing in the web app is not an agent. See Issues.sq.
+     */
+    val agentName: String?,
 )
 
 /** Reads and writes `issues`, `issue_labels` and `issue_components`. */
@@ -63,6 +71,8 @@ class IssueStore(
      *   history over MCP passes it; see [AccessControl.canAttributeWrites]. It is
      *   bound to `updated_at` as well, for the reason below, so a backfilled issue
      *   sorts on the board where its history says it belongs rather than at the top.
+     * @param agentName the agent that filed it on the author's behalf, or null when
+     *   a human did. Only the MCP path passes a name; the web path leaves it null.
      * @return the new issue's id and its FOO-<number>.
      */
     suspend fun insertDraft(
@@ -72,6 +82,7 @@ class IssueStore(
         priorityId: Long,
         author: Author,
         createdAt: Long? = null,
+        agentName: String? = null,
     ): Pair<Long, Long> = withContext(DatabaseDispatcher) {
         // The number is allocated inside the INSERT, by MAX+1, so a gap after a
         // cancelled draft is possible and a reused number is not. See Issues.sq.
@@ -86,7 +97,7 @@ class IssueStore(
         val row = database.issuesQueries
             .insert(
                 projectId, projectId, title, "", statusId, priorityId, timestamp, timestamp,
-                author.accountId, author.externalName,
+                author.accountId, author.externalName, agentName,
             )
             .executeAsOne()
         row.id to row.number
@@ -312,4 +323,5 @@ private fun se.soderbjorn.lunicle.db.Issues.toRecord(): IssueRecord = IssueRecor
     updatedAt = updated_at,
     sortOrder = sort_order,
     author = authorOf(created_by, created_by_external),
+    agentName = agent_name,
 )

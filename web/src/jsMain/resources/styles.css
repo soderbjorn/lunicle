@@ -354,6 +354,9 @@ html { background: var(--bg); }
    .account-btn inside .account's 30px row — 16 + 10 padding + 2 border = 28. */
 .icon-profile { width: 16px; height: 16px; }
 .icon-logo { width: 18px; height: 18px; color: var(--green-hi); }
+/* Sits inside .agent-badge beside 12px text; 13px keeps the drawing level with
+   the cap height rather than towering over it. Colour comes from the badge. */
+.icon-agent { width: 13px; height: 13px; }
 
 /* ============================================================
    Buttons
@@ -654,6 +657,42 @@ html { background: var(--bg); }
    issue is finished business — it should not be the brightest thing on the
    card. */
 .tag-resolution { border-color: var(--border); color: var(--green-dim); }
+
+/* The "made by an agent" badge, on an issue byline or a comment head.
+
+   Deliberately NOT a .tag. The tags catalogue what an issue IS — its labels, its
+   status — and share the outlined, unfilled treatment for that reason. This flags
+   where a row came FROM, which is a louder thing to say, so it is filled and
+   carries an icon the tags do not.
+
+   The colour is a violet the rest of the palette never reaches. Green, blue and
+   yellow are all "a human working"; a fourth hue that belongs to nothing else is
+   how the eye is told, before it reads a word, that this row was not typed by
+   hand. Not a --token because there is no theme slot for "machine" and inventing
+   one would let a theme quietly turn the signal green — but it still has to hold
+   in both themes, so `light-dark()` picks the shade off the `color-scheme` the
+   toolkit sets on :root: a deep violet on a light board, a bright one on a dark
+   one. A single fixed violet washed out on whichever background it was not tuned
+   for. The icon takes `currentColor`, so it follows the text either way. */
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 7px 2px 5px;
+  border-radius: 3px;
+  border: 1px solid light-dark(rgba(124, 58, 237, .55), rgba(185, 140, 255, .5));
+  background: light-dark(rgba(124, 58, 237, .1), rgba(185, 140, 255, .13));
+  color: light-dark(#6d28d9, #c4a2ff);
+  white-space: nowrap;
+}
+.agent-badge-label { line-height: 1; }
+
+/* On the issue, the badge is its own line under the byline. Pulled up close to
+   the byline it belongs to (which carries 14px below it), and carrying that 14px
+   itself so the fields below keep their spacing whether or not the badge is
+   shown. */
+.issue-fields > .agent-badge { margin: -8px 0 14px; }
 
 .board-empty { color: var(--green-dim); font-size: 13px; }
 
@@ -1349,10 +1388,15 @@ html { background: var(--bg); }
    The border and the 20px gap carry the card shape on their own. */
 .comment { border: 1px solid var(--border); border-radius: 4px; padding: 10px; }
 .comment-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+/* Author and its agent badge, grouped on the left. This carries the flex the
+   author span used to, so the Edit/Delete buttons still land far right while the
+   badge stays beside the name it names. min-width:0 lets the group shrink rather
+   than shoving the buttons off the edge on a narrow modal. */
+.comment-meta { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
 /* The byline is author AND timestamp in one span (see commentByline) — they
    cannot be sized apart without splitting it, and at 11px they read as fine
    print beside 15px body text. */
-.comment-author { color: var(--green-hi); font-size: 13px; flex: 1; }
+.comment-author { color: var(--green-hi); font-size: 13px; }
 .comment-body p:last-child { margin-bottom: 0; }
 
 /* ============================================================

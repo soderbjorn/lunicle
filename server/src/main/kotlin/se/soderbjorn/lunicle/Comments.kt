@@ -22,6 +22,10 @@ import se.soderbjorn.lunicle.db.LunicleDatabase
  *   flag covers the closed tab.
  * @property author who wrote it: an account, an imported name, or nobody. See
  *   [Author].
+ * @property agentName the agent that wrote it on the author's behalf, or null
+ *   when a human did. Orthogonal to [author], not a fourth kind of it — the
+ *   comment is still the author's, and this only records that an agent held the
+ *   pen. Set by the MCP tools; a human commenting in the web app is not an agent.
  */
 data class CommentRecord(
     val id: Long,
@@ -29,6 +33,7 @@ data class CommentRecord(
     val body: String,
     val createdAt: Long,
     val author: Author,
+    val agentName: String?,
     val isDraft: Boolean,
 )
 
@@ -45,14 +50,17 @@ class CommentStore(
      *   MCP passes it; see [AccessControl.canAttributeWrites]. A comment has no
      *   `updated_at` to keep in step, so unlike an issue there is nothing else to
      *   bind it to — `publish` below deliberately leaves `created_at` alone.
+     * @param agentName the agent that wrote it on the author's behalf, or null when
+     *   a human did. Only the MCP path passes a name; the web path leaves it null.
      */
     suspend fun insertDraft(
         issueId: Long,
         author: Author,
         createdAt: Long? = null,
+        agentName: String? = null,
     ): Long = withContext(DatabaseDispatcher) {
         database.commentsQueries
-            .insert(issueId, "", createdAt ?: now(), author.accountId, author.externalName)
+            .insert(issueId, "", createdAt ?: now(), author.accountId, author.externalName, agentName)
             .executeAsOne()
     }
 
@@ -84,5 +92,6 @@ private fun se.soderbjorn.lunicle.db.Comments.toRecord(): CommentRecord = Commen
     body = body,
     createdAt = created_at,
     author = authorOf(created_by, created_by_external),
+    agentName = agent_name,
     isDraft = is_draft != 0L,
 )

@@ -135,6 +135,38 @@ const val CHECK_SVG = """
 </svg>
 """
 
+/**
+ * The agent mark — a robot's head — flagging an issue or comment an agent made.
+ *
+ * Hand-drawn to this file's rule rather than an emoji robot, for exactly the
+ * reason the file header gives: a 🤖 renders in the OS's own colour, weight and
+ * baseline, none of which a stylesheet can reach, and it would sit in a badge
+ * whose whole job is to look deliberate. This one takes `currentColor` from the
+ * badge around it like every other icon here.
+ *
+ * Construction on the usual 24×24 grid, kept plain so it still reads at the ~13px
+ * a badge renders it: an antenna (a stalk from the crown to a dot above it), a
+ * rounded-rect head, two dot eyes, and a straight mouth. The dot eyes and the
+ * antenna are what make the head read as a machine rather than a face — a robot
+ * is a face with the humanity drawn out of it, so the eyes are points, not
+ * almonds, and there is a bolt on top.
+ */
+private const val BOT_SVG = """
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3 v2.5"/>
+  <circle cx="12" cy="2.25" r="1"/>
+  <rect x="4.5" y="5.5" width="15" height="12" rx="2.5"/>
+  <circle cx="9.5" cy="11" r="1.1"/>
+  <circle cx="14.5" cy="11" r="1.1"/>
+  <path d="M9.5 14.25 h5"/>
+</svg>
+"""
+
+/** The agent mark, for the "made by an agent" badge on an issue or comment. */
+fun agentIcon(): HTMLElement = icon(BOT_SVG, "icon-agent")
+
 /** The cogwheel, for the project-settings button. */
 fun gearIcon(): HTMLElement = icon(GEAR_SVG, "icon-gear")
 

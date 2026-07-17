@@ -13,6 +13,11 @@ CREATE TABLE comments (
     -- An author with no account, for imported history. Exclusive with
     -- created_by, same reasoning as issues — the long version lives there.
     created_by_external TEXT,
+    -- The agent that wrote this on the author's behalf, or NULL when a human did.
+    -- Not a third author: created_by still names whose account the comment was
+    -- posted under, and this records that an agent held the pen. Same column,
+    -- same reasoning, as issues — the long version lives there.
+    agent_name TEXT,
     -- Same reason as issues: the comment modal supports inline image upload, so
     -- the row must exist before the image does. Cancel deletes it; the flag
     -- covers the crash.
@@ -24,8 +29,8 @@ CREATE TABLE comments (
 );
 
 insert:
-INSERT INTO comments (issue_id, body, created_at, created_by, created_by_external)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO comments (issue_id, body, created_at, created_by, created_by_external, agent_name)
+VALUES (?, ?, ?, ?, ?, ?)
 RETURNING id;
 
 publish:
@@ -38,10 +43,10 @@ delete:
 DELETE FROM comments WHERE id = ?;
 
 findById:
-SELECT id, issue_id, body, created_at, created_by, created_by_external, is_draft
+SELECT id, issue_id, body, created_at, created_by, created_by_external, agent_name, is_draft
 FROM comments WHERE id = ?;
 
 forIssue:
-SELECT id, issue_id, body, created_at, created_by, created_by_external, is_draft
+SELECT id, issue_id, body, created_at, created_by, created_by_external, agent_name, is_draft
 FROM comments WHERE issue_id = ? AND is_draft = 0
 ORDER BY created_at;

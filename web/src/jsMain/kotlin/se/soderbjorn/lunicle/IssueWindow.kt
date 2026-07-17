@@ -52,6 +52,10 @@ class IssueWindow(
     private lateinit var titleField: HTMLInputElement
     private lateinit var readTitle: HTMLElement
     private lateinit var byline: HTMLElement
+    // The "made by an agent" badge under the byline, and the label inside it that
+    // carries the agent's name. Hidden unless the issue has an agentName; see render.
+    private lateinit var agentBadge: HTMLElement
+    private lateinit var agentBadgeLabel: HTMLElement
     private lateinit var statusSelect: Dropdown
     private lateinit var statusRead: HTMLElement
     private lateinit var prioritySelect: Dropdown
@@ -91,6 +95,11 @@ class IssueWindow(
     fun mount(host: HTMLElement) {
         readTitle = element("h3", "issue-title")
         byline = element("p", "issue-byline")
+        // Icon plus name, so the badge states "agent" both ways — the drawn mark
+        // for the glance and the word for the read. See IssueBackingViewModel.agentBadge.
+        agentBadgeLabel = element("span", "agent-badge-label")
+        agentBadge = element("span", "agent-badge")
+        agentBadge.children(agentIcon(), agentBadgeLabel)
         titleField = textField("Short description") { viewModel.onTitleChanged(it) }
 
         statusSelect = Dropdown("field") { viewModel.onStatusChanged(it) }
@@ -159,6 +168,7 @@ class IssueWindow(
         fields.children(
             readTitle,
             byline,
+            agentBadge,
             element("label", "field-label field-label-edit", "Title"),
             titleField,
             statusPriorityRow,
@@ -219,6 +229,12 @@ class IssueWindow(
         readTitle.visible(!state.isEditing)
         byline.setTextIfChanged(state.byline)
         byline.visible(!state.isEditing && !state.isDraft)
+
+        // Only on an agent-filed issue, and only in read mode — same as the byline
+        // it sits under. The label drives the visibility: no agent, no badge.
+        val agentBadgeText = state.agentBadge
+        agentBadgeLabel.setTextIfChanged(agentBadgeText ?: "")
+        agentBadge.visible(agentBadgeText != null && !state.isEditing && !state.isDraft, displayValue = "inline-flex")
 
         body.classList.toggle("editing", state.isEditing)
 
@@ -345,9 +361,20 @@ class IssueWindow(
     private fun renderComment(state: IssueBackingViewModel.State, comment: CommentView): HTMLElement {
         val el = element("article", "comment")
         val head = element("div", "comment-head")
-        head.appendChild(
-            element("span", "comment-author", state.commentByline(comment)),
-        )
+        // Author and, when an agent wrote it, the badge, as one left-aligned group
+        // — the group takes the flex space so the Edit/Delete buttons still sit far
+        // right, and the badge hugs the name it is about rather than drifting to the
+        // opposite edge. Rebuilt with the comment each render, so a plain
+        // conditional append is enough — no persistent element to toggle as there
+        // is for the issue byline.
+        val meta = element("div", "comment-meta")
+        meta.appendChild(element("span", "comment-author", state.commentByline(comment)))
+        state.commentAgentBadge(comment)?.let { badgeText ->
+            val badge = element("span", "agent-badge")
+            badge.children(agentIcon(), element("span", "agent-badge-label", badgeText))
+            meta.appendChild(badge)
+        }
+        head.appendChild(meta)
         if (comment.canEdit) {
             head.children(
                 button("Edit", "link-btn") {

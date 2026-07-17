@@ -236,6 +236,16 @@ internal val MCP_INSTRUCTIONS = """
     it afterwards except an admin. That is a consequence of there being no account
     to own it, not an oversight, and it applies to imported attachments too.
 
+    Saying you are an agent: create_issue and add_comment take an optional
+    `agent_name`, and unlike the backfill parameters above this is one you should
+    NORMALLY SEND. Put your own name in it — the assistant or product you are — so
+    that the board shows clearly an agent filed the issue or wrote the comment
+    rather than a human typing it by hand. It is not admin-only and does not change
+    who the issue belongs to: it rides alongside the user's own account as a label.
+    Leave it out only when the user has explicitly asked you to act purely as them
+    with no agent attribution — that is the override, and it is the only reason to
+    omit it.
+
     Writing issues well: the title is one line and is what people see on the card,
     so make it a statement of the problem rather than a category. The description
     is markdown and is the place for detail — steps, context, what was expected.
@@ -358,6 +368,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "resolution" to stringProp("Required only if `status` is one with requiresResolution."),
                 "labels" to stringArrayProp("Label names from get_board."),
                 "components" to stringArrayProp("Component names from get_board."),
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
@@ -405,6 +416,7 @@ class McpTools(private val deps: BoardDependencies) {
             inputSchema = schema(
                 "issue_id" to integerProp("The issue to comment on."),
                 "body" to stringProp("The comment, in markdown."),
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
@@ -575,6 +587,9 @@ class McpTools(private val deps: BoardDependencies) {
                                     componentsByIssue[issue.id].orEmpty().forEach { id -> componentNames[id]?.let { add(it) } }
                                 }
                                 put("author", issue.author.displayName(authors))
+                                // Present only on issues an agent filed. Says a
+                                // human did not type this — see resolveAgentName.
+                                issue.agentName?.let { put("agentName", it) }
                                 put("updatedAt", issue.updatedAt)
                                 // Sent for the same reason the web board sends it:
                                 // editing is per issue — authorship is one of the
@@ -625,6 +640,7 @@ class McpTools(private val deps: BoardDependencies) {
                     issueComponents.forEach { id -> componentNames[id]?.let { add(it) } }
                 }
                 put("author", issue.author.displayName(authors))
+                issue.agentName?.let { put("agentName", it) }
                 put("createdAt", issue.createdAt)
                 put("updatedAt", issue.updatedAt)
                 put("canEdit", canEdit)
@@ -636,6 +652,7 @@ class McpTools(private val deps: BoardDependencies) {
                                 put("id", comment.id)
                                 put("body", comment.body)
                                 put("author", comment.author.displayName(authors))
+                                comment.agentName?.let { put("agentName", it) }
                                 put("createdAt", comment.createdAt)
                             },
                         )
@@ -674,6 +691,12 @@ class McpTools(private val deps: BoardDependencies) {
         val attribution = resolveAttribution(user, arguments)
             .getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
 
+        // Orthogonal to attribution and not gated by it: an agent labelling its own
+        // writes is the ordinary case, not the admin-only act of writing as someone
+        // else. See [resolveAgentName].
+        val agentName = resolveAgentName(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
+
         val title = arguments.string("title") ?: return refuse("An issue needs a title.")
         if (title.length > MAX_MCP_TITLE_LENGTH) return refuse("That title is too long.")
 
@@ -707,6 +730,7 @@ class McpTools(private val deps: BoardDependencies) {
             project.id,
             attribution.author,
             attribution.at,
+            agentName,
         )
         val issue = deps.issues.findById(issueId)
             ?: return refuse("The issue could not be created.")
@@ -856,12 +880,15 @@ class McpTools(private val deps: BoardDependencies) {
         }
         val attribution = resolveAttribution(user, arguments)
             .getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
+        val agentName = resolveAgentName(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
         val body = arguments.string("body") ?: return refuse("A comment needs something in it.")
 
         val commentId = deps.issueRepository.createCommentDraft(
             issue.id,
             attribution.author,
             attribution.at,
+            agentName,
         )
         try {
             deps.issueRepository.saveComment(commentId, body)
@@ -1083,6 +1110,35 @@ class McpTools(private val deps: BoardDependencies) {
         }
 
         return Result.success(Attribution(author = author, at = at))
+    }
+
+    /**
+     * The agent's own name for a write it is making, or null.
+     *
+     * Nothing like [resolveAttribution]'s ceremony, and deliberately: this is not
+     * a permission and asks no question of [AccessControl]. An agent naming itself
+     * on the row it writes is the ordinary, encouraged case — the whole point is
+     * that a reader can see a human did not type this — where writing *as somebody
+     * else* is the admin-only act that [resolveAttribution] guards. So there is no
+     * "did they ask, may they" here; there is only a value, trimmed, with an upper
+     * bound so a runaway string cannot become a row nobody can read past.
+     *
+     * Absent, blank and null all collapse to null — the override the instructions
+     * describe: an agent told to file purely as the user simply leaves it out, and
+     * the badge does not appear. There is nothing to refuse for its absence.
+     */
+    private fun resolveAgentName(arguments: JsonObject): Result<String?> {
+        val name = arguments.string(AGENT_NAME_ARGUMENT)?.trim()?.takeIf { it.isNotBlank() }
+            ?: return Result.success(null)
+        if (name.length > MAX_AGENT_NAME_LENGTH) {
+            return Result.failure(
+                ResolutionRefusal(
+                    "`$AGENT_NAME_ARGUMENT` is too long — keep it under $MAX_AGENT_NAME_LENGTH " +
+                        "characters. It is a name, not a description of what you did.",
+                ),
+            )
+        }
+        return Result.success(name)
     }
 
     /**
@@ -1331,6 +1387,35 @@ private const val AUTHOR_ARGUMENT = "author"
 private const val AUTHOR_EXTERNAL_ARGUMENT = "author_external"
 private const val CREATED_AT_ARGUMENT = "created_at"
 private const val UPDATED_AT_ARGUMENT = "updated_at"
+private const val AGENT_NAME_ARGUMENT = "agent_name"
+
+/**
+ * How long an [AGENT_NAME_ARGUMENT] may be.
+ *
+ * A name, not a sentence. Generous enough for "Acme Support Assistant (v2)" and
+ * short enough that a model which mistook the field for a changelog is refused
+ * rather than filling a badge with a paragraph. See [McpTools.resolveAgentName].
+ */
+private const val MAX_AGENT_NAME_LENGTH = 80
+
+/**
+ * Shared by `create_issue` and `add_comment`: one description of `agent_name`.
+ *
+ * The one write parameter here that an agent is meant to send on the ordinary
+ * path rather than avoid — so the description leads with *do*, and names the
+ * override rather than leaving the model to infer there is one. Unlike `author`,
+ * it is not admin-only and changes nothing about ownership, which the last line
+ * says out loud so a model does not lump it in with the backfill parameters above
+ * and shy away from it.
+ */
+private const val AGENT_NAME_PROP_DESCRIPTION =
+    "Your own name as the agent doing this on the user's behalf — for example the assistant " +
+        "or product you are. NORMALLY SET IT: it is how the board shows, clearly, that an agent " +
+        "filed this rather than a human typing by hand, and that is the expected default for a " +
+        "write made through this MCP server. Omit it only when you have been explicitly asked to " +
+        "act purely as the user with no agent attribution. This is NOT admin-only and does not " +
+        "change who the issue or comment belongs to — it rides alongside the user's own account " +
+        "as a label, nothing more."
 
 /** Shared by every tool that takes it: one description of `author`, not several that drift. */
 private const val AUTHOR_PROP_DESCRIPTION =

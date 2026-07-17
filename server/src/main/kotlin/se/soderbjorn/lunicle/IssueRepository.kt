@@ -50,6 +50,8 @@ class IssueRepository(
      * @param createdAt when the issue should claim to have been written, or null
      *   for now. Only an admin backfilling history over MCP passes it, and it must
      *   pass the same value to [save] — see that function.
+     * @param agentName the agent filing on the author's behalf, or null when a
+     *   human is. Only the MCP tools pass it; the web route leaves it null.
      * @return the new issue's id and its number.
      * @throws IllegalStateException if the project has no statuses or no
      *   priorities at all. That would mean [ProjectRepository.create] was
@@ -61,6 +63,7 @@ class IssueRepository(
         projectId: Long,
         author: Author,
         createdAt: Long? = null,
+        agentName: String? = null,
     ): Pair<Long, Long> {
         val first = statuses.firstForProject(projectId) ?: error(
             "Project $projectId has no statuses, so it cannot take an issue. Every project gets " +
@@ -78,6 +81,7 @@ class IssueRepository(
             priorityId = priority.id,
             author = author,
             createdAt = createdAt,
+            agentName = agentName,
         )
     }
 
@@ -140,9 +144,15 @@ class IssueRepository(
      *
      * @param createdAt when it should claim to have been written, or null for now.
      *   The backfill path's only lever here; see [CommentStore.insertDraft].
+     * @param agentName the agent commenting on the author's behalf, or null when a
+     *   human is. Only the MCP tools pass it; the web route leaves it null.
      */
-    suspend fun createCommentDraft(issueId: Long, author: Author, createdAt: Long? = null): Long =
-        comments.insertDraft(issueId, author, createdAt)
+    suspend fun createCommentDraft(
+        issueId: Long,
+        author: Author,
+        createdAt: Long? = null,
+        agentName: String? = null,
+    ): Long = comments.insertDraft(issueId, author, createdAt, agentName)
 
     /** Save a comment's body and publish it. Same reasoning as [save]. */
     suspend fun saveComment(id: Long, body: String) {
