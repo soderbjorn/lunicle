@@ -3,7 +3,7 @@ kotlin = "2.3.20"
 # darkness-toolkit UI shell. Resolved from the committed libs-repo (see
 # settings.gradle.kts); a sibling darkness-toolkit checkout transparently
 # substitutes these with project builds during development.
-darkness = "0.2.35"
+darkness = "0.2.36"
 ktor = "3.4.1"
 kotlinx-coroutines = "1.10.2"
 kotlinx-serialization = "1.9.0"
