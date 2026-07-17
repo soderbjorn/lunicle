@@ -20,6 +20,10 @@ kotlin {
             implementation(projects.clientServer)
             implementation(projects.client)
             implementation(libs.kotlinx.coroutines.core)
+            // The darkness-toolkit web shell: app frame, top bar, floating
+            // windows, theming. toolkit-core rides in transitively (api).
+            implementation(libs.darkness.core)
+            implementation(libs.darkness.web)
         }
         // The first tests in this module, and they need a browser rather than a
         // JVM: the serialiser reads a real DOM, which is the whole point of it —

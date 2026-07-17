@@ -59,7 +59,7 @@ class ProjectDialog(
     private lateinit var nameField: HTMLInputElement
     private lateinit var prefixField: HTMLInputElement
     private lateinit var prefixHint: HTMLElement
-    private lateinit var publicBox: HTMLInputElement
+    private lateinit var publicBox: Toggle
     private lateinit var validationElement: HTMLElement
     private lateinit var errorElement: HTMLElement
     private lateinit var okButton: HTMLElement
@@ -100,14 +100,13 @@ class ProjectDialog(
         nameField = textField { viewModel.onNameChanged(it) }
         prefixField = textField { viewModel.onPrefixChanged(it) }
         prefixHint = element("p", "field-hint")
-        publicBox = checkbox { viewModel.onPublicChanged(it) }
+        publicBox = Toggle { viewModel.onPublicChanged(it) }
 
         validationElement = element("p", "field-validation")
         errorElement = element("p", "modal-error")
         errorElement.setAttribute("role", "status")
 
-        val publicRow = element("label", "checkbox-row")
-        publicRow.children(publicBox, element("span", "", "Public — anyone can read this project's issues without signing in"))
+        val publicRow = toggleRow(publicBox, "Public — anyone can read this project's issues without signing in")
 
         settingsElement = element("div", "project-settings")
         membersElement = element("div", "member-list")
@@ -242,19 +241,17 @@ class ProjectDialog(
         member.note?.let { row.appendChild(element("p", "field-hint", it)) }
 
         // An admin's row has no toggles — the note is the whole row. Returning
-        // before the box, rather than appending an empty one: .role-row carries a
-        // margin, and an empty one leaves a gap under the note that reads as a
-        // checkbox that failed to render.
+        // before the toggle, rather than appending an empty one: .role-row carries
+        // a margin, and an empty one leaves a gap under the note that reads as a
+        // control that failed to render.
         if (member.roles.isEmpty()) return row
 
         val roles = element("div", "role-row")
         member.roles.forEach { role ->
-            val box = checkbox { viewModel.onRoleToggled(member.userId, role.key, it) }
+            val box = Toggle { viewModel.onRoleToggled(member.userId, role.key, it) }
             box.checked = role.isOn
             box.disabled = !role.isEnabled
-            val label = element("label", "checkbox-row")
-            label.children(box, element("span", "", role.description))
-            roles.appendChild(label)
+            roles.appendChild(toggleRow(box, role.description))
         }
         row.appendChild(roles)
         return row
@@ -359,17 +356,15 @@ class ProjectDialog(
             container.appendChild(nameField)
 
             if (row.showsClosingFlag) {
-                val flag = checkbox {
+                val flag = Toggle {
                     // The name comes from the field rather than from `row`, so that
-                    // ticking the box does not silently revert an edit the admin
+                    // flipping the toggle does not silently revert an edit the admin
                     // typed and has not blurred out of yet. One row, one write —
                     // the server takes the name and the flag together.
                     viewModel.onVocabularyEdited(section.kind, row.id, nameField.value, it)
                 }
                 flag.checked = row.requiresResolution
-                val label = element("label", "checkbox-row vocab-flag")
-                label.children(flag, element("span", "", "needs a resolution"))
-                container.appendChild(label)
+                container.appendChild(toggleRow(flag, "needs a resolution", "vocab-flag"))
             }
 
             row.usageNote?.let { container.appendChild(element("span", "vocab-uses", it)) }

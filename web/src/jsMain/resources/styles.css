@@ -1,28 +1,40 @@
 /* ============================================================
-   Lunicle — "Lunamux Dark" terminal aesthetic, matching
-   the marketing site (lunamux-web/styles.css) so the embedded
-   iframe reads as part of the page framing it rather than as a
-   pasted-in third-party widget.
+   Lunicle — content styles inside the darkness-toolkit shell.
+
+   Every colour routes through the toolkit's flat `--t-<token>`
+   palette (painted on :root by the shell's applyTheme on every
+   theme change), so the board, the issue windows and the modals
+   follow whichever theme the user picks — Lunamux Dark by
+   default — in both appearances. The fallbacks are the original
+   hand-written "Lunamux Dark" values, so the content is legible
+   for the beat before the shell's first paint.
 
    NOTE: the --green* custom-property names are historical, kept
-   in step with lunamux-web — they hold the navy/cyan palette,
-   not green.
+   from the pre-toolkit stylesheet (in step with lunamux-web) —
+   they hold "primary/accent/dim text", not green.
    ============================================================ */
 
 :root {
-  --bg:        #04090f;   /* near-black navy ground */
-  --panel:     #070f1a;   /* surface */
-  --panel-2:   #0b1626;   /* raised surface */
-  --green:     #4dc8f5;   /* primary text — cyan glow */
-  --green-hi:  #66d9ff;   /* bright accent — vivid cyan */
-  --green-dim: #5f7590;   /* secondary / comments */
-  --border:    rgba(77, 200, 245, .20);
-  --border-hi: rgba(77, 200, 245, .45);
-  --glow:      rgba(77, 200, 245, .35);
-  --red:       #ff5f57;
-  --yellow:    #febc2e;   /* validation — "you have not filled this in yet" */
-  --head:      #eaf3fb;   /* headings and field text */
-  --body:      #cfe0ee;   /* running text: issue descriptions, comments, cards */
+  --bg:        var(--t-bg, #04090f);          /* ground */
+  /* NOTE on tokens: a lunamux pane's INTERIOR is painted in --t-surface
+     (white-ish under Lemonade, raised navy under the dark themes) against
+     --t-bg/--t-canvas chrome. Window interiors here (board, issue) use
+     --panel for that reason, with --bg supplying the quieter tone for the
+     columns sitting on them. Measured, not assumed: under Lemonade,
+     --t-canvas equals --t-bg (the soft yellow) and --t-surface is the
+     near-white — the reverse of what the names suggest. */
+  --panel:     var(--t-surface, #070f1a);     /* surface — window interiors */
+  --panel-2:   var(--t-surface-alt, #0b1626); /* raised surface */
+  --green:     var(--t-text, #4dc8f5);        /* primary text */
+  --green-hi:  var(--t-accent, #66d9ff);      /* bright accent */
+  --green-dim: var(--t-text-dim, #5f7590);    /* secondary / comments */
+  --border:    var(--t-border, rgba(77, 200, 245, .20));
+  --border-hi: var(--t-accent-soft, rgba(77, 200, 245, .45));
+  --glow:      var(--t-glow, rgba(77, 200, 245, .35));
+  --red:       var(--t-danger, #ff5f57);
+  --yellow:    var(--t-warn, #febc2e);        /* validation */
+  --head:      var(--t-text-bright, #eaf3fb); /* headings and field text */
+  --body:      var(--t-text, #cfe0ee);        /* running text */
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
 
@@ -44,56 +56,118 @@ body {
 html { background: var(--bg); }
 
 /* ============================================================
-   Shell — the board, with the footer stuck under it.
+   Windows — Lunicle's content inside the darkness shell.
 
-   One column. There was a sidebar on the right holding sign-in;
-   sign-in is a button in the top bar now, and a 260px column
-   holding nothing else was 260px of the board's width spent on
-   a border.
-
-   Rows rather than a plain block so the footer can be pinned to
-   the bottom of a SHORT page without being pinned over a long
-   one: `1fr auto` makes .main absorb the slack, so the footer is
-   pushed to the viewport's bottom when there is little content
-   and sits after the board when there is a lot.
+   The old page shell (layout grid, top bar, sticky footer) is
+   gone: the toolkit owns the app frame, the top bar and the
+   bottom bar now. What is left to lay out is the INSIDE of two
+   window kinds — the board pane and the issue panes — plus the
+   bits Lunicle contributes to the toolkit's chrome slots.
    ============================================================ */
 
-#app {
-  min-height: 100vh;
-  min-height: 100dvh;
-}
-
-.layout {
-  display: grid;
-  grid-template-rows: 1fr auto;
-  min-height: 100vh;
-  min-height: 100dvh;
-}
-
-.main {
-  padding: 20px 24px 20px;
-  min-width: 0; /* without this a wide board stretches the grid track instead of scrolling */
+/* The board window's content: switcher row on top, board taking
+   the rest, scrolling in both directions inside the pane. */
+.board-pane {
+  height: 100%;
   display: flex;
   flex-direction: column;
+  padding: 14px 16px;
+  min-width: 0;
+  /* The surface tone — what a lunamux pane's interior is painted in
+     (white-ish under Lemonade, raised navy under the dark themes). Without
+     this the board interior kept the window-chrome tone and the columns
+     supplied the surface one — the same two colours, inverted, which read
+     as off against every lunamux pane. See the :root token note. */
+  background: var(--panel);
 }
 
-/* Sticky, not fixed. `fixed` would take it out of flow and let the board scroll
-   underneath it — which means the last row of every column ends up behind the
-   footer, reachable only by a scroll that has nowhere left to go. Sticky keeps
-   it in the grid, so it occupies real height that the board is laid out around,
-   and still pins to the viewport's bottom edge while you scroll. */
-.footer {
-  position: sticky;
-  bottom: 0;
-  z-index: 5; /* over the board, under .modal-backdrop's 10 */
+.board-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding-bottom: 12px;
+}
+
+.board-pane .board {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* An issue window's content: the body bands take the slack, the
+   footer buttons stay pinned at the bottom of the pane. */
+.issue-window-host { height: 100%; }
+
+.issue-window {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+  min-width: 0;
+  /* Surface interior, same reasoning as .board-pane: an issue window is a
+     document being read, and documents live on the content surface. */
+  background: var(--panel);
+}
+
+/* The body reuses the modal-large band layout (.modal-body /
+   .issue-fields / .issue-scroll / .editor-host below) — the
+   issue window IS the old issue dialog, re-housed. */
+.issue-window .modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.issue-footer {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 24px;
+  flex: none;
+  padding-top: 10px;
   border-top: 1px solid var(--border);
-  /* Opaque, not a tint: the board scrolls under it and a translucent footer
-     would show cards sliding through the wordmark. */
-  background: var(--panel);
+}
+
+/* The bar's padding, rebalanced around the maximised board. The pane's
+   border sits 12px in from the frame edge (4px maximised-pane inset + the
+   8px frame pad), and that 12 is the measure the bar's content has to
+   agree with on every side: the same 12 above the text (the inset and the
+   frame pad supply it — the bar adds nothing on top), 12 below it, and 12
+   from the left edge to the brand icon so the brand lines up with the
+   pane's border rather than floating at its own indent. The toolkit's own
+   2px/16px is tuned for a bar inside busier chrome; here the bar borders
+   the pane directly and the pane sets the grid.
+
+   Doubled ancestor selector for the same reason as .dt-modal-backdrop
+   below: the toolkit's sheet is injected after this one, so a bare
+   .dt-bottombar here would lose the tie. */
+.dt-app-frame-bottombar .dt-bottombar {
+  padding: 0 12px 12px;
+}
+
+/* The "+" menu's rows, back in the chrome's proportional face.
+   The toolkit gives .dt-hover-menu-item `font: inherit` and mounts the menu
+   on the body, so Lunicle's mono body font — meant for the CONTENT, the board
+   and the issue windows — leaked into it, and "New issue"/"New project" came
+   out fixed-width while every other piece of chrome (sidebar, top bar,
+   tooltips) stayed proportional. Naming the family here on the menu box, not
+   the item, is enough: `font: inherit` then picks it up. Same fallback stack
+   the toolkit's own sidebar rule carries, so a theme that sets
+   --dt-font-sidebar still wins and the menu matches the sidebar either way. */
+.dt-hover-menu {
+  font-family: var(--dt-font-sidebar, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif);
+}
+
+/* The brand line in the toolkit's bottom bar — what the old
+   sticky footer said, minus the footer. No padding of its own: the bar's
+   12px above already places the icon on the pane's left edge, and another
+   12 here would push it off that line. */
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .footer-name {
@@ -103,53 +177,11 @@ html { background: var(--bg); }
   text-transform: uppercase;
 }
 
-/* ============================================================
-   Top bar
-   ============================================================ */
-
-/* A grid, not a flex row with spacers. "New issue" is meant to be CENTRED, and
-   two flex:1 spacers only centre it when the stuff either side happens to weigh
-   the same — the picker is 200px+ and the account corner is a name of unknown
-   length, so it would sit centred only by coincidence and drift every time the
-   name changed. `1fr auto 1fr` centres the middle track against the BAR, which
-   is what centred means here, and it holds regardless of what is beside it. */
-.topbar {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 18px;
-}
-
-.topbar-left {
+/* The sign-in/profile corner, now living in the toolkit's
+   trailing top-bar slot. */
+.topbar-account {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 0; /* or a long project name pushes the centre track off-centre */
-}
-
-/* The centre track's wrapper, and it must ALWAYS be in the DOM — see MainView's
-   comment where it is built. "New issue" is hidden for anyone without create
-   rights, and a `display: none` grid item is removed from the grid rather than
-   merely made invisible: with the button as the middle child, hiding it left two
-   items for three tracks and the account corner slid into the centre of the bar.
-   Empty, this collapses to zero width and the `auto` track vanishes, which is
-   what an absent button should look like. */
-.topbar-center {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Pushed to the bar's right edge. Its 1fr track is as wide as the left one, so
-   without this the account would sit at the track's start — floating in the
-   middle-right with a gap after it. */
-.topbar-right {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
   min-width: 0;
 }
 
@@ -228,9 +260,10 @@ select.field {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: border-color .12s, box-shadow .12s;
 }
 
-.icon-btn:hover { box-shadow: 0 0 12px var(--glow); }
+.icon-btn:hover { border-color: var(--border-hi); box-shadow: 0 0 12px var(--glow); }
 
 /* ============================================================
    Icons — the hand-drawn SVGs. See Icons.kt.
@@ -278,30 +311,83 @@ select.field {
    centre while "Cancel" — never toggled, so never inline-flex — stayed centred.
    Declaring the flex box here means every .btn is the same box whether or not a
    view has toggled it, and justify-content is what centres a flex line. */
+/* The .dt-modal-btn recipe from darkness-toolkit.css, applied to every Lunicle
+   button so a button in an issue window is indistinguishable from one in a
+   toolkit dialog: 7px/18px padding, 6px radius, 13px, quiet --t-bg surface
+   with a --t-border border. Primary is the toolkit's confirm shape — accent
+   fill, bg-coloured label, weight 600, brightness hover. Danger is the
+   toolkit's muted `.dt-destructive` treatment — a translucent danger tint
+   with danger text/border — rather than the old solid-red border. */
 .btn {
   font-family: inherit;
   font-size: 13px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--green-hi);
-  background: var(--panel-2);
-  border: 1px solid var(--border-hi);
-  border-radius: 4px;
-  padding: 9px 16px;
+  color: var(--green);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 18px;
   cursor: pointer;
-  transition: background .15s, box-shadow .15s;
+  appearance: none;
+  transition: background .12s, border-color .12s, box-shadow .12s, color .12s, filter .12s;
 }
 
-.btn:hover:not(:disabled) { background: #10203a; box-shadow: 0 0 14px var(--glow); }
+/* Hover LIGHTS UP, deliberately beyond the dt recipe's surface swap. The
+   resting shape still matches a toolkit dialog's, but --bg → --panel is one
+   near-black to a neighbouring near-black and read as a dead button; the
+   border and the glow are what the eye actually catches, same treatment the
+   lunamux site's buttons use. */
+.btn:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--border-hi);
+  box-shadow: 0 0 10px var(--glow);
+}
 .btn:disabled { opacity: .5; cursor: default; }
 
-.btn-primary { border-color: var(--green-hi); color: var(--head); }
-.btn-quiet { color: var(--green-dim); border-color: var(--border); }
-.btn-danger { color: var(--red); border-color: rgba(255, 95, 87, .5); }
-.btn-danger:hover:not(:disabled) { background: rgba(255, 95, 87, .12); box-shadow: none; }
-.btn-danger-quiet { color: var(--red); border-color: rgba(255, 95, 87, .3); background: transparent; }
-.btn-danger-quiet:hover:not(:disabled) { background: rgba(255, 95, 87, .1); box-shadow: none; }
+.btn-primary {
+  background: var(--green-hi);
+  color: var(--bg);
+  border-color: transparent;
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--green-hi);
+  border-color: transparent;
+  filter: brightness(1.12);
+  box-shadow: 0 0 14px var(--glow);
+}
+.btn-quiet { color: var(--green-dim); background: transparent; }
+/* A quiet button rests on whatever surface its dialog painted, so the base
+   hover's --panel fill can vanish into it — a translucent accent wash shows
+   on every surface, and the dim label brightens with it. */
+.btn-quiet:hover:not(:disabled) {
+  color: var(--green-hi);
+  background: color-mix(in srgb, var(--green-hi) 8%, transparent);
+}
+.btn-danger {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+}
+/* The danger variants restate border and glow in their own colour: without
+   this the base hover paints a cyan edge and cyan halo on a red button. */
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 26%, transparent);
+  border-color: color-mix(in srgb, var(--red) 60%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--red) 30%, transparent);
+}
+.btn-danger-quiet {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 30%, transparent);
+  background: transparent;
+}
+.btn-danger-quiet:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border-color: color-mix(in srgb, var(--red) 55%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--red) 25%, transparent);
+}
 
 /* A button that reads as a link — for per-comment actions, which must be
    available without competing with the dialog's real buttons. */
@@ -350,7 +436,10 @@ select.field {
    which is the behaviour that was here before — it is now the fallback rather
    than the norm. */
 .column {
-  background: var(--panel);
+  /* The ground tone, quieter than the surface the board interior now paints
+     — so the columns recede into the window the way chrome recedes behind a
+     lunamux pane, instead of glowing brighter than their container. */
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px;
@@ -424,7 +513,12 @@ select.field {
 .resolution-choice { width: 100%; padding: 11px 16px; }
 
 .card {
-  background: var(--panel-2);
+  /* The surface tone — same as a terminal pane's interior (and this board
+     window's own background). On the --bg-toned column the card reads as a
+     bright slip of the content surface, which is the most readable pairing
+     the palette offers: under Lemonade a near-white card on the soft-yellow
+     column, instead of the deeper-yellow-on-yellow that --panel-2 gave. */
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 10px;
@@ -505,40 +599,37 @@ select.field {
    Modals
    ============================================================ */
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(2, 6, 12, .75);
-  display: flex;
-  justify-content: center;
-  /* flex-start, deliberately, even though the modal is centred — see .modal's
-     `margin: auto` below. */
+/* Lunicle modals ride the toolkit's `.dt-modal*` classes for their entire
+   visual identity — surface, border, shadow, title, message, button row — so
+   they are indistinguishable from the darkness/lunamux dialogs and track any
+   toolkit restyle for free (see Modal.kt). The rules below carry only what dt
+   deliberately doesn't decide for us: our width band, and a scroll-friendly
+   backdrop. The doubled selectors are for specificity — the toolkit's styles
+   are injected at mount time, AFTER this sheet, so a single-class rule here
+   would lose every tie. */
+
+.dt-modal-backdrop.modal-backdrop {
+  /* flex-start + margin:auto on the panel, instead of dt's center: a flex
+     item centred that way and taller than the viewport overflows BOTH ends,
+     and the top half becomes unreachable — the scroll container will not
+     scroll above its content's start. Auto margins collapse to zero instead
+     of going negative, so a tall dialog pins to the top and scrolls
+     normally, while a short one still sits in the middle. */
   align-items: flex-start;
   padding: 40px 20px;
   overflow-y: auto;
-  z-index: 10;
+  /* Same layer as the toolkit's own .dt-modal-backdrop (10000): a maximised
+     darkness pane is `z-index: 1000 !important`, and at the old page-era 10
+     the sign-in picker opened BEHIND the maximised board. One shared layer
+     means whichever dialog opened last paints on top (both mount into body
+     in open order). */
+  z-index: 10000;
 }
 
-.modal {
-  background: var(--panel);
-  border: 1px solid var(--border-hi);
-  border-radius: 6px;
-  box-shadow: 0 0 40px rgba(0, 0, 0, .6);
+.dt-modal.modal {
   width: 100%;
   max-width: 640px;
-  /* Centres vertically, and this is the reason it is not `align-items: center`
-     on the backdrop: a flex item centred that way and taller than the viewport
-     overflows *both* ends, and the top half becomes unreachable — the scroll
-     container will not scroll above its content's start. Auto margins collapse
-     to zero instead of going negative, so a tall modal (the issue dialog, with
-     its 180px description box and a run of comments) pins to the top and
-     scrolls normally, while a short one sits in the middle.
-
-     Position is fixed to the iframe's own viewport, which lunamux-web sizes to
-     exactly the visible area (`.issues iframe { height: 100% }`) rather than
-     letting it grow tall — so "centre" here is the centre of what the visitor
-     is actually looking at, embedded or standalone. */
-  margin: auto;
+  margin: auto; /* the vertical centring — see the backdrop comment above */
 }
 
 /* The prose dialogs — an issue with its comments, and a comment being written.
@@ -559,7 +650,7 @@ select.field {
    dvh, not vh: on a mobile browser vh counts the URL bar's space even while the
    bar is covering it, which puts the footer under it. The 80px is the backdrop's
    40px padding, twice. */
-.modal-large {
+.dt-modal.modal-large {
   max-width: 880px;
   height: calc(100dvh - 80px);
   /* Beyond this the measure gets unreadable and the buttons end up a long way
@@ -641,6 +732,14 @@ select.field {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* A file being dragged over the editor: the surface advertises itself as the
+   drop target. The class rides on .editor (the root) — see MarkdownEditor's
+   drop wiring. */
+.editor-drop .editor-surface {
+  outline: 2px dashed var(--green-hi);
+  outline-offset: -4px;
 }
 
 /* Status and priority share a row — but the two faces of the dialog want
@@ -737,24 +836,16 @@ select.field {
    what says so. */
 .issue-fields > label.field-label:first-of-type { margin-top: 0; }
 
-.modal-title {
-  margin: 0;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  color: var(--head);
-  font-size: 14px;
-  letter-spacing: .04em;
-}
+/* Title, message and button-row visuals come from the toolkit's
+   .dt-modal-title / .dt-modal-message / .dt-modal-buttons — see Modal.kt.
+   What remains here is layout the dt rules don't decide: the body band
+   between title and buttons, and the footer's vertical rhythm. */
 
-.modal-body { padding: 20px; }
-.modal-message { margin: 0; color: var(--body); font-size: 13px; }
+.modal-body { padding: 12px 0 0; }
 
-.modal-footer {
-  display: flex;
+.dt-modal-buttons.modal-footer {
   align-items: center;
-  gap: 8px;
-  padding: 14px 20px;
-  border-top: 1px solid var(--border);
+  margin-top: 16px;
 }
 
 /* A floor, not a fixed width. The footer buttons already share .btn's padding,
@@ -814,17 +905,56 @@ select.field {
 .field-hint { color: var(--green-dim); font-size: 11px; margin: 6px 0 0; }
 .field-validation { color: var(--yellow); font-size: 12px; margin: 12px 0 0; }
 
-.checkbox-row {
+/* A boolean and its label on one line, darkness's On/Off pair standing where
+   the checkbox used to. See Dom.kt's Toggle.
+
+   Label leads, pair trails. The label takes the slack, so the pairs land on a
+   common right edge and a column of them reads as one control per row rather
+   than as a ragged line of buttons each at its own indent. The pair keeps its
+   intrinsic width (`flex: none` on .toggle), so a long label — "Public —
+   anyone can read this project's issues…" — wraps and pushes the row taller
+   rather than squeezing the buttons.
+
+   `align-items: center` reads right for the one-line labels; a wrapped label
+   centres against the pair, which beats the checkbox row's old top-alignment
+   now that the control is 28px tall rather than a 13px box. */
+.toggle-row {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
   margin: 18px 0 0;
   color: var(--body);
   font-size: 12px;
-  cursor: pointer;
 }
 
-.checkbox { margin: 3px 0 0; accent-color: var(--green-hi); }
+.toggle-label { flex: 1; min-width: 0; }
+
+/* The pair itself. The buttons are the toolkit's own .dt-settings-choice-btn,
+   so they arrive themed; only the row's own gap is ours, tightened from the
+   sidebar's 6px because On/Off is a pair rather than a list of choices. */
+.toggle {
+  flex: none;
+  gap: 4px;
+}
+
+/* The toolkit sizes its choice buttons for a settings sidebar, where they are
+   the only thing on the row. In a dialog they sit next to running text and a
+   14px pad on a two-letter word left them looking like Submit buttons — so:
+   narrower, and a fixed min-width so "On" and "Off" come out the same size
+   rather than one being visibly slimmer than its twin. */
+.toggle .dt-settings-choice-btn {
+  padding: 5px 0;
+  min-width: 44px;
+  text-align: center;
+}
+
+/* A dead toggle still has to look like one — see .vocab-delete below for the
+   same reasoning. Dim both sides, and say with the cursor that the answer to a
+   click is no, rather than leaving the accented side looking live. */
+.toggle .dt-settings-choice-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
 
 /* Label/component pickers. Buttons rather than a multi-select, which is
    unusable on touch and invisible about what is selected. */
@@ -839,7 +969,13 @@ select.field {
   border-radius: 12px;
   padding: 4px 10px;
   cursor: pointer;
+  transition: border-color .12s, color .12s;
 }
+
+/* Scoped off the on-state: an unscoped .chip:hover would out-specify .chip-on
+   and dim a selected chip's solid accent border back to the translucent one
+   the moment the mouse reached it. */
+.chip:not(.chip-on):hover { border-color: var(--border-hi); color: var(--green); }
 
 .chip-on { color: var(--head); border-color: var(--green-hi); background: #10203a; }
 
@@ -1072,14 +1208,14 @@ select.field {
    Lightbox — the full-size image viewer
    ============================================================ */
 
-/* z-index 20: above .modal-backdrop's 10. An image is almost always opened from
+/* Above .modal-backdrop's 10000. An image is almost always opened from
    inside a modal — an issue's description, a comment — and a viewer that
    appeared behind the dialog it was opened from would look like nothing
    happened. */
 .lightbox {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 10010;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1217,7 +1353,10 @@ select.field {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 6; /* over .footer's 5, under .modal-backdrop's 10 */
+  /* The menu hangs off the topbar's account button, so it must clear the
+     maximised-pane layer (1000) or it would open behind a maximised board.
+     Below the modal layer (10000) so dialogs still cover it. */
+  z-index: 2000;
   display: none;
   flex-direction: column;
   min-width: 160px;
@@ -1489,17 +1628,22 @@ select.field {
    names become a ragged left edge on every control after them. */
 .vocab-row .field { flex: 1; min-width: 0; }
 
-/* Reset .checkbox-row's stacked-form margins: inside a row it is one control
-   among several, not a paragraph. */
+/* Reset .toggle-row's stacked-form margins: inside a row it is one control
+   among several, not a paragraph. Its label never wraps here — the row lays out
+   horizontally and a wrapped "needs a resolution" would push the row taller
+   than the field it sits beside. */
 .vocab-flag {
   margin: 0;
   flex: none;
   white-space: nowrap;
   font-size: 11px;
-  align-items: center;
+  gap: 8px;
 }
 
-.vocab-flag .checkbox { margin: 0; }
+/* No right edge to reach for here — this row sits among the field and the
+   buttons rather than spanning the dialog, so the label sizes to its text and
+   the pair follows it directly. */
+.vocab-flag .toggle-label { flex: none; }
 
 /* "Used by 3 issues" — the count that decides whether Delete is even live, so it
    sits next to the button it explains. Dim: it is context, not a control. */
@@ -1560,6 +1704,6 @@ select.field {
 
 .role-row { margin-top: 4px; }
 
-/* Tighter than a standalone .checkbox-row: these come in threes under one name,
+/* Tighter than a standalone .toggle-row: these come in threes under one name,
    and the default 18px would make one person's privileges a screenful. */
-.role-row .checkbox-row { margin-top: 6px; }
+.role-row .toggle-row { margin-top: 6px; }

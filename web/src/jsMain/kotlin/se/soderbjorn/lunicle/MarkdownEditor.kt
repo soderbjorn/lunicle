@@ -119,6 +119,58 @@ class MarkdownEditor(
         surface.setAttribute("data-placeholder", "Describe the issue…")
 
         surface.oninput = { emit(); Unit }
+
+        // Drop a file anywhere on the surface to attach it — the same path as
+        // the Attach button, so an image lands inline and anything else lands
+        // as a download link, with the same size check and the same error
+        // reporting. The `onUpload` contract already does the deciding; this
+        // only adds the gesture.
+        //
+        // preventDefault on dragover is what makes the surface a drop target at
+        // all; without it the browser navigates to the dropped file, replacing
+        // the app with a JPEG. Guarded on a Files payload so dragging *text*
+        // across the editor keeps the browser's native text-drag behaviour.
+        surface.addEventListener("dragover", { event ->
+            val drag = event.asDynamic()
+            val types = drag.dataTransfer?.types
+            val hasFiles = types != null && (types.indexOf("Files") as? Int ?: -1) >= 0
+            if (hasFiles && surface.contentEditable == "true") {
+                event.preventDefault()
+                root.classList.add("editor-drop")
+            }
+        })
+        surface.addEventListener("dragleave", { root.classList.remove("editor-drop") })
+        surface.addEventListener("drop", { event ->
+            root.classList.remove("editor-drop")
+            if (surface.contentEditable != "true") return@addEventListener
+            val files = event.asDynamic().dataTransfer?.files
+            val count = files?.length as? Int ?: 0
+            if (count == 0) return@addEventListener
+            event.preventDefault()
+            // Drop the caret where the file was dropped, so the attachment
+            // lands under the pointer rather than wherever the caret last was.
+            // caretRangeFromPoint is non-standard-but-everywhere; when a
+            // browser lacks it, the current caret (or the end) is still a
+            // sane landing place.
+            val mouse = event.asDynamic()
+            savedRange = document.asDynamic().caretRangeFromPoint?.let { _ ->
+                document.asDynamic().caretRangeFromPoint(mouse.clientX, mouse.clientY)
+            } ?: currentRange()
+            // Sequentially, not in parallel: each insert lands at the caret the
+            // previous one left behind, so several dropped files end up in
+            // drop order rather than in whatever order their reads finished.
+            scope.launch {
+                for (index in 0 until count) {
+                    val file = files[index] as File
+                    val bytes = file.readBytes()
+                    val markdown = onUpload(file.name, file.type, bytes) ?: continue
+                    restoreRange()
+                    insertAttachment(inlineHtmlOf(markdown))
+                    savedRange = currentRange()
+                }
+            }
+        })
+
         surface.addEventListener("paste", { event ->
             event.preventDefault()
             // Plain text only. The single most important line in this file: it

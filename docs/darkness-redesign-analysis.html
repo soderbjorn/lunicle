@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Darkness Redesign — Analysis &amp; Implementation Plan</title>
+<style>
+  :root {
+    --bg: #fafafa; --fg: #1a1a1a; --muted: #666;
+    --card: #fff; --border: #ddd; --accent: #6b4fbb;
+    --keep: #1a7f37; --drop: #b42318; --new: #175cd3; --warn: #b54708;
+    --code-bg: #f0f0f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #e6e6e6; --muted: #9a9aa0;
+      --card: #1f1f24; --border: #34343c; --accent: #a894e0;
+      --keep: #4ade80; --drop: #f87171; --new: #7ab5ff; --warn: #fbbf24;
+      --code-bg: #2a2a30;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem 4rem;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.3rem; margin: 2.5rem 0 .75rem; border-bottom: 1px solid var(--border); padding-bottom: .35rem; }
+  h3 { font-size: 1.05rem; margin: 1.5rem 0 .5rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; }
+  p { margin: .6rem 0; }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; font-size: .88em; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; font-size: .93rem; }
+  th, td { border: 1px solid var(--border); padding: .45rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  .tag { font-weight: 600; white-space: nowrap; }
+  .keep { color: var(--keep); }
+  .drop { color: var(--drop); }
+  .new  { color: var(--new); }
+  .warn { color: var(--warn); }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0;
+  }
+  .risk { border-left: 4px solid var(--warn); }
+  ol.compact li, ul.compact li { margin: .35rem 0; }
+  .scrollwrap { overflow-x: auto; }
+  .phase { border-left: 4px solid var(--accent); }
+  .phase h3 { margin-top: 0; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Darkness Redesign — Analysis &amp; Implementation Plan</h1>
+<p class="subtitle">Lunicle adopts the darkness toolkit shell · based on <code>docs/darkness-redesign.txt</code> incl. answers #1 and #2 · branch <code>feature/darkness-migration</code> · 2026-07-17</p>
+
+<h2>Goal &amp; agreed decisions</h2>
+<p>Lunicle replaces its hand-written DOM UI (the <code>web</code> module) with the darkness-toolkit app shell, keeping the view-model layer (<code>client</code>) and everything below it. Toolkit changes are made opt-in so <strong>Lunamux's behaviour and appearance do not change</strong>.</p>
+<ul class="compact">
+  <li><strong>Board</strong> lives in its own darkness window: opens maximised, minimizable, <em>not</em> closable. The single (invisible) tab uses the <strong>Auto</strong> layout preset.</li>
+  <li><strong>Issues</strong> open in their own windows — read mode with an Edit button toggling edit mode (and back), permission-gated. Several may be open at once; reopening an issue focuses its existing window. <strong>New issue</strong> (from the + menu) is the same window starting in edit mode. Closing with unsaved changes → <strong>Save / Discard / Keep editing</strong> modal. No Cancel button.</li>
+  <li><strong>+ menu</strong> contains <em>New issue</em> and, when permitted, <em>New project</em>. New project opens a <strong>modal dialog</strong> (darkness-styled) with today's fields — removed from the board's project switcher.</li>
+  <li><strong>Project switcher</strong> moves into the board window. Multiple projects supported.</li>
+  <li><strong>Top bar</strong>: no sidebar (or its toggle), no world switcher, no tab strip, no 3D, no bell/info/cogwheel. Keeps +, window layout, dark/light cycle, theme sidebar, appearance sidebar, and Lunicle's <strong>sign-in/profile button</strong> trailing at the end.</li>
+  <li><strong>Windows</strong> keep minimise/maximise/close only — no overflow menu (rename), no reformat.</li>
+  <li><strong>Themes</strong>: the toolkit catalog, defaulting to <em>Lunamux Dark</em>. Theme and dark/light choice not persisted; window layout not persisted. Reload resets everything — acceptable for now.</li>
+  <li><strong>Deep links</strong> (<code>?issue=LMX-12</code>) run normal init (board window) and additionally open the issue's window as if clicked.</li>
+  <li><strong>Signed-out use</strong> keeps working: browse public projects, sign-in button in the top bar.</li>
+  <li><strong>Board refresh</strong>: saving an issue (create or edit) triggers the board view model to refresh.</li>
+  <li><strong>Restyle depth</strong>: board and issue content restyled to darkness/lunamux appearance as much as possible, not just the chrome.</li>
+  <li><strong>Toolkit delivery</strong>: consumed like Lunamux — committed <code>libs-repo</code> pin + sibling composite-build auto-detect; toolkit's <code>publishAllToLibsRepo</code> gains Lunicle as a target. Work happens on the toolkit's main worktree; Lunamux compat verified by manual testing (I flag risks).</li>
+</ul>
+
+<h2>Survey findings (what exists today)</h2>
+
+<h3>Lunicle (this repo)</h3>
+<ul class="compact">
+  <li>UI is hand-written Kotlin/JS DOM in <code>web/</code> — the throw-away layer (views, dialogs, <code>Dom.kt</code>, <code>Icons.kt</code>, <code>MarkdownEditor</code> UI, <code>styles.css</code>).</li>
+  <li>Keep layer is clean: <code>client/viewmodel/</code> — one immutable <code>State</code> over a single <code>StateFlow</code> per VM, intent methods, no DOM/transport leakage. <code>StorageRepository</code> wraps the API. <code>clientServer</code> holds DTOs.</li>
+  <li>Key VMs: <code>MainScreenBackingViewModel</code> (board, picker, drag/drop, <em>which dialog is open</em>, deep links), <code>IssueBackingViewModel</code>, <code>EditProjectBackingViewModel</code>, <code>SessionBackingViewModel</code>, <code>CommentBackingViewModel</code>, <code>ConnectionsBackingViewModel</code>.</li>
+  <li>No unsaved-changes prompt today — a <em>draft contract</em>: New issue creates the DB row up-front (attachments need an owner); Cancel deletes the draft. The new Save/Discard maps onto this: Discard = delete draft (new) / drop local edits (existing).</li>
+  <li>Deep links (<code>?project=</code>, <code>?issue=</code>) parsed in <code>web/main.kt</code>, resolved in <code>StorageRepository.resolve()</code>; URL written back via <code>history.replaceState</code> (iframe-friendly, no hash).</li>
+  <li>Permissions are server-decided affordances on DTOs (<code>canCreateIssue</code>, <code>canEdit</code>, <code>canCreateProject</code>, …) — already exactly what's needed to gate the Edit button and + menu items.</li>
+  <li>No local-lib plumbing (no <code>libs-repo</code>, no composite build) — must be added.</li>
+</ul>
+
+<h3>Darkness toolkit (0.2.31)</h3>
+<p>The web shell is Kotlin/JS DOM: <code>mountAppShell(AppShellSpec)</code> in <code>toolkit-web</code> builds everything; hosts customize via <code>AppShellSpec</code>. Gap analysis for Lunicle's needs:</p>
+<div class="scrollwrap">
+<table>
+  <tr><th>Need</th><th>Status</th><th>Detail</th></tr>
+  <tr><td>World switcher absent</td><td class="tag keep">EXISTS</td><td>Conditional on <code>worldSource</code> — pass null.</td></tr>
+  <tr><td>Settings cogwheel absent</td><td class="tag keep">EXISTS</td><td>Conditional on <code>appSettingsContent</code> — pass null.</td></tr>
+  <tr><td>Bell / info / 3D absent</td><td class="tag keep">EXISTS</td><td>They were never toolkit built-ins — Lunamux injects them via <code>extraTopbarTrailing</code>/<code>BeforeStandard</code>. Lunicle simply doesn't.</td></tr>
+  <tr><td>Sign-in/profile trailing slot</td><td class="tag keep">EXISTS</td><td><code>extraTopbarTrailing</code> + <code>TopbarAction.custom(element)</code>.</td></tr>
+  <tr><td>+ menu custom entries</td><td class="tag keep">EXISTS (mostly)</td><td>Host items via <code>TabSource.paneAddMenuItems</code>, rebuilt per open (dynamic permission gating works). Needs: suppress the built-in “New tab” row (see ADD).</td></tr>
+  <tr><td>Auto layout default</td><td class="tag keep">EXISTS</td><td><code>LayoutPreset.Auto</code> is the default for new tabs.</td></tr>
+  <tr><td>No persistence</td><td class="tag keep">EXISTS</td><td><code>Persister</code> is pluggable; pass <code>InMemoryPersister</code>.</td></tr>
+  <tr><td>No pane overflow / rename / reformat</td><td class="tag keep">EXISTS</td><td>Shell attaches no kebab; rename is opt-in (<code>paneRename</code> — pass null); “reformat” isn't a shell menu item.</td></tr>
+  <tr><td>Confirm dialogs</td><td class="tag keep">EXISTS (2-button)</td><td><code>showConfirmDialog</code>, <code>confirmClosePane</code>.</td></tr>
+  <tr><td>Hide sidebar + its toggle entirely</td><td class="tag new">ADD</td><td>Toggle is unconditionally built; no flag to omit sidebar.</td></tr>
+  <tr><td>Hide the whole tab strip</td><td class="tag new">ADD</td><td>Per-tab hiding exists, but the active tab is force-shown; no strip-level flag.</td></tr>
+  <tr><td>Per-window chrome (disable close per pane)</td><td class="tag new">ADD</td><td>Window callbacks are global; nearest lever is all-or-nothing.</td></tr>
+  <tr><td>Open maximised by default (per pane)</td><td class="tag new">ADD</td><td>Only achievable today by pre-writing the layout blob.</td></tr>
+  <tr><td>Close interception (unsaved changes)</td><td class="tag new">ADD</td><td>Only a boolean <code>confirmFloatingClose</code> exists; need a per-pane async veto hook.</td></tr>
+  <tr><td>Suppress “New tab” / “New workspace” rows in +</td><td class="tag new">ADD</td><td>Driven by callback presence, entangled with tab management in local mode.</td></tr>
+  <tr><td>3-button Save/Discard/Keep dialog</td><td class="tag new">ADD</td><td>Generic 3-choice modal on the <code>.dt-modal</code> pattern.</td></tr>
+  <tr><td>Default appearance = Dark</td><td class="tag new">ADD (verify)</td><td>Default may be Auto; need a spec-level initial-appearance default (or confirm <code>ThemeBootstrap.manual()</code> covers it).</td></tr>
+</table>
+</div>
+
+<h3>Lunamux (compatibility constraints)</h3>
+<ul class="compact">
+  <li>Pins toolkit <strong>0.2.31</strong> from its committed <code>libs-repo</code>; sibling checkout auto-switches to composite build (<code>darkness.toolkit.path</code>, force-artifacts escape hatch). The toolkit's <code>publishAllToLibsRepo</code> targets lunamux + notegrow; Lunicle becomes a third target.</li>
+  <li>Lunamux queries toolkit-owned DOM in ~43 places (<code>.dt-pane</code> ×29, <code>.dt-modal</code> ×10, <code>.dt-sidebar</code> ×7), assumes the pane header wrapping structure, shadows the close action via action ordering, and sniffs theme-manager close via transitions. <strong>Rule for all toolkit changes: additive, opt-in, no CSS-class renames, no DOM restructuring in default configuration.</strong></li>
+</ul>
+
+<h2>Implementation plan</h2>
+
+<div class="card phase">
+<h3>Phase 1 — Toolkit: opt-in shell configurability</h3>
+<p>All in <code>darkness-toolkit/main</code>, every option defaulting to current behaviour:</p>
+<ol class="compact">
+  <li><code>AppShellSpec.topbar</code> (or similar) with flags: <code>showSidebarToggle</code> (false ⇒ sidebar fully absent), <code>showTabStrip</code>, plus explicit control over the built-in “New tab”/“New workspace” rows in the + menu (e.g. <code>showNewTabMenuItem</code>). Defaults = all current.</li>
+  <li>Per-pane window chrome: a host hook (e.g. <code>paneChrome(paneId): PaneChromeSpec</code>) controlling closability per window; board window sets <code>closable = false</code>.</li>
+  <li>Per-pane “open maximised” at creation time (first-class flag, not layout-blob surgery).</li>
+  <li>Async per-pane close interceptor (e.g. <code>onPaneCloseRequested(paneId, proceed)</code>) so the host can show a dialog and then allow/cancel the close.</li>
+  <li>Generic three-button choice dialog beside <code>showConfirmDialog</code> (used for Save / Discard / Keep editing).</li>
+  <li>Initial appearance default (Dark) configurable if not already possible.</li>
+  <li>Add Lunicle to <code>publishAllToLibsRepo</code> targets (<code>../../lunicle/main/libs-repo</code>, overridable property).</li>
+</ol>
+<p class="muted">Compat check: build Lunamux against toolkit source (composite build) after each change; no lunamux code edits expected since everything is additive.</p>
+</div>
+
+<div class="card phase">
+<h3>Phase 2 — Lunicle: dependency plumbing</h3>
+<ol class="compact">
+  <li>Copy Lunamux's <code>settings.gradle.kts</code> pattern: <code>libs-repo</code> Maven repo + sibling auto-detect composite build + <code>useArtifacts</code> escape hatch.</li>
+  <li>Version-catalog entries for <code>toolkit-core</code>/<code>toolkit-web</code>; <code>web</code> module depends on them.</li>
+  <li>First toolkit publish into <code>lunicle/main/libs-repo</code> (version bump per the <code>/bump-toolkit</code> workflow).</li>
+</ol>
+</div>
+
+<div class="card phase">
+<h3>Phase 3 — Lunicle: view-model extensions (client module)</h3>
+<p>The one structural change: window management replaces the single-dialog model.</p>
+<ol class="compact">
+  <li><code>MainScreenBackingViewModel</code>'s <code>ActiveDialog</code> (one dialog at a time) gives way to a window registry: multiple open issues, each with its own <code>IssueBackingViewModel</code> instance/scope; focus-existing on reopen. Registry lives shell-side (bootstrap), VM keeps deep-link resolution and board state.</li>
+  <li>Expose dirty-state from <code>IssueBackingViewModel</code> for existing-issue edit mode, plus explicit save-then-close and discard paths (new-issue discard = delete draft row, as Cancel does today).</li>
+  <li>Board refresh trigger: on successful issue save/delete, notify the board VM to reload (same pattern as the existing session-change and project-settings-written reloads). Also covers new-project → project-list refresh.</li>
+</ol>
+</div>
+
+<div class="card phase">
+<h3>Phase 4 — Lunicle: new web shell (replace the <code>web</code> UI)</h3>
+<ol class="compact">
+  <li>New bootstrap: <code>mountAppShell(AppShellSpec)</code> — no worldSource, no appSettingsContent, sidebar+tabstrip off, InMemoryPersister, Lunamux Dark default, + menu = New issue (+ New project when permitted), sign-in/profile as trailing custom action.</li>
+  <li>Board window: non-closable, opens maximised; content = board renderer rebuilt on darkness styles (columns, cards, drag/drop) driven by <code>MainScreenBackingViewModel</code>; project switcher inside the window (without “New project…”).</li>
+  <li>Issue windows: read view (rendered markdown) + Edit toggle; close goes through the interceptor → Save/Discard/Keep dialog when dirty. New issue opens in edit mode.</li>
+  <li>New-project modal on the toolkit dialog pattern, driven by <code>EditProjectBackingViewModel</code> (today's fields).</li>
+  <li>Port sign-in flows (Google GIS / GitHub popups), comment/resolution/profile dialogs, markdown editor mounting, lightbox — restyled to <code>dt-</code> idioms.</li>
+  <li>Deep links: keep <code>?project=</code>/<code>?issue=</code> parsing and <code>replaceState</code> sync; a deep-linked issue opens its window after the board mounts. URL reflects the most recently focused issue window.</li>
+  <li>Retire the old views/<code>styles.css</code> once parity is reached.</li>
+</ol>
+</div>
+
+<div class="card phase">
+<h3>Phase 5 — Verify &amp; release</h3>
+<ol class="compact">
+  <li>Feature pass on Lunicle: signed-out browsing, sign-in, board CRUD + drag/drop, multi-issue windows, unsaved-changes flows, deep links, permissions gating, board auto-refresh on save.</li>
+  <li>Lunamux regression: build + run against the new toolkit; I flag every risk area (DOM-class coupling list above); you do manual testing.</li>
+  <li>Bump toolkit version, <code>publishAllToLibsRepo</code> (lunamux, notegrow, lunicle), prune old versions, pin in both consumers.</li>
+</ol>
+</div>
+
+<h2>Risks &amp; watch items</h2>
+<div class="card risk">
+<ul class="compact">
+  <li><strong>Lunamux DOM coupling</strong>: any accidental change to <code>.dt-*</code> class names/structure breaks lunamux silently. Mitigation: additive-only flags; default rendering path untouched; targeted grep of lunamux's coupled selectors after each toolkit change.</li>
+  <li><strong>+ menu local-mode entanglement</strong>: suppressing “New tab” while keeping one implicit local-mode tab touches the same code path lunamux uses in source mode — needs care and a lunamux smoke check.</li>
+  <li><strong>Multi-instance <code>IssueBackingViewModel</code></strong>: written for one-dialog-at-a-time; verify no hidden shared state (e.g. in <code>StorageRepository</code>) before allowing N instances.</li>
+  <li><strong>Draft contract vs. Save/Discard</strong>: new-issue drafts already exist server-side; “Keep editing” must not leak orphan drafts, and browser/tab close (no interceptor possible) keeps today's draft-cleanup semantics.</li>
+  <li><strong>Iframe embedding</strong> (lunamux.dev embeds lunicle): preserve the no-hash, <code>replaceState</code>-only URL behaviour.</li>
+</ul>
+</div>
+
+</main>
+</body>
+</html>

@@ -26,7 +26,7 @@ private val MONTHS = listOf(
 )
 
 /**
- * Format an epoch-millis timestamp as "17 Jul 2026, 14.32".
+ * Format an epoch-millis timestamp as "17 Jul 2026, 14:32".
  *
  * In the reader's own zone, not the server's. The server stores UTC millis and
  * has no idea where anyone is; `currentSystemDefault()` is the browser's zone on
@@ -49,11 +49,13 @@ fun formatTimestamp(millis: Long): String {
     // on the JVM. Enum ordinal is 0-based and identical on both, which is also
     // why MONTHS is indexed from 0 rather than offset by one.
     val month = MONTHS[local.month.ordinal]
-    // Both fields padded. The minute must be — 14.9 is not a time anybody writes
+    // Both fields padded. The minute must be — 14:9 is not a time anybody writes
     // — and the hour must be for the reason the format exists at all: these are
-    // scanned down a column, and an unpadded "8.56" shifts every character after
-    // it half a step left of the "14.32" above.
+    // scanned down a column, and an unpadded "8:56" shifts every character after
+    // it half a step left of the "14:32" above.
     val hour = local.hour.toString().padStart(2, '0')
     val minute = local.minute.toString().padStart(2, '0')
-    return "${local.day} $month ${local.year}, $hour.$minute"
+    // A colon, not a full stop: "14:32" is the shape a time has. (The earlier
+    // "14.32" read as a decimal to anyone outside the sv-SE convention.)
+    return "${local.day} $month ${local.year}, $hour:$minute"
 }

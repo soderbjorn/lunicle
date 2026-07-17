@@ -68,13 +68,66 @@ fun textFieldCommitting(onCommit: (String) -> Unit): HTMLInputElement {
     return el
 }
 
-/** Create a checkbox. */
-fun checkbox(onChange: (Boolean) -> Unit): HTMLInputElement {
-    val el = document.createElement("input") as HTMLInputElement
-    el.type = "checkbox"
-    el.className = "checkbox"
-    el.onchange = { onChange(el.checked); Unit }
-    return el
+/**
+ * An On/Off pair of buttons — darkness's boolean control, and now Lunicle's.
+ *
+ * The toolkit spells a boolean as two buttons with the live one accented (see
+ * the settings sidebar's `dt-settings-choice-btn` rows), not as a checkbox, and
+ * a Lunicle dialog sitting inside that shell should not disagree about what a
+ * boolean looks like. The row it goes in stays a row: [toggleRow] puts the pair
+ * where the checkbox used to be, with the label beside it.
+ *
+ * Reuses the toolkit's own class names rather than restyling a copy, so these
+ * follow the toolkit's chrome — and every theme's accent — for free.
+ *
+ * The rendered state is [checked]'s alone; a click reports the intent and
+ * nothing else, exactly as `onchange` did. If the view model refuses (a
+ * privilege the server rejects, a request in flight), the next render says so
+ * and the buttons never claimed otherwise.
+ */
+class Toggle(private val onChange: (Boolean) -> Unit) {
+    /** The pair, ready to append. */
+    val element: HTMLElement = element("div", "toggle dt-settings-button-row")
+
+    private val buttons: List<HTMLButtonElement> = listOf(true, false).map { value ->
+        button(if (value) "On" else "Off", "dt-settings-choice-btn") {
+            // Guarded, not just visually dead: `disabled` stops the click, but a
+            // click on the already-live side is still a no-op worth swallowing —
+            // it is not a change, and the view models treat every call as one.
+            if (value != checked) onChange(value)
+        }.also { element.appendChild(it) }
+    }
+
+    /** Which side is live. Set it to render; it is never changed by a click. */
+    var checked: Boolean = false
+        set(value) {
+            field = value
+            buttons[0].classList.toggle("dt-selected", value)
+            buttons[1].classList.toggle("dt-selected", !value)
+        }
+
+    /** Both sides at once: a toggle nobody may move is dead as a whole. */
+    var disabled: Boolean = false
+        set(value) {
+            field = value
+            buttons.forEach { it.disabled = value }
+        }
+
+    init {
+        checked = false
+    }
+}
+
+/**
+ * A [Toggle] and its label on one row — the label leading, the pair trailing.
+ *
+ * A `div`, not a `label`: a label wrapping a button hands the button's clicks to
+ * the label's own activation behaviour, and the pair would fire twice.
+ */
+fun toggleRow(toggle: Toggle, label: String, className: String = ""): HTMLElement {
+    val row = element("div", "toggle-row" + if (className.isEmpty()) "" else " $className")
+    row.children(element("span", "toggle-label", label), toggle.element)
+    return row
 }
 
 /** Create a textarea. */

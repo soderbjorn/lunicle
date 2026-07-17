@@ -33,15 +33,22 @@ class Modal(
     private val onDismiss: () -> Unit,
     isLarge: Boolean = false,
 ) {
-    private val backdrop = element("div", "modal-backdrop")
-    private val panel = element("div", if (isLarge) "modal modal-large" else "modal")
-    private val titleElement = element("h2", "modal-title", title)
+    // Each element carries the toolkit's `dt-modal*` class FIRST and a
+    // lunicle class second. The dt class is what makes these dialogs
+    // pixel-match the darkness/lunamux ones — surface, border, shadow, title
+    // weight, button row — and track any future toolkit restyle for free
+    // (exactly the pattern lunamux's own hand-rolled dialogs use). The
+    // lunicle class carries only what dt deliberately doesn't: our widths,
+    // the scroll-friendly backdrop, and the topmost-wins Escape query.
+    private val backdrop = element("div", "dt-modal-backdrop modal-backdrop")
+    private val panel = element("div", if (isLarge) "dt-modal modal modal-large" else "dt-modal modal")
+    private val titleElement = element("h2", "dt-modal-title modal-title", title)
 
     /** Where the caller puts the dialog's content. */
     val body: HTMLElement = element("div", "modal-body")
 
     /** Where the caller puts the buttons. */
-    val footer: HTMLElement = element("div", "modal-footer")
+    val footer: HTMLElement = element("div", "dt-modal-buttons modal-footer")
 
     private var keyListener: ((org.w3c.dom.events.Event) -> Unit)? = null
 
@@ -146,7 +153,7 @@ class AlertDialog(
     private val modal = Modal(title, onDismiss = onDismiss)
 
     fun mount(host: HTMLElement) {
-        modal.body.appendChild(element("p", "modal-message", message))
+        modal.body.appendChild(element("p", "dt-modal-message modal-message", message))
         // One button, and it is "OK" rather than "Close": there is nothing to
         // cancel, and nothing happens either way. Cancel beside OK on a dialog
         // with no decision in it invites a search for the difference.
@@ -181,7 +188,7 @@ class ConfirmDialog(
     private val modal = Modal(title, onDismiss = onCancel)
 
     fun mount(host: HTMLElement) {
-        modal.body.appendChild(element("p", "modal-message", message))
+        modal.body.appendChild(element("p", "dt-modal-message modal-message", message))
         modal.footer.children(
             button("Cancel", "btn btn-quiet") { onCancel() },
             button(destructiveLabel, "btn btn-danger") { onConfirm() },

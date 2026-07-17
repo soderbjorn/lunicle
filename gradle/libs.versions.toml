@@ -1,5 +1,9 @@
 [versions]
 kotlin = "2.3.20"
+# darkness-toolkit UI shell. Resolved from the committed libs-repo (see
+# settings.gradle.kts); a sibling darkness-toolkit checkout transparently
+# substitutes these with project builds during development.
+darkness = "0.2.34"
 ktor = "3.4.1"
 kotlinx-coroutines = "1.10.2"
 kotlinx-serialization = "1.9.0"
@@ -8,6 +12,8 @@ logback = "1.5.32"
 sqldelight = "2.1.0"
 
 [libraries]
+darkness-core = { module = "se.soderbjorn.darkness:toolkit-core", version.ref = "darkness" }
+darkness-web = { module = "se.soderbjorn.darkness:toolkit-web", version.ref = "darkness" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }

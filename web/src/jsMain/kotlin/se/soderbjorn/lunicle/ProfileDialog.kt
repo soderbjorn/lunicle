@@ -30,7 +30,6 @@ import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLElement
-import org.w3c.dom.HTMLInputElement
 import se.soderbjorn.lunicle.client.viewmodel.CONNECTIONS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.ENABLE_EXPLANATION
@@ -53,7 +52,7 @@ class ProfileDialog(
     private val modal = Modal("Profile", onDismiss = { onDismiss() })
 
     private lateinit var nameElement: HTMLElement
-    private lateinit var enableBox: HTMLInputElement
+    private lateinit var enableBox: Toggle
     private lateinit var explanation: HTMLElement
     private lateinit var setupSection: HTMLElement
     private lateinit var serverUrlValue: HTMLElement
@@ -72,9 +71,8 @@ class ProfileDialog(
         this.host = host
         nameElement = element("p", "modal-message")
 
-        enableBox = checkbox { viewModel.onEnabledToggled(it) }
-        val enableRow = element("label", "checkbox-row")
-        enableRow.children(enableBox, element("span", "", ENABLE_LABEL))
+        enableBox = Toggle { viewModel.onEnabledToggled(it) }
+        val enableRow = toggleRow(enableBox, ENABLE_LABEL)
         explanation = element("p", "field-hint", ENABLE_EXPLANATION)
 
         // ── State B: on, with the things nobody types correctly ──────────────

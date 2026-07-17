@@ -34,7 +34,15 @@ import se.soderbjorn.lunicle.clientserver.IssueSummary
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
 import se.soderbjorn.lunicle.clientserver.StatusItem
 
-/** Which modal, if any, MainScreen is showing. */
+/**
+ * Which modal, if any, MainScreen is showing.
+ *
+ * Issues are deliberately NOT here any more: an issue opens in its own
+ * *window*, several can be open at once, and "which windows are open" is a
+ * list, not an either/or — see [MainScreenBackingViewModel.State.openIssueIds].
+ * What remains modal is what genuinely blocks: the project form and the
+ * resolution question a drag is waiting on.
+ */
 sealed interface ActiveDialog {
     /** None. */
     data object None : ActiveDialog
@@ -44,15 +52,6 @@ sealed interface ActiveDialog {
 
     /** The project dialog, editing an existing project. */
     data class EditProject(val project: ProjectSummary) : ActiveDialog
-
-    /**
-     * The issue modal.
-     *
-     * @param issueId the issue to open — always a real id, because "New issue"
-     *   creates the row before the modal opens. See
-     *   [IssueBackingViewModel.State.isDraft].
-     */
-    data class Issue(val issueId: Long) : ActiveDialog
 
     /**
      * "Why are you closing this?" — the board's half of the resolution rule.
@@ -206,6 +205,24 @@ class MainScreenBackingViewModel(
         val board: BoardState? = null,
         val canCreateProject: Boolean = false,
         val dialog: ActiveDialog = ActiveDialog.None,
+        /**
+         * The issues with a window open, in the order they were opened.
+         *
+         * Ids rather than richer objects, because everything else about an
+         * open issue lives in that window's own [IssueBackingViewModel] — this
+         * list only answers "which windows exist", which is all the shell
+         * needs to build panes. Always real ids, drafts included: "New issue"
+         * creates the row before the window opens.
+         */
+        val openIssueIds: List<Long> = emptyList(),
+        /**
+         * The issue window that has focus, or null when the board does.
+         *
+         * Drives two things: which pane the shell marks active, and — through
+         * [openIssueTicket] — what the address bar says. Must be a member of
+         * [openIssueIds] or null; the mutations below maintain that.
+         */
+        val focusedIssueId: Long? = null,
         val errorMessage: String? = null,
     ) {
         /** The project in the top bar, or null. */
@@ -264,12 +281,15 @@ class MainScreenBackingViewModel(
             get() = board?.resolutions.orEmpty().associate { it.id to it.name }
 
         /**
-         * The open issue's ticket — "LMX-12" — or null.
+         * The focused issue window's ticket — "LMX-12" — or null.
          *
          * What the address bar should say, handed to the bootstrap to put there;
          * see main.kt. A *string* rather than a URL, because a URL is a fact about
          * the browser and this view model does not have one — an iOS client would
          * take the same ticket and build a `lunicle://` link out of it.
+         *
+         * With several windows open the URL follows *focus*: the link is to what
+         * the user is looking at, and there is only one address bar.
          *
          * Null for a draft, and that is deliberate rather than incidental: a draft
          * is not on anyone's board, so a link to it would resolve to nothing for
@@ -277,9 +297,20 @@ class MainScreenBackingViewModel(
          * falls out rather than needing a check.
          */
         val openIssueTicket: String? get() {
-            val open = (dialog as? ActiveDialog.Issue) ?: return null
+            val focused = focusedIssueId ?: return null
             val board = board ?: return null
-            val issue = board.issues.firstOrNull { it.id == open.issueId } ?: return null
+            val issue = board.issues.firstOrNull { it.id == focused } ?: return null
+            return "${board.project.namePrefix}-${issue.number}"
+        }
+
+        /**
+         * The window title for an open issue: "LMX-12", or "New issue" for a
+         * draft (which has no public ticket yet — its row is invisible on the
+         * board, so the number would name nothing anyone else can see).
+         */
+        fun issueWindowTitle(issueId: Long): String {
+            val board = board ?: return "Issue"
+            val issue = board.issues.firstOrNull { it.id == issueId } ?: return "New issue"
             return "${board.project.namePrefix}-${issue.number}"
         }
 
@@ -379,18 +410,25 @@ class MainScreenBackingViewModel(
             _stateFlow.value = result.fold(
                 onSuccess = { loaded ->
                     selectedProjectId = loaded.board?.project?.id
-                    _stateFlow.value.copy(
+                    val previous = _stateFlow.value
+                    // Open what the link asked for, if it is there — a window,
+                    // as if the user had clicked the card. Consumed either
+                    // way: a ticket that names an issue this caller cannot see
+                    // resolves to nothing, and retrying it on every refresh
+                    // would never start working.
+                    val linked = deepLinkedIssueId(loaded.board)
+                    previous.copy(
                         isLoaded = true,
                         isBusy = false,
                         projects = loaded.projects.projects,
                         canCreateProject = loaded.projects.canCreateProject,
                         board = loaded.board,
                         errorMessage = null,
-                        // Open what the link asked for, if it is there. Consumed
-                        // below either way: a ticket that names an issue this
-                        // caller cannot see resolves to nothing, and retrying it on
-                        // every refresh would never start working.
-                        dialog = deepLinkedDialog(loaded.board) ?: _stateFlow.value.dialog,
+                        openIssueIds = when {
+                            linked == null || linked in previous.openIssueIds -> previous.openIssueIds
+                            else -> previous.openIssueIds + linked
+                        },
+                        focusedIssueId = linked ?: previous.focusedIssueId,
                     )
                 },
                 onFailure = { t ->
@@ -405,20 +443,19 @@ class MainScreenBackingViewModel(
     }
 
     /**
-     * The dialog a deep link wants open, or null.
+     * The issue a deep link wants a window for, or null.
      *
      * Consumes [preferredTicket] whether or not it resolved — see the field's
      * comment. A link to a deleted issue, or to one in a project this caller may
      * not read, lands on the board with nothing open, which is the honest answer
      * and is what the picker is for.
      */
-    private fun deepLinkedDialog(board: BoardState?): ActiveDialog? {
+    private fun deepLinkedIssueId(board: BoardState?): Long? {
         val ticket = preferredTicket ?: return null
         preferredTicket = null
         if (board == null) return null
         if (!board.project.namePrefix.equals(ticket.prefix, ignoreCase = true)) return null
-        val issue = board.issues.firstOrNull { it.number == ticket.number } ?: return null
-        return ActiveDialog.Issue(issue.id)
+        return board.issues.firstOrNull { it.number == ticket.number }?.id
     }
 
     /** Refresh only the current board, leaving the picker alone. */
@@ -441,7 +478,17 @@ class MainScreenBackingViewModel(
         // in the old one.
         preferredName = null
         preferredTicket = null
-        _stateFlow.value = _stateFlow.value.copy(isBusy = true, errorMessage = null)
+        // The open windows go too: they belong to the board being left, and a
+        // window whose vocabularies and permissions came from another project
+        // would be a window quietly lying about both. The shell closes the
+        // panes when the list empties; unsaved drafts were the user's to keep
+        // or discard before switching, same as before a reload.
+        _stateFlow.value = _stateFlow.value.copy(
+            isBusy = true,
+            errorMessage = null,
+            openIssueIds = emptyList(),
+            focusedIssueId = null,
+        )
         scope.launch {
             val result = runCatching { storage.board(id) }
             _stateFlow.value = result.fold(
@@ -464,17 +511,33 @@ class MainScreenBackingViewModel(
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.EditProject(project))
     }
 
+    /**
+     * A card was clicked: open its window, or focus the one already open.
+     *
+     * The re-focus half is the multi-window contract from the redesign: the
+     * same issue never gets two windows. The shell reads [State.focusedIssueId]
+     * and raises the matching pane.
+     */
     fun onIssueOpened(issueId: Long) {
-        _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.Issue(issueId))
+        val current = _stateFlow.value
+        _stateFlow.value = current.copy(
+            openIssueIds = if (issueId in current.openIssueIds) {
+                current.openIssueIds
+            } else {
+                current.openIssueIds + issueId
+            },
+            focusedIssueId = issueId,
+        )
     }
 
     /**
-     * "New issue": create the hidden draft, then open the modal on it.
+     * "New issue": create the hidden draft, then open a window on it.
      *
-     * The row exists before the modal does, which is what lets the editor upload
-     * a file — an attachment needs an owner, and the `CHECK` in the
-     * schema means there is no such thing as an attachment without one. Cancel
-     * deletes the row; see [IssueBackingViewModel.onCancelTapped].
+     * The row exists before the window does, which is what lets the editor
+     * upload a file — an attachment needs an owner, and the `CHECK` in the
+     * schema means there is no such thing as an attachment without one.
+     * Discarding the window deletes the row; see
+     * [IssueBackingViewModel.onCloseRequested].
      */
     fun onNewIssueTapped() {
         val projectId = selectedProjectId ?: return
@@ -483,7 +546,12 @@ class MainScreenBackingViewModel(
             val result = runCatching { storage.createIssueDraft(projectId) }
             _stateFlow.value = result.fold(
                 onSuccess = { draft ->
-                    _stateFlow.value.copy(isBusy = false, dialog = ActiveDialog.Issue(draft.id))
+                    val now = _stateFlow.value
+                    now.copy(
+                        isBusy = false,
+                        openIssueIds = now.openIssueIds + draft.id,
+                        focusedIssueId = draft.id,
+                    )
                 },
                 onFailure = { t ->
                     _stateFlow.value.copy(isBusy = false, errorMessage = t.userMessage("Could not start a new issue."))
@@ -493,10 +561,42 @@ class MainScreenBackingViewModel(
     }
 
     /**
-     * A dialog closed.
+     * An issue window closed (its view model called `onFinished`).
+     *
+     * Focus is not reassigned to another window: closing a window lands the
+     * user on the board, which is where the closed issue's card is — the
+     * natural "where was I" after a close. The shell focuses the board pane
+     * when [State.focusedIssueId] goes null.
+     */
+    fun onIssueWindowClosed(issueId: Long) {
+        val current = _stateFlow.value
+        _stateFlow.value = current.copy(
+            openIssueIds = current.openIssueIds - issueId,
+            focusedIssueId = current.focusedIssueId?.takeIf { it != issueId },
+        )
+    }
+
+    /**
+     * The user focused a window — an issue's, or the board's (null).
+     *
+     * Reported by the shell so the address bar can follow focus; see
+     * [State.openIssueTicket]. Ignores ids that have no window: focus events
+     * can race a close, and a stale one must not resurrect the URL of a
+     * window that is gone.
+     */
+    fun onIssueWindowFocused(issueId: Long?) {
+        val current = _stateFlow.value
+        if (issueId != null && issueId !in current.openIssueIds) return
+        if (current.focusedIssueId == issueId) return
+        _stateFlow.value = current.copy(focusedIssueId = issueId)
+    }
+
+    /**
+     * A modal dialog closed (the project form or the resolution question —
+     * issue windows report through [onIssueWindowClosed] instead).
      *
      * @param changed whether anything was written. Reloading only when something
-     *   changed keeps closing a read-only issue from costing a round-trip.
+     *   changed keeps a looked-at-and-dismissed dialog from costing a round-trip.
      * @param selectProjectId a project to switch to first, or null to stay where
      *   we are. Only the project dialog passes one, and only after OK: making a
      *   project and being left looking at the previous one — or, from the empty

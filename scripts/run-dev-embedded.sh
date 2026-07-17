@@ -16,7 +16,7 @@
 #
 # Env:
 #   LUNICLE_PORT   the tracker's port (default: 8080)
-#   LUNAMUX_WEB    path to the lunamux-web checkout (default: ../lunamux-web)
+#   LUNAMUX_WEB    path to the lunamux-web checkout (default: ../../lunamux-web)
 #   SITE_PORT      port to serve the site on (default: 8000)
 #
 # ── Why this works without deploying anything ────────────────────────────────

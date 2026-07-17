@@ -11,7 +11,8 @@
 # exist twice, comments and all. It exists here once.
 #
 # Env:
-#   LUNAMUX_WEB   path to the lunamux-web checkout (default: ../lunamux-web)
+#   LUNAMUX_WEB   path to the lunamux-web checkout (default: ../../lunamux-web,
+#                 i.e. a sibling of the lunicle worktree container)
 #   SITE_PORT     port to serve it on (default: 8000)
 
 # shellcheck source=probe.sh
@@ -19,7 +20,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/probe.sh"
 
 LUNICLE_REPO_ROOT="${LUNICLE_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SITE_PORT="${SITE_PORT:-8000}"
-LUNAMUX_WEB="${LUNAMUX_WEB:-$LUNICLE_REPO_ROOT/../lunamux-web}"
+LUNAMUX_WEB="${LUNAMUX_WEB:-$LUNICLE_REPO_ROOT/../../lunamux-web}"
 
 SITE_URL="http://localhost:$SITE_PORT/?issues=1#/issues"
 

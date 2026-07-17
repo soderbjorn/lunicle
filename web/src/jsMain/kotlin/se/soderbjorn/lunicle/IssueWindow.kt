@@ -1,22 +1,32 @@
 /**
- * The issue modal: read it, or edit it, comment on it, delete it.
+ * An issue window's content: read it, or edit it, comment on it, delete it.
  *
- * Two faces of one dialog — a reader sees rendered markdown, someone with rights
- * sees the editor. Which one is showing is [IssueBackingViewModel.State.isEditing],
- * decided there and not here.
+ * The successor to the old IssueDialog, re-housed from a modal into the body of
+ * a darkness floating window. The chrome — title bar, minimise/maximise/close —
+ * belongs to the toolkit now; this renders only what goes inside, plus the
+ * footer buttons. Two faces of one window — a reader sees rendered markdown,
+ * someone with rights sees the editor. Which one is showing is
+ * [IssueBackingViewModel.State.isEditing], decided there and not here.
+ *
+ * There is no Cancel button. The window's close control is the way out, and the
+ * Save / Discard / Keep-editing question it can raise arrives through
+ * [IssueBackingViewModel.State.confirmingClose] — rendered here as the
+ * toolkit's three-way choice dialog, so it looks like every other darkness
+ * confirmation.
  *
  * @see IssueBackingViewModel
  */
 package se.soderbjorn.lunicle
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.HTMLSelectElement
+import se.soderbjorn.darkness.web.DialogChoice
+import se.soderbjorn.darkness.web.showChoiceDialog
 import se.soderbjorn.lunicle.client.renderMarkdown
 import se.soderbjorn.lunicle.client.viewmodel.CommentBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.IssueBackingViewModel
@@ -24,20 +34,22 @@ import se.soderbjorn.lunicle.clientserver.CommentView
 import se.soderbjorn.lunicle.clientserver.VocabularyItem
 
 /**
- * Renders the issue modal.
+ * Renders one issue window's body.
  *
- * @param openComment asks the bootstrap to put a comment dialog up. The issue
- *   dialog does not build one itself: a dialog owning another dialog's lifetime
- *   is how you end up with two modals fighting over Escape.
+ * @param dialogHost where the delete confirmation mounts — the shared modal
+ *   host, so it stacks with every other dialog and Modal's topmost-wins Escape
+ *   keeps working.
+ * @param openComment asks the bootstrap to put a comment dialog up. The window
+ *   does not build one itself: a view owning another dialog's lifetime is how
+ *   you end up with two modals fighting over Escape.
  */
-class IssueDialog(
+class IssueWindow(
     private val viewModel: IssueBackingViewModel,
     private val scope: CoroutineScope,
+    private val dialogHost: HTMLElement,
     private val openComment: (editing: CommentBackingViewModel.Existing?) -> Unit,
 ) {
-    private val modal = Modal("Issue", onDismiss = { viewModel.onCancelTapped() }, isLarge = true)
-
-    private lateinit var host: HTMLElement
+    private lateinit var body: HTMLElement
     private lateinit var titleField: HTMLInputElement
     private lateinit var readTitle: HTMLElement
     private lateinit var byline: HTMLElement
@@ -58,20 +70,29 @@ class IssueDialog(
     private lateinit var addCommentButton: HTMLElement
     private lateinit var validationElement: HTMLElement
     private lateinit var errorElement: HTMLElement
-    private lateinit var okButton: HTMLButtonElement
-    private lateinit var cancelButton: HTMLButtonElement
+    private lateinit var saveButton: HTMLButtonElement
     private lateinit var editButton: HTMLElement
     private lateinit var deleteButton: HTMLElement
     private lateinit var editor: MarkdownEditor
 
     private var confirm: ConfirmDialog? = null
+
+    /**
+     * Whether the Save/Discard/Keep-editing dialog is currently on screen.
+     *
+     * The toolkit's [showChoiceDialog] is fire-and-forget — it cannot be
+     * re-rendered or dismissed from outside — so this view tracks "already
+     * open" itself, the same way the old dialog code tracked its confirm. The
+     * flag clears in the dialog's own callbacks, which are also what clear
+     * [IssueBackingViewModel.State.confirmingClose], so the two stay in step.
+     */
+    private var choiceShowing = false
+
     private var renderedStatusIds: List<Long> = emptyList()
     private var renderedPriorityIds: List<Long> = emptyList()
     private var renderedResolutionIds: List<Long> = emptyList()
 
     fun mount(host: HTMLElement) {
-        this.host = host
-
         readTitle = element("h3", "issue-title")
         byline = element("p", "issue-byline")
         titleField = textField("Short description") { viewModel.onTitleChanged(it) }
@@ -106,15 +127,10 @@ class IssueDialog(
         errorElement = element("p", "modal-error")
         errorElement.setAttribute("role", "status")
 
-        // Status and priority share a row: two full-width selects stacked cost a
-        // third of the dialog's height to say two words.
-        // Each cell carries its name TWICE, and the two are not redundant: the
-        // <label> belongs to the select and only appears while editing, the
-        // caption sits inline before the tag and only appears while reading.
-        // Without the caption the read face is a bare "New" next to a bare
-        // "Normal" — two words in the dialog's most prominent row with nothing
-        // saying which axis either one is on. On the board the column heading and
-        // the priority group say it; in here nothing did.
+        // Status and priority share a row — same layout, and the same reasoning,
+        // as the old dialog: see the field-cell comments there. The caption/label
+        // duplication is deliberate (label for the edit face, caption for the
+        // read face).
         val statusCell = element("div", "field-cell")
         statusCell.children(
             element("label", "field-label field-label-edit", "Status"),
@@ -129,9 +145,6 @@ class IssueDialog(
             element("span", "tag-caption", "Priority"),
             priorityRead,
         )
-        // Resolution shares the row, and is present only when the chosen status
-        // demands one — see render(). The whole cell goes, not just the select: a
-        // "Resolution" label over nothing is a field that looks broken.
         resolutionCell = element("div", "field-cell")
         resolutionCell.children(
             element("label", "field-label field-label-edit", "Resolution"),
@@ -143,15 +156,9 @@ class IssueDialog(
         val statusPriorityRow = element("div", "field-row")
         statusPriorityRow.children(statusCell, priorityCell, resolutionCell)
 
-        // Three bands, and the split is what makes the scrolling right. See
-        // .issue-fields / .issue-scroll in styles.css:
-        //
-        //  - `fields` never scrolls. It is the identity of the thing you are
-        //    looking at, and it should not slide away while you type.
-        //  - `editorHost` takes the rest of the height while editing, and the
-        //    editor's own surface scrolls inside it.
-        //  - `scrollArea` is the reading face — description and comments — which
-        //    scrolls as one.
+        // Same three bands as the old dialog, for the same scrolling reasons:
+        // identity never scrolls, the editor takes the remaining height while
+        // editing, and the reading face scrolls as one.
         val fields = element("div", "issue-fields")
         fields.children(
             readTitle,
@@ -175,7 +182,12 @@ class IssueDialog(
             addCommentButton,
         )
 
-        modal.body.children(
+        // `modal-body`, deliberately: the three-band scroll layout
+        // (.modal-body / .issue-fields / .issue-scroll / .editor-host) was
+        // written for the old issue dialog and is reused verbatim — the issue
+        // window IS that dialog, re-housed. See styles.css.
+        body = element("div", "modal-body")
+        body.children(
             fields,
             editorHost,
             scrollArea,
@@ -183,46 +195,41 @@ class IssueDialog(
             errorElement,
         )
 
+        // "Edit" toggles into the editor and back out of it; toggling out with
+        // typed text asks first — all decided in the view model. Save keeps the
+        // window open, landing back in read mode on what was written.
         editButton = button("Edit", "btn") { viewModel.onEditTapped() }
         deleteButton = button("Delete", "btn btn-danger-quiet") { viewModel.onDeleteTapped() }
-        okButton = button("OK", "btn btn-primary") { viewModel.onOkTapped() } as HTMLButtonElement
-        cancelButton = button("Cancel", "btn btn-quiet") { viewModel.onCancelTapped() } as HTMLButtonElement
+        saveButton = button("Save", "btn btn-primary") { viewModel.onOkTapped() } as HTMLButtonElement
 
-        modal.footer.children(
+        val footer = element("div", "issue-footer")
+        footer.children(
             deleteButton,
             element("div", "modal-footer-spacer"),
             editButton,
-            cancelButton,
-            okButton,
+            saveButton,
         )
 
-        modal.mount(host)
+        val root = element("div", "issue-window")
+        root.children(body, footer)
+        host.appendChild(root)
+
         scope.launch { viewModel.stateFlow.collect { render(it) } }
         viewModel.start()
     }
 
     private fun render(state: IssueBackingViewModel.State) {
-        modal.setTitle(state.heading)
         readTitle.setTextIfChanged(state.title.ifBlank { "Untitled" })
         readTitle.visible(!state.isEditing)
         byline.setTextIfChanged(state.byline)
         byline.visible(!state.isEditing && !state.isDraft)
 
-        // Every "edit-only" label rides on one class rather than being toggled
-        // individually — there are six of them and forgetting one shows a stray
-        // "Components" heading above a read-only issue.
-        modal.body.classList.toggle("editing", state.isEditing)
+        body.classList.toggle("editing", state.isEditing)
 
         titleField.setValueIfChanged(state.title)
         editor.setValue(state.description)
         editor.setEnabled(state.isEditing)
 
-        // Every edit-only control is hidden in read mode, not merely disabled.
-        // Disabling alone leaves a dead grey textarea above the rendered
-        // description and an inert input above the heading — the reader sees
-        // each piece of text twice, once formatted and once in a broken-looking
-        // form. The labels ride on the `editing` class (see .field-label-edit);
-        // these are controls rather than labels, so they say it themselves.
         titleField.visible(state.isEditing)
         editorHost.visible(state.isEditing, displayValue = "flex")
 
@@ -234,11 +241,6 @@ class IssueDialog(
         priorityRead.setTextIfChanged(state.priorityName)
         priorityRead.visible(!state.isEditing, displayValue = "inline-block")
 
-        // Editing: shown when the chosen status demands a resolution. Reading:
-        // shown when the issue actually has one. The two conditions differ on
-        // purpose — while editing it must appear the instant the status changes,
-        // before anything has been picked, which is exactly when resolutionName is
-        // still null.
         renderResolutions(state)
         val showResolution =
             if (state.isEditing) state.requiresResolution else state.resolutionName != null
@@ -250,28 +252,13 @@ class IssueDialog(
         renderChips(componentBox, state.components, state.componentIds, state.isEditing) { viewModel.onComponentToggled(it) }
         renderReadTags(state)
 
-        // innerHTML with renderMarkdown's output — the one sanctioned use. See
-        // Markdown.kt: everything it emits is a tag it built itself, and every
-        // byte of the issue's text was escaped before any rule saw it.
         val html = renderMarkdown(state.description)
         if (descriptionRead.innerHTML != html) descriptionRead.innerHTML = html
         descriptionRead.visible(!state.isEditing)
 
-        // Comments belong to the reading face of this dialog, and only to it.
-        // Two reasons, and they arrive at the same rule:
-        //
-        //  - A draft has no comments and cannot have any — it does not exist on
-        //    the server yet. What that left was a "Comments" heading over "No
-        //    comments yet." on an issue nobody has ever been able to see, which
-        //    is not information, it is furniture.
-        //  - While editing, the comments are a wall of other people's text under
-        //    the field you are typing in. They are read before the Edit button is
-        //    pressed and they will be there after Cancel; nothing about them is
-        //    editable from here, so they are pushing the footer down the screen
-        //    to no purpose.
-        //
-        // The whole section goes, not just its contents: an empty heading is the
-        // same claim made more quietly.
+        // Comments belong to the reading face only — see the old dialog's long
+        // comment for why: a draft has none and cannot, and while editing they
+        // are a wall of other people's text under the field being typed in.
         val showComments = !state.isDraft && !state.isEditing
         renderComments(state)
         commentsHeading.visible(showComments)
@@ -283,14 +270,17 @@ class IssueDialog(
         errorElement.setTextIfChanged(state.errorMessage ?: "")
         errorElement.visible(state.errorMessage != null)
 
-        editButton.visible(!state.isEditing && state.canEdit, displayValue = "inline-flex")
+        // "Edit" in read mode, "View" in the editor — one toggle, two labels.
+        // Hidden on a draft: a draft has nothing to read, so there is nowhere
+        // to toggle back to until it is saved.
+        editButton.setTextIfChanged(if (state.isEditing) "View" else "Edit")
+        editButton.visible(state.canEdit && !state.isDraft, displayValue = "inline-flex")
         deleteButton.visible(state.canDelete && !state.isDraft, displayValue = "inline-flex")
-        okButton.visible(state.isEditing, displayValue = "inline-flex")
-        okButton.disabled = !state.isOkEnabled
-        cancelButton.setTextIfChanged(if (state.isEditing) "Cancel" else "Close")
-        cancelButton.disabled = state.isBusy
+        saveButton.visible(state.isEditing, displayValue = "inline-flex")
+        saveButton.disabled = !state.isOkEnabled
 
-        renderConfirm(state)
+        renderDeleteConfirm(state)
+        renderCloseConfirm(state)
     }
 
     private fun renderStatuses(state: IssueBackingViewModel.State) {
@@ -311,11 +301,6 @@ class IssueDialog(
         statusSelect.visible(state.isEditing, displayValue = "block")
     }
 
-    /**
-     * The priority dropdown. [renderStatuses]' twin, and rebuilt on the same
-     * terms — the id-list guard is what stops the open dropdown closing under the
-     * user on an unrelated state tick.
-     */
     private fun renderPriorities(state: IssueBackingViewModel.State) {
         val ids = state.priorities.map { it.id }
         if (ids != renderedPriorityIds) {
@@ -334,17 +319,14 @@ class IssueDialog(
         prioritySelect.visible(state.isEditing, displayValue = "block")
     }
 
-    /** The resolution dropdown. [renderStatuses]' twin; same rebuild guard. */
     private fun renderResolutions(state: IssueBackingViewModel.State) {
         val ids = state.resolutions.map { it.id }
         if (ids != renderedResolutionIds) {
             renderedResolutionIds = ids
             resolutionSelect.clear()
-            // A blank first option, and only here of the three dropdowns. Status
-            // and priority always have a value; a resolution starts as null and
-            // the user must choose. Without a blank, the select would show the
-            // first resolution while the state held none — the dialog claiming
-            // "Done" while OK is refused for having no resolution.
+            // A blank first option, only here of the three dropdowns: a
+            // resolution starts as null and the user must choose. See the old
+            // dialog's comment.
             resolutionSelect.appendChild(
                 (kotlinx.browser.document.createElement("option") as org.w3c.dom.HTMLOptionElement).apply {
                     value = ""
@@ -364,13 +346,6 @@ class IssueDialog(
         resolutionSelect.visible(state.isEditing, displayValue = "block")
     }
 
-    /**
-     * The label/component pickers.
-     *
-     * Rebuilt on every render, which is fine here and not in the picker: these
-     * are buttons rather than a native `<select>`, so there is no open dropdown
-     * to close under the user.
-     */
     private fun renderChips(
         box: HTMLElement,
         items: List<VocabularyItem>,
@@ -407,9 +382,6 @@ class IssueDialog(
     private fun renderComment(state: IssueBackingViewModel.State, comment: CommentView): HTMLElement {
         val el = element("article", "comment")
         val head = element("div", "comment-head")
-        // Author and timestamp are one string from the view model, not a span
-        // each: it is one attribution, and splitting it here would put the
-        // separator — and the decision to have one — in the view.
         head.appendChild(
             element("span", "comment-author", state.commentByline(comment)),
         )
@@ -423,13 +395,13 @@ class IssueDialog(
                 },
             )
         }
-        val body = element("div", "markdown comment-body")
-        body.innerHTML = renderMarkdown(comment.body)
-        el.children(head, body)
+        val commentBody = element("div", "markdown comment-body")
+        commentBody.innerHTML = renderMarkdown(comment.body)
+        el.children(head, commentBody)
         return el
     }
 
-    private fun renderConfirm(state: IssueBackingViewModel.State) {
+    private fun renderDeleteConfirm(state: IssueBackingViewModel.State) {
         if (state.isConfirmingDelete && confirm == null) {
             confirm = ConfirmDialog(
                 title = "Delete issue",
@@ -437,15 +409,49 @@ class IssueDialog(
                 destructiveLabel = "Delete",
                 onConfirm = { viewModel.onDeleteConfirmed() },
                 onCancel = { viewModel.onDeleteCancelled() },
-            ).also { it.mount(host) }
+            ).also { it.mount(dialogHost) }
         } else if (!state.isConfirmingDelete && confirm != null) {
             confirm?.dismiss()
             confirm = null
         }
     }
 
-    fun dismiss() {
+    /**
+     * The Save / Discard / Keep-editing question, as the toolkit's three-way
+     * dialog so it matches every other darkness confirmation.
+     *
+     * Escape and a backdrop click mean "Keep editing": the two no-touch ways
+     * out of a dialog must be the one answer that changes nothing.
+     */
+    private fun renderCloseConfirm(state: IssueBackingViewModel.State) {
+        if (state.confirmingClose == null || choiceShowing) return
+        choiceShowing = true
+        showChoiceDialog(
+            title = "Unsaved changes",
+            message = "${state.heading} has unsaved changes.",
+            choices = listOf(
+                DialogChoice(id = "keep", label = "Keep editing"),
+                DialogChoice(id = "discard", label = "Discard", destructive = true),
+                DialogChoice(id = "save", label = "Save", isPrimary = true),
+            ),
+            onChoice = { id ->
+                choiceShowing = false
+                when (id) {
+                    "save" -> viewModel.onCloseSaveTapped()
+                    "discard" -> viewModel.onCloseDiscardTapped()
+                    else -> viewModel.onCloseKeepEditingTapped()
+                }
+            },
+            onDismiss = {
+                choiceShowing = false
+                viewModel.onCloseKeepEditingTapped()
+            },
+        )
+    }
+
+    /** Take down anything this window put up outside its own pane. */
+    fun dispose() {
         confirm?.dismiss()
-        modal.dismiss()
+        confirm = null
     }
 }

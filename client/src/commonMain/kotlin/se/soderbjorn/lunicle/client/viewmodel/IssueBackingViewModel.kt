@@ -1,20 +1,26 @@
 /**
- * Backing view-model for the issue modal: read, edit, comment, delete.
+ * Backing view-model for an issue window: read, edit, comment, delete.
  *
  * The draft contract is the thing to understand here, because it is why this
  * screen is not a plain form:
  *
- *   "New issue" creates the row on the server **before** the modal opens (see
+ *   "New issue" creates the row on the server **before** the window opens (see
  *   [MainScreenBackingViewModel.onNewIssueTapped]). It has to: the editor can
  *   upload a file, an attachment must have an owner, and the schema's
  *   `CHECK` makes an ownerless attachment unrepresentable rather than merely
  *   unlikely. So there is always a real issue id, and "new" is a *flag on an
  *   existing row* ([State.isDraft]) rather than the absence of one.
  *
- *   The consequence: **Cancel on a draft deletes the issue.** Not "discards
+ *   The consequence: **discarding a draft deletes the issue.** Not "discards
  *   changes" — deletes. And closing the tab instead leaves the row behind, which
  *   is exactly what `is_draft` covers: it stays invisible on every board, and
  *   the startup sweep collects the files behind it.
+ *
+ * There is no Cancel button any more. The window's close control is the way
+ * out, and closing with unsaved edits asks Save / Discard / Keep editing —
+ * see [onCloseRequested] and [State.confirmingClose]. The same question guards
+ * the Edit button's toggle *back* to read mode, because both gestures would
+ * otherwise silently drop typed text.
  *
  * @see StorageRepository
  * @see CommentBackingViewModel
@@ -40,13 +46,40 @@ import se.soderbjorn.lunicle.clientserver.StatusItem
 import se.soderbjorn.lunicle.clientserver.VocabularyItem
 
 /**
- * Owns the issue modal.
+ * What an unanswered Save / Discard / Keep-editing question is guarding.
+ *
+ * Two gestures can lose typed text and both must ask first, but what happens
+ * after each answer differs: answering for [Window] ends with the window
+ * closing, answering for [LeaveEdit] ends with the window still open in read
+ * mode. One enum rather than two boolean flags, because the two questions are
+ * mutually exclusive and a state that could claim both at once would be a
+ * state that lies.
+ */
+enum class CloseConfirm {
+    /** The user clicked the window's close control. */
+    Window,
+
+    /** The user toggled the Edit button back toward read mode. */
+    LeaveEdit,
+}
+
+/**
+ * Owns one issue window.
+ *
+ * Several of these can be alive at once — one per open issue window — which is
+ * why nothing in here is shared mutable state beyond the [storage] the caller
+ * passes in (a stateless HTTP wrapper).
  *
  * @param issueId the issue to open. Always real; see the file's preamble.
  * @param board the board it belongs to, for the label/component/status
  *   vocabularies. Passed in rather than re-fetched: MainScreen already has it,
  *   and asking again would be a round-trip to learn what the caller knows.
- * @param onFinished called when the modal is done; true if anything was written.
+ * @param onFinished called when the window is done and should close; true if
+ *   anything was written.
+ * @param onWritten called after any write the board might need to reflect — a
+ *   save, a delete, a comment — *without* the window closing. The bootstrap
+ *   routes it to the board's refresh, which is what keeps a card's title
+ *   current the moment its issue is saved rather than when its window closes.
  */
 class IssueBackingViewModel(
     private val issueId: Long,
@@ -54,6 +87,7 @@ class IssueBackingViewModel(
     private val storage: StorageRepository = StorageRepository(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onFinished: (changed: Boolean) -> Unit,
+    private val onWritten: () -> Unit = {},
 ) {
     private val _stateFlow = MutableStateFlow(State())
 
@@ -78,6 +112,23 @@ class IssueBackingViewModel(
      * @property isDraft whether this issue has never been published. Drives the
      *   whole Cancel contract; see the preamble.
      */
+    /**
+     * The editable fields as one value, so "has anything changed" is a single
+     * `!=` between what is on screen and what was last loaded or saved —
+     * see [State.isDirty]. Field-for-field with the editable half of [State];
+     * a field added there and forgotten here would be a field whose edits are
+     * silently droppable, which is why they sit adjacent.
+     */
+    data class Fields(
+        val title: String,
+        val description: String,
+        val statusId: Long,
+        val priorityId: Long,
+        val resolutionId: Long?,
+        val labelIds: Set<Long>,
+        val componentIds: Set<Long>,
+    )
+
     data class State(
         val isLoaded: Boolean = false,
         val isBusy: Boolean = false,
@@ -98,6 +149,20 @@ class IssueBackingViewModel(
         val canDelete: Boolean = false,
         val canComment: Boolean = false,
         val isConfirmingDelete: Boolean = false,
+        /**
+         * The unanswered Save / Discard / Keep-editing question, or null.
+         * Set by [onCloseRequested] and the Edit toggle; answered by
+         * [onCloseSaveTapped] / [onCloseDiscardTapped] /
+         * [onCloseKeepEditingTapped]. The view renders the modal off this,
+         * exactly as it renders the delete confirmation off
+         * [isConfirmingDelete].
+         */
+        val confirmingClose: CloseConfirm? = null,
+        /**
+         * The fields as last loaded or saved — the baseline [isDirty]
+         * compares against. Null until the first fetch returns.
+         */
+        val saved: Fields? = null,
         val errorMessage: String? = null,
         val statuses: List<StatusItem> = emptyList(),
         val priorities: List<StatusItem> = emptyList(),
@@ -106,6 +171,29 @@ class IssueBackingViewModel(
         val components: List<VocabularyItem> = emptyList(),
         val prefix: String = "",
     ) {
+        /** The editable fields as they are on screen right now. */
+        val fields: Fields get() = Fields(
+            title = title,
+            description = description,
+            statusId = statusId,
+            priorityId = priorityId,
+            resolutionId = resolutionId,
+            labelIds = labelIds,
+            componentIds = componentIds,
+        )
+
+        /**
+         * Whether closing now would lose typed text.
+         *
+         * Only meaningful in edit mode: read mode has no editable surface, so
+         * whatever [fields] holds there is by construction what was loaded. An
+         * untouched draft is NOT dirty — its fields still equal the empty row
+         * the server created — which is what lets an abandoned "New issue"
+         * close silently instead of asking about work that was never done.
+         */
+        val isDirty: Boolean get() =
+            isEditing && saved != null && fields != saved
+
         /** "LMX-123", or "New issue" for a draft that has no meaningful number yet. */
         val ticket: String get() = "$prefix-$number"
 
@@ -230,6 +318,17 @@ class IssueBackingViewModel(
         canEdit = canEdit,
         canDelete = canDelete,
         canComment = canComment,
+        // The freshly fetched fields are the new dirty-baseline: whatever is
+        // on screen after this apply is, by definition, unmodified.
+        saved = Fields(
+            title = title,
+            description = description,
+            statusId = statusId,
+            priorityId = priorityId,
+            resolutionId = resolutionId,
+            labelIds = labelIds.toSet(),
+            componentIds = componentIds.toSet(),
+        ),
         errorMessage = null,
         statuses = board.statuses,
         priorities = board.priorities,
@@ -241,9 +340,150 @@ class IssueBackingViewModel(
 
     // ── Editing ──────────────────────────────────────────────────────────────
 
+    /**
+     * The Edit button — a toggle, both directions.
+     *
+     * Into edit mode: gated on [State.canEdit], exactly as before. Back toward
+     * read mode: silent when nothing changed, otherwise the same Save / Discard
+     * / Keep-editing question the close control asks — leaving edit mode drops
+     * the same typed text closing does, so it earns the same guard. A draft
+     * never toggles back: it has nothing to read yet.
+     */
     fun onEditTapped() {
-        if (!_stateFlow.value.canEdit) return
-        _stateFlow.value = _stateFlow.value.copy(isEditing = true)
+        val current = _stateFlow.value
+        if (!current.isEditing) {
+            if (!current.canEdit) return
+            _stateFlow.value = current.copy(isEditing = true)
+            return
+        }
+        if (current.isDraft || current.isBusy) return
+        if (!current.isDirty) {
+            _stateFlow.value = current.copy(isEditing = false)
+            return
+        }
+        _stateFlow.value = current.copy(confirmingClose = CloseConfirm.LeaveEdit)
+    }
+
+    // ── Closing ──────────────────────────────────────────────────────────────
+
+    /**
+     * The window's close control was clicked.
+     *
+     * Clean states close at once: a read-mode issue, an edit with nothing
+     * typed, and — the draft contract — an untouched "New issue", whose backing
+     * row is deleted on the way out exactly as Cancel used to. Only a genuinely
+     * dirty edit stops to ask; [State.confirmingClose] carries the question and
+     * the three `onClose*Tapped` intents are the answers.
+     */
+    fun onCloseRequested() {
+        val current = _stateFlow.value
+        if (current.isBusy) return
+        if (current.isDirty) {
+            _stateFlow.value = current.copy(confirmingClose = CloseConfirm.Window)
+            return
+        }
+        closeDiscarding(current)
+    }
+
+    /** Save, then do what the confirmed gesture wanted. */
+    fun onCloseSaveTapped() {
+        val current = _stateFlow.value
+        val intent = current.confirmingClose ?: return
+        // A save that cannot succeed — a blank title, a close without a
+        // resolution — turns into the validation sentence with the question
+        // dismissed: the user is back in the editor looking at why, which
+        // beats a Save button that silently does nothing inside a modal.
+        val validation = current.validationMessage
+        if (validation != null) {
+            _stateFlow.value = current.copy(confirmingClose = null, errorMessage = validation)
+            return
+        }
+        _stateFlow.value = current.copy(confirmingClose = null, isBusy = true, errorMessage = null)
+        scope.launch {
+            val result = runCatching { saveCurrent(_stateFlow.value) }
+            result.fold(
+                onSuccess = {
+                    hasWritten = true
+                    onWritten()
+                    when (intent) {
+                        CloseConfirm.Window -> onFinished(true)
+                        CloseConfirm.LeaveEdit -> {
+                            _stateFlow.value = _stateFlow.value.copy(isEditing = false)
+                            refresh(startEditingIfDraft = false)
+                        }
+                    }
+                },
+                onFailure = { t ->
+                    println("Issue: save failed: ${t.message}")
+                    _stateFlow.value = _stateFlow.value.copy(
+                        isBusy = false,
+                        errorMessage = t.userMessage("Could not save that issue."),
+                    )
+                },
+            )
+        }
+    }
+
+    /** Drop the typed text, then do what the confirmed gesture wanted. */
+    fun onCloseDiscardTapped() {
+        val current = _stateFlow.value
+        val intent = current.confirmingClose ?: return
+        when (intent) {
+            CloseConfirm.Window -> closeDiscarding(current.copy(confirmingClose = null))
+            CloseConfirm.LeaveEdit -> {
+                // Back to read mode showing what is actually saved. The saved
+                // baseline is authoritative here — restoring from it rather
+                // than re-fetching, because nothing was written.
+                val saved = current.saved ?: return
+                _stateFlow.value = current.copy(
+                    confirmingClose = null,
+                    isEditing = false,
+                    title = saved.title,
+                    description = saved.description,
+                    statusId = saved.statusId,
+                    priorityId = saved.priorityId,
+                    resolutionId = saved.resolutionId,
+                    labelIds = saved.labelIds,
+                    componentIds = saved.componentIds,
+                )
+            }
+        }
+    }
+
+    /** Never mind — stay in the editor. */
+    fun onCloseKeepEditingTapped() {
+        _stateFlow.value = _stateFlow.value.copy(confirmingClose = null)
+    }
+
+    /**
+     * Close without saving.
+     *
+     * On a draft this **deletes the issue** — the row only ever existed so the
+     * editor had something to attach images to, and an abandoned one must not
+     * appear on anyone's board. On a published issue it just closes: nothing
+     * was written, so there is nothing to undo.
+     */
+    private fun closeDiscarding(current: State) {
+        if (!current.isDraft) {
+            onFinished(hasWritten)
+            return
+        }
+        _stateFlow.value = current.copy(isBusy = true)
+        scope.launch {
+            runCatching { storage.deleteIssue(issueId) }
+                .onFailure {
+                    // Not worth stopping the user over, and not worth an error
+                    // they cannot act on: the row is a draft, so it is invisible
+                    // either way, and the startup sweep takes its files. Logged
+                    // because a rash of these would mean something real.
+                    println("Issue: discarding draft $issueId failed: ${it.message}")
+                }
+            // `hasWritten`, not false: a comment posted into a draft that is now
+            // being discarded still changed nothing visible — but an image
+            // uploaded to it did, and the board's issue list is stale either
+            // way once a row has come and gone.
+            onFinished(hasWritten)
+        }
     }
 
     fun onTitleChanged(value: String) {
@@ -299,30 +539,30 @@ class IssueBackingViewModel(
     private fun Set<Long>.toggle(id: Long): Set<Long> = if (id in this) this - id else this + id
 
     /**
-     * OK: publish a draft, or save an edit. One call for both — the server does
-     * not distinguish them either.
+     * Save: publish a draft, or save an edit. One call for both — the server
+     * does not distinguish them either.
+     *
+     * The window stays open. Saving lands the issue back in read mode showing
+     * what was just written — the window is the issue now, not a form whose
+     * job ends at OK — and the board learns about it through [onWritten]
+     * rather than through the window closing.
      */
     fun onOkTapped() {
         val current = _stateFlow.value
         if (!current.isOkEnabled) return
         _stateFlow.value = current.copy(isBusy = true, errorMessage = null)
         scope.launch {
-            val result = runCatching {
-                storage.saveIssue(
-                    id = issueId,
-                    title = current.title,
-                    description = current.description,
-                    statusId = current.statusId,
-                    priorityId = current.priorityId,
-                    resolutionId = current.resolutionId,
-                    labelIds = current.labelIds.toList(),
-                    componentIds = current.componentIds.toList(),
-                )
-            }
+            val result = runCatching { saveCurrent(current) }
             result.fold(
                 onSuccess = {
                     println("Issue: saved $issueId")
-                    onFinished(true)
+                    hasWritten = true
+                    onWritten()
+                    _stateFlow.value = _stateFlow.value.copy(isEditing = false)
+                    // Re-fetch rather than patch: publishing a draft changes
+                    // facts the server owns (isDraft off, the real number),
+                    // and the fetch also resets the dirty baseline.
+                    refresh(startEditingIfDraft = false)
                 },
                 onFailure = { t ->
                     println("Issue: save failed: ${t.message}")
@@ -335,37 +575,18 @@ class IssueBackingViewModel(
         }
     }
 
-    /**
-     * Cancel.
-     *
-     * On a draft this **deletes the issue** — the row only ever existed so the
-     * editor had something to attach images to, and an abandoned one must not
-     * appear on anyone's board. On a published issue it just closes: the fields
-     * were never written, so there is nothing to undo.
-     */
-    fun onCancelTapped() {
-        val current = _stateFlow.value
-        if (current.isBusy) return
-        if (!current.isDraft) {
-            onFinished(hasWritten)
-            return
-        }
-        _stateFlow.value = current.copy(isBusy = true)
-        scope.launch {
-            runCatching { storage.deleteIssue(issueId) }
-                .onFailure {
-                    // Not worth stopping the user over, and not worth an error
-                    // they cannot act on: the row is a draft, so it is invisible
-                    // either way, and the startup sweep takes its files. Logged
-                    // because a rash of these would mean something real.
-                    println("Issue: discarding draft $issueId failed: ${it.message}")
-                }
-            // `hasWritten`, not false: a comment posted into a draft that is now
-            // being discarded still changed nothing visible — but an image
-            // uploaded to it did, and the board's issue list is stale either
-            // way once a row has come and gone.
-            onFinished(hasWritten)
-        }
+    /** The one save call, shared by the Save button and the close dialog's Save. */
+    private suspend fun saveCurrent(current: State) {
+        storage.saveIssue(
+            id = issueId,
+            title = current.title,
+            description = current.description,
+            statusId = current.statusId,
+            priorityId = current.priorityId,
+            resolutionId = current.resolutionId,
+            labelIds = current.labelIds.toList(),
+            componentIds = current.componentIds.toList(),
+        )
     }
 
     fun onDeleteTapped() {
@@ -381,7 +602,10 @@ class IssueBackingViewModel(
         _stateFlow.value = _stateFlow.value.copy(isBusy = true, isConfirmingDelete = false)
         scope.launch {
             runCatching { storage.deleteIssue(issueId) }.fold(
-                onSuccess = { onFinished(true) },
+                onSuccess = {
+                    onWritten()
+                    onFinished(true)
+                },
                 onFailure = { t ->
                     _stateFlow.value = _stateFlow.value.copy(
                         isBusy = false,
@@ -403,6 +627,7 @@ class IssueBackingViewModel(
      */
     fun onCommentsChanged() {
         hasWritten = true
+        onWritten()
         scope.launch { refresh(startEditingIfDraft = false) }
     }
 
