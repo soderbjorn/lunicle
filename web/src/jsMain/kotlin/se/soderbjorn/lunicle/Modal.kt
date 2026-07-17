@@ -18,11 +18,13 @@ import org.w3c.dom.events.KeyboardEvent
  * A modal: backdrop, panel, title, body, footer.
  *
  * @param title shown in the title bar.
- * @param onDismiss called for Escape and for a backdrop click — the two ways to
- *   leave a dialog without touching a button. Wired to the same intent as
- *   Cancel, so a draft discarded with Escape is discarded the same way as one
- *   dismissed with the button. Getting that wrong would leave a draft row behind
- *   every time someone hit Escape.
+ * @param onDismiss called for Escape — the one way to leave a dialog without
+ *   touching a button. Wired to the same intent as Cancel, so a draft discarded
+ *   with Escape is discarded the same way as one dismissed with the button.
+ *   Getting that wrong would leave a draft row behind every time someone hit
+ *   Escape. A click on the backdrop deliberately does *not* dismiss: a stray
+ *   click in the dim area losing an in-progress dialog read as confusing, so a
+ *   dialog now stays open until a button (or Escape) closes it.
  * @param isLarge for the dialogs that hold *prose* — an issue and its comments,
  *   or a comment being written. They get a fixed, generous panel whose body
  *   scrolls inside itself, rather than the default panel that grows to fit and
@@ -57,12 +59,12 @@ class Modal(
         panel.children(titleElement, body, footer)
         backdrop.appendChild(panel)
 
-        // A click on the backdrop dismisses; a click *inside* the panel must not.
-        // Without the target check, every click on a field would close the
-        // dialog, because the event bubbles to the backdrop.
-        backdrop.onclick = { event ->
-            if (event.target == backdrop) onDismiss()
-        }
+        // A click on the backdrop deliberately does nothing. It used to dismiss,
+        // but a stray click in the dim area closing a half-filled dialog was more
+        // surprise than shortcut — you would lose a draft to a misclick meant for
+        // the panel. A dialog now leaves only by a button or Escape, both of which
+        // are deliberate. The backdrop still swallows the click (it is a full
+        // overlay) so nothing behind it reacts either.
 
         val listener: (org.w3c.dom.events.Event) -> Unit = { event ->
             // Only the topmost modal answers Escape. Every open modal has a
