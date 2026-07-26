@@ -1,0 +1,17 @@
+-- Version 28 → 29: the instance-wide switches (LNL-115).
+--
+-- One new table and nothing else — no existing table is touched, so there is no
+-- column to back-fill and no data to move. A migrated volume simply starts with no
+-- rows, which reads as both switches off: the app stays usable signed out and only
+-- an administrator may create a project, exactly the behaviour every deployment had
+-- before this table existed.
+--
+-- The statement below is the same one InstanceSettings.sq declares for a fresh
+-- database, verbatim, so a migrated volume and a newly created one end up with the
+-- identical schema — the line MigrationTest holds. See InstanceSettings.sq for why
+-- the switches are rows under a key rather than columns on a singleton table.
+
+CREATE TABLE instance_settings (
+    key TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL
+);

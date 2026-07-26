@@ -1,0 +1,89 @@
+-- Counting issues for the statistics dialog.
+--
+-- Its own file rather than four more queries at the bottom of Issues.sq, because
+-- these read across `issues`, `issue_events` and `statuses` together and belong
+-- to none of them. Nothing here writes.
+--
+-- ── "Created" is a column. "Closed" is not. ────────────────────────────────
+--
+-- An issue records when it was filed — `issues.created_at`, set once and never
+-- moved — so counting the ones filed in a window is exact for every window, and
+-- `createdSince` below is the whole of it.
+--
+-- Closing is not a column. An issue records the status it is in *now* and the
+-- resolution that goes with it, and neither remembers when it got there:
+-- `updated_at` moves on every subsequent edit, so an issue closed in March and
+-- given a label in July claims July. So a window count has to come from the
+-- history, and the history has three limits worth stating in full, because each
+-- one makes the number smaller than the truth rather than larger:
+--
+--  1. STATUS_CHANGED stores the status's NAME as it stood, on purpose — see
+--     IssueEvents.sq's value_text. Matching those snapshots against the columns
+--     that require a resolution TODAY is therefore a match across a rename: a
+--     project that renamed "Closed" to "Shipped" stops counting every close
+--     recorded under the old name. Storing an id instead would have made the
+--     history lie when a column was deleted, which is the worse of the two.
+--  2. An issue created *directly* into a closing column writes CREATED and
+--     nothing else — IssueHistory.recordCreated deliberately does not synthesise
+--     a STATUS_CHANGED for the state an issue arrived in. The web app cannot do
+--     this (a draft lands in the leftmost column) but MCP's create_issue can, so
+--     a backfilled import of already-closed issues is invisible here.
+--  3. The history began at 5.sqm, which backfilled CREATED for issues that
+--     already existed and could not invent the events it had no record of. Every
+--     close before that date is simply not in the table.
+--
+-- ── Which is why all-time is measured differently ──────────────────────────
+--
+-- `closedAll` counts the board as it stands — issues holding a resolution right
+-- now — and is exact, immune to all three limits above, and the number a person
+-- would get by counting the closed column themselves. That it disagrees with the
+-- window counts is not a defect to reconcile: they answer different questions.
+-- "How many did we close last week" is about activity in a period, and only the
+-- history knows. "How many have we closed" is about the board, and the board
+-- knows precisely. The dialog says which is which rather than hiding it.
+--
+-- The visible consequence, named because somebody will notice it: on a project
+-- older than its history, all-time closed can exceed what the windows would ever
+-- sum to. That is the honest direction for the error to run.
+
+-- Issues filed since a moment. Drafts excluded — a half-written issue is nobody's
+-- business but its author's, and it is the one issue on the board that has not
+-- happened yet.
+createdSince:
+SELECT COUNT(*) FROM issues WHERE project_id = ? AND is_draft = 0 AND created_at >= ?;
+
+-- Every issue ever filed here. Same draft exclusion, no window.
+createdAll:
+SELECT COUNT(*) FROM issues WHERE project_id = ? AND is_draft = 0;
+
+-- Issues moved into a closing column since a moment. See the preamble for what
+-- this can and cannot see.
+--
+-- COUNT(DISTINCT issue_id), not COUNT(*): an issue closed, reopened and closed
+-- again within one window produced two events and is one issue closed. Counting
+-- events would let a single contested ticket inflate a week.
+--
+-- `requires_resolution = 1` rather than a status named "Closed", for the reason
+-- that flag exists at all — a project that renamed or added a closing column is
+-- describing its own workflow, and this should follow it. A project may mark
+-- more than one column closing, and this counts them all for free.
+closedSince:
+SELECT COUNT(DISTINCT e.issue_id)
+FROM issue_events e
+JOIN issues i ON i.id = e.issue_id
+WHERE i.project_id = ?
+  AND i.is_draft = 0
+  AND e.kind = 'STATUS_CHANGED'
+  AND e.created_at >= ?
+  AND e.value_text IN (
+      SELECT s.name FROM statuses s WHERE s.project_id = ? AND s.requires_resolution = 1
+  );
+
+-- Issues closed as the board stands now. Exact, and deliberately not the same
+-- measurement as closedSince; the preamble argues why.
+--
+-- Read off `resolution_id IS NOT NULL` rather than off the status, because those
+-- two are kept in lockstep by BoardRoutes and the resolution is the narrower
+-- claim: an issue carrying one is in a column that demanded it. See Issues.sq.
+closedAll:
+SELECT COUNT(*) FROM issues WHERE project_id = ? AND is_draft = 0 AND resolution_id IS NOT NULL;

@@ -1,0 +1,112 @@
+-- The in-app notification list (LNL-109): one row per notification per user.
+--
+-- ── Why this is a stored row and not derived, unlike the read badges ────────
+--
+-- Reads.sq deliberately stores no per-item state — "unread" there is a high-water
+-- comparison, because the alternative was a row per user per message on tables
+-- people are encouraged to grow. A notification is the opposite case: it is not
+-- "have you caught up on this container" but "this specific thing happened to you,
+-- once", and there is no watermark that expresses "Grace assigned you LNL-42 at
+-- 3pm". So it is a real row, written when the event fires — the same moment the
+-- twin e-mail is composed (see EmailNotifier.kt) — and it carries its own text and
+-- its own destination.
+--
+-- The volume this table grows with is the volume of *notifications actually sent*,
+-- which is bounded by subscriptions and mentions rather than by every post and
+-- message: a busy forum a hundred people can read produces one row each only for
+-- the handful watching it. Dismiss and clear are hard DELETEs (LNL-109 chose no
+-- retention), so a user who empties the panel empties the table of their rows.
+--
+-- ── Destination is ids, not a link ──────────────────────────────────────────
+--
+-- The `dest_*` columns are the app's own ids for where the notification points;
+-- the client navigates from them directly rather than through a `?issue=` URL.
+-- They are all nullable and which are set is a function of `kind` — an ISSUE_*
+-- row sets `dest_project_id` + `dest_issue_id`, a MESSAGE sets
+-- `dest_conversation_id` (+ `dest_message_id`), a FORUM_* sets `dest_forum_id` +
+-- `dest_post_id` (+ project). See NotificationKind.
+--
+-- ── Why the dest columns are NOT foreign keys ───────────────────────────────
+--
+-- For `conversation_reads.last_read_message_id`'s reason (see Reads.sq): they are
+-- destinations recorded at a moment, not live references. If the issue a
+-- notification points at is later deleted, the notification is stale — the click
+-- will find nothing and the client says so — but an `ON DELETE CASCADE` would
+-- instead silently delete the *notification*, erasing the record that the thing
+-- ever happened. "Somebody assigned you an issue that has since been deleted" is
+-- still true and still worth having seen. Only `user_id` is a key and cascades: a
+-- notification for a deleted account is one nobody will read.
+
+CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+
+    -- Epoch millis. Newest first in the list; also the relative time a row shows.
+    created_at INTEGER NOT NULL,
+
+    -- 0 until the owner opens it; a click sets it to 1. Indexed with user_id for
+    -- the bell's count.
+    is_read INTEGER NOT NULL DEFAULT 0,
+
+    -- A NotificationKind name. Text rather than an integer so a new kind is a new
+    -- string the client already parses by name, not a magic number to keep in
+    -- step across two modules.
+    kind TEXT NOT NULL,
+
+    -- The whole human-readable line, names already resolved. Never a message or
+    -- comment body — that is the difference from the twin e-mail.
+    title TEXT NOT NULL,
+
+    -- Destination ids. Nullable; populated per kind. Not foreign keys — see above.
+    dest_project_id INTEGER,
+    dest_issue_id INTEGER,
+    dest_conversation_id INTEGER,
+    dest_message_id INTEGER,
+    dest_forum_id INTEGER,
+    dest_post_id INTEGER,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- The bell's five-minute poll: one indexed count of a user's unread rows.
+CREATE INDEX notifications_user_unread ON notifications (user_id, is_read);
+
+-- The panel's list: a user's rows, newest first.
+CREATE INDEX notifications_user_created ON notifications (user_id, created_at);
+
+-- Write one notification. created_at is passed in (the caller's clock), like every
+-- other insert in this server.
+insert:
+INSERT INTO notifications (
+    user_id, created_at, kind, title,
+    dest_project_id, dest_issue_id, dest_conversation_id, dest_message_id, dest_forum_id, dest_post_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- One user's notifications, newest first, for the panel.
+listForUser:
+SELECT id, created_at, is_read, kind, title,
+       dest_project_id, dest_issue_id, dest_conversation_id, dest_message_id, dest_forum_id, dest_post_id
+FROM notifications
+WHERE user_id = ?
+ORDER BY created_at DESC, id DESC;
+
+-- How many of one user's notifications are unread — the bell's whole question.
+unreadCount:
+SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0;
+
+-- Mark one row read. user_id is in the WHERE so one user cannot touch another's row
+-- by guessing an id — the id alone is not authority.
+markRead:
+UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?;
+
+-- Mark all of a user's notifications read.
+markAllRead:
+UPDATE notifications SET is_read = 1 WHERE user_id = ?;
+
+-- Dismiss one row (hard delete). user_id-scoped, as markRead.
+delete:
+DELETE FROM notifications WHERE id = ? AND user_id = ?;
+
+-- Clear all of a user's notifications.
+deleteAllForUser:
+DELETE FROM notifications WHERE user_id = ?;

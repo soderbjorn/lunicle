@@ -1,0 +1,77 @@
+-- Comments, in markdown, on an issue.
+--
+-- No project_id: a comment reaches its project through its issue, and
+-- duplicating it here would be a second source of truth for a fact that already
+-- has one.
+
+CREATE TABLE comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL,
+    body TEXT NOT NULL,          -- markdown, same editor as the issue
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,          -- SET NULL, same reasoning as issues
+    -- An author with no account, for imported history. Exclusive with
+    -- created_by, same reasoning as issues — the long version lives there.
+    created_by_external TEXT,
+    -- The agent that wrote this on the author's behalf, or NULL when a human did.
+    -- Not a third author: created_by still names whose account the comment was
+    -- posted under, and this records that an agent held the pen. Same column,
+    -- same reasoning, as issues — the long version lives there.
+    agent_name TEXT,
+    -- Same reason as issues: the comment modal supports inline image upload, so
+    -- the row must exist before the image does. Cancel deletes it; the flag
+    -- covers the crash.
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+insert:
+INSERT INTO comments (issue_id, body, created_at, created_by, created_by_external, agent_name)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+publish:
+UPDATE comments SET body = ?, is_draft = 0 WHERE id = ?;
+
+update:
+UPDATE comments SET body = ? WHERE id = ?;
+
+-- A full edit of an already-published comment: body, and — for the MCP
+-- update_comment path only — its date and author too. is_draft is deliberately
+-- untouched, so a published comment stays published. The web app never reaches
+-- this; it edits the body alone, through `update`.
+edit:
+UPDATE comments
+SET body = ?, created_at = ?, created_by = ?, created_by_external = ?, agent_name = ?
+WHERE id = ?;
+
+-- Every comment that could contain an @mention, for the display-name rewrite.
+--
+-- `LIKE '%@%'` is a coarse pre-filter and nothing more: the real question is
+-- whether `mentionSpans` finds anything, which SQL cannot ask. It is here so a
+-- rename does not drag every comment on the instance through the matcher — an
+-- '@' is the one character every mention must contain. Drafts included: a draft
+-- is somebody's unsent comment, and it must not be the one place an old name
+-- survives.
+withPossibleMentions:
+SELECT id, body FROM comments WHERE body LIKE '%@%';
+
+-- Every comment that could link to an attachment, for the startup link repair.
+-- Issues.sq's twin; its comment is the long version.
+withAttachmentLinks:
+SELECT id, body FROM comments WHERE body LIKE '%/api/attachments/%';
+
+delete:
+DELETE FROM comments WHERE id = ?;
+
+findById:
+SELECT id, issue_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM comments WHERE id = ?;
+
+forIssue:
+SELECT id, issue_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM comments WHERE issue_id = ? AND is_draft = 0
+ORDER BY created_at;

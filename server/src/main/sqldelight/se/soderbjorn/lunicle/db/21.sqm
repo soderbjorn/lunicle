@@ -1,0 +1,74 @@
+-- Version 21 → 22: e-mail becomes the account key.
+--
+-- `UNIQUE (provider, provider_id)` was the identity, and the schema comment on
+-- `users.email` argued at length that an address must never be one — because the
+-- same human signing in via both Google and GitHub was two accounts by design.
+-- GitHub sign-in is gone and the `AccountMerge` written to clean up after it was
+-- retired in 4f05fb0, which left that pair as a more fragile spelling of "the
+-- Google account" and foreclosed adding any second way to sign in. See LNL-73 and
+-- the rewritten comment in Users.sq.
+--
+-- Two statements: normalize what is already stored, then make it unique.
+--
+-- The dual-path story is 1.sqm's and 2.sqm's. MigrationTest migrates every earlier
+-- snapshot forward and compares PRAGMA output — indexes included — against a
+-- fresh `Schema.create`, so drift between this and Users.sq fails the build
+-- rather than the volume.
+--
+-- ── Why a partial index and not a table rebuild ────────────────────────────
+--
+-- SQLite cannot `ALTER TABLE ... ADD UNIQUE`. The worked precedent for adding
+-- uniqueness is 13.sqm, which rebuilds the table — and 13.sqm itself explains
+-- that this was only safe because `attachments` is a leaf that nothing points at.
+-- `users` is the exact opposite: sessions, issues (on both `created_by` and
+-- `assignee_id`), comments, attachments, roles, subscriptions, ui_settings,
+-- email_codes and the oauth_* tables all reference it. Rebuilding it means
+-- dropping and recreating every one of those foreign keys correctly, while
+-- `migrateSchema` runs with foreign keys OFF (Database.kt) precisely so that sort
+-- of thing can go wrong quietly before `verifyForeignKeys` catches it — or
+-- doesn't. 3.sqm's warning applies in full.
+--
+-- `CREATE UNIQUE INDEX ... WHERE email IS NOT NULL` needs no ALTER at all, keeps
+-- NULLs distinct so unkeyed rows stay legal, and is covered by the existing test.
+--
+-- ── Normalization first, and what it can collide with ─────────────────────
+--
+-- Nothing lowercased anywhere before this, and the two write paths disagreed: the
+-- OAuth path stored Google's value verbatim, `setEmail` trimmed only. So
+-- `Alice@X.com` and `alice@x.com` could be two rows, and the index would refuse
+-- to be created over them.
+--
+-- The deployed volume holds one user, so there is nothing to reconcile and this
+-- is the cheapest this change will ever be — that is the reason LNL-73 is being
+-- done now rather than later. But "one user" is a fact about today's deployment
+-- and not about every volume this migration will ever run on, and a
+-- `CREATE UNIQUE INDEX` that fails takes the whole migration — and therefore the
+-- boot — down with it. So the third statement below exists as a backstop: where
+-- two rows would collide after normalization, the **lowest id keeps the address**
+-- and the others are set to NULL.
+--
+-- That is a real, if tiny, loss: somebody would find their address gone from
+-- their profile and their notifications stopped. It is chosen over the
+-- alternative deliberately. An un-bootable server is not recoverable by the
+-- person it happens to; a null address is visible on the profile screen, fixable
+-- by typing it back in, and now — unlike before this ticket — provable. The rows
+-- involved were never verified by anything, since nothing could verify anything
+-- before LNL-71.
+--
+-- It should affect nobody. It is here so that if it ever does, the outcome is a
+-- support conversation rather than an outage.
+
+-- 1. One spelling. Matches normalizeEmail exactly: trim, then lowercase. Blank
+--    becomes NULL for the reason that function gives — "" is not an address, and
+--    storing one makes `email IS NOT NULL` true for somebody with nowhere to
+--    receive mail.
+UPDATE users SET email = NULLIF(LOWER(TRIM(email)), '') WHERE email IS NOT NULL;
+
+-- 2. The backstop described above. Keeps the lowest id per address; clears the
+--    rest. A no-op on any volume where no two accounts share an address.
+UPDATE users SET email = NULL
+WHERE email IS NOT NULL
+  AND id > (SELECT MIN(other.id) FROM users other WHERE other.email = users.email);
+
+-- 3. The key itself.
+CREATE UNIQUE INDEX users_email_unique ON users(email) WHERE email IS NOT NULL;

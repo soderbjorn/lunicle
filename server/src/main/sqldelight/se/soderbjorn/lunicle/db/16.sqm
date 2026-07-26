@@ -1,0 +1,129 @@
+-- Version 16 → 17: private conversations, the messages in them, and attachments
+-- in those.
+--
+-- Three new tables, one index and one rebuilt table. The dual-path story is
+-- 1.sqm's and 2.sqm's: a fresh volume runs `CREATE TABLE` out of the .sq files
+-- and gets all of this for free; a volume already at version 16 runs this
+-- instead. MigrationTest migrates every earlier snapshot forward and compares
+-- PRAGMA output against a fresh `Schema.create`, so drift between the two files
+-- fails the build rather than the volume.
+--
+-- ── Order matters here, exactly as it did in 15.sqm ─────────────────────────
+--
+-- `messages` has a foreign key at `conversations`, and the rebuilt `attachments`
+-- has one at `messages`, so the three must be created in that order. SQLite
+-- would accept any order — a foreign key naming a missing table is only an error
+-- when a row is written, not when the table is declared — which is exactly why
+-- this is stated rather than left to look accidental: getting it wrong produces
+-- a schema that creates cleanly and then fails on the first upload.
+--
+-- ── Why `attachments` is rebuilt again ──────────────────────────────────────
+--
+-- 15.sqm rebuilt it to widen the owner CHECK from two to four; this widens it to
+-- five, and ALTER TABLE still cannot touch a CHECK. (It *can* add the nullable
+-- column, so the rebuild is forced by the constraint alone, as it was last
+-- time.) 13.sqm's argument for why a rebuild is safe on this table is unchanged
+-- and is the reason it can be done twice without ceremony: **nothing in this
+-- schema has a foreign key pointing AT `attachments`**. Every key points the
+-- other way, so dropping and recreating it cannot cascade into anything.
+--
+-- ── What existing rows get ──────────────────────────────────────────────────
+--
+-- NULL in `message_id`, which is the only coherent answer rather than a backfill
+-- decision: every attachment on any existing volume belongs to an issue, an
+-- issue comment, a forum post or a forum comment, because messages did not exist
+-- until this statement ran. The CHECK is satisfied by the owner they already
+-- have.
+--
+-- `id` is carried across explicitly rather than left to AUTOINCREMENT, for
+-- 13.sqm's reason: `public_id` was backfilled from `id` for the rows that
+-- predate it, so a row that came back with a different id would change its own
+-- URL and — worse — could be the second row to claim an existing one.
+--
+-- The statements below reproduce Conversations.sq, Messages.sq and
+-- Attachments.sq's CREATE TABLE blocks, minus the prose. See those files for
+-- what each column and constraint is for.
+
+CREATE TABLE conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE conversation_participants (
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, user_id),
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX conversation_participants_user_idx ON conversation_participants(user_id);
+
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+    created_by_external TEXT,
+    agent_name TEXT,
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+CREATE TABLE attachments_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    issue_id INTEGER,
+    comment_id INTEGER,
+    forum_post_id INTEGER,
+    forum_comment_id INTEGER,
+    message_id INTEGER,
+
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+
+    storage_key TEXT NOT NULL UNIQUE,
+
+    public_id TEXT NOT NULL UNIQUE,
+
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+
+    created_by_external TEXT,
+
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_post_id) REFERENCES forum_posts(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_comment_id) REFERENCES forum_comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    CHECK (
+        (issue_id IS NOT NULL) + (comment_id IS NOT NULL) +
+            (forum_post_id IS NOT NULL) + (forum_comment_id IS NOT NULL) +
+            (message_id IS NOT NULL) = 1
+    ),
+
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+INSERT INTO attachments_new (
+    id, issue_id, comment_id, forum_post_id, forum_comment_id,
+    filename, mime_type, byte_size, storage_key, public_id,
+    created_at, created_by, created_by_external
+)
+SELECT
+    id, issue_id, comment_id, forum_post_id, forum_comment_id,
+    filename, mime_type, byte_size, storage_key, public_id,
+    created_at, created_by, created_by_external
+FROM attachments;
+
+DROP TABLE attachments;
+
+ALTER TABLE attachments_new RENAME TO attachments;

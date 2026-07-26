@@ -1,0 +1,432 @@
+/**
+ * The instance-wide switches (LNL-115, LNL-137), through the real routes with real
+ * session cookies — the standard here (see AdminSettingsTest), because the property
+ * that matters is that a route *asks* [AccessControl], not that the rule returns the
+ * right boolean in isolation.
+ *
+ * Three switches, their surfaces:
+ *
+ *  - **require-sign-in** rides on `GET /api/session`, so it must reach a signed-out
+ *    caller — that is the whole point, and the test proves the flag flips there.
+ *  - **anyone-can-create-project** widens the create gate on `POST /api/projects`
+ *    and the affordance on `GET /api/projects`. The gate is the load-bearing half:
+ *    a signed-in non-admin is refused with the switch off and admitted with it on,
+ *    while a signed-out caller is refused either way — creating still needs a
+ *    session.
+ *  - **hide-display-name** rides on `GET /api/session` too (LNL-137), so every
+ *    signed-in client knows to omit the profile override; the test proves the flag
+ *    flips there.
+ *  - all are set through `POST /api/admin/instance-settings`, which is admin-only
+ *    with no narrowed half, exactly like the rest of AdminRoutes.
+ *
+ * @see AccessControl.canCreateProject
+ * @see se.soderbjorn.lunicle.clientserver.InstanceSettingKey
+ */
+package se.soderbjorn.lunicle
+
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.request.cookie
+import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
+import io.ktor.server.routing.routing
+import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
+import se.soderbjorn.lunicle.clientserver.AdminSettingsState
+import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
+import se.soderbjorn.lunicle.clientserver.ProjectListState
+import se.soderbjorn.lunicle.clientserver.ProjectUpdate
+import se.soderbjorn.lunicle.clientserver.SessionState
+import se.soderbjorn.lunicle.clientserver.SetInstanceSettingRequest
+import se.soderbjorn.lunicle.store.InstanceSettings
+import java.io.File
+import java.nio.file.Files
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+
+class InstanceSettingsTest {
+    private val file: File = Files.createTempFile("lunicle-instance", ".db").toFile().also { it.delete() }
+    private val opened = openDatabase(DatabaseLocation(file, isPersistent = false, reason = "test"))
+    private val database = opened.database
+
+    private val users = UserStore(database)
+    private val sessions = SessionStore(database)
+    private val roles = RoleStore(database)
+    private val projects = ProjectStore(database)
+    private val labels = LabelStore(database)
+    private val components = ComponentStore(database)
+    private val statuses = StatusStore(database)
+    private val priorities = PriorityStore(database)
+    private val resolutions = ResolutionStore(database)
+    private val sprints = SprintStore(database)
+    private val versions = VersionStore(database)
+    private val issues = IssueStore(database)
+    private val comments = CommentStore(database)
+    private val attachmentStore = AttachmentStore(database)
+    private val attachments = AttachmentRepository(attachmentStore, File(file.parentFile, "attachments-${file.name}"))
+    private val projectRepository = ProjectRepository(database, projects, attachments, attachmentStore)
+    private val issueRepository =
+        IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
+    private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
+    private val vocabularies =
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+    private val access = AccessControl(roles)
+
+    // The real SQLite-backed store, shared by both route bundles below — the whole
+    // point of the file is that a switch set through the admin route is the same
+    // switch the session and project routes read.
+    private val instanceSettings = InstanceSettingsStore(database)
+
+    @AfterTest
+    fun tearDown() {
+        opened.close()
+        file.delete()
+        File("${file.absolutePath}-wal").delete()
+        File("${file.absolutePath}-shm").delete()
+    }
+
+    // ── require-sign-in reaches the session ───────────────────────────────────
+
+    /**
+     * The switch is off by default, and flipping it through the admin route makes
+     * `GET /api/session` report it — to a signed-out caller, which is the one the
+     * gate is drawn for.
+     */
+    @Test
+    fun `require sign-in defaults off and reaches the signed-out session once set`(): Unit = runBlocking {
+        val fixture = seed()
+        val adminCookie = sessions.create(fixture.adminId)
+
+        withAuthAndBoard { client ->
+            assertFalse(
+                client.get("/api/session").body<SessionState>().isSignInRequired,
+                "A fresh instance already required sign-in.",
+            )
+
+            val set = client.post("/api/admin/instance-settings") {
+                cookie(SESSION_COOKIE, adminCookie)
+                contentType(ContentType.Application.Json)
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.REQUIRE_SIGN_IN, true))
+            }
+            assertEquals(HttpStatusCode.OK, set.status)
+            assertTrue(
+                set.body<AdminSettingsState>().requireSignIn,
+                "The write did not report the switch it had just set.",
+            )
+
+            // The signed-out session — no cookie — now carries the gate flag.
+            assertTrue(
+                client.get("/api/session").body<SessionState>().isSignInRequired,
+                "The require-sign-in switch did not reach the signed-out session.",
+            )
+        }
+    }
+
+    // ── hide-display-name reaches the session ─────────────────────────────────
+
+    /**
+     * The switch is off by default, and flipping it through the admin route makes
+     * `GET /api/session` report it — so every signed-in client knows to drop the
+     * profile override (LNL-137). Read with the admin's own cookie, a signed-in
+     * caller, because that is who the profile field it hides belongs to.
+     */
+    @Test
+    fun `hide display name defaults off and reaches the session once set`(): Unit = runBlocking {
+        val fixture = seed()
+        val adminCookie = sessions.create(fixture.adminId)
+
+        withAuthAndBoard { client ->
+            assertFalse(
+                client.get("/api/session") { cookie(SESSION_COOKIE, adminCookie) }
+                    .body<SessionState>().isDisplayNameHidden,
+                "A fresh instance already hid the display name.",
+            )
+
+            val set = client.post("/api/admin/instance-settings") {
+                cookie(SESSION_COOKIE, adminCookie)
+                contentType(ContentType.Application.Json)
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.HIDE_DISPLAY_NAME, true))
+            }
+            assertEquals(HttpStatusCode.OK, set.status)
+            assertTrue(
+                set.body<AdminSettingsState>().hideDisplayName,
+                "The write did not report the switch it had just set.",
+            )
+
+            assertTrue(
+                client.get("/api/session") { cookie(SESSION_COOKIE, adminCookie) }
+                    .body<SessionState>().isDisplayNameHidden,
+                "The hide-display-name switch did not reach the session.",
+            )
+        }
+    }
+
+    // ── who may change the switches ───────────────────────────────────────────
+
+    /**
+     * A signed-in non-admin cannot set an instance switch, and the switch is
+     * unchanged afterwards — the store is checked directly, because a 403 that had
+     * already written would still read as a 403.
+     */
+    @Test
+    fun `a non-admin cannot change instance settings`(): Unit = runBlocking {
+        seed()
+        val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
+        val cookie = sessions.create(ordinary.id)
+
+        withAuthAndBoard { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/admin/instance-settings") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(SetInstanceSettingRequest(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true))
+                }.status,
+                "A non-admin flipped an instance switch.",
+            )
+        }
+        assertFalse(
+            instanceSettings.current().anyoneCanCreateProject,
+            "A refused write set the switch anyway.",
+        )
+    }
+
+    /** No session at all is a 403 too, not a 401 — like the rest of AdminRoutes. */
+    @Test
+    fun `a signed-out caller cannot change instance settings`(): Unit = runBlocking {
+        seed()
+        withAuthAndBoard { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/admin/instance-settings") {
+                    contentType(ContentType.Application.Json)
+                    setBody(SetInstanceSettingRequest(InstanceSettingKey.REQUIRE_SIGN_IN, true))
+                }.status,
+            )
+        }
+        assertEquals(InstanceSettings(), instanceSettings.current(), "A signed-out write changed a switch.")
+    }
+
+    /** The admin sets both switches, and the directory reports both back. */
+    @Test
+    fun `the admin sets both switches and the directory reports them`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+
+        withAuthAndBoard { client ->
+            client.post("/api/admin/instance-settings") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.REQUIRE_SIGN_IN, true))
+            }
+            val after = client.post("/api/admin/instance-settings") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true))
+            }.body<AdminSettingsState>()
+
+            assertTrue(after.requireSignIn, "The first switch did not survive the second write.")
+            assertTrue(after.anyoneCanCreateProject, "The second switch was not reported.")
+        }
+        assertEquals(
+            InstanceSettings(requireSignIn = true, anyoneCanCreateProject = true),
+            instanceSettings.current(),
+        )
+    }
+
+    // ── anyone-can-create-project gates POST /api/projects ────────────────────
+
+    /**
+     * With creation closed (the default), a signed-in non-admin is refused and a
+     * signed-out caller is refused, while the admin gets through.
+     */
+    @Test
+    fun `with creation closed only the admin may create a project`(): Unit = runBlocking {
+        val fixture = seed()
+        val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
+        val ordinaryCookie = sessions.create(ordinary.id)
+        val adminCookie = sessions.create(fixture.adminId)
+
+        withAuthAndBoard { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/projects") {
+                    cookie(SESSION_COOKIE, ordinaryCookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(ProjectUpdate("Ordinary's", "ORD", isPublic = false))
+                }.status,
+                "A non-admin created a project with the switch off.",
+            )
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/projects") {
+                    contentType(ContentType.Application.Json)
+                    setBody(ProjectUpdate("Nobody's", "NOB", isPublic = false))
+                }.status,
+                "A signed-out caller created a project.",
+            )
+            assertEquals(
+                HttpStatusCode.OK,
+                client.post("/api/projects") {
+                    cookie(SESSION_COOKIE, adminCookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(ProjectUpdate("Admin's", "ADM", isPublic = false))
+                }.status,
+                "The admin was refused their own create route.",
+            )
+        }
+        assertTrue(projects.selectAll().any { it.namePrefix == "ADM" })
+        assertFalse(projects.selectAll().any { it.namePrefix == "ORD" || it.namePrefix == "NOB" })
+    }
+
+    /**
+     * With creation open, any signed-in user may create — but a signed-out caller
+     * still may not, because creating needs a session whatever the switch says.
+     */
+    @Test
+    fun `with creation open a signed-in user may create but a signed-out one may not`(): Unit = runBlocking {
+        seed()
+        val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
+        val ordinaryCookie = sessions.create(ordinary.id)
+        instanceSettings.set(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true)
+
+        withAuthAndBoard { client ->
+            assertEquals(
+                HttpStatusCode.OK,
+                client.post("/api/projects") {
+                    cookie(SESSION_COOKIE, ordinaryCookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(ProjectUpdate("Ordinary's", "ORD", isPublic = false))
+                }.status,
+                "A signed-in user was refused with open creation on.",
+            )
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/projects") {
+                    contentType(ContentType.Application.Json)
+                    setBody(ProjectUpdate("Nobody's", "NOB", isPublic = false))
+                }.status,
+                "A signed-out caller created a project even though creating needs a session.",
+            )
+        }
+        assertTrue(projects.selectAll().any { it.namePrefix == "ORD" })
+        assertFalse(projects.selectAll().any { it.namePrefix == "NOB" })
+    }
+
+    /**
+     * The picker's `canCreateProject` affordance follows the switch for a signed-in
+     * non-admin: false while creation is closed, true once it is open.
+     *
+     * The affordance and the gate above read the switch the same way, so this is
+     * what stops the button and the route disagreeing.
+     */
+    @Test
+    fun `the create affordance follows the switch for a non-admin`(): Unit = runBlocking {
+        seed()
+        val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
+        val cookie = sessions.create(ordinary.id)
+
+        withAuthAndBoard { client ->
+            assertFalse(
+                client.get("/api/projects") { cookie(SESSION_COOKIE, cookie) }
+                    .body<ProjectListState>().canCreateProject,
+                "A non-admin was offered New project with the switch off.",
+            )
+        }
+
+        instanceSettings.set(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true)
+
+        withAuthAndBoard { client ->
+            assertTrue(
+                client.get("/api/projects") { cookie(SESSION_COOKIE, cookie) }
+                    .body<ProjectListState>().canCreateProject,
+                "A non-admin was not offered New project with the switch on.",
+            )
+        }
+    }
+
+    // ── Fixture ──────────────────────────────────────────────────────────────
+
+    private class Fixture(val adminId: Long, val projectId: Long)
+
+    private suspend fun seed(name: String = "Lunamux", prefix: String = "LMX"): Fixture {
+        roles.seed()
+        val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", null))
+        val project = projectRepository.create(name, prefix, isPublic = false)
+        return Fixture(admin.id, project.id)
+    }
+
+    /**
+     * Mount both route bundles over the one instance-settings store, and hand back a
+     * client. The session route lives in [authRoutes] and the admin/project routes
+     * in [boardRoutes]; both are given the same [instanceSettings] so a switch set
+     * through one is read by the other, which is the whole thing under test.
+     */
+    private fun withAuthAndBoard(block: suspend (HttpClient) -> Unit) = testApplication {
+        val impersonations = Impersonations()
+        application {
+            install(ServerContentNegotiation) { json() }
+            routing {
+                authRoutes(
+                    config = OAuthConfig(google = null, isEmailAvailable = false),
+                    sessions = sessions,
+                    users = users,
+                    impersonations = impersonations,
+                    instanceSettings = instanceSettings,
+                )
+                boardRoutes(dependencies(impersonations))
+            }
+        }
+        block(createClient { install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) { json() } })
+    }
+
+    private fun dependencies(impersonations: Impersonations) = BoardDependencies(
+        access = access,
+        projects = projects,
+        projectRepository = projectRepository,
+        roles = roles,
+        vocabularies = vocabularies,
+        forums = ForumRepository(ForumStore(database), attachments, attachmentStore),
+        forumPosts = ForumPostRepository(
+            ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
+        ),
+        audience = ProjectAudience(users, roles),
+        conversations = ConversationRepository(
+            ConversationStore(database), MessageStore(database), attachments, attachmentStore,
+        ),
+        labels = labels,
+        components = components,
+        statuses = statuses,
+        priorities = priorities,
+        resolutions = resolutions,
+        versions = versions,
+        // Both take the store.SprintStore interface; the low-level SprintStore
+        // gateway does not implement it, the SprintRepository does — so the
+        // repository is passed for both, exactly as Application.module does.
+        sprints = sprintRepository,
+        sprintRepository = sprintRepository,
+        issues = issues,
+        issueRepository = issueRepository,
+        comments = comments,
+        attachments = attachmentStore,
+        attachmentRepository = attachments,
+        attachmentTickets = AttachmentTicketStore(),
+        sessions = sessions,
+        users = users,
+        impersonations = impersonations,
+        instanceSettings = instanceSettings,
+        subscriptions = SubscriptionStore(database),
+        reads = ReadStore(database),
+    )
+}

@@ -1,0 +1,209 @@
+-- Who has asked to be e-mailed about what.
+--
+-- Four tables, one shape: a row's mere presence is the subscription. There is no
+-- "subscribed = 0" state to store — not wanting an e-mail is not wanting a row,
+-- which is exactly what a DELETE leaves behind. This mirrors `project_roles`
+-- (see Roles.sq): a join table keyed on the pair, written with INSERT OR IGNORE
+-- and DELETE, so a double-click subscribes once and un-subscribing what was
+-- never subscribed is not an error.
+--
+-- All four cascade on either parent's deletion, for `project_roles`' reason: a
+-- subscription to a project, an issue, a forum or a post that no longer exists
+-- is not a subscription anyone would miss, and leaving the row would point an
+-- e-mail at a destination the sender can no longer explain. The user side
+-- cascades too — a deleted account takes its subscriptions with it, the same way
+-- it takes its tokens and its grants.
+--
+-- Nothing keys on email here. The address lives on `users` (see Users.sq), and
+-- the recipient queries below reach it by join at send time — so a user who
+-- fills in or clears their address later is reflected without touching a
+-- subscription row.
+--
+-- ── The pairing, which is what makes four tables read as two ideas ──────────
+--
+-- The issue side has "tell me about new things in this container" (a project's
+-- new issues) and "tell me about changes to this one thing" (an issue's
+-- updates). LNL-63 adds exactly the same pair one feature over: a forum's new
+-- posts, and one post's new comments. Nothing about the forum pair is a new
+-- shape, which is why it is four near-identical tables rather than one generic
+-- `subscriptions(user_id, target_type, target_id)`.
+--
+-- That generic table was written out and rejected. A polymorphic target cannot
+-- carry a foreign key — SQLite cannot key a column whose destination depends on
+-- another column — so all four cascades above would move into Kotlin, on four
+-- delete paths, one of which would eventually be added without it. The failure
+-- is silent: nobody notices an e-mail that is never sent about a post that no
+-- longer exists, they notice it as the notifier quietly resolving nothing. The
+-- same argument is made at greater length about the attachment owner columns in
+-- Attachments.sq, and it comes out the same way here.
+--
+-- ── Visibility is deliberately NOT in the recipient queries ─────────────────
+--
+-- LNL-63 requires that somebody who loses sight of a project stops receiving its
+-- forum e-mail. That rule is `AccessControl.canReadProject`'s — public project,
+-- or a system administrator, or a member — and it is *not* spelled again in SQL
+-- below, even though it could be. `ProjectAudience` turns the same rule into a
+-- set, and `ForumNotificationService` intersects these rows with it at send
+-- time. Two copies of a visibility rule, one of them in a language where nobody
+-- will look for it, is how the two come to disagree.
+--
+-- ── The audience is everyone; the address is no longer filtered here (LNL-109) ─
+--
+-- These four queries used to end `AND u.email IS NOT NULL`, dropping any
+-- subscriber without an address so the notifier only ever saw people it could
+-- mail. LNL-109 gives every notification an in-app twin, and the in-app row must
+-- reach a subscriber who has no address on file — the bell does not need a
+-- mailbox. So the address filter is gone from SQL: these now return the whole
+-- audience with a *nullable* `email`, and the split — write an in-app row for all,
+-- send an e-mail only to those with an address — is made once, in the notifier
+-- (see EmailNotifier.kt's `NotificationDispatcher`). What stays here is the one
+-- narrowing that is about *who*, not *how they are reached*: not the actor.
+
+-- Per-user, per-project: "e-mail me when a new issue is created in this project."
+CREATE TABLE project_new_issue_subscriptions (
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, project_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+-- Per-user, per-issue: "e-mail me about any updates to this issue."
+CREATE TABLE issue_update_subscriptions (
+    user_id INTEGER NOT NULL,
+    issue_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, issue_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+-- Per-user, per-forum: "e-mail me when somebody posts in this forum."
+--
+-- The forum's twin of `project_new_issue_subscriptions`, keyed on the forum
+-- rather than on the project: a project may have a dozen forums, and watching
+-- one of them is a statement about that room rather than about the project.
+-- Nothing is ever auto-subscribed here — see `forum_post_subscriptions` for the
+-- one place a row is written without somebody pressing a button.
+CREATE TABLE forum_new_post_subscriptions (
+    user_id INTEGER NOT NULL,
+    forum_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, forum_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
+);
+
+-- Per-user, per-post: "e-mail me when somebody comments on this post."
+--
+-- `issue_update_subscriptions`' twin, and it inherits that table's one automatic
+-- write: publishing a post subscribes its author, exactly as publishing an issue
+-- subscribes theirs. See ForumPostRoutes' PUT, where the decision is argued.
+CREATE TABLE forum_post_subscriptions (
+    user_id INTEGER NOT NULL,
+    post_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, post_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (post_id) REFERENCES forum_posts(id) ON DELETE CASCADE
+);
+
+subscribeProjectNewIssues:
+INSERT OR IGNORE INTO project_new_issue_subscriptions (user_id, project_id) VALUES (?, ?);
+
+unsubscribeProjectNewIssues:
+DELETE FROM project_new_issue_subscriptions WHERE user_id = ? AND project_id = ?;
+
+isSubscribedProjectNewIssues:
+SELECT EXISTS(
+    SELECT 1 FROM project_new_issue_subscriptions WHERE user_id = ? AND project_id = ?
+);
+
+subscribeIssueUpdates:
+INSERT OR IGNORE INTO issue_update_subscriptions (user_id, issue_id) VALUES (?, ?);
+
+unsubscribeIssueUpdates:
+DELETE FROM issue_update_subscriptions WHERE user_id = ? AND issue_id = ?;
+
+isSubscribedIssueUpdates:
+SELECT EXISTS(
+    SELECT 1 FROM issue_update_subscriptions WHERE user_id = ? AND issue_id = ?
+);
+
+-- Everyone watching an issue, by name, for the issue detail's watcher list.
+-- Names only — the same `display_name ?: provider_name` every other screen
+-- shows, and pointedly not the email: who is watching is visible to anyone who
+-- can see the issue, but where they'd be mailed is not. Ordered by name because
+-- it is a list a human reads.
+watchersForIssue:
+SELECT u.id, COALESCE(u.display_name, u.provider_name) AS name
+FROM issue_update_subscriptions s
+JOIN users u ON u.id = s.user_id
+WHERE s.issue_id = ?
+ORDER BY name COLLATE NOCASE;
+
+-- The audience for a project's new issue: every subscriber, minus the one person
+-- who just created it. You are not notified about your own action — the
+-- `user_id != ?` is that exclusion, and the second bind is the actor. `email` is
+-- returned as-is and may be null: the notifier writes an in-app row for everyone
+-- here and mails only those whose address is present. See this file's preamble
+-- (LNL-109) and EmailNotifier.kt.
+recipientsForProjectNewIssue:
+SELECT u.id, u.email, COALESCE(u.display_name, u.provider_name) AS name
+FROM project_new_issue_subscriptions s
+JOIN users u ON u.id = s.user_id
+WHERE s.project_id = ? AND u.id != ?;
+
+-- The audience for an issue update. Same shape and same actor exclusion as above;
+-- see it for why each clause is here.
+recipientsForIssueUpdate:
+SELECT u.id, u.email, COALESCE(u.display_name, u.provider_name) AS name
+FROM issue_update_subscriptions s
+JOIN users u ON u.id = s.user_id
+WHERE s.issue_id = ? AND u.id != ?;
+
+-- ── Forums (LNL-63) ────────────────────────────────────────────────────────
+--
+-- The four below are the two above, one feature over. Written out rather than
+-- generalised for the reason at the top of this file, and kept in the same order
+-- and the same shape so that the pair reads as one idea applied twice.
+
+subscribeForumNewPosts:
+INSERT OR IGNORE INTO forum_new_post_subscriptions (user_id, forum_id) VALUES (?, ?);
+
+unsubscribeForumNewPosts:
+DELETE FROM forum_new_post_subscriptions WHERE user_id = ? AND forum_id = ?;
+
+isSubscribedForumNewPosts:
+SELECT EXISTS(
+    SELECT 1 FROM forum_new_post_subscriptions WHERE user_id = ? AND forum_id = ?
+);
+
+subscribeForumPost:
+INSERT OR IGNORE INTO forum_post_subscriptions (user_id, post_id) VALUES (?, ?);
+
+unsubscribeForumPost:
+DELETE FROM forum_post_subscriptions WHERE user_id = ? AND post_id = ?;
+
+isSubscribedForumPost:
+SELECT EXISTS(
+    SELECT 1 FROM forum_post_subscriptions WHERE user_id = ? AND post_id = ?
+);
+
+-- The audience for a forum's new post: every watcher, minus whoever just posted.
+-- Same actor bind as `recipientsForProjectNewIssue`, and `email` nullable for the
+-- same LNL-109 reason; see it.
+--
+-- Note what is NOT here: whether the watcher can still see the project. That
+-- narrowing is applied by ForumNotificationService against `ProjectAudience`,
+-- deliberately — see this file's preamble. It narrows the in-app row too, not just
+-- the e-mail: somebody who can no longer see the project should get neither.
+recipientsForForumNewPost:
+SELECT u.id, u.email, COALESCE(u.display_name, u.provider_name) AS name
+FROM forum_new_post_subscriptions s
+JOIN users u ON u.id = s.user_id
+WHERE s.forum_id = ? AND u.id != ?;
+
+-- The audience for a new comment on a watched post. Same shape again.
+recipientsForForumPost:
+SELECT u.id, u.email, COALESCE(u.display_name, u.provider_name) AS name
+FROM forum_post_subscriptions s
+JOIN users u ON u.id = s.user_id
+WHERE s.post_id = ? AND u.id != ?;

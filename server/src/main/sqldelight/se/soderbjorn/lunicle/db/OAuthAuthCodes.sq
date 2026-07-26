@@ -1,0 +1,64 @@
+-- Authorization codes: the two-minute secret between "Approve" and a token.
+--
+-- ── Why the raw code is not here ────────────────────────────────────────────
+--
+-- The primary key is SHA-256(code), and the code itself is never written down.
+-- It is generated, handed to the agent through a redirect, and recognised again
+-- only by its hash. So this table cannot be read to obtain a code — it can only
+-- be used to confirm one that was already presented.
+--
+-- That matters more than it does for `sessions`, whose ids are stored raw. A
+-- session id lives in a browser cookie jar; these values travel through URLs,
+-- which land in server logs, proxy logs and browser history. Hashing at rest is
+-- what makes a leaked copy of this table useless rather than a set of live
+-- credentials.
+--
+-- Two minutes: an agent exchanges a code the instant it receives it, so this is
+-- generous already. A code that sits unused for longer than that has not been
+-- delayed — it has been lost, or intercepted.
+
+CREATE TABLE oauth_auth_codes (
+    -- SHA-256(code), hex. See the preamble.
+    code_hash TEXT PRIMARY KEY NOT NULL,
+
+    user_id INTEGER NOT NULL,
+    client_id TEXT NOT NULL,
+
+    -- Both carried from the login state and both re-checked at /token: the
+    -- presented redirect_uri must equal this one, and PKCE must verify against
+    -- this challenge. Storing them on the code rather than looking them up again
+    -- is what binds the code to the exact request that produced it.
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+);
+
+create:
+INSERT INTO oauth_auth_codes (
+    code_hash, user_id, client_id, redirect_uri, code_challenge, resource, scope, expires_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Expiry in the WHERE clause — see OAuthLoginState.sq's `find`.
+find:
+SELECT code_hash, user_id, client_id, redirect_uri, code_challenge, resource, scope, expires_at
+FROM oauth_auth_codes
+WHERE code_hash = ? AND expires_at > ?;
+
+-- Single-use is enforced by deletion, and the delete is the consume step.
+--
+-- Framnaflow does read-then-delete against Firestore, which is a race it
+-- documents and lives with. Ours runs inside a transaction on
+-- DatabaseDispatcher's single thread, so two agents presenting the same code
+-- cannot both find it — the second finds nothing. See OAuthCodeStore.consume.
+delete:
+DELETE FROM oauth_auth_codes WHERE code_hash = ?;
+
+deleteExpired:
+DELETE FROM oauth_auth_codes WHERE expires_at <= ?;

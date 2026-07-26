@@ -1,0 +1,102 @@
+-- The last statistics snapshot compiled for a project, and when.
+--
+-- ── Why any of this is stored ──────────────────────────────────────────────
+--
+-- Six of the nine numbers below are counts over tables in this same file's
+-- database and could be recomputed on every read for nothing. The other three
+-- are commit counts, which cost a network round trip to github.com — several,
+-- for a repository with any history — and that is what this table exists for.
+--
+-- The six cheap ones are stored anyway, so that every number in the dialog is
+-- true *as of one moment*. The alternative — live issue counts beside cached
+-- commit counts — puts two different "now"s on one screen under a single
+-- timestamp, and a reader comparing "issues closed this week" against "commits
+-- this week" would be comparing across a gap of up to fifteen minutes with
+-- nothing on screen to say so. Consistency is worth six redundant integers.
+--
+-- ── One row per project, or none ───────────────────────────────────────────
+--
+-- The absent row is a real state and the one every project starts in: nobody has
+-- opened the dialog yet. It reads as "no statistics yet" rather than as zeroes,
+-- which is why every count here is NOT NULL and the *row* is what is optional. A
+-- project with genuinely zero issues and a project nobody has compiled are
+-- different things, and a table of nullable counts would spell them the same.
+
+CREATE TABLE project_statistics (
+    -- The primary key, not merely a reference: at most one snapshot per project,
+    -- by construction rather than by a rule something has to enforce. Same taste
+    -- as projects.active_sprint_id — two writers racing to refresh can only
+    -- produce one winner and one loser, never two snapshots of one project.
+    project_id INTEGER NOT NULL PRIMARY KEY,
+
+    -- When this snapshot was compiled. The whole scheduling mechanism: the route
+    -- compares it against the fifteen-minute window and decides whether to serve
+    -- this row or replace it. Written only on a *successful* compile, so a failed
+    -- refresh leaves the previous snapshot and its honest age in place rather
+    -- than stamping "just now" onto numbers nothing recomputed.
+    computed_at INTEGER NOT NULL,
+
+    -- Commits on the repository's default branch, in each window.
+    --
+    -- Nullable, unlike every other count here, and the null is the point: it
+    -- means "not answered", which happens whenever no repository is linked, no
+    -- token is configured, or GitHub refused. A zero would claim the repository
+    -- was quiet, and a quiet week is a different fact from an unanswerable
+    -- question — the difference between "nobody committed" and "your token
+    -- expired". See commits_unavailable.
+    commits_week INTEGER,
+    commits_month INTEGER,
+    commits_all INTEGER,
+
+    -- Why the commit counts are null, in words fit to show a user, or NULL
+    -- because they are not null and nothing needs explaining.
+    --
+    -- Stored rather than re-derived on read, because the reason belongs to the
+    -- moment of the attempt: by the time somebody reads this row the token may
+    -- have been fixed, and a re-derivation would then report success beside
+    -- three null counts nothing recomputed.
+    commits_unavailable TEXT,
+
+    -- Issues filed in each window, from this project's own `issues` table.
+    -- Drafts excluded; see IssueStatistics.sq.
+    issues_created_week INTEGER NOT NULL,
+    issues_created_month INTEGER NOT NULL,
+    issues_created_all INTEGER NOT NULL,
+
+    -- Issues closed in each window. The week and month counts come from the
+    -- history; the all-time count is the board's own current state. They are
+    -- deliberately not the same measurement, and IssueStatistics.sq explains at
+    -- length why no single one of them can answer all three windows.
+    issues_closed_week INTEGER NOT NULL,
+    issues_closed_month INTEGER NOT NULL,
+    issues_closed_all INTEGER NOT NULL,
+
+    -- CASCADE: a deleted project's statistics are not a record anybody keeps.
+    -- Unlike issue history, nothing here is testimony about what somebody did —
+    -- it is a cache of counts whose inputs have just been deleted too.
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+-- Write a snapshot, replacing whichever one was there.
+--
+-- INSERT OR REPLACE rather than a read-then-insert-or-update: the choice between
+-- the two statements would be made on a read this transaction does not hold, and
+-- two refreshes landing together would race between checking and writing. There
+-- is nothing to preserve on the old row — every column is recomputed — so
+-- replacing it wholesale is both correct and the only single-statement form.
+upsert:
+INSERT OR REPLACE INTO project_statistics (
+    project_id, computed_at,
+    commits_week, commits_month, commits_all, commits_unavailable,
+    issues_created_week, issues_created_month, issues_created_all,
+    issues_closed_week, issues_closed_month, issues_closed_all
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- The last snapshot, or nothing at all because none was ever compiled. The
+-- absent row is what the dialog renders as "no statistics yet"; see the preamble.
+forProject:
+SELECT project_id, computed_at,
+       commits_week, commits_month, commits_all, commits_unavailable,
+       issues_created_week, issues_created_month, issues_created_all,
+       issues_closed_week, issues_closed_month, issues_closed_all
+FROM project_statistics WHERE project_id = ?;

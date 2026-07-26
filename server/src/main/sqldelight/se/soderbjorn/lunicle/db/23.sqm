@@ -1,0 +1,28 @@
+-- Version 23 → 24: a project can switch off its discussions and its messages.
+--
+-- The forum "master toggle" is a client-side URL flag (`?forums=1`) that decides
+-- whether the Discussion and Messages tabs exist at all on a deployment — see
+-- ShellBackingViewModel. It is all-or-nothing and instance-wide. LNL-96 adds the
+-- per-project half a project administrator was missing: a project that has the
+-- feature available can still say "not here", and the tab goes for that project
+-- while staying for the others.
+--
+-- Two columns rather than one, because the ticket asks for the two to be
+-- switched independently: a project may want a discussion forum and no private
+-- messages, or the reverse. One flag could not express that.
+--
+-- ── Default 1, and why back-fill is a no-op ─────────────────────────────────
+--
+-- Enabled is the state every project has had until now — the tabs showed
+-- wherever the master toggle was on — so 1 is what keeps this upgrade invisible.
+-- `ALTER TABLE ADD COLUMN` can only supply a constant, and here the constant is
+-- exactly right for every existing row, so unlike 9.sqm and 22.sqm there is no
+-- follow-up UPDATE to seed a per-row value: they all want the same one.
+--
+-- The DEFAULT 1 matches the columns as Projects.sq now declares them, so a fresh
+-- database ends up with the same PRAGMA as a migrated one — MigrationTest is what
+-- holds that line.
+
+ALTER TABLE projects ADD COLUMN discussions_enabled INTEGER NOT NULL DEFAULT 1;
+
+ALTER TABLE projects ADD COLUMN messages_enabled INTEGER NOT NULL DEFAULT 1;

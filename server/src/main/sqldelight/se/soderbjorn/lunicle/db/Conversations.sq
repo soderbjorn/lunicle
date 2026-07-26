@@ -1,0 +1,164 @@
+-- Private conversations, and who is in them.
+--
+-- ── No project_id, and that is the one structural decision here ──────────────
+--
+-- Every other table in this schema reaches a project sooner or later: an issue
+-- names one, a comment reaches one through its issue, a forum post through its
+-- forum. A conversation names none, deliberately. LNL-30 settles that private
+-- messages are **instance-wide** — two people who share one project talk about
+-- whatever they like, and asking which project a conversation "belongs to" has
+-- no answer that is not invented.
+--
+-- The consequence is that this is the one thing in the app whose permission
+-- question is not `(user, project)`. It is `(user, conversation)`, answered by
+-- `conversation_participants` below, and `AccessControl.canReadConversation` is
+-- the rule. A project reference here would have made the uniform shape *look*
+-- available and would have been a lie in the column.
+--
+-- The project *does* still bound who may be messaged — "anyone who can see a
+-- project you can see" — but that is a question asked once, at the moment a
+-- conversation is created, and answered against the projects as they stand then.
+-- It is not a property of the row: somebody who later loses the last project you
+-- share stays in the conversation, because a thread you are already in is not
+-- something to be removed from silently. See ProjectAudience and MessageRoutes.
+--
+-- ── Membership is fixed at creation ─────────────────────────────────────────
+--
+-- LNL-30 settles this too, and the schema says it as plainly as it can: there is
+-- no `added_at`, no `left_at`, and no `is_active`. A participant row is written
+-- when the conversation is, and the only thing that ever removes one is the
+-- account going. You cannot add somebody to an existing conversation — you start
+-- a new one — and that is what makes "does a new member see what was said before
+-- they arrived?" a question with no occasion to be asked.
+--
+-- ── No subject, no title ────────────────────────────────────────────────────
+--
+-- The design's conversation list shows the other participants' names, not a
+-- subject line, and there is nowhere in it to type one. A nullable title column
+-- nothing writes would be a field the next person feels obliged to surface.
+--
+-- ── No history ──────────────────────────────────────────────────────────────
+--
+-- As with forums (see ForumPosts.sq), and for a stronger reason: an audit trail
+-- over a private conversation is a second, differently-permissioned copy of the
+-- very thing being kept private.
+
+CREATE TABLE conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+
+    -- Who started it. SET NULL, as everywhere: a deleted account leaves the
+    -- conversation standing for the people still in it.
+    --
+    -- Note this is NOT how the caller's right to read is decided — that is the
+    -- participants table, and the starter is one of them. It is here so the
+    -- "discard the conversation I just started and never sent" route can tell an
+    -- abandoned draft from somebody else's thread.
+    created_by INTEGER,
+
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Who is in a conversation. The whole of the permission model for messages.
+--
+-- The sender is a row here like everybody else — there is no "owner", because a
+-- conversation is not owned. A 1:1 is two rows and a group is three or more, and
+-- nothing in this schema tells them apart: they are the same thing at different
+-- sizes, which is why there is no `is_group` flag for a client to branch on.
+--
+-- ON DELETE CASCADE on `user_id`, unlike the SET NULL that authorship gets
+-- everywhere else in this schema, and the difference is forced rather than
+-- chosen: `user_id` is half the primary key, so it cannot be null. A deleted
+-- account therefore drops out of every conversation it was in, while its
+-- messages stay (theirs is a `created_by` that SET NULLs, so they read as "a
+-- deleted account" exactly as an old issue comment does). That is the coherent
+-- reading — the remaining participants keep the thread they were part of, and
+-- nobody inherits a seat in it.
+CREATE TABLE conversation_participants (
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, user_id),
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- The primary key's leading column is the conversation, so "which conversations
+-- is this user in" — which is the first thing the Messages tab asks, on every
+-- load — would otherwise scan the table. `oauth_tokens_user` exists for the same
+-- reason: a composite key indexes its own left edge and nothing else.
+CREATE INDEX conversation_participants_user_idx ON conversation_participants(user_id);
+
+insert:
+INSERT INTO conversations (created_at, created_by) VALUES (?, ?) RETURNING id;
+
+addParticipant:
+INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id) VALUES (?, ?);
+
+delete:
+DELETE FROM conversations WHERE id = ?;
+
+findById:
+SELECT id, created_at, created_by FROM conversations WHERE id = ?;
+
+participantIds:
+SELECT user_id FROM conversation_participants WHERE conversation_id = ?;
+
+-- Is this caller in this conversation? The permission question, as one indexed
+-- existence check rather than as a list the caller then searches — see
+-- RoleStore.isMember, which is the same shape for the same reason.
+isParticipant:
+SELECT EXISTS(
+    SELECT 1 FROM conversation_participants WHERE conversation_id = ? AND user_id = ?
+);
+
+-- The Messages tab's list: every conversation this user is in that has anything
+-- in it, most recently spoken in first, with the last line for the preview.
+--
+-- ── Why the `is_draft = 0` EXISTS is not optional ───────────────────────────
+--
+-- A conversation is created together with the empty message row its first
+-- attachment hangs off, so between "I picked recipients" and "I pressed Send"
+-- there is a real conversation with nothing in it. Without this clause it would
+-- appear in the recipients' lists — a message from somebody, with no message in
+-- it — the moment they refreshed. The same clause covers the composer that was
+-- abandoned by closing the tab: the row stays, and nobody ever sees it.
+--
+-- The two correlated subqueries read the same rows twice and are still the right
+-- shape: a join with GROUP BY would need the preview to come from an aggregate,
+-- and SQLite's bare-column-with-MAX behaviour is exactly the kind of thing that
+-- works until it is asked about a tie. `last_at` comes back nullable because
+-- MAX() over nothing is NULL; the EXISTS above means it never is.
+forUser:
+SELECT
+    c.id,
+    (
+        SELECT MAX(m.created_at) FROM messages m
+        WHERE m.conversation_id = c.id AND m.is_draft = 0
+    ) AS last_at,
+    (
+        SELECT m.body FROM messages m
+        WHERE m.conversation_id = c.id AND m.is_draft = 0
+        ORDER BY m.created_at DESC, m.id DESC LIMIT 1
+    ) AS last_body
+FROM conversations c
+WHERE EXISTS (
+    SELECT 1 FROM conversation_participants p
+    WHERE p.conversation_id = c.id AND p.user_id = ?
+)
+AND EXISTS (
+    SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.is_draft = 0
+)
+ORDER BY last_at DESC, c.id DESC;
+
+-- Everybody in every conversation this user is in, in one select.
+--
+-- The list needs each row's other participants by name, and asking per
+-- conversation would be a query per row — the N+1 that `forForum`'s comment
+-- count avoids one level down. The self-join reads "the conversations I am in,
+-- and then everyone in those".
+participantsForUser:
+SELECT conversation_id, user_id
+FROM conversation_participants
+WHERE conversation_id IN (
+    SELECT conversation_id FROM conversation_participants WHERE user_id = ?
+);

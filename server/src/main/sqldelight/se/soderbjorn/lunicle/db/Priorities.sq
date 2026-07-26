@@ -1,0 +1,67 @@
+-- Per-project issue priorities, ordered. Statuses' twin — see Statuses.sq.
+
+CREATE TABLE priorities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- Ordered like statuses' `position`, and with the same convention: 0 first.
+    -- Here "first" means HIGHEST — "Very high" is 0 and "Very low" is 4 — so the
+    -- board's "highest priority first" is a plain `ORDER BY position`, ascending,
+    -- with no DESC and no negative numbers.
+    --
+    -- The alternative was a `weight` where bigger meant more urgent, which reads
+    -- better in isolation and worse everywhere else: every query would sort DESC
+    -- while statuses sorted ASC, and the two tables would disagree about what
+    -- position 0 means. One convention, applied twice.
+    position INTEGER NOT NULL,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    -- The target of issues' composite foreign key. See Issues.sq.
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO priorities (project_id, name, position) VALUES (?, ?, ?);
+
+update:
+UPDATE priorities SET name = ? WHERE id = ?;
+
+-- See Statuses.sq's setPosition: one row at a time, inside the transaction that
+-- rewrites the whole project's order.
+setPosition:
+UPDATE priorities SET position = ? WHERE id = ?;
+
+-- Refused by RESTRICT while any issue holds it, exactly as a status is. Note
+-- what deleting one silently changes even when it succeeds: `defaultForProject`
+-- is COUNT/2, so removing a priority moves the middle — the scale a new issue
+-- lands on is a function of how many rows are here.
+delete:
+DELETE FROM priorities WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, position FROM priorities WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name, position FROM priorities WHERE project_id = ? ORDER BY position;
+
+-- What a new issue gets: the middle of the scale.
+--
+-- Not the first, which is what statuses do — a new issue landing in the board's
+-- leftmost column is right, and a new issue landing at "Very high" is a lie that
+-- someone then has to correct on every single issue. The middle is the only
+-- choice that claims nothing.
+--
+-- Computed rather than hardcoded to 'Normal', for Statuses.firstForProject's
+-- reason: the seed names these, and a project that renamed them must still be
+-- able to take an issue. COUNT/2 is integer division, so a 5-row scale gives
+-- OFFSET 2 — the third of five, the middle. An even scale rounds to the lower
+-- half (4 rows → OFFSET 2, the third), which is the safer side to err on: it is
+-- the calmer of the two middles.
+defaultForProject:
+SELECT id, project_id, name, position FROM priorities
+WHERE project_id = ?
+ORDER BY position
+LIMIT 1
+OFFSET (SELECT COUNT(*) / 2 FROM priorities WHERE project_id = ?);

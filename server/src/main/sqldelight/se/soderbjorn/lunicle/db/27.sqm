@@ -1,0 +1,33 @@
+-- Version 27 → 28: the in-app notification list (LNL-109).
+--
+-- A new table and its two indexes, and nothing else — no existing table is
+-- touched, so there is no column to back-fill and no data to move. Every account
+-- simply starts with no notifications, which is the correct state: nothing has
+-- been notifying anyone in-app until now, and old sent e-mails have no twin row to
+-- reconstruct.
+--
+-- The statements below are the same ones Notifications.sq declares for a fresh
+-- database, verbatim, so a migrated volume and a newly created one end up with the
+-- identical schema — the line MigrationTest holds. See Notifications.sq for why the
+-- dest_* columns are not foreign keys and why a notification is a stored row rather
+-- than a derived high-water mark like the read badges.
+
+CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    dest_project_id INTEGER,
+    dest_issue_id INTEGER,
+    dest_conversation_id INTEGER,
+    dest_message_id INTEGER,
+    dest_forum_id INTEGER,
+    dest_post_id INTEGER,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX notifications_user_unread ON notifications (user_id, is_read);
+
+CREATE INDEX notifications_user_created ON notifications (user_id, created_at);

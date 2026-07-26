@@ -1,0 +1,24 @@
+-- Version 32 → 33: the board can show a card's author, per project (LNL-157).
+--
+-- One new column on `projects`. `show_issue_author` is a per-project display
+-- setting a project administrator flips — the board shows each card's author on a
+-- muted footer line when it is on. Not a requirement like 24.sqm's/29.sqm's flags
+-- (what a ticket must carry) and not a per-user preference: the whole project sees
+-- the same board, so the choice belongs to the project. See Projects.sq's
+-- show_issue_author for how it rides to ProjectSummary and gates the card render.
+--
+-- ── Default 0, and why back-fill is a no-op ─────────────────────────────────
+--
+-- Off is the state every project has had until now — no board has ever shown the
+-- author — so 0 is what keeps this upgrade invisible, and it is the opt-in default
+-- the ticket asks for because the board is sparse. `ALTER TABLE ADD COLUMN` can
+-- only supply a constant, and here the constant is exactly right for every existing
+-- row, so there is no follow-up UPDATE. 24.sqm's reasoning for require_label
+-- applies verbatim.
+--
+-- The DEFAULT 0 matches the column as Projects.sq now declares it, so a fresh
+-- database ends up with the same PRAGMA as a migrated one — MigrationTest holds
+-- that line, comparing this applied to the 32 snapshot column for column against
+-- what the .sq files create from scratch.
+
+ALTER TABLE projects ADD COLUMN show_issue_author INTEGER NOT NULL DEFAULT 0;

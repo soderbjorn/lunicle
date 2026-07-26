@@ -1,0 +1,91 @@
+-- Version 4 → 5: every project gains a "Ready for test" column, before Closed.
+--
+-- The first migration here that changes no schema at all. Nothing is created,
+-- altered or dropped — `statuses` already stores board columns as rows, one per
+-- project, so a new default column is data. That makes MigrationTest blind to
+-- this file by construction: it compares PRAGMA output, and PRAGMA output is
+-- identical either side of an INSERT. `5.db` is a byte-for-byte-equivalent
+-- shape to `4.db` and exists only because the version moved. The row this file
+-- inserts is covered by StatusMigrationTest instead.
+--
+-- The create path does not run this. A fresh volume gets its columns from
+-- ProjectRepository's DEFAULT_STATUSES at the moment each project is created —
+-- see that list, which now carries the same name. This file is the other half:
+-- the projects on the deployed volume that already exist and would otherwise
+-- keep their five columns forever.
+--
+-- ── Why this anchors on requires_resolution and not on the name ─────────────
+--
+-- "Before Closed" is the requirement, and `name = 'Closed'` is the obvious way
+-- to write it and the wrong one, for the reason Statuses.sq gives at length: the
+-- seed names that column but a project may rename it, and this volume has been
+-- serving long enough for that to have happened. A migration keyed on the name
+-- would silently do nothing for a renamed project — no error, no row, and a
+-- board that quietly disagrees with every other board.
+--
+-- So the anchor is the flag, which is the durable fact: the closing column is
+-- the one that demands a resolution, whatever it is called. MIN() because
+-- Statuses.sq allows a project to flag a second column, and the leftmost one is
+-- the one "before Closed" means.
+--
+-- ── The COALESCE tail is the project that has no flagged column ─────────────
+--
+-- Possible today: the settings dialog can turn `requires_resolution` off, and
+-- nothing stops an admin turning it off everywhere. Such a project has no
+-- "before Closed" to insert before, so the new column goes on the end, which is
+-- the only answer that is not a guess. The second tail — position 0 — is for a
+-- project with no statuses at all. That should be unreachable, because seeding
+-- is one transaction with the project insert, but `position` is NOT NULL and an
+-- unreachable NULL here would be a failed migration on startup rather than a
+-- bad row, so it is worth the four characters.
+--
+-- ── Why both statements skip a project that already has the name ────────────
+--
+-- `UNIQUE (project_id, name)` on a COLLATE NOCASE column. A project whose admin
+-- already made a "Ready for test" column by hand — or a "ready for test" one —
+-- would violate it, and a violation here is not a bad row: it aborts the
+-- migration, which aborts startup, on the deployed volume, for everyone. The
+-- guard is on the shift as well as the insert so the two cannot disagree and
+-- leave a project shifted but not filled.
+
+-- Make room. Positions have no UNIQUE constraint (see Statuses.sq's setPosition
+-- for why), so this does not need to walk the columns in any particular order.
+UPDATE statuses
+SET position = position + 1
+WHERE position >= (
+        SELECT MIN(anchor.position)
+        FROM statuses anchor
+        WHERE anchor.project_id = statuses.project_id
+          AND anchor.requires_resolution = 1
+    )
+  AND NOT EXISTS (
+        SELECT 1 FROM statuses existing
+        WHERE existing.project_id = statuses.project_id
+          AND existing.name = 'Ready for test'
+    );
+
+-- Fill the gap the shift just opened. MIN(position) - 1 rather than the value
+-- the statement above compared against, because that value has itself moved:
+-- the flagged column is now one to the right, so the free slot is one to its
+-- left. Reading it back after the fact is what makes this correct for a project
+-- whose closing column sat at position 0 — the shift moved it to 1, and this
+-- lands on 0 rather than on -1.
+--
+-- requires_resolution is 0: Closed stays the one column that demands a
+-- resolution. "Ready for test" is work handed over, not work finished.
+INSERT INTO statuses (project_id, name, position, requires_resolution)
+SELECT
+    p.id,
+    'Ready for test',
+    COALESCE(
+        (SELECT MIN(a.position) - 1 FROM statuses a
+         WHERE a.project_id = p.id AND a.requires_resolution = 1),
+        (SELECT MAX(m.position) + 1 FROM statuses m WHERE m.project_id = p.id),
+        0
+    ),
+    0
+FROM projects p
+WHERE NOT EXISTS (
+    SELECT 1 FROM statuses e
+    WHERE e.project_id = p.id AND e.name = 'Ready for test'
+);

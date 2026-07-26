@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lunicle</title>
+    <link type="text/css" rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!--
+    The UI is built in Kotlin (see CounterView.kt) and mounted into #app by
+    main.kt. Markup is intentionally near-empty: the view is Kotlin DOM calls,
+    not HTML, so that the shared backing view model stays the only place any
+    behaviour lives.
+-->
+<div id="app"></div>
+<!--
+    Google Identity Services, for the sign-in popup. Loaded from Google rather
+    than bundled because it is the only supported way to get it, and because it
+    must be the origin's own script for the popup's opener link to work.
+
+    Google's consent screen cannot be framed (X-Frame-Options: DENY, verified),
+    and Lunicle lives in an iframe on lunamux.dev — so the popup is not a
+    preference, it is the only path. See docs/oauth-instructions.html.
+
+    `async defer`: nothing here blocks on it. SignInView checks for the global
+    and says so if the network ate the script, rather than presenting a button
+    that silently does nothing.
+-->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script type="application/javascript" src="web.js"></script>
+</body>
+</html>

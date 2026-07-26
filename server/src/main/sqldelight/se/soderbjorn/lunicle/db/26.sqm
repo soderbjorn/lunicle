@@ -1,0 +1,33 @@
+-- Version 26 → 27: a project can store its GitHub token literally.
+--
+-- LNL-107 (comment) lets an owner choose where a project's GitHub token comes
+-- from: none, the value of a named environment variable (the only source until
+-- now), or the token written directly. This adds the column that holds the third.
+--
+-- ── One column, no mode column, and why back-fill is a no-op ────────────────
+--
+-- The token's *source* is not stored as its own column. At most one of
+-- github_token_env and github_token_literal is ever non-NULL — the write derives
+-- both from one TokenSource and clears whichever the choice does not use — so
+-- "which source" is read off "which column holds a value" (see
+-- ProjectStore.repositoryConfig). That is what makes this upgrade invisible: an
+-- existing row has only github_token_env, possibly NULL, and reads back as env (or
+-- none) with no UPDATE to run. The new column defaults to NULL, which is exactly
+-- right for every existing row — none of them stored a literal — so, like 24.sqm,
+-- there is no follow-up write.
+--
+-- ── The security note this column is owed ───────────────────────────────────
+--
+-- github_token_env exists specifically so a secret never lands in this file (see
+-- Projects.sq). This column is the deliberate exception, for a deployment that
+-- cannot set environment variables and otherwise could not link a private
+-- repository at all. It is a real secret at rest, in every backup, so the defence
+-- that used to be the env-name prefix rule moves elsewhere: only an owner may
+-- write or even see that a project has one, and the wire never echoes the value
+-- back. The database is not where that defence lives; the role and the wire are.
+--
+-- NULL is a fully supported state and the default: no literal token, which for a
+-- project with no env name either means no token, which means the commit counts go
+-- unavailable and every other statistic still answers.
+
+ALTER TABLE projects ADD COLUMN github_token_literal TEXT;

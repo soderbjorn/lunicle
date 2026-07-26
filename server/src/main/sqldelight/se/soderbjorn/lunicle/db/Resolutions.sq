@@ -1,0 +1,63 @@
+-- Why an issue was closed. Per project, ordered — statuses' and priorities' twin.
+
+CREATE TABLE resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- Ordered, and the order is what the board groups by: "Done" is 0 and shows
+    -- first. Same convention as statuses and priorities — 0 first, ascending, no
+    -- DESC anywhere.
+    position INTEGER NOT NULL,
+
+    -- Whether this resolution means the work was actually done, as opposed to
+    -- dismissed — "Done" is, "Will not fix" and "Duplicate" are not (LNL-134). Data
+    -- rather than a rule about the name, the same taste as statuses.requires_resolution:
+    -- a project that renames "Done" to "Shipped" keeps the meaning, and a project
+    -- can mark more than one resolution done.
+    --
+    -- It is what makes "require a fixed version when resolving" precise. The
+    -- toggle lives on the project (projects.require_fixed_version_on_resolve); this
+    -- flag is what it consults, so closing as Duplicate never demands a fixed
+    -- version and closing as Done does. Enforced in BoardRoutes, never as a CHECK —
+    -- the rule spans three rows (issue, resolution, project) that no single-row
+    -- constraint can see.
+    --
+    -- The DEFAULT is not for any caller — `insert` always names it — it is there
+    -- because 29.sqm added this column with `ALTER TABLE ADD COLUMN`, which cannot
+    -- omit one, and a fresh database must end up with the same PRAGMA as a migrated
+    -- one. MigrationTest enforces that. 0 back-fills every existing resolution as
+    -- not-done, which keeps the upgrade invisible: nothing required a fixed version
+    -- before this column existed, so nothing starts to.
+    is_done INTEGER NOT NULL DEFAULT 0,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    -- The target of issues' composite foreign key. See Issues.sq.
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO resolutions (project_id, name, position, is_done) VALUES (?, ?, ?, ?);
+
+-- Renaming, and setting the done flag — both in one write, because they are one
+-- decision made in the same settings row, the way Statuses.sq folds the closing
+-- flag into its rename.
+update:
+UPDATE resolutions SET name = ?, is_done = ? WHERE id = ?;
+
+setPosition:
+UPDATE resolutions SET position = ? WHERE id = ?;
+
+-- `issues.resolution_id` is NULLABLE, unlike status_id and priority_id — but it
+-- is still composite-keyed with no ON DELETE clause, so RESTRICT refuses this
+-- for a resolution any closed issue holds. Nullable buys the issues that have no
+-- resolution a pass; it does not turn the reference into a SET NULL.
+delete:
+DELETE FROM resolutions WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, position, is_done FROM resolutions WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name, position, is_done FROM resolutions WHERE project_id = ? ORDER BY position;

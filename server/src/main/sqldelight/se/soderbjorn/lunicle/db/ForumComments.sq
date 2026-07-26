@@ -1,0 +1,97 @@
+-- Comments, in markdown, on a forum post.
+--
+-- A near-copy of Comments.sq, pointed at `forum_posts` instead of `issues`, and
+-- the copy is deliberate. The alternative was one `comments` table with two
+-- nullable owner columns and a CHECK, the shape `attachments` uses — and it was
+-- rejected because the two are not the same row. An issue comment is reachable
+-- through six routes, the MCP tools, the notifier and the history recorder, all
+-- of which take a `CommentRecord` whose `issueId` is non-null; widening it would
+-- make that field nullable everywhere and turn every one of those call sites into
+-- a place where "which kind of comment is this" has to be asked and can be got
+-- wrong. `attachments` earns the shared table because its two owners are treated
+-- identically after the lookup. These two are not.
+--
+-- ── No nesting ──────────────────────────────────────────────────────────────
+--
+-- There is no `parent_comment_id`, and that is LNL-30's settled decision rather
+-- than a first cut. A post has an ordered list of comments and that is the whole
+-- shape. Threading is the feature that turns a comment list into a tree renderer,
+-- a collapse-state store and an ordering argument, and none of it was asked for.
+--
+-- No project_id and no forum_id, for Comments.sq's reason: a comment reaches its
+-- post through `post_id`, its forum through the post, and its project through the
+-- forum. Every route walks that chain anyway, because the far end is where the
+-- permission question is answered.
+--
+-- No history, as with posts. See ForumPosts.sq.
+
+CREATE TABLE forum_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    body TEXT NOT NULL,          -- markdown, same editor as the post
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,          -- SET NULL, same reasoning as issues
+    -- An author with no account, for imported history. Exclusive with
+    -- created_by; see ForumPosts.sq for why the pair is here before anything
+    -- writes it.
+    created_by_external TEXT,
+    -- The agent that wrote this on the author's behalf, or NULL when a human did.
+    agent_name TEXT,
+    -- The comment composer supports inline image upload, so the row must exist
+    -- before the image does. See Comments.sq.
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (post_id) REFERENCES forum_posts(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+insert:
+INSERT INTO forum_comments (post_id, body, created_at, created_by, created_by_external, agent_name)
+VALUES (?, '', ?, ?, ?, ?)
+RETURNING id;
+
+publish:
+UPDATE forum_comments SET body = ?, is_draft = 0 WHERE id = ?;
+
+-- The body alone, for the two bulk markdown rewrites. See ForumPosts.sq's
+-- `updateBody` for why this is not spelled as a general edit.
+updateBody:
+UPDATE forum_comments SET body = ? WHERE id = ?;
+
+-- A full edit of an already-published comment: body, date, author and agent
+-- label. See ForumPosts.sq's `edit`, and Comments.sq's, which is this statement
+-- for the issue side. `is_draft` is untouched.
+edit:
+UPDATE forum_comments
+SET body = ?, created_at = ?, created_by = ?, created_by_external = ?, agent_name = ?
+WHERE id = ?;
+
+delete:
+DELETE FROM forum_comments WHERE id = ?;
+
+findById:
+SELECT id, post_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM forum_comments WHERE id = ?;
+
+-- Scoped by post as well as by id, so a route can prove the comment it was handed
+-- really is this post's. See ForumPosts.sq's `findByIdInForum`.
+findByIdInPost:
+SELECT id, post_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM forum_comments WHERE id = ? AND post_id = ?;
+
+-- A post's published comments, oldest first — flat, in order, which is the whole
+-- of the shape LNL-30 decided on. Comments.sq's `forIssue` twin.
+forPost:
+SELECT id, post_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM forum_comments WHERE post_id = ? AND is_draft = 0
+ORDER BY created_at, id;
+
+-- Every comment that could contain an @mention, for the display-name rewrite.
+-- See Comments.sq's twin.
+withPossibleMentions:
+SELECT id, body FROM forum_comments WHERE body LIKE '%@%';
+
+-- Every comment that could link to an attachment, for the startup link repair.
+withAttachmentLinks:
+SELECT id, body FROM forum_comments WHERE body LIKE '%/api/attachments/%';

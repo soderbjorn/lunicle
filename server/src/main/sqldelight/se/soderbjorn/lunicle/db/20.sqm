@@ -1,0 +1,74 @@
+-- Version 20 → 21: an address can now be *proved*, and the two things that take.
+--
+-- LNL-71 closes the hole where `POST /api/user/email` let any signed-in user set
+-- their address to any string that passed a shape check. That was harmless while
+-- e-mail was decorative and is an account-takeover primitive the moment anything
+-- keys on it — which LNL-73 does next. This is the schema half: the flag that
+-- distinguishes an address somebody proved from one they merely typed.
+--
+-- The dual-path story is 1.sqm's and 2.sqm's: a fresh volume runs `CREATE TABLE`
+-- out of Users.sq and gets the column for free; a volume already at version 20
+-- runs this instead. MigrationTest migrates every earlier snapshot forward and
+-- compares PRAGMA output against a fresh `Schema.create`, so drift between the
+-- two files fails the build rather than the volume.
+--
+-- ── The cheap statement is the right one here, unlike 13.sqm ───────────────
+--
+-- `ALTER TABLE ADD COLUMN` works because this column is NOT NULL *with a constant
+-- default*, which is the one shape SQLite's ALTER can express. 13.sqm had to
+-- rebuild `attachments` because its new column was UNIQUE and per-row; neither
+-- applies. That matters more than it would there: `users` is the table every
+-- other one points at — sessions, issues on two columns, comments, attachments,
+-- roles, subscriptions, ui_settings, email_codes and the oauth_* tables — and
+-- `migrateSchema` runs with foreign keys off (Database.kt), so a rebuild here is
+-- exactly the operation that goes wrong quietly. 3.sqm's warning applies in full.
+-- Nothing is rebuilt.
+--
+-- ── What existing rows get: 0, and it has to be 0 ─────────────────────────
+--
+-- Every address in this table today was accepted with no verification of any
+-- kind — that is the bug being fixed — so there is no row whose address is known
+-- to be real. A back-fill of 1 would not be a convenience, it would be the
+-- migration asserting a fact nobody established, and LNL-73 is about to treat
+-- this flag as identity.
+--
+-- The consequence is real and accepted, and it is the same shape as 6.sqm's:
+-- everybody starts unverified, and each row is corrected the first time its owner
+-- proves the address — by confirming it here, by signing in with a code (LNL-74),
+-- or by Google's own `email_verified` claim (LNL-73). Nobody is signed out and
+-- nothing stops working in the meantime; notifications still go to an unverified
+-- address exactly as they did yesterday.
+--
+-- The DEFAULT stays on the column afterwards rather than being an artefact of
+-- this statement — Users.sq declares it too — because a new row's address is
+-- unproved for the same reason an old one's is.
+
+ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
+
+-- ── And: at most one pending address change per account ───────────────────
+--
+-- This index belongs to *this* migration rather than to 19.sqm, which created the
+-- table, and the split is deliberate. LNL-76 built `email_codes` as a
+-- purpose-parameterised primitive in which `user_id` is opaque caller-supplied
+-- context it never interprets — nothing there has an opinion about how many codes
+-- one account may have outstanding, and sign-in codes carry no account at all.
+--
+-- The one-per-account rule arrives with the thing that needs it: LNL-71's pending
+-- address change, which the profile dialog asks about in the singular. Without
+-- this, a user who typed `new1@` and thought better of it and typed `new2@` would
+-- have two pending changes and `pendingFor` would find two rows where it expects
+-- at most one.
+--
+-- A partial unique index, not a table rebuild and not a column constraint.
+-- SQLite cannot `ALTER TABLE ... ADD UNIQUE`, and `user_id` is nullable — every
+-- sign-in code has NULL there, and NULLs must stay distinct or the second sign-in
+-- code anywhere on the instance would collide with the first. `WHERE user_id IS
+-- NOT NULL` says so explicitly rather than relying on SQLite's NULL handling to
+-- mean what we want.
+--
+-- MigrationTest reads indexes back through `pragma_index_list`, so this is
+-- covered by the existing guard rather than needing one of its own.
+
+CREATE UNIQUE INDEX email_codes_one_per_user
+    ON email_codes(user_id, purpose)
+    WHERE user_id IS NOT NULL;

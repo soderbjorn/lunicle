@@ -1,0 +1,30 @@
+# Keep the build context to just the sources the image builds from. Everything
+# here is either regenerated inside the image or irrelevant to it — and a stale
+# host build/ directory leaking in is a genuine source of "works locally,
+# broken in the container".
+.git
+.gradle
+build
+*/build
+kotlin-js-store
+.claude
+.idea
+local.properties
+
+# Planning + instruction documents, and the local dev scripts. They belong in
+# the repo, not in the image. (The Dockerfile COPYs specific paths, so these
+# were never going to land in the image regardless — excluding them keeps the
+# build context small, and a smaller context is a faster build.)
+docs/
+scripts/*
+
+# …except the entrypoint, which is genuinely part of the image: it chowns the
+# mounted volume and drops to the unprivileged user before exec'ing the JVM.
+# See the Dockerfile, and the script's own header for why that has to happen at
+# runtime rather than at build time.
+#
+# Note `scripts/*` above rather than `scripts/`: Docker will not re-include a
+# file from a directory that has itself been excluded, so the negation below is
+# silently ineffective against a bare `scripts/` and the COPY fails with "file
+# not found" while the file is plainly right there.
+!scripts/container-entrypoint.sh

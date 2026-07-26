@@ -1,0 +1,288 @@
+-- Attachment metadata. The bytes live on the volume, not here.
+--
+-- Files rather than BLOBs, for three reasons in order of how much they bite:
+-- heap (SQLDelight maps BLOB to ByteArray, so every read of a 10 MB screenshot
+-- is a 10 MB array through a free-trial-sized JVM, where a file streams and
+-- never lands in heap); the local loop (a database carrying every screenshot
+-- ever pasted is slow to copy and unpleasant to dump); and because it is the
+-- same volume anyway, so the BLOB's "one thing to back up" advantage is mostly
+-- notional.
+--
+-- The cost, honestly: writes stop being atomic. A file written whose row fails
+-- to insert leaks disk; a row deleted whose file fails to unlink does the same.
+-- Neither loses data. Handled the way the session sweep already is — a startup
+-- pass deleting files with no matching storage_key. See AttachmentRepository.
+
+CREATE TABLE attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Exactly one owner, enforced by the CHECK below. Five nullable columns
+    -- rather than an (owner_type, owner_id) pair, because that pair cannot
+    -- carry a foreign key at all — and losing FK cascade is how you end up with
+    -- attachments pointing at deleted issues.
+    --
+    -- ── Why the forum owners are two more columns rather than a shared one ───
+    --
+    -- LNL-61 needed attachments in forum posts and forum comments, and the cheap
+    -- move would have been to reuse `comment_id` for a forum comment. It is the
+    -- wrong cheap move twice over: the column carries a foreign key at
+    -- `comments(id)`, so a forum comment's id would have to *exist as an issue
+    -- comment* for the row to insert at all, and the cascade would then delete
+    -- the file when an unrelated issue comment went. The two id spaces are
+    -- different id spaces; one column cannot name both.
+    --
+    -- ── The fifth column, which LNL-61 said was the deciding one ─────────────
+    --
+    -- That ticket left this note: *"a fifth kind of attachable thing makes it
+    -- five. At that point the (owner_type, owner_id) pair starts to look better."*
+    -- LNL-60 is the fifth, and the trade was re-examined rather than inherited.
+    -- It still comes out this way, and the reason is the one that was already
+    -- written down: the pair buys a tidier shape by giving up every cascade in
+    -- this list, and there is nothing to put in its place — SQLite cannot express
+    -- a foreign key whose target depends on another column's value, so the
+    -- cleanup would have to move into Kotlin, into five delete paths, one of
+    -- which would eventually be added without it. The failure that produces is
+    -- silent: nothing breaks, the volume merely never gets smaller. Five columns
+    -- and a CHECK that counts to one is ugly and cannot be got wrong.
+    --
+    -- What genuinely does change at five is the *arithmetic* below. Read it as
+    -- "exactly one owner"; if a sixth is ever added and this is edited without
+    -- the CHECK, an orphan becomes representable again.
+    issue_id INTEGER,
+    comment_id INTEGER,
+    forum_post_id INTEGER,
+    forum_comment_id INTEGER,
+
+    -- A private message's attachment (LNL-60).
+    --
+    -- Worth naming what is different about this one: it is the only owner in this
+    -- list that does not reach a project. Every other branch of `serveAttachment`
+    -- walks up to a project and asks `canReadProject`; this one walks up to a
+    -- conversation and asks whether the reader is in it. See Conversations.sq for
+    -- why messages have no project, and `mayReadAttachment` for the branch.
+    message_id INTEGER,
+
+    filename TEXT NOT NULL,      -- as uploaded, for the download name
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+
+    -- The file's name on the volume. Random, not derived from filename: a
+    -- user-supplied name reaching the filesystem is a path-traversal bug
+    -- waiting for "../../lunicle.db". This column is the ONLY thing that ever
+    -- names a path, and nothing a user types reaches it.
+    storage_key TEXT NOT NULL UNIQUE,
+
+    -- What this attachment is called in a URL, and the only part of this row a
+    -- reader ever sees. Random, and that is the whole point of the column: the
+    -- URL used to be `id`, so every attachment on the instance was reachable by
+    -- counting, and a private project's screenshots were one guessed integer
+    -- away from anybody who thought to try. See LNL-51.
+    --
+    -- ── Why not just use storage_key, which is already random ───────────────
+    --
+    -- Because it names a path. Putting it in a URL means every reader learns the
+    -- filename on the volume, and it welds the public identifier to the storage
+    -- layout — rename the scheme on disk and every link ever pasted dies. Two
+    -- random strings is the cheaper of the two couplings.
+    --
+    -- ── Why existing rows get their id as their public id ───────────────────
+    --
+    -- Because their URLs are already written down. `/api/attachments/80` is
+    -- inside the markdown of somebody's issue, in an e-mail we sent, and in
+    -- links people have pasted at each other. Backfilling the decimal id makes
+    -- every one of those keep working with no rewrite pass and no compatibility
+    -- branch in the route — the old URL IS the new URL for those rows. They stay
+    -- as guessable as they always were, which the ticket accepts explicitly;
+    -- what matters is that nothing minted from here on is.
+    public_id TEXT NOT NULL UNIQUE,
+
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+
+    -- An author with no account, for imported history. Exclusive with
+    -- created_by, same reasoning as issues — the long version lives there.
+    --
+    -- Here it carries a file rather than prose, which changes nothing about the
+    -- attribution and everything about how the bytes arrive: an importer has no
+    -- session to POST with, so uploads come through a minted ticket instead.
+    -- See AttachmentTickets.
+    created_by_external TEXT,
+
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_post_id) REFERENCES forum_posts(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_comment_id) REFERENCES forum_comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    -- SQLite counts a true condition as 1, so this reads "exactly one owner is
+    -- set". An orphan attachment and a doubly-owned one are both now
+    -- unrepresentable rather than merely unlikely.
+    CHECK (
+        (issue_id IS NOT NULL) + (comment_id IS NOT NULL) +
+            (forum_post_id IS NOT NULL) + (forum_comment_id IS NOT NULL) +
+            (message_id IS NOT NULL) = 1
+    ),
+
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+insertForIssue:
+INSERT INTO attachments (issue_id, filename, mime_type, byte_size, storage_key, public_id, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+insertForComment:
+INSERT INTO attachments (comment_id, filename, mime_type, byte_size, storage_key, public_id, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+-- The forum's two. Separate statements rather than one with a nullable pair,
+-- because the CHECK above means a statement that could set either could also set
+-- both, and the failure would be a constraint violation at runtime rather than a
+-- shape the caller could not express. Four narrow inserts is the whole cost of
+-- four owner columns being unrepresentably-wrong rather than merely unlikely.
+insertForForumPost:
+INSERT INTO attachments (forum_post_id, filename, mime_type, byte_size, storage_key, public_id, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+insertForForumComment:
+INSERT INTO attachments (forum_comment_id, filename, mime_type, byte_size, storage_key, public_id, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+-- ...and the private message's. Same shape, same reason.
+insertForMessage:
+INSERT INTO attachments (message_id, filename, mime_type, byte_size, storage_key, public_id, created_at, created_by, created_by_external)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+-- `SELECT *` rather than the columns spelled out, unlike most queries here, and
+-- for a mechanical reason: it makes SQLDelight map this to the generated
+-- `Attachments` type rather than minting a row class of its own, so this and
+-- findByPublicId below answer with the SAME type and one mapper serves both.
+-- Two spelled-out projections would be two structurally identical classes, and
+-- AttachmentStore would need a copy of `toRecord` per query.
+findById:
+SELECT * FROM attachments WHERE id = ?;
+
+-- The lookup the download route does, and the only one that starts from
+-- something a caller supplied. Keyed on the UNIQUE public_id, so it is an index
+-- seek rather than a scan, and it answers for exactly one row or none — which is
+-- what lets `serveAttachment` treat an unknown id and an unreadable one as the
+-- same 404.
+findByPublicId:
+SELECT * FROM attachments WHERE public_id = ?;
+
+delete:
+DELETE FROM attachments WHERE id = ?;
+
+-- Every key the volume is allowed to hold. Read by the startup sweep, which
+-- deletes any file under $VOLUME/attachments/ that is not in this set — the
+-- files behind cancelled drafts and failed inserts.
+allStorageKeys:
+SELECT storage_key FROM attachments;
+
+-- Every attachment's declared type. Read once at startup by the link repair,
+-- which has to know which ids are documents the view route will serve.
+--
+-- The whole table rather than a `WHERE mime_type IN (…)`: which types those are
+-- is SANDBOXED_DOCUMENT_MIME_TYPES, a Kotlin set, and a copy of it spelled out in
+-- SQL here would be a second list to keep in step with the first — which is the
+-- exact drift the clientServer module exists to prevent. Two columns per
+-- attachment, once per boot, is not a query worth being clever about.
+--
+-- public_id, not id: the repair rewrites URLs inside stored markdown, and a URL
+-- names the public id. Selecting the row id here would have it looking for
+-- `/api/attachments/41` in prose that says `/api/attachments/kQ7m…` and quietly
+-- repairing nothing.
+allMimeTypes:
+SELECT public_id, mime_type FROM attachments;
+
+-- Every file an issue owns, directly or through one of its comments.
+--
+-- Read *before* the issue is deleted, because afterwards nothing can name these
+-- files: the rows go by ON DELETE CASCADE, and SQLite has no way to reach the
+-- filesystem. Getting that order backwards leaves the volume holding every
+-- screenshot of every deleted issue, growing forever, with nothing able to
+-- identify them. See IssueRepository.delete.
+keysForIssue:
+SELECT storage_key FROM attachments
+WHERE issue_id = ?
+   OR comment_id IN (SELECT id FROM comments WHERE issue_id = ?);
+
+-- Every file one comment owns. Read before the comment is deleted, for the
+-- reason above.
+keysForComment:
+SELECT storage_key FROM attachments WHERE comment_id = ?;
+
+-- Every file one forum post owns, directly or through one of its comments. Read
+-- before the post is deleted, for the reason above. `keysForIssue`'s twin.
+keysForForumPost:
+SELECT storage_key FROM attachments
+WHERE forum_post_id = ?
+   OR forum_comment_id IN (SELECT id FROM forum_comments WHERE post_id = ?);
+
+-- Every file one forum comment owns. Same timing rule.
+keysForForumComment:
+SELECT storage_key FROM attachments WHERE forum_comment_id = ?;
+
+-- Every file under any post in a forum. Read before the forum is deleted — which
+-- is a route a project administrator can reach, and which cascades through posts
+-- and comments in one statement. Without this, deleting a forum would take every
+-- row and leave every file, with nothing left able to name them.
+keysForForum:
+SELECT storage_key FROM attachments
+WHERE forum_post_id IN (SELECT id FROM forum_posts WHERE forum_id = ?)
+   OR forum_comment_id IN (
+       SELECT forum_comments.id FROM forum_comments
+       JOIN forum_posts ON forum_posts.id = forum_comments.post_id
+       WHERE forum_posts.forum_id = ?
+   );
+
+-- Every file one message owns. Same timing rule as `keysForIssue`.
+keysForMessage:
+SELECT storage_key FROM attachments WHERE message_id = ?;
+
+-- Every file under any message in a conversation. Read before the conversation
+-- is deleted, which happens on exactly one path — discarding a conversation that
+-- was started and never sent — and which cascades through its messages in one
+-- statement.
+keysForConversation:
+SELECT storage_key FROM attachments
+WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?);
+
+-- The same, one level up: every file under any issue OR any forum post in a
+-- project. Read before the project is deleted, for the reason above.
+--
+-- Messages are deliberately absent from this one, and their absence is not an
+-- oversight of the kind the comment below describes: a conversation belongs to
+-- no project (see Conversations.sq), so deleting a project cannot cascade into
+-- one and there is nothing here for this query to name.
+--
+-- All four owners, because deleting a project cascades down both halves of it —
+-- issues → comments and forums → posts → comments — and a query that named only
+-- the issue side would leave every discussion attachment on the volume for ever.
+-- That is the specific bug this branch of the query exists to prevent, and it is
+-- silent: nothing fails, the disk merely never gets smaller.
+keysForProject:
+SELECT storage_key FROM attachments
+WHERE issue_id IN (SELECT id FROM issues WHERE project_id = ?)
+   OR comment_id IN (
+       SELECT comments.id FROM comments
+       JOIN issues ON issues.id = comments.issue_id
+       WHERE issues.project_id = ?
+   )
+   OR forum_post_id IN (
+       SELECT forum_posts.id FROM forum_posts
+       JOIN forums ON forums.id = forum_posts.forum_id
+       WHERE forums.project_id = ?
+   )
+   OR forum_comment_id IN (
+       SELECT forum_comments.id FROM forum_comments
+       JOIN forum_posts ON forum_posts.id = forum_comments.post_id
+       JOIN forums ON forums.id = forum_posts.forum_id
+       WHERE forums.project_id = ?
+   );

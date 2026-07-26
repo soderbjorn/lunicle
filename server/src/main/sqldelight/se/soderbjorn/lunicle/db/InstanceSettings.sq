@@ -1,0 +1,41 @@
+-- Instance-wide switches an administrator sets once for the whole deployment:
+-- whether signing in is required to use the app at all, and whether any signed-in
+-- user (not only an admin) may create a project. See LNL-115.
+--
+-- A key-value table, and singleton-scoped — there is no user_id here, unlike
+-- `user_ui_settings`, which is the whole difference between the two. That table
+-- answers "what did *this account* choose"; this one answers "how is *this
+-- deployment* configured", and the answer is the same for everyone who asks. A
+-- column-per-flag `instance` table with a single row would do the same job; a KV
+-- table is chosen for the reason `user_ui_settings` gives — the next instance
+-- switch is a new row and an allowlisted key, not a migration.
+--
+-- Which keys may land here is not this table's business: the admin route names the
+-- key from a closed enum (InstanceSettingKey), so this stays a table of settings
+-- rather than a scratch space. Values are the strings "true" / "false"; a missing
+-- row reads as the flag's default (off), so "never set" and "set to off" collapse
+-- to one state the reader need not tell apart — the same choice `user_ui_settings`
+-- makes with "no row" meaning "never chosen".
+
+CREATE TABLE instance_settings (
+    -- An InstanceSettingKey wire-name, e.g. `require_sign_in`.
+    key TEXT NOT NULL PRIMARY KEY,
+
+    -- "true" or "false". NOT NULL because "unset" is spelled as no row, exactly as
+    -- in user_ui_settings — a null would be a third state the reader folds back
+    -- into the default anyway.
+    value TEXT NOT NULL
+);
+
+-- Every switch that has ever been set, in one query. The set is tiny — two keys
+-- today — so the caller reads all of it at once rather than naming keys it would
+-- have to know in advance, the same shape `user_ui_settings.selectForUser` uses.
+selectAll:
+SELECT key, value FROM instance_settings;
+
+-- Last write wins: a switch has no history worth keeping and no conflict worth
+-- reporting, so two admins toggling it are simply the most recent one being right.
+upsert:
+INSERT INTO instance_settings (key, value)
+VALUES (?, ?)
+ON CONFLICT (key) DO UPDATE SET value = excluded.value;

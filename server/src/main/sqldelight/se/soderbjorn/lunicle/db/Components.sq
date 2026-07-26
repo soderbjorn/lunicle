@@ -1,0 +1,50 @@
+-- Per-project component vocabulary. Identical in shape to labels; see
+-- Labels.sq for why each constraint is there.
+
+CREATE TABLE components (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- Where it sits in this project's list, 0 first — the same convention as
+    -- statuses and priorities. It decides the order the pickers offer and the
+    -- order an issue's tags are drawn in, which is a curation decision the
+    -- project owner gets to make: "Bug" before "Codebase" is more useful than
+    -- alphabetical, and alphabetical is only a default nobody chose.
+    --
+    -- Deliberately not UNIQUE per project: every swap passes through a state
+    -- where two rows share a position, and the rewrite is one transaction over
+    -- the whole list rather than a pair of careful steps. See
+    -- VocabularyRepository.reorder.
+    --
+    -- The DEFAULT is not for any caller — `insert` always names a position — it
+    -- is there because 8.sqm added this column with `ALTER TABLE ADD COLUMN`,
+    -- which cannot omit one, and a fresh database must end up with the same
+    -- PRAGMA as a migrated one. MigrationTest is what enforces that.
+    position INTEGER NOT NULL DEFAULT 0,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO components (project_id, name, position) VALUES (?, ?, ?);
+
+-- Rename only; see Labels.sq's `update` for why project_id is not settable.
+update:
+UPDATE components SET name = ? WHERE id = ?;
+
+-- One row at a time, inside the transaction that rewrites the whole
+-- project's order. See Statuses.sq's setPosition.
+setPosition:
+UPDATE components SET position = ? WHERE id = ?;
+
+delete:
+DELETE FROM components WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, position FROM components WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name, position FROM components WHERE project_id = ? ORDER BY position;

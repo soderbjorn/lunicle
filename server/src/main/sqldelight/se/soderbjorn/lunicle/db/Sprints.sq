@@ -1,0 +1,86 @@
+-- Per-project timeboxes, ordered. A sprint is a named bucket of issues that can
+-- be activated, completed, and rolled forward.
+--
+-- The whole feature is this table plus `issues.sprint_id` plus
+-- `projects.active_sprint_id`. A project that never inserts a row here is
+-- untouched by sprints existing: no board control renders, get_board returns an
+-- empty list, and every one of its issues has sprint_id NULL. Sprints are
+-- invisible by absence, not by a feature flag — which is why there is no
+-- `projects.uses_sprints` column and why ProjectRepository seeds none.
+
+CREATE TABLE sprints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- Planning order, not chronology. Kept rather than ordering by `id` so a
+    -- sprint can be inserted between two existing ones — writing next quarter's
+    -- three sprints and then slotting a hotfix sprint in front of them is the
+    -- case this exists for. Same shape and same reorder transaction as
+    -- statuses.position; see VocabularyRepository.reorder.
+    position INTEGER NOT NULL,
+
+    -- When this sprint was completed, or NULL because it has not been.
+    --
+    -- A timestamp rather than a boolean because it is system-set and never
+    -- typed: nothing in the UI offers a date field, so there is no invalid value
+    -- to validate and no timezone to argue about. NULL is the load-bearing part
+    -- — it is what keeps a finished sprint out of the activation candidates and
+    -- out of the planning dropdown. The instant is strictly more than the flag
+    -- at identical query cost, and it is the only part of this that could not be
+    -- recovered later: "which sprint is done" can be recomputed from a flag, but
+    -- "when did it finish" cannot be recomputed from anything.
+    --
+    -- Deliberately NOT paired with starts_at/ends_at. Nothing would read them:
+    -- scoping is projects.active_sprint_id, completion is this column and a
+    -- button, ordering is `position`. A human-typed date drags input widgets,
+    -- validation, overlap rules and is-this-sprint-late behind it, and is one
+    -- migration away whenever something actually keys off it.
+    completed_at INTEGER,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    -- Not currently the target of any composite foreign key: issues.sprint_id is
+    -- single-column, because a composite key cannot carry ON DELETE SET NULL
+    -- without nulling project_id too. See Issues.sq's sprint_id. This is kept
+    -- anyway — it costs one index that the UNIQUE(project_id, name) lookup path
+    -- does not replace, and it is what a later change would need to make that
+    -- reference composite.
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO sprints (project_id, name, position) VALUES (?, ?, ?);
+
+-- Name only. `position` is set by setPosition over a whole project at once and
+-- `completed_at` by complete/reopen, for Statuses.sq's reason: a rename that also
+-- carried either would let two writers disagree about which one won.
+update:
+UPDATE sprints SET name = ? WHERE id = ?;
+
+setPosition:
+UPDATE sprints SET position = ? WHERE id = ?;
+
+-- Stamp a sprint finished. Idempotent by intent rather than by SQL — the route
+-- refuses an already-completed sprint before reaching here, so this never
+-- silently rewrites a completion instant that history has already reported.
+complete:
+UPDATE sprints SET completed_at = ? WHERE id = ?;
+
+-- Deleting a sprint un-sprints its issues rather than being refused:
+-- issues.sprint_id is nullable with ON DELETE SET NULL, so no RESTRICT fires and
+-- VocabularyRepository has nothing to count first. That is why SPRINT's
+-- restrictsOnUse is false — the schema is the reason, not a preference.
+--
+-- projects.active_sprint_id is SET NULL by the same delete, so deleting the
+-- active sprint leaves the project with none active rather than dangling.
+delete:
+DELETE FROM sprints WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, position, completed_at FROM sprints
+WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name, position, completed_at FROM sprints
+WHERE project_id = ? ORDER BY position;

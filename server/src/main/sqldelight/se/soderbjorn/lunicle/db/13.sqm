@@ -1,0 +1,95 @@
+-- Version 13 → 14: an attachment gets a public id, so its URL stops being a
+-- number anyone can count to.
+--
+-- `/api/attachments/80` was the whole address of an attachment, and 80 is one
+-- less than 81. Access is checked — `serveAttachment` runs canReadProject before
+-- it streams a byte — so this was never an open door; but it published the size
+-- and shape of the instance to anybody who tried, and it meant a private
+-- project's files were distinguishable from absent ones by which error came
+-- back. See LNL-51 and Attachments.sq's public_id.
+--
+-- ── Why this rebuilds the table, when 3.sqm and 12.sqm did not ─────────────
+--
+-- Because the column is NOT NULL and UNIQUE, and SQLite's ALTER TABLE ADD COLUMN
+-- can express neither: it refuses a UNIQUE column outright, and a NOT NULL one
+-- needs a constant default, which a per-row identifier by definition does not
+-- have. 3.sqm's assignee_id was nullable and 12.sqm was a rename, which is why
+-- both got away with the cheap statement. This is 2.sqm's situation, and it gets
+-- 2.sqm's answer.
+--
+-- The rebuild is safe here in a way it would not be on `issues`: nothing in this
+-- schema has a foreign key pointing AT `attachments`. The keys all point the
+-- other way — at issues, comments and users — so dropping and recreating this
+-- table cannot cascade into anything. (3.sqm's warning about DROP TABLE with
+-- foreign keys off is about `issues`, which every other table references. This
+-- table is a leaf.)
+--
+-- ── What existing rows get, and why it is their own id ─────────────────────
+--
+-- `CAST(id AS TEXT)`, so `/api/attachments/80` still resolves to attachment 80
+-- after this runs. Those URLs are already written down — inside the markdown of
+-- issues and comments, in notification e-mails we have already sent, and in
+-- links people have pasted at each other — and any other backfill would break
+-- every one of them and require a rewrite pass over stored prose to repair.
+-- The ticket asks for exactly this: existing attachments keep working, and it is
+-- fine that they keep their guessable URLs. Everything minted after this
+-- migration gets a random id from AttachmentRepository.newPublicId.
+--
+-- A decimal id and a base64url id cannot collide, but not for the reason it
+-- first looks: base64url's alphabet does include digits. They cannot collide
+-- because the random ones are 22 characters long and the backfilled ones are the
+-- decimal spelling of an existing row id, so a clash would need ~10^21 rows in
+-- this table. The UNIQUE constraint is what makes that a failed insert rather
+-- than a served-file-belonging-to-somebody-else, which is the failure worth
+-- being sure about.
+--
+-- The statements below reproduce Attachments.sq's CREATE TABLE, minus the prose.
+-- MigrationTest migrates every earlier snapshot forward and compares PRAGMA
+-- output against a fresh Schema.create, so drift between the two files fails the
+-- build rather than the volume.
+
+CREATE TABLE attachments_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    issue_id INTEGER,
+    comment_id INTEGER,
+
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+
+    storage_key TEXT NOT NULL UNIQUE,
+
+    public_id TEXT NOT NULL UNIQUE,
+
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+
+    created_by_external TEXT,
+
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    CHECK ((issue_id IS NOT NULL) + (comment_id IS NOT NULL) = 1),
+
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+-- `id` is carried across explicitly rather than left to AUTOINCREMENT. It has to
+-- be: `storage_key` is the file on the volume and `id` is what the backfilled
+-- public id is derived from, so a row that came back with a different id would
+-- both change its own URL and — far worse — be the second row to claim an
+-- existing one.
+INSERT INTO attachments_new (
+    id, issue_id, comment_id, filename, mime_type, byte_size, storage_key, public_id,
+    created_at, created_by, created_by_external
+)
+SELECT
+    id, issue_id, comment_id, filename, mime_type, byte_size, storage_key, CAST(id AS TEXT),
+    created_at, created_by, created_by_external
+FROM attachments;
+
+DROP TABLE attachments;
+
+ALTER TABLE attachments_new RENAME TO attachments;

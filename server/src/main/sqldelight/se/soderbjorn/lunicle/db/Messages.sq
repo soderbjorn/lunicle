@@ -1,0 +1,129 @@
+-- Messages, in markdown, in a conversation.
+--
+-- The third near-copy of Comments.sq, after ForumComments.sq, and the copy is
+-- deliberate for the reason that file gives at length: an issue comment is
+-- reachable through six routes, the MCP tools, the notifier and the history
+-- recorder, all of which take a `CommentRecord` whose `issueId` is non-null.
+-- Widening that table a second time would make the field nullable everywhere and
+-- turn every one of those call sites into a place where "which kind of comment
+-- is this" has to be asked and can be got wrong.
+--
+-- ── What a message deliberately does not have ───────────────────────────────
+--
+-- **No `read_at`, and no unread flag.** Read/unread is LNL-64 and is stored as a
+-- high-water mark per conversation, not as a column here — a per-message read
+-- state would be a row per user per message, which is the shape LNL-30 rejected
+-- explicitly.
+--
+-- **No `edited_at`, and no edit route.** A message can be deleted and cannot be
+-- changed. That is not a missing feature: a private conversation records no
+-- history (see Conversations.sq), so an edited message would be indistinguishable
+-- from one that always said that, in a thread whose whole value is that it is
+-- what was said. Deleting is honest — the message is gone and everybody sees a
+-- gap; rewriting is not.
+--
+-- **No recipient column.** A message is addressed to a conversation, and the
+-- conversation is addressed to people. See Conversations.sq.
+
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    body TEXT NOT NULL,          -- markdown, same editor as an issue or a post
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,          -- SET NULL, same reasoning as issues
+
+    -- An author with no account, for imported history. Exclusive with
+    -- created_by; see ForumPosts.sq for why the pair is here before anything
+    -- writes it. Nothing writes it today and nothing is planned to: messages
+    -- have no MCP surface and no importer, by LNL-30's decision.
+    created_by_external TEXT,
+
+    -- The agent that wrote this on the author's behalf, or NULL when a human
+    -- did. Not a third author; see Comments.sq. Also unwritten today.
+    agent_name TEXT,
+
+    -- Same reason as issues, comments and posts: the composer supports inline
+    -- image upload, so the row must exist before the image does.
+    --
+    -- It does one extra job here that it does nowhere else. A *new conversation*
+    -- has no parent row at all, so the draft message and the conversation are
+    -- created together — which means this flag is also what hides a conversation
+    -- somebody started, attached a file to, and then abandoned. See
+    -- Conversations.sq's `forUser`, whose second EXISTS is that hiding.
+    is_draft INTEGER NOT NULL DEFAULT 1,
+
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+-- The draft row, with an empty body. `publish` fills it in.
+insert:
+INSERT INTO messages (conversation_id, body, created_at, created_by, created_by_external, agent_name)
+VALUES (?, '', ?, ?, ?, ?)
+RETURNING id;
+
+publish:
+UPDATE messages SET body = ?, is_draft = 0 WHERE id = ?;
+
+-- The body alone, for the two bulk markdown rewrites — the mention renamer and
+-- the attachment link repair. Deliberately not a general "edit a message":
+-- neither of those callers is a user editing anything, there is no route that
+-- is, and both must leave `is_draft` exactly as they found it.
+updateBody:
+UPDATE messages SET body = ? WHERE id = ?;
+
+delete:
+DELETE FROM messages WHERE id = ?;
+
+findById:
+SELECT id, conversation_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM messages WHERE id = ?;
+
+-- Scoped by conversation as well as by id, so a route can prove the message it
+-- was handed really is this conversation's before it writes. ForumPosts.sq's
+-- `findByIdInForum` draws the same line for the same reason: the ids in a URL
+-- are claims being checked, not decoration.
+findByIdInConversation:
+SELECT id, conversation_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM messages WHERE id = ? AND conversation_id = ?;
+
+-- A conversation's published messages, oldest first — a thread is read from the
+-- top, exactly as a post's comments are. The conversation *list* is newest
+-- first; that is a different question (what happened last) about a different
+-- thing (the room, not the transcript).
+forConversation:
+SELECT id, conversation_id, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM messages WHERE conversation_id = ? AND is_draft = 0
+ORDER BY created_at, id;
+
+-- Has anything ever been sent here?
+--
+-- The one question the "discard the conversation I started and never sent" route
+-- asks. Phrased over published rows rather than over rows, because the draft the
+-- caller is discarding is itself a row and would answer yes.
+hasPublished:
+SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ? AND is_draft = 0);
+
+-- The newest published message here, as an id — the value a read mark is set to.
+--
+-- Zero for a conversation nothing has been published in, which is a real state
+-- (a composer that was opened and abandoned) and is the correct mark for it: a
+-- watermark of 0 is below every id, so nothing is retroactively marked read.
+--
+-- MAX(id) rather than MAX(created_at) because `conversation_reads` holds an id;
+-- see Reads.sq for why that column is a watermark rather than a reference.
+maxPublishedId:
+SELECT COALESCE(MAX(id), 0) FROM messages WHERE conversation_id = ? AND is_draft = 0;
+
+-- Every message that could contain an @mention, for the display-name rewrite.
+-- See Comments.sq's twin, whose comment is the long version of why `LIKE '%@%'`
+-- is a pre-filter and nothing more, and why drafts are included.
+withPossibleMentions:
+SELECT id, body FROM messages WHERE body LIKE '%@%';
+
+-- Every message that could link to an attachment, for the startup link repair.
+-- Issues.sq's twin; its comment is the long version.
+withAttachmentLinks:
+SELECT id, body FROM messages WHERE body LIKE '%/api/attachments/%';

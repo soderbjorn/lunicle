@@ -1,0 +1,44 @@
+-- Version 12 → 13: a project may name a GitHub repository, and cache the
+-- statistics compiled from it.
+--
+-- ── Why ALTER TABLE works here, when 2.sqm had to rebuild ──────────────────
+--
+-- 2.sqm rebuilt `issues` wholesale because the column it was adding needed a
+-- *composite* foreign key, which SQLite cannot add after the fact. None of the
+-- three columns below references anything: two are free text parsed at the point
+-- of entry, and the third names an environment variable, which is not a row
+-- anywhere. So ADD COLUMN is sufficient, and is the enormously cheaper option on
+-- a table every other table points at — a rebuild of `projects` would mean
+-- dropping and recreating every foreign key aimed at it.
+--
+-- All three are nullable with no default, so every existing project migrates to
+-- "no repository linked", which is the state they are all genuinely in and the
+-- state the feature is designed to render.
+
+ALTER TABLE projects ADD COLUMN repository_owner TEXT;
+ALTER TABLE projects ADD COLUMN repository_name TEXT;
+ALTER TABLE projects ADD COLUMN github_token_env TEXT;
+
+-- The snapshot cache. Created empty: there is nothing to backfill, because a
+-- missing row already means "not compiled yet" and that is true of every project
+-- at this moment. The first person to open the dialog compiles the first one.
+--
+-- Kept in step with ProjectStatistics.sq by hand, as every migration here is —
+-- MigrationTest compares this file's result against the generated schema and
+-- fails on any drift, which is what makes the duplication safe rather than
+-- merely traditional.
+CREATE TABLE project_statistics (
+    project_id INTEGER NOT NULL PRIMARY KEY,
+    computed_at INTEGER NOT NULL,
+    commits_week INTEGER,
+    commits_month INTEGER,
+    commits_all INTEGER,
+    commits_unavailable TEXT,
+    issues_created_week INTEGER NOT NULL,
+    issues_created_month INTEGER NOT NULL,
+    issues_created_all INTEGER NOT NULL,
+    issues_closed_week INTEGER NOT NULL,
+    issues_closed_month INTEGER NOT NULL,
+    issues_closed_all INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);

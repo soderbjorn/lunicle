@@ -1,0 +1,95 @@
+-- Version 5 → 6: an issue remembers what happened to it.
+--
+-- Two new tables and an index, none of which existing rows point at, so nothing
+-- has to be rebuilt and nothing existing is touched. See IssueEvents.sq for
+-- what the columns mean; this file is only the half that has to run on the
+-- volume, and the back-fill at the bottom.
+--
+-- The CREATE statements are duplicated from IssueEvents.sq rather than shared,
+-- because that is how SQLDelight migrations work and the duplication is checked:
+-- MigrationTest migrates every earlier snapshot forward and compares PRAGMA
+-- output against a fresh Schema.create, so a column that drifts between the two
+-- files fails the build rather than the volume. That test is the reason this
+-- file can be copy-paste and still be safe.
+
+CREATE TABLE issue_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    value_text TEXT,
+    value_user_id INTEGER,
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,
+    created_by_external TEXT,
+    agent_name TEXT,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (value_user_id) REFERENCES users(id) ON DELETE SET NULL,
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+CREATE INDEX issue_events_issue_idx ON issue_events (issue_id, id);
+
+CREATE TABLE issue_event_values (
+    event_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (event_id, position),
+    FOREIGN KEY (event_id) REFERENCES issue_events(id) ON DELETE CASCADE
+);
+
+-- ── The back-fill ───────────────────────────────────────────────────────────
+--
+-- Every issue that already exists gets the one event that can be reconstructed
+-- honestly: it was created. Without this, every issue on the volume opens to an
+-- empty history panel, which reads as "nothing has ever happened to this issue"
+-- rather than "this predates the feature" — and the empty state is indelible,
+-- because the moment it could have described has passed.
+--
+-- ── Why the issue's own columns are carried across, not defaults ────────────
+--
+-- created_at is the issue's, not now(). A CREATED event dated today for an
+-- issue filed in March is not a weaker record than the real thing, it is a
+-- false one, and it would sort the whole board's history into a single lump at
+-- the migration timestamp.
+--
+-- The author columns come across for the same reason and as a *pair*: copying
+-- created_by while dropping created_by_external would silently reattribute
+-- every imported issue to nobody. They are exclusive by CHECK on both tables,
+-- so copying both preserves whichever one is set and cannot violate it.
+--
+-- agent_name is carried too, and this is the one field the back-fill can get
+-- subtly wrong — see IssueEvents.sq's note on the column. `issues.agent_name`
+-- means "an agent last touched this issue", which for a never-edited issue is
+-- exactly "an agent created it" and for an edited one may not be. There is no
+-- better source: the edit that set it left no other trace. Slightly over-
+-- attributing the creation of an issue that an agent has certainly touched is
+-- the smallest available error, and it is bounded to rows written before this
+-- migration — every event after it records the agent for its own change.
+--
+-- ── The three things this does not do ───────────────────────────────────────
+--
+-- No back-fill of title, label, status or assignee changes: nothing recorded
+-- them, so any row claiming one would be invented. A gap is honest and an
+-- invention is not, and IssueEvents.sq's "whole set, not a diff" choice is what
+-- lets the history stay readable across that gap.
+--
+-- No issue_event_values rows: CREATED carries none.
+--
+-- Drafts are skipped — `is_draft = 0`, matching every other read of this table
+-- except the usage counters. An unpublished draft is nobody's business but its
+-- author's, and it will write its own CREATED event through the normal path
+-- when it is published. Back-filling one here would double it.
+--
+-- NOT EXISTS makes this idempotent. Nothing should run a migration twice, but
+-- this one is cheap to guard and the failure mode without the guard is a
+-- history where every issue was created twice — silent, permanent, and
+-- unfixable from the UI.
+INSERT INTO issue_events (issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name)
+SELECT i.id, 'CREATED', NULL, NULL, i.created_at, i.created_by, i.created_by_external, i.agent_name
+FROM issues i
+WHERE i.is_draft = 0
+  AND NOT EXISTS (
+        SELECT 1 FROM issue_events e
+        WHERE e.issue_id = i.id AND e.kind = 'CREATED'
+    );

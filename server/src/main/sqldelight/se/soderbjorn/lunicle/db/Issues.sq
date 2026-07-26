@@ -1,0 +1,641 @@
+-- The payload. Per project, and structurally so.
+
+CREATE TABLE issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Per project, and not merely by convention: every label, component and
+    -- status this issue can reach is constrained against THIS column via the
+    -- composite foreign keys below and in IssueLabels.sq. An issue cannot leak
+    -- into another project's vocabulary because the database will not store the
+    -- row.
+    project_id INTEGER NOT NULL,
+
+    -- The per-project number: the 123 in FOO-123. Distinct from the id, which
+    -- is global and an implementation detail.
+    number INTEGER NOT NULL,
+
+    -- The issue's short description. Named `title` rather than `label` because
+    -- `labels` is already a table, and `issue.label` beside `issue.labels`
+    -- differing by one character while meaning entirely unrelated things is a
+    -- bug generator. The UI may still call it whatever it likes.
+    title TEXT NOT NULL,
+
+    -- Markdown, produced by the WYSIWYG editor — plus allow-listed inline HTML
+    -- for <u>, which no markdown flavour has. The renderer must never pass raw
+    -- HTML through; see MarkdownView.kt.
+    description TEXT NOT NULL DEFAULT '',
+
+    status_id INTEGER NOT NULL,
+
+    -- How urgent, on the project's own scale. NOT NULL and composite-keyed for
+    -- exactly status_id's reasons: an issue always has a priority (the seed's
+    -- middle one, if nobody chose — see Priorities.defaultForProject), and it
+    -- cannot be another project's priority because the database will not store
+    -- the row.
+    --
+    -- This is why 2.sqm rebuilds the table rather than running ALTER TABLE ADD
+    -- COLUMN: SQLite cannot add a *composite* foreign key that way, and a
+    -- nullable single-column reference would have been a weaker guarantee than
+    -- the column beside it. See 2.sqm.
+    priority_id INTEGER NOT NULL,
+
+    -- Why this issue was closed, or NULL because it is not.
+    --
+    -- The one NULLABLE reference on this table, and the null means something
+    -- precise: this issue is not in a status that demands a resolution. It is not
+    -- "unknown" or "not set yet" — an issue in a requires_resolution column
+    -- always has one, and an issue anywhere else never does. BoardRoutes enforces
+    -- both halves; see Statuses.sq's requires_resolution for why that rule cannot
+    -- be a CHECK.
+    --
+    -- Composite-keyed like the other two, and nullable at the same time: SQLite
+    -- treats a composite foreign key as satisfied when ANY of its columns is
+    -- NULL, so an issue with no resolution passes without the constraint being
+    -- weakened for the issues that do have one.
+    resolution_id INTEGER,
+
+    -- Hidden until the editor's OK. "New issue" inserts the row straight away
+    -- so that an inline image upload has an issue to attach to — but an
+    -- unfinished issue must not appear on anyone's board. Cancel deletes the
+    -- row outright; this flag covers the crash/closed-tab case, where the draft
+    -- simply stays invisible.
+    is_draft INTEGER NOT NULL DEFAULT 1,
+
+    created_at INTEGER NOT NULL,
+
+    -- Last touched. The board's secondary sort, newest first, within a priority.
+    --
+    -- NOT NULL and set to created_at on insert, rather than nullable-until-first-
+    -- edit with a COALESCE in the sort. A never-edited issue IS at its most
+    -- recent moment — the moment it was written — so there is nothing to fall
+    -- back to, and a nullable column here would put a COALESCE in every ORDER BY
+    -- that touches it forever.
+    updated_at INTEGER NOT NULL,
+
+    -- Manual rank within this issue's group on the board, ascending. 0 means
+    -- "never ranked".
+    --
+    -- ── Why a rank at all, when there is already an order ──────────────────
+    --
+    -- Because `updated_at DESC` is an order nobody chose. It is a fine default and
+    -- a useless instruction: you cannot say "this one first" to it except by
+    -- touching the issue, and touching an issue in order to move it is how you end
+    -- up editing something to reorder it.
+    --
+    -- ── The rule ──────────────────────────────────────────────────────────
+    --
+    -- 0 is the default and means unranked. A group where everything is 0 sorts
+    -- entirely by `updated_at DESC` — exactly as it did before this column
+    -- existed, and as most groups always will. Dragging one card renumbers that
+    -- whole group 1..n in its new visual order, so a group is either untouched or
+    -- fully ranked, never half of each. A new issue arrives at 0 and therefore
+    -- sorts above a ranked group, which is the behaviour that was already there:
+    -- newest first.
+    --
+    -- Reordering does NOT bump `updated_at` — see setSortOrder. That is the whole
+    -- reason this is a column of its own.
+    sort_order INTEGER NOT NULL DEFAULT 0,
+
+    -- Nullable + SET NULL: deleting a user must not delete their issues. The
+    -- issue outlives the account; the board would otherwise lose history every
+    -- time someone left. AccessControl reads this for ownership, so a null
+    -- author is an issue only an admin or a change_unowned_issues holder can
+    -- edit — which is correct.
+    created_by INTEGER,
+
+    -- The author when there is no account to point at: history imported from
+    -- another tracker, written by somebody who has never signed in here.
+    --
+    -- The name itself, because there is nothing else to hold. Naming somebody
+    -- does not create an account, and minting one to hang this on would put a
+    -- row in `users` that cannot sign in, must never be offered in a picker,
+    -- and would collide with the real account if that person ever arrived.
+    --
+    -- Exclusive with created_by — see the CHECK below. So an imported issue is
+    -- unowned as far as AccessControl is concerned, landing on the same rule as
+    -- a deleted author above: admin, or a change_unowned_issues holder. That is
+    -- the correct answer rather than a shortfall. An imported author cannot
+    -- edit their own issue because there is no "they" here to be.
+    created_by_external TEXT,
+
+    -- The agent that filed this on the author's behalf, or NULL when a human did
+    -- — a person typing in the web app is not one, and only the MCP tools ever
+    -- set it. Deliberately NOT a third kind of author: created_by still names
+    -- whose account the issue was filed under, and this is the orthogonal fact
+    -- that an agent held the pen for them. So it is exempt from the CHECK below
+    -- and rides alongside either author column — an agent acting for a real
+    -- account, or (on a backfill) for an imported external name. Rendered as a
+    -- badge beside the author, never in place of them; see BoardRoutes.
+    agent_name TEXT,
+
+    -- Who is working on this, or NULL because nobody is.
+    --
+    -- Nullable + SET NULL for created_by's reasons, arriving at a different
+    -- answer: an assignee leaving must not delete their issues *and must not
+    -- leave them assigned to a ghost*. The issue outlives the account and comes
+    -- back to the pool, which is the only reading that keeps a board honest.
+    --
+    -- NOT composite-keyed against project_id, unlike every other reference on
+    -- this table, and the difference is that users are not project-scoped: there
+    -- is no `users(id, project_id)` to point at, because an account belongs to
+    -- the instance. What makes an assignee legitimate *here* is the
+    -- be_assigned_issue role, which is a row in project_roles rather than a
+    -- shape the schema can express — so it is checked by AccessControl on every
+    -- write instead. The consequence worth naming: revoking that role later does
+    -- NOT retroactively unassign the issues someone already holds. That is
+    -- correct — the work is still theirs until somebody says otherwise — but it
+    -- means this column can hold a user who could not be assigned today.
+    --
+    -- Deliberately NOT exclusive with anything, so no CHECK: unlike created_by
+    -- there is no external twin. An imported tracker's assignee who has no
+    -- account here is simply unassigned, because an assignee is a person who is
+    -- expected to *act*, and a name that cannot sign in cannot.
+    assignee_id INTEGER,
+
+    -- Which timebox this issue is scheduled into, or NULL because it is not in
+    -- one. NULL is the backlog — an absence, not a row — which is what makes a
+    -- project that never uses sprints indistinguishable from one that has not
+    -- got round to it: every issue here is NULL and nothing renders.
+    --
+    -- Orthogonal to status on purpose. Status is how far along the work is;
+    -- sprint is when we intend to do it. An issue can be untriaged *and* in the
+    -- active sprint — an urgent bug pulled straight in — and that is a normal
+    -- state, not a broken one.
+    --
+    -- NOT composite-keyed against project_id, unlike status_id, priority_id and
+    -- resolution_id, and unlike them the reason is not that the target is
+    -- unscoped — `sprints` is per-project and even carries the UNIQUE(id,
+    -- project_id) a composite key would point at. The reason is that composite
+    -- and SET NULL cannot coexist: SQLite's SET NULL nulls *every* column of the
+    -- child key, so deleting a sprint would try to write NULL into project_id
+    -- and fail on its NOT NULL instead of un-sprinting the issue.
+    --
+    -- SET NULL is the semantic the feature needs — deleting a sprint releases
+    -- its issues rather than being refused — so the composite key is what gives
+    -- way. The consequence, named because nothing in the schema will catch it:
+    -- an issue could be pointed at another project's sprint, and only the route
+    -- validation stops that. Same arrangement as assignee_id leaning on
+    -- AccessControl; see BoardRoutes' resolveSprint.
+    sprint_id INTEGER,
+
+    -- Which release this issue is planned for, and which release it was fixed in,
+    -- or NULL for each because it is not set (LNL-134). Two orthogonal facts drawn
+    -- from the one per-project `versions` list: `planned_version_id` is intent —
+    -- "we mean to ship this in 2.0" — and `fixed_version_id` is record — "it went
+    -- out in 2.0.1". An issue can carry a planned version and no fixed one (open),
+    -- a fixed one and no planned one (nobody scheduled it, it just landed), both,
+    -- or neither (the common case, and what a project that never uses versions
+    -- always shows).
+    --
+    -- NOT composite-keyed against project_id, exactly like sprint_id above and for
+    -- the identical reason: SET NULL is the semantic the feature needs — deleting a
+    -- version releases the issues that pointed at it rather than being refused — and
+    -- SQLite's SET NULL nulls *every* column of a composite child key, so a
+    -- composite key here would try to write NULL into project_id and fail its NOT
+    -- NULL. The composite key gives way; the route validation is what stops an issue
+    -- pointing at another project's version. See BoardRoutes' resolveVersion.
+    planned_version_id INTEGER,
+    fixed_version_id INTEGER,
+
+    -- The issue this one belongs under, or NULL because it belongs under none
+    -- (LNL-55). An issue that has children *is* an epic — there is no separate
+    -- "epic" kind, just this pointer — and a childless issue with no parent is
+    -- the common case, the state every issue had before this column existed.
+    --
+    -- One level, same project, no cycles. None of those three is a shape the
+    -- schema can express — SQLite has no way to say "a parent may not itself have
+    -- a parent" or "no cycles", and a composite (parent_id, project_id) key would
+    -- collide with SET NULL exactly as sprint_id's comment describes — so all
+    -- three are enforced in IssueRepository on every reparent, and this column is
+    -- a plain single-column self reference. See IssueRepository.setParent.
+    --
+    -- NOT composite-keyed against project_id, for sprint_id's reason: SET NULL is
+    -- the semantic the feature needs — deleting an epic releases its children
+    -- rather than being refused or cascading their deletion — and SQLite's SET
+    -- NULL nulls *every* column of a composite child key, so a composite key here
+    -- would try to write NULL into project_id and fail its NOT NULL. The
+    -- self-reference is fine: an issue's parent is another row in this same table.
+    parent_id INTEGER,
+
+    -- Manual rank among the siblings under one parent, ascending; 0 means
+    -- "never ranked". A SEPARATE axis from sort_order above, and deliberately so:
+    -- sort_order is where a card sits in its board group, and this is where a
+    -- child sits in its epic's work order — a child still has a board rank, and
+    -- conflating the two would make reordering an epic reshuffle the board. Same
+    -- 0-is-unranked rule as sort_order: a sibling set nobody has arranged is all
+    -- 0 and falls through to `number`, and reordering renumbers the set 1..n. See
+    -- setChildOrder, which is setSortOrder's twin.
+    child_order INTEGER NOT NULL DEFAULT 0,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (sprint_id) REFERENCES sprints(id) ON DELETE SET NULL,
+    FOREIGN KEY (planned_version_id) REFERENCES versions(id) ON DELETE SET NULL,
+    FOREIGN KEY (fixed_version_id) REFERENCES versions(id) ON DELETE SET NULL,
+    -- Self reference: an issue's parent is another issue. SET NULL so deleting an
+    -- epic orphans its children rather than deleting them or being refused. See
+    -- parent_id above for why it is single-column.
+    FOREIGN KEY (parent_id) REFERENCES issues(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (assignee_id) REFERENCES users(id) ON DELETE SET NULL,
+    -- Composite: a status must belong to THIS issue's project. No ON DELETE —
+    -- a status still holding issues must not be deletable, and SQLite's default
+    -- RESTRICT is exactly right.
+    FOREIGN KEY (status_id, project_id) REFERENCES statuses(id, project_id),
+    -- Same shape, same reasoning, for the same reasons. See priority_id above.
+    FOREIGN KEY (priority_id, project_id) REFERENCES priorities(id, project_id),
+    FOREIGN KEY (resolution_id, project_id) REFERENCES resolutions(id, project_id),
+
+    UNIQUE (project_id, number),
+    -- The target of the join tables' composite foreign keys. See IssueLabels.sq.
+    UNIQUE (id, project_id),
+
+    -- One author or the other, never both. Both null is still allowed and still
+    -- means "nobody" — that is what ON DELETE SET NULL leaves behind.
+    --
+    -- Without this, an imported name could sit alongside a real account and the
+    -- reads that prefer the external name would silently mask the account on
+    -- every board and every API response. That is the precise bug this column
+    -- exists to avoid, so it is worth making unrepresentable rather than
+    -- merely discouraged.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+-- Allocate the number and insert, in one statement.
+--
+-- MAX+1, not COUNT+1: numbers are never reused after a delete. COUNT would hand
+-- FOO-12 to a second issue the moment the first was deleted, and every link and
+-- commit message naming FOO-12 would silently point at the wrong thing.
+-- UNIQUE(project_id, number) is the backstop if this is ever wrong.
+--
+-- The consequence worth naming: opening "New issue" and cancelling burns a
+-- number, so a board can go FOO-12, FOO-14. That is the correct trade — gaps
+-- are cosmetic, reused numbers are corruption.
+-- `updated_at` is bound to the same value the caller passes for `created_at`,
+-- rather than defaulting: a draft has been "touched" at the moment it was made,
+-- and its position on the board — once published — is decided by that. See the
+-- column's comment.
+-- No resolution_id: a draft lands in the leftmost column, which is never the
+-- one that demands a resolution. It defaults to NULL, which is the correct
+-- answer for every issue that is not closed.
+insert:
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by, created_by_external, agent_name)
+VALUES (
+    ?,
+    (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project_id = ?),
+    ?, ?, ?, ?, 1, ?, ?, ?, ?, ?
+)
+RETURNING id, number;
+
+-- Publish the draft and write the editor's fields. One statement, so an issue
+-- cannot become visible carrying the placeholder title it was created with.
+--
+-- The assignee is one of the editor's fields and is written here with the rest,
+-- rather than through `setAssignee` below. That is what makes the Assignee
+-- dropdown behave like Status and Priority — staged until Save, discardable, and
+-- covered by the dialog's unsaved-changes guard. `setAssignee` exists for the
+-- read-mode "Assign to me" button, which is a different gesture under a
+-- different permission; see AccessControl.canBeAssigned.
+-- The sprint is written here with the rest for assignee_id's reason: it is a
+-- dropdown in the editor, so it stages until Save and is covered by the dialog's
+-- unsaved-changes guard. `setSprint` below is the other gesture — the card menu
+-- and the planning dialog, which write immediately and never open the editor.
+-- The two version fields ride here with the rest for assignee_id's and sprint_id's
+-- reason: they are dropdowns in the editor, so they stage until Save and are
+-- covered by the dialog's unsaved-changes guard. `setFixedVersion` below is the
+-- other gesture — the resolution dialog's inline picker on a drag-to-close, which
+-- writes immediately alongside the status move and never opens the editor.
+publish:
+UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, assignee_id = ?, sprint_id = ?, planned_version_id = ?, fixed_version_id = ?, updated_at = ?, is_draft = 0
+WHERE id = ?;
+
+update:
+UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, sprint_id = ?, planned_version_id = ?, fixed_version_id = ?, updated_at = ? WHERE id = ?;
+
+-- The MCP update_issue path's admin-only correction: an issue's author, its
+-- creation date and its agent label, in one statement. These three columns have
+-- no other writer after insert — content moves through `publish`/`update`, a move
+-- through `setStatus`, and none of them touch who filed the issue or when — so an
+-- ordinary edit cannot reach them and only a backfilling admin ever does.
+-- is_draft, updated_at and the content columns are deliberately left alone here.
+editAttribution:
+UPDATE issues SET created_at = ?, created_by = ?, created_by_external = ?, agent_name = ? WHERE id = ?;
+
+-- Drag-and-drop between columns. A status_id write like any other, gated by the
+-- same canEditIssue the editor uses — see AccessControl. The composite foreign
+-- key means a status from another project cannot land here even if a caller
+-- asks for one.
+--
+-- It bumps updated_at, and that is a real decision rather than housekeeping: a
+-- drag IS an edit — it is the most common one there is — and a board sorted on
+-- "last touched" that ignored the one gesture the board itself offers would
+-- leave a card you just moved sitting at the bottom of the column you moved it
+-- to.
+-- The resolution moves WITH the status, and is written in the same statement.
+--
+-- Both directions matter. Dragging INTO the closed column carries the resolution
+-- the user just picked; dragging back OUT of it carries null, which CLEARS the
+-- old one. Two statements would leave a window where an issue is closed with no
+-- resolution, or open with a stale one — and the second is worse, because the
+-- board would keep grouping a reopened issue under "Will not fix".
+setStatus:
+UPDATE issues SET status_id = ?, resolution_id = ?, updated_at = ? WHERE id = ?;
+
+-- Manual rank, and deliberately the ONE write on this table that leaves
+-- `updated_at` alone.
+--
+-- Every other write here stamps it, because every other write changes what the
+-- issue *is*. Reordering changes where it sits, which is a fact about the board
+-- rather than about the issue — tidying a column should not make every card in
+-- it claim to have been edited just now.
+setSortOrder:
+UPDATE issues SET sort_order = ? WHERE id = ?;
+
+-- The priority alone, for a card dragged across a group header on the board.
+--
+-- Separate from the editor's full-row update because the board knows exactly one
+-- field changed and has no business sending back a title and a description it
+-- never showed. Stamps `updated_at`, unlike setSortOrder above and for the
+-- mirror-image reason: which group a card is in is a fact about the ISSUE, not
+-- about the board's arrangement of it.
+setPriority:
+UPDATE issues SET priority_id = ?, updated_at = ? WHERE id = ?;
+
+-- Every issue whose description could contain an @mention, for the
+-- display-name rewrite. The `LIKE '%@%'` is a coarse pre-filter — see the twin
+-- query in Comments.sq for why it is only that.
+withPossibleMentions:
+SELECT id, description FROM issues WHERE description LIKE '%@%';
+
+-- Every description that could link to an attachment, for the startup link
+-- repair. Same shape and same coarseness as the query above: the URL prefix is
+-- the one string every attachment link must contain, and whether a given
+-- description holds a link worth re-spelling is `retargetAttachmentLinks`'s
+-- question, not SQL's. Drafts included — a draft is somebody's unpublished
+-- issue, and it must not be the one place the old spelling survives.
+withAttachmentLinks:
+SELECT id, description FROM issues WHERE description LIKE '%/api/attachments/%';
+
+-- Rewrite a description in place, for the display-name rewrite ONLY.
+--
+-- The second write on this table that leaves `updated_at` alone, and for
+-- setSortOrder's reasoning turned inside out: the issue has not been edited,
+-- somebody else changed their name. Stamping it would push every issue that ever
+-- mentioned that person to the top of a board sorted on "last touched", which is
+-- a lie about who did what and when. No history event either — an edit nobody
+-- made is not one to record.
+setDescription:
+UPDATE issues SET description = ? WHERE id = ?;
+
+-- "Assign to me", and its undo. The read-mode button's only write.
+--
+-- Its own statement rather than a trip through `publish`, because it is reached
+-- under a DIFFERENT permission: taking an issue needs be_assigned_issue, not the
+-- canEditIssue that publish's route demands. Routing it through publish would
+-- mean either widening that route — letting anyone who may be assigned rewrite
+-- the title — or refusing the button to the very people it is for. So the
+-- narrow write gets a narrow statement, and it touches exactly one column.
+--
+-- It bumps updated_at, on setStatus's reasoning: picking up an issue is an edit,
+-- and one people watch a board for.
+setAssignee:
+UPDATE issues SET assignee_id = ?, updated_at = ? WHERE id = ?;
+
+-- Schedule one issue, or pass NULL to send it back to the backlog. The card
+-- menu, the planning dialog and MCP all land here; the editor writes the sprint
+-- through `publish`/`update` instead. Gated by the same canEditIssue as
+-- setStatus — scheduling is an edit.
+--
+-- Bumps updated_at, unlike setSortOrder: moving work into next sprint is a fact
+-- about the issue, where a drag within a group is a fact about one person's
+-- screen. Safe to bump because recency is deliberately not a level in
+-- forProject's ORDER BY, so nothing on the board moves.
+--
+-- Whether anyone is *told* is a separate question, and the answer differs by
+-- caller: the single-issue route mails the watchers, the bulk planning and
+-- completion writes do not. See SprintRepository's preamble for why one decision
+-- about twenty issues is not twenty notifications.
+setSprint:
+UPDATE issues SET sprint_id = ?, updated_at = ? WHERE id = ?;
+
+-- Empty a sprint. The first half of a membership replace: the route writes the
+-- complete set rather than a delta, so it clears and re-adds inside one
+-- transaction. Doing it as a delta instead would make two people planning the
+-- same sprint at once interleave into a set neither of them chose.
+--
+-- Does not bump updated_at, because on its own it is half a write: every issue
+-- this touches is either about to be re-added by the same transaction — in which
+-- case the timestamp it should carry is the one setSprint gives it — or genuinely
+-- dropped, which setSprint cannot express because the row is no longer named.
+-- clearSprintTouching below is what stamps the ones that are really leaving.
+clearSprint:
+UPDATE issues SET sprint_id = NULL WHERE sprint_id = ?;
+
+-- Stamp the issues a membership replace is about to drop. Run before clearSprint
+-- inside the same transaction, with the surviving ids excluded by the caller —
+-- see SprintRepository.setMembership for why the exclusion is done in Kotlin
+-- rather than as a NOT IN here.
+touchSprintMembers:
+UPDATE issues SET updated_at = ? WHERE id = ?;
+
+-- Roll the unfinished work forward when a sprint is completed. `moveUnfinishedTo`
+-- may be another sprint's id or NULL for the backlog.
+--
+-- "Unfinished" is read off statuses.requires_resolution rather than a status
+-- named "Closed", for exactly the reason that flag exists: a project that renamed
+-- its closing column must not silently start rolling its finished work forward.
+-- A project may also mark a second column closing, and this respects that for
+-- free.
+moveUnfinished:
+UPDATE issues SET sprint_id = ?, updated_at = ?
+WHERE sprint_id = ?
+  AND status_id IN (SELECT id FROM statuses WHERE project_id = ? AND requires_resolution = 0);
+
+delete:
+DELETE FROM issues WHERE id = ?;
+
+findById:
+SELECT id, project_id, number, title, description, status_id, priority_id, resolution_id,
+       is_draft, created_at, updated_at, sort_order, created_by, created_by_external, agent_name,
+       assignee_id, sprint_id, planned_version_id, fixed_version_id, parent_id, child_order
+FROM issues WHERE id = ?;
+
+-- How many issues hold each of this project's statuses — the count the settings
+-- dialog needs to say "3 issues still have that status" *before* the delete, and
+-- the count VocabularyRepository refuses on.
+--
+-- ── Drafts are counted, and that is not an oversight ────────────────────────
+--
+-- Every other query on this table excludes `is_draft = 1`, because a half-written
+-- issue is nobody's business but its author's. This one cannot: a draft row holds
+-- a status_id like any other, so it is a draft that will make SQLite's RESTRICT
+-- refuse the delete. Filtering them out here would produce the worst possible
+-- answer — a dialog that says "nothing uses this, go ahead" followed by a
+-- constraint violation nobody can explain from the UI.
+--
+-- One grouped query per kind rather than one count per row: a project has a
+-- handful of statuses today and this is not the place to teach it to cost a
+-- round-trip each.
+usageByStatus:
+SELECT status_id, COUNT(*) AS uses FROM issues WHERE project_id = ? GROUP BY status_id;
+
+-- See usageByStatus. Drafts count here too, for the same reason.
+usageByPriority:
+SELECT priority_id, COUNT(*) AS uses FROM issues WHERE project_id = ? GROUP BY priority_id;
+
+-- `resolution_id IS NOT NULL` rather than a plain GROUP BY: the null group is
+-- every open issue in the project, which is not a resolution anybody could
+-- delete, and it would arrive as a count keyed on nothing.
+usageByResolution:
+SELECT resolution_id, COUNT(*) AS uses FROM issues
+WHERE project_id = ? AND resolution_id IS NOT NULL
+GROUP BY resolution_id;
+
+-- How many issues each of this project's sprints holds. Unlike the three above
+-- this count never refuses a delete — sprint_id is SET NULL, so a sprint with
+-- issues in it deletes cleanly and releases them. It is shown, not enforced:
+-- "12 issues" beside a sprint in the settings dialog, and the number the delete
+-- confirmation quotes so nobody empties next quarter by accident.
+--
+-- `sprint_id IS NOT NULL` for usageByResolution's reason: the null group is the
+-- backlog, which is not a sprint anybody could delete.
+usageBySprint:
+SELECT sprint_id, COUNT(*) AS uses FROM issues
+WHERE project_id = ? AND sprint_id IS NOT NULL
+GROUP BY sprint_id;
+
+-- How many issues each of this project's versions is referenced by — as a planned
+-- version or a fixed one, summed, since the delete confirmation quotes one number
+-- for "issues using this version" and the dropdown's inline delete releases both
+-- references at once. Like usageBySprint this count never refuses a delete — both
+-- version columns are SET NULL, so a version still in use deletes cleanly and
+-- releases its issues; it is shown, not enforced.
+--
+-- A UNION ALL of the two columns rather than one GROUP BY, because a single issue
+-- may name the same version in both roles (planned for 2.0, fixed in 2.0) and both
+-- references are freed by the delete — so it is counted in both, which is the
+-- honest answer to "how many pointers does deleting this break". Each arm drops
+-- its NULL group for usageByResolution's reason: NULL is "no version", which is not
+-- a version anybody could delete.
+usageByVersion:
+SELECT version_id, COUNT(*) AS uses FROM (
+    SELECT planned_version_id AS version_id FROM issues
+    WHERE project_id = ? AND planned_version_id IS NOT NULL
+    UNION ALL
+    SELECT fixed_version_id AS version_id FROM issues
+    WHERE project_id = ? AND fixed_version_id IS NOT NULL
+)
+GROUP BY version_id;
+
+-- The fixed version alone, written immediately alongside a drag-to-close.
+--
+-- Separate from the editor's full-row `update` for setPriority's and setStatus's
+-- reason: the resolution dialog knows exactly one extra field changed on a move it
+-- is already making, and has no business sending back a title and a description it
+-- never showed. It is written in the same transaction as `setStatus` on the
+-- close path — see BoardRoutes' move handler — so an issue is never briefly closed
+-- as done with no fixed version when the project requires one.
+--
+-- Bumps updated_at, on setStatus's reasoning: recording the release an issue was
+-- fixed in is an edit, and one people watch a board for.
+setFixedVersion:
+UPDATE issues SET fixed_version_id = ?, updated_at = ? WHERE id = ?;
+
+-- The board. Drafts excluded: a half-written issue is nobody's business but its
+-- author's, and the author is looking at it in a modal rather than on the
+-- board.
+--
+-- Ordered here rather than in the view model, because the ordering is over
+-- columns this SELECT does not return: `priorities.position` and
+-- `resolutions.position`. Sorting client-side would mean shipping both positions
+-- with every issue purely so the browser could re-derive an order the database
+-- already knows — and every other client would have to re-implement it
+-- identically.
+--
+-- ── The sort ────────────────────────────────────────────────────────────────
+--
+-- Levels 1–2 sort issues into groups; levels 3–4 order each group, and do it
+-- only by facts the group's own arrangement decides. Nothing about an issue's
+-- content reaches the ordering once it has landed in its group, so editing a
+-- card never moves it.
+--
+--  1. `r.position` — the resolution. NULLs sort FIRST in SQLite's ASC, which is
+--     exactly right by luck and by intent: an unresolved issue has no resolution
+--     to group under, and every issue in a given lane agrees about this, because
+--     having a resolution is a property of the lane's status. So this line does
+--     nothing at all in an ordinary lane, and groups the closed lane by
+--     "Done" then "Will not fix".
+--  2. The CASE — the priority, *for unresolved issues only*. This is
+--     "primarily order by resolution instead": once an issue is closed, how
+--     urgent it was is history, so priority stops being a sort key. The CASE
+--     evaluates to NULL for every resolved row, which makes it a no-op there
+--     rather than a second grouping inside each resolution.
+--  3. `sort_order` — the manual rank, when a group has been dragged into shape.
+--     0 for everything otherwise, so it does nothing at all in a group nobody
+--     has touched and every such group falls straight through to the number
+--     below.
+--  4. `number` — the natural order: the order the issues were created in, which
+--     is where an unranked group settles. It is also a total order on its own
+--     (numbers are unique per project), so there is no tie left for SQLite to
+--     break arbitrarily and no run-to-run shuffling.
+--
+-- Recency deliberately is NOT a level here. Sorting by `updated_at` meant any
+-- edit — a typo fix, a label — dragged a card to the top of its group, which
+-- reads as the board rearranging itself while you work.
+--
+-- LEFT JOIN on resolutions, not JOIN: resolution_id is null for most issues, and
+-- an inner join would return an empty board.
+forProject:
+SELECT i.id, i.project_id, i.number, i.title, i.description, i.status_id, i.priority_id,
+       i.resolution_id, i.is_draft, i.created_at, i.updated_at, i.sort_order, i.created_by,
+       i.created_by_external, i.agent_name, i.assignee_id, i.sprint_id,
+       i.planned_version_id, i.fixed_version_id, i.parent_id, i.child_order
+FROM issues i
+JOIN priorities p ON p.id = i.priority_id
+LEFT JOIN resolutions r ON r.id = i.resolution_id
+WHERE i.project_id = ? AND i.is_draft = 0
+ORDER BY r.position,
+         CASE WHEN i.resolution_id IS NULL THEN p.position END,
+         i.sort_order,
+         i.number;
+
+-- The children of one epic, in their work order, drafts excluded.
+--
+-- Ordered like forProject's tail — the manual `child_order` when the set has been
+-- arranged, then `number` for a set nobody has touched (0 for every row, so it
+-- falls straight through). No status/priority grouping here: children of an epic
+-- are a flat ordered list, not a board, and the ordering that matters is the one
+-- the epic's editor set. Drafts excluded for forProject's reason — a half-written
+-- issue is its author's business, not a row on somebody else's epic.
+childrenOf:
+SELECT id, project_id, number, title, description, status_id, priority_id, resolution_id,
+       is_draft, created_at, updated_at, sort_order, created_by, created_by_external, agent_name,
+       assignee_id, sprint_id, planned_version_id, fixed_version_id, parent_id, child_order
+FROM issues
+WHERE parent_id = ? AND is_draft = 0
+ORDER BY child_order, number;
+
+-- Set or clear one issue's parent. NULL detaches it from its epic. The web app's
+-- "add a child" / "remove from parent" gestures and MCP's `parent` field land
+-- here; there is no editor-staged path, for setSprint's reason — a reparent is an
+-- immediate gesture, not one of the fields the Save button commits.
+--
+-- Bumps updated_at, on setSprint's reasoning: which epic an issue belongs under is
+-- a fact about the issue, and one watchers care about. child_order is deliberately
+-- left alone — a freshly attached child arrives unranked (0) and sorts by number
+-- at the foot of any arranged set, exactly as a new board card floats on
+-- sort_order; setChildOrder is the separate gesture that arranges them.
+--
+-- The same-project, one-level and no-cycle rules this column depends on are NOT
+-- here — SQLite cannot express them — and are checked in IssueRepository before
+-- this runs. See its setParent.
+setParent:
+UPDATE issues SET parent_id = ?, updated_at = ? WHERE id = ?;
+
+-- Rank one epic's children 1..n in the order given — setSortOrder's twin, and the
+-- second write on this table (with it) that leaves updated_at alone: a work-order
+-- is a fact about the epic's arrangement of its children, not about any child
+-- having been edited. Renumbering the whole set 1..n in one transaction is what
+-- keeps two siblings from claiming the same rank; see setGroupOrder, which does
+-- the identical thing for a board group.
+setChildOrder:
+UPDATE issues SET child_order = ? WHERE id = ?;

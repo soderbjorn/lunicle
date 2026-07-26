@@ -1,0 +1,15 @@
+{
+  "//": "Composite indexes the Lunicle Firestore backend needs in production (LNL-122). Apply with `gcloud firestore indexes composite create` or `firebase deploy --only firestore:indexes`. The emulator serves every query unindexed, so the contract and smoke tests pass without this; it is only the real Native-mode deploy that requires it. Every other Firestore*Store query is a single-field equality or range served by an automatic single-field index — see each store's `Composite indexes` KDoc section — so this file holds exactly the one two-field query in the whole backend.",
+  "indexes": [
+    {
+      "//": "FirestoreUserStore.upsert's returning-user lookup by (provider, providerId) — two equality filters, which Native mode needs a composite index for. See FirestoreUserStore.",
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "provider", "order": "ASCENDING" },
+        { "fieldPath": "providerId", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

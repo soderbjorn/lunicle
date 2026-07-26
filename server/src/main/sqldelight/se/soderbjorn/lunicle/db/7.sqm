@@ -1,0 +1,40 @@
+-- Version 7 → 8: a signed-in user's theme follows them.
+--
+-- One new table, nothing touched. See UiSettings.sq for what it holds and why
+-- it is a key-value table rather than columns on `users`.
+--
+-- ── Why this needs no back-fill and no default ──────────────────────────────
+--
+-- An account with no row here has never chosen a theme, and the client already
+-- has an answer for that: the shell's own defaults, which is exactly what every
+-- session landed on before this migration existed. So the "empty" state after
+-- this runs is indistinguishable from the state before it — nobody's screen
+-- changes at the deploy, and the first person to touch the appearance control
+-- is the first person to get a row.
+--
+-- That is the opposite of 6.sqm, whose column deliberately changed behaviour for
+-- every existing account. The difference is that this is a preference and that
+-- was a permission: a preference nobody has expressed should fall back to the
+-- default, and a permission nobody has granted must not fall back to "allowed".
+--
+-- ── Why a plain CREATE TABLE is the whole migration ─────────────────────────
+--
+-- A new table with no dependents cannot invalidate anything that already exists:
+-- no existing query names it, no existing row references it, and the foreign key
+-- points from here to `users` rather than the other way about. That makes this
+-- one of the rare schema changes where the migration and the declaration are
+-- word-for-word the same statement — unlike 2.sqm, which had to rebuild a table
+-- SQLite could not alter in place.
+--
+-- The DDL below is duplicated from UiSettings.sq, minus its comments, and must
+-- stay in step with it. MigrationTest is what enforces that: it applies every
+-- .sqm to the previous snapshot and compares the result, column for column and
+-- foreign key for foreign key, against what the .sq files create from scratch.
+
+CREATE TABLE user_ui_settings (
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (user_id, key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);

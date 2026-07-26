@@ -1,0 +1,176 @@
+-- Proof that somebody controls a mailbox, in flight.
+--
+-- One row is one six-digit code that has been mailed to an address and not yet
+-- redeemed. Two features need exactly this — passwordless sign-in (LNL-74) and
+-- verified address changes (LNL-71) — and they need it identically: the proofs
+-- are the same, and only what the proof authorises differs. So the lifecycle is
+-- one table and one store, parameterised by `purpose`, rather than two
+-- near-copies of a security-sensitive flow. Two copies is how one of them
+-- quietly ends up without the attempt cap.
+--
+-- ── Why this is on the volume and not in memory ────────────────────────────
+--
+-- The rate limiter that ships beside this is deliberately in memory, and the
+-- reasoning does not carry across. A restart that forgets a rate-limit counter
+-- costs an attacker a delay. A restart that forgets an issued code strands a
+-- real user staring at a mail holding a code the server no longer recognises,
+-- with nothing on screen that could explain why. That is a support ticket with
+-- no diagnosis, produced by a deploy.
+--
+-- `oauth_auth_codes` already persists short-lived single-use secrets for exactly
+-- this reason, and this table is deliberately built to its pattern rather than
+-- inventing a parallel one.
+
+CREATE TABLE email_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- The mailbox the code was sent to, normalized by the caller before it gets
+    -- here. Both callers trim and lowercase, so `Alice@X.com` and `alice@x.com`
+    -- are one address and not two live codes — see normalizeEmail.
+    address TEXT NOT NULL,
+
+    -- EmailCodePurpose.name — SIGN_IN or EMAIL_CHANGE. Stored as the enum's name
+    -- rather than its ordinal, for `users.provider`'s reason: an ordinal silently
+    -- remaps if anyone reorders the enum, and the failure here would be a code
+    -- issued to confirm an address becoming redeemable as a sign-in.
+    --
+    -- Part of the key, not decoration. That is the whole security property this
+    -- column exists for: LNL-71 mails a code to an address the signed-in user has
+    -- merely *claimed*, and if that code were redeemable at the sign-in endpoint,
+    -- the confirmation mail would be a way into the account it was being attached
+    -- to. Different purposes are different codes and never substitute.
+    purpose TEXT NOT NULL,
+
+    -- SHA-256 of the code, hex. Never the code.
+    --
+    -- The rule the OAuth tables already follow, and it applies here for the same
+    -- reason: a database read must not hand over live credentials. Six digits is
+    -- a small enough space that a hash is not much of a barrier to someone
+    -- holding the table — but they would have to grind it per row, and the
+    -- alternative is a column a `SELECT *` prints in plaintext.
+    code_hash TEXT NOT NULL,
+
+    -- How many wrong codes have been presented for this row.
+    --
+    -- Load-bearing, and the easiest thing in this design to leave out. Six digits
+    -- is 10^6, which an unmetered script walks in minutes; the cap — not the
+    -- length — is what makes a short code safe. At ATTEMPT_LIMIT the row is
+    -- deleted rather than marked, so an exhausted code and an absent one are the
+    -- same fact and cannot be told apart from outside.
+    attempts INTEGER NOT NULL DEFAULT 0,
+
+    created_at INTEGER NOT NULL,
+
+    expires_at INTEGER NOT NULL,
+
+    -- Which account this proof was requested on behalf of, when the caller had
+    -- one. Caller-supplied context that the primitive stores and hands back on
+    -- redemption without ever interpreting.
+    --
+    -- Null for sign-in, and that is not an omission: at the moment a sign-in code
+    -- is issued there is no account yet, and the address is the only thing known.
+    -- Set for an address change, where the pending change belongs to the
+    -- signed-in user who asked for it and the confirm step has to be able to
+    -- check that it is still the same person.
+    user_id INTEGER,
+
+    -- At most one live code per address and purpose. Issuing a new one
+    -- supersedes any outstanding one — see `issue`, which deletes first — so this
+    -- is the constraint that makes "a stale code in an older mail cannot be used"
+    -- a fact about the schema rather than about a store method being called
+    -- correctly. Two purposes for one address still coexist, which is the point
+    -- of having purpose in the key at all.
+    UNIQUE (address, purpose),
+
+    -- Deleting an account takes its pending address change with it. Without the
+    -- cascade a deleted user could still have a code outstanding that named them.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- At most one live code per account and purpose, alongside the per-address one
+-- in the table.
+--
+-- Two different constraints answering two different questions, and both are
+-- needed. The UNIQUE above stops one *address* accumulating codes; this stops one
+-- *account* doing it. Without it, a user who typed `new1@` and then `new2@` would
+-- have two pending changes and `pendingFor` — which asks "what is this user
+-- waiting to confirm", singular — would find two rows and fail. That is not a
+-- hypothetical: it is what happened the first time this was written without it.
+--
+-- Added by 20.sqm rather than 19.sqm, which created the table, because the rule
+-- is not this primitive's. `user_id` here is opaque caller-supplied context, and
+-- sign-in codes carry none at all; "one pending change per account" is LNL-71's
+-- model arriving with LNL-71.
+--
+-- A partial index rather than a column constraint because `user_id` is nullable
+-- and sign-in codes all carry NULL. SQLite treats NULLs as distinct in a UNIQUE
+-- index, so `WHERE user_id IS NOT NULL` is belt to that brace and states the
+-- intent besides. See 13.sqm for why a partial index is also the only way to add
+-- uniqueness to an existing table here.
+CREATE UNIQUE INDEX email_codes_one_per_user
+    ON email_codes(user_id, purpose)
+    WHERE user_id IS NOT NULL;
+
+-- Drop any outstanding code for this address and purpose.
+--
+-- Called immediately before `insert` rather than relying on `INSERT OR REPLACE`,
+-- so that superseding is a thing the code says it is doing. The UNIQUE above
+-- makes forgetting it a constraint violation rather than a second live code.
+deleteFor:
+DELETE FROM email_codes WHERE address = ? AND purpose = ?;
+
+insert:
+INSERT INTO email_codes (address, purpose, code_hash, attempts, created_at, expires_at, user_id)
+VALUES (?, ?, ?, 0, ?, ?, ?);
+
+-- The live code for an address and purpose, if there is one.
+--
+-- Expiry is in the WHERE clause, not checked by the caller — the rule the OAuth
+-- half of this schema follows, and it matters here for the reason
+-- OAuthLoginState.sq gives: the sweep runs only at startup, so a server left up
+-- for a month would otherwise honour a code that expired weeks ago. Sessions.kt
+-- candidly documents that trap for itself; this table does not inherit it.
+find:
+SELECT id, address, purpose, code_hash, attempts, created_at, expires_at, user_id
+FROM email_codes
+WHERE address = ? AND purpose = ? AND expires_at > ?;
+
+-- The address one user is currently waiting to confirm, if any.
+--
+-- What makes LNL-71's pending state survive the profile dialog being closed and
+-- reopened: the pending change is a row here rather than a field in a view
+-- model, so a user who closes the dialog to go and read their mail comes back to
+-- find the request still waiting. Expiry is in the WHERE clause for `find`'s
+-- reason.
+--
+-- Purpose is passed rather than hardcoded so this file stays free of any one
+-- caller's vocabulary, but there is only one purpose a pending change can have.
+findForUser:
+SELECT id, address, purpose, code_hash, attempts, created_at, expires_at, user_id
+FROM email_codes
+WHERE user_id = ? AND purpose = ? AND expires_at > ?;
+
+-- Give up on a pending change. The user's own "never mind", so that a mistyped
+-- address is not a fifteen-minute wait — see the profile dialog's Cancel.
+deleteForUser:
+DELETE FROM email_codes WHERE user_id = ? AND purpose = ?;
+
+-- One more wrong guess against this row.
+recordAttempt:
+UPDATE email_codes SET attempts = attempts + 1 WHERE id = ?;
+
+-- Consumed, or given up on. Single use means the row goes either way: a
+-- successful redemption and an exhausted attempt cap both end with no row, which
+-- is what makes "reused" and "never existed" indistinguishable to the caller.
+delete:
+DELETE FROM email_codes WHERE id = ?;
+
+deleteExpired:
+DELETE FROM email_codes WHERE expires_at <= ?;
+
+-- How many codes are outstanding. For the startup log, and for the tests that
+-- assert a failed send left nothing behind — which is the one property here with
+-- no observable consequence until somebody grinds six digits against a row that
+-- should not exist.
+countAll:
+SELECT count(*) FROM email_codes;

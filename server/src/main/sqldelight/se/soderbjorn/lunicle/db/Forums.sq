@@ -1,0 +1,105 @@
+-- Discussion forums, scoped to a project.
+--
+-- A forum is a named, ordered container for posts — the discussion-side twin of
+-- a board. Its shape is deliberately the same as the vocabulary tables (see
+-- Labels.sq): per-project, uniquely named within that project, and ordered by an
+-- explicit `position` rather than by creation.
+--
+-- ── What is NOT here, and why ───────────────────────────────────────────────
+--
+-- **No per-forum access list.** The design prototype had one — a "Forum access"
+-- modal toggling each member on or off per forum, with "locked" forums hidden
+-- from those switched off. LNL-30's settled decisions replace that with
+-- project-level visibility (LNL-57): everyone who can see the project sees all
+-- of its forums, and nobody else sees any of them. So there is no `forum_roles`
+-- table and no `is_restricted` column. Adding either later is a migration, not a
+-- rewrite, but it is not what was asked for and a column nobody writes to is a
+-- claim the schema makes and cannot keep.
+--
+-- **No author.** A forum is a fixture of the project rather than somebody's
+-- contribution, and only a project administrator can make one. Posts and
+-- comments carry authorship (see LNL-61); the room they are in does not.
+--
+-- **No history.** LNL-30 settles that forums, posts and comments record no audit
+-- trail, unlike issues. There is no `forum_events` twin of IssueEvents.sq, and
+-- that absence is deliberate rather than pending.
+
+CREATE TABLE forums (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- One line under the name in the forum list, saying what belongs here.
+    -- Nullable because most forums do not need one, and an empty string and an
+    -- absent description are the same statement — the routes normalise blank to
+    -- NULL so the two cannot both exist and render differently.
+    description TEXT,
+
+    -- Where it sits in this project's list, 0 first — the same convention as
+    -- labels, statuses and priorities, and for the same reason: which forum
+    -- comes first is a curation decision the project administrator gets to
+    -- make, and creation order is only a default nobody chose.
+    --
+    -- Deliberately not UNIQUE per project: every reorder passes through a state
+    -- where two rows share a position, and the rewrite is one transaction over
+    -- the whole list rather than a pair of careful steps. See Labels.sq, which
+    -- says the same thing at greater length, and ForumRepository.reorder.
+    position INTEGER NOT NULL,
+
+    created_at INTEGER NOT NULL,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    -- Unique within a project, not across the instance: two projects may both
+    -- have a "General", and it would be strange if they could not.
+    UNIQUE (project_id, name)
+);
+
+-- RETURNING rather than a follow-up `last_insert_rowid()`, as Comments.sq does:
+-- the id comes back from the statement that minted it, so there is no window in
+-- which a concurrent insert on the same connection could be the one answered
+-- for.
+insert:
+INSERT INTO forums (project_id, name, description, position, created_at)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id;
+
+-- Renaming and re-describing, never re-projecting: `project_id` is absent from
+-- the SET list for Labels.sq's reason. A forum that could change projects would
+-- take its posts with it, into a project whose members never agreed to read
+-- them. A forum belongs to the project it was made in, for life.
+update:
+UPDATE forums SET name = ?, description = ? WHERE id = ?;
+
+-- One row at a time, inside the transaction that rewrites the whole project's
+-- order. See ForumRepository.reorder.
+setPosition:
+UPDATE forums SET position = ? WHERE id = ?;
+
+delete:
+DELETE FROM forums WHERE id = ?;
+
+-- Scoped by project, not by id alone, so a route can prove the row it was handed
+-- really is this project's before it writes. `/projects/7/forums/42` naming
+-- forum 42 from project 9 answers 404 rather than editing another project's
+-- forum. The vocabulary tables all repeat this shape; see Labels.sq.
+findByIdInProject:
+SELECT id, project_id, name, description, position, created_at
+FROM forums WHERE id = ? AND project_id = ?;
+
+-- By id alone, for the paths that start from a forum and have to walk to its
+-- project to ask whether the caller may see it at all — the deep link, and
+-- everything LNL-61 hangs off a forum. The project check does not disappear; it
+-- moves to the caller, which is why this returns `project_id`.
+findById:
+SELECT id, project_id, name, description, position, created_at
+FROM forums WHERE id = ?;
+
+forProject:
+SELECT id, project_id, name, description, position, created_at
+FROM forums WHERE project_id = ? ORDER BY position;
+
+-- The next free position, for an insert that appends. MAX + 1 rather than a
+-- count, so a list with a deleted row in the middle does not hand out a
+-- position somebody already has.
+nextPosition:
+SELECT COALESCE(MAX(position) + 1, 0) FROM forums WHERE project_id = ?;

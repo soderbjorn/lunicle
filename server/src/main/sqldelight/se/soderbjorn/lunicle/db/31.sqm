@@ -1,0 +1,36 @@
+-- Version 31 → 32: epics, as a generic parent link (LNL-55).
+--
+-- Two new columns on `issues` and nothing else. `parent_id` is a nullable
+-- self-reference — the epic an issue belongs under, or NULL for none — and
+-- `child_order` is the issue's manual rank among its siblings under that parent.
+-- An issue that has children is an epic; there is no separate "epic" kind. See
+-- Issues.sq's parent_id / child_order for why parent_id is single-column and how
+-- the same-project / one-level / no-cycle rules live in IssueRepository rather
+-- than the schema.
+--
+-- ── Nothing to back-fill ────────────────────────────────────────────────────
+--
+-- No issue gets a parent: NULL is "belongs under no epic", an absence rather than
+-- a row, so every existing issue is correctly parentless and every existing board
+-- is untouched — indistinguishable from the state before these columns existed.
+-- child_order is NOT NULL DEFAULT 0, which back-fills every existing row as
+-- unranked (0), exactly as sort_order does; 9.sqm's and 30.sqm's reasoning for a
+-- DEFAULT that reproduces the prior state applies verbatim.
+--
+-- ── Plain ALTER TABLE ───────────────────────────────────────────────────────
+--
+-- parent_id is a single-column nullable reference, the exact case SQLite's ALTER
+-- TABLE ADD COLUMN accepts — 29.sqm's planned_version_id is the same shape. The
+-- default is omitted because SQLite REQUIRES the default of an added column with a
+-- REFERENCES clause to be NULL. child_order is NOT NULL with a constant default,
+-- which ADD COLUMN also accepts. The self reference resolves against `issues`,
+-- which already exists, so no ordering concern like 29.sqm's.
+--
+-- The two ALTERs must leave the schema MigrationTest reads back — column type,
+-- nullability, default, and the parent_id foreign key's ON DELETE SET NULL —
+-- identical to what Issues.sq now declares; it applies this to the 31 snapshot and
+-- compares column for column and foreign key for foreign key against the .sq files.
+
+ALTER TABLE issues ADD COLUMN parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL;
+
+ALTER TABLE issues ADD COLUMN child_order INTEGER NOT NULL DEFAULT 0;

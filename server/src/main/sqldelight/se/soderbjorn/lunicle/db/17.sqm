@@ -1,0 +1,50 @@
+-- Version 17 → 18: watching a forum, and watching a post.
+--
+-- Two new tables and nothing else. No table is rebuilt and no column is added,
+-- which makes this the smallest migration since 12.sqm — the whole of LNL-63's
+-- storage is two join tables whose presence-of-a-row *is* the subscription, and
+-- there is nowhere else in the schema for a watch to be recorded.
+--
+-- The dual-path story is 1.sqm's and 2.sqm's: a fresh volume runs `CREATE TABLE`
+-- out of Subscriptions.sq and gets both of these for free; a volume already at
+-- version 17 runs this instead. MigrationTest migrates every earlier snapshot
+-- forward and compares PRAGMA output against a fresh `Schema.create`, so drift
+-- between the two files fails the build rather than the volume.
+--
+-- ── Order does not matter here, unlike 15.sqm and 16.sqm ────────────────────
+--
+-- Both tables point at things that already exist — `users`, `forums`,
+-- `forum_posts` — and neither points at the other. Stated rather than left
+-- unsaid because the two migrations before this one both had an order that was
+-- load-bearing and invisible, and "this one does not" is worth being able to
+-- read rather than having to re-derive.
+--
+-- ── What existing rows get: nothing, because there are none ─────────────────
+--
+-- Neither table is backfilled and there is no backfill that would be correct.
+-- Watching is something somebody asks for, so a volume that has been running
+-- since before this migration has nobody watching a forum — which is exactly
+-- what an empty table says. The one automatic subscription in the feature (a
+-- post's author, at publish) is written by the publish route from that point on
+-- and is deliberately not applied retroactively: subscribing somebody to a
+-- thread they wrote three months ago, without asking, would mail them about a
+-- conversation they had already stopped following.
+--
+-- The statements below reproduce Subscriptions.sq's two new CREATE TABLE blocks,
+-- minus the prose. See that file for what each constraint is for.
+
+CREATE TABLE forum_new_post_subscriptions (
+    user_id INTEGER NOT NULL,
+    forum_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, forum_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
+);
+
+CREATE TABLE forum_post_subscriptions (
+    user_id INTEGER NOT NULL,
+    post_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, post_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (post_id) REFERENCES forum_posts(id) ON DELETE CASCADE
+);

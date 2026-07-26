@@ -1,0 +1,66 @@
+-- Per-project release versions: a named, ordered vocabulary an issue points at
+-- twice — once as the version it is planned for, once as the version it was fixed
+-- in (issues.planned_version_id / issues.fixed_version_id). Both draw from this
+-- one list; there is no separate "planned" and "fixed" pool (LNL-134).
+--
+-- The whole feature is this table plus those two issue columns plus
+-- `projects.require_fixed_version_on_resolve`. A project that never inserts a row
+-- here is untouched by versions existing: the pickers render empty, get_board
+-- returns an empty list, and every one of its issues has both version columns
+-- NULL. Versions are invisible by absence, not by a feature flag — the same shape
+-- as sprints, and for the same reason (see Sprints.sq).
+
+CREATE TABLE versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- Where it sits in this project's list, 0 first — the same convention statuses,
+    -- priorities and labels use. It decides the order the version pickers offer, a
+    -- curation decision the project owner gets to make: newest-release-first is more
+    -- useful than alphabetical, and alphabetical is only a default nobody chose.
+    --
+    -- Deliberately not UNIQUE per project: every swap passes through a state where
+    -- two rows share a position, and the rewrite is one transaction over the whole
+    -- list rather than a pair of careful steps. See VocabularyRepository.reorder.
+    position INTEGER NOT NULL,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    -- Unique *within* a project, like every other vocabulary table.
+    UNIQUE (project_id, name),
+    -- Not currently the target of any composite foreign key: both
+    -- issues.planned_version_id and issues.fixed_version_id are single-column,
+    -- because a composite key cannot carry ON DELETE SET NULL without nulling
+    -- project_id too — the exact arrangement issues.sprint_id spells out. This is
+    -- kept anyway, for one index the UNIQUE(project_id, name) lookup does not
+    -- replace, and as what a later change would need to make those references
+    -- composite.
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO versions (project_id, name, position) VALUES (?, ?, ?);
+
+-- Renaming, not re-projecting: `project_id` is deliberately absent from the SET
+-- list, for Labels.sq's reason — a version belongs to the project it was made in.
+update:
+UPDATE versions SET name = ? WHERE id = ?;
+
+-- One row at a time, inside the transaction that rewrites the whole project's
+-- order. See Statuses.sq's setPosition.
+setPosition:
+UPDATE versions SET position = ? WHERE id = ?;
+
+-- Deleting a version un-versions its issues rather than being refused: both
+-- issues.planned_version_id and issues.fixed_version_id are nullable with ON
+-- DELETE SET NULL, so no RESTRICT fires and VocabularyRepository has nothing to
+-- count first. That is why VERSION's restrictsOnUse is false — the schema is the
+-- reason, not a preference. Same arrangement as sprints (see Sprints.sq's delete).
+delete:
+DELETE FROM versions WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, position FROM versions WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name, position FROM versions WHERE project_id = ? ORDER BY position;

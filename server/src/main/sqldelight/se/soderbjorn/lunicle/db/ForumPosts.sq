@@ -1,0 +1,177 @@
+-- Posts, in markdown, in a forum.
+--
+-- The discussion side's answer to `issues`, and deliberately a much smaller one:
+-- a post is a title, a body, an author and a date. No status, no priority, no
+-- assignee, no sprint, no labels. Those exist on an issue because an issue is a
+-- unit of *work* that has to be scheduled and closed; a post is something
+-- somebody said, and the only thing that ever happens to it is that people reply.
+--
+-- No project_id, for Comments.sq's reason: a post reaches its project through its
+-- forum, and duplicating it here would be a second source of truth for a fact
+-- that already has one. Every route resolves the forum first anyway, because that
+-- is where the permission question is answered.
+--
+-- ── No history, and that is the decision rather than the backlog ────────────
+--
+-- LNL-30 settles that forums, posts and comments record no audit trail. There is
+-- no `forum_events` twin of IssueEvents.sq and there is not meant to be one. An
+-- issue's history exists because "who moved this to Closed, and when" is a
+-- question people genuinely litigate; nobody asks it of a forum post. Building
+-- the twin would have been the obvious symmetry and it would have doubled the
+-- write path of every route here to record something nothing reads.
+--
+-- The visible consequence, stated so it is not discovered: a post has no
+-- `updated_at`. It carries when it was written and nothing about when it was
+-- last touched, exactly as a comment does.
+
+CREATE TABLE forum_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    forum_id INTEGER NOT NULL,
+
+    -- The one line in the post list, and the heading of the post itself. Not
+    -- nullable and not COLLATE NOCASE: unlike a forum name this is prose rather
+    -- than an identifier, so two posts may share a title and nothing here needs
+    -- to compare them.
+    title TEXT NOT NULL,
+
+    body TEXT NOT NULL,          -- markdown, same editor as an issue
+    created_at INTEGER NOT NULL,
+    created_by INTEGER,          -- SET NULL, same reasoning as issues
+
+    -- An author with no account, for imported history. Exclusive with
+    -- created_by, same reasoning as issues — the long version lives there.
+    -- Nothing writes it today: forums have no MCP tools and no importer (LNL-30
+    -- is explicit about the first). It is here because the column pair and its
+    -- CHECK are what `Author` is, and a table that carried only half of it would
+    -- need its own mapper and its own rules the day an import arrives.
+    created_by_external TEXT,
+
+    -- The agent that wrote this on the author's behalf, or NULL when a human did.
+    -- Not a third author; see Comments.sq. Also unwritten today, for the reason
+    -- above — the forum has no MCP surface.
+    agent_name TEXT,
+
+    -- Same reason as issues and comments: the composer supports inline image
+    -- upload, so the row must exist before the image does. Cancel deletes it; the
+    -- flag covers the closed tab. This is the whole reason a post is created in
+    -- two steps rather than one, and it is what lets the attachment machinery be
+    -- reused unchanged rather than re-invented for a body that has no row yet.
+    is_draft INTEGER NOT NULL DEFAULT 1,
+
+    FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+-- The draft row, with an empty title and body. `publish` fills both in.
+insert:
+INSERT INTO forum_posts (forum_id, title, body, created_at, created_by, created_by_external, agent_name)
+VALUES (?, '', '', ?, ?, ?, ?)
+RETURNING id;
+
+publish:
+UPDATE forum_posts SET title = ?, body = ?, is_draft = 0 WHERE id = ?;
+
+-- The body alone, for the two bulk markdown rewrites — the mention renamer and
+-- the attachment link repair. Deliberately not a general "edit a post": neither
+-- of those callers is a user editing anything, and both must leave `is_draft`
+-- exactly as they found it. See MentionRenamer.
+updateBody:
+UPDATE forum_posts SET body = ? WHERE id = ?;
+
+-- A full edit of an already-published post: its title, its body, and — because
+-- the only caller is LNL-78's `update_forum_post` — its date, its author and its
+-- agent label as well. Comments.sq's `edit` is the same statement one feature
+-- over, and the reasoning is the same: the web app never reaches this, because it
+-- has no edit button for a post at all, so this is the import-repair path and
+-- nothing else. `is_draft` is deliberately untouched, so a published post stays
+-- published and an unpublished one is not published by being corrected.
+--
+-- Note the comment two statements up that says the column pair is unwritten
+-- today because forums have no MCP surface. LNL-78 is when that stopped being
+-- true; the pair is what this statement writes.
+edit:
+UPDATE forum_posts
+SET title = ?, body = ?, created_at = ?, created_by = ?, created_by_external = ?, agent_name = ?
+WHERE id = ?;
+
+delete:
+DELETE FROM forum_posts WHERE id = ?;
+
+findById:
+SELECT id, forum_id, title, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM forum_posts WHERE id = ?;
+
+-- Scoped by forum as well as by id, so a route can prove the post it was handed
+-- really is this forum's before it writes. Forums.sq's `findByIdInProject` draws
+-- the same line one level up, and for the same reason: the ids in a URL are
+-- claims being checked, not decoration.
+findByIdInForum:
+SELECT id, forum_id, title, body, created_at, created_by, created_by_external, agent_name, is_draft
+FROM forum_posts WHERE id = ? AND forum_id = ?;
+
+-- A forum's published posts, newest first, each with how many comments it has.
+--
+-- Newest first, unlike comments: a forum is read by coming back to see what is
+-- new, where a thread is read from the top. Note this is the one order in the
+-- discussion side that is NOT the administrator's to choose — `forums.position`
+-- is curation, and a post list is a chronology.
+--
+-- The count is a correlated subquery rather than a LEFT JOIN with a GROUP BY,
+-- because the join would need the whole row list in its grouping key and would
+-- lose a post with no comments unless written carefully. Drafts are excluded on
+-- both sides: a draft post is invisible, and a draft comment is somebody's
+-- unsent text and must not be counted into a total the author can see moving.
+--
+-- ── The last comment, and why it is a join rather than more subqueries ─────
+--
+-- LNL-62's post card is three columns: the title, the comment count, and *who
+-- last said something and how long ago*. That last column is what makes a forum
+-- list scannable — "which thread is busy, and is it still moving" — and it is a
+-- fact about one specific row, the newest published comment, rather than an
+-- aggregate.
+--
+-- Three of its fields are wanted and a scalar subquery yields one column, so the
+-- obvious spelling is three of them. It is wrong twice over. Each would find its
+-- own row, so a query written slightly differently in one of the three would show
+-- one comment's author beside another's date and nothing would look broken. And
+-- SQLDelight types a scalar subquery by the column inside it: `created_at` is NOT
+-- NULL, so a post with no comments would be typed non-null and throw on the
+-- mapper the first time a forum held a thread nobody had replied to.
+--
+-- The LEFT JOIN fixes both. One subquery picks the row — `ORDER BY created_at
+-- DESC, id DESC`, the tie broken by id the same way `commentsOn` breaks it, so
+-- two comments sharing a millisecond still yield one answer — and the join
+-- supplies every field from it, nullable because a LEFT JOIN's right side is.
+forForum:
+SELECT
+    p.id, p.forum_id, p.title, p.body, p.created_at,
+    p.created_by, p.created_by_external, p.agent_name, p.is_draft,
+    (SELECT COUNT(*) FROM forum_comments c WHERE c.post_id = p.id AND c.is_draft = 0) AS comment_count,
+    lc.created_at AS last_comment_at,
+    lc.created_by AS last_comment_by,
+    lc.created_by_external AS last_comment_by_external
+FROM forum_posts p
+LEFT JOIN forum_comments lc ON lc.id = (
+    SELECT c.id FROM forum_comments c
+    WHERE c.post_id = p.id AND c.is_draft = 0
+    ORDER BY c.created_at DESC, c.id DESC
+    LIMIT 1
+)
+WHERE p.forum_id = ? AND p.is_draft = 0
+ORDER BY p.created_at DESC, p.id DESC;
+
+-- Every post that could contain an @mention, for the display-name rewrite. See
+-- Comments.sq's twin, whose comment is the long version of why `LIKE '%@%'` is a
+-- pre-filter and nothing more, and why drafts are included.
+--
+-- Titles are not scanned, matching MentionRenamer's stated position: nothing
+-- renders a mention in a title, so an '@' there is punctuation.
+withPossibleMentions:
+SELECT id, body FROM forum_posts WHERE body LIKE '%@%';
+
+-- Every post that could link to an attachment, for the startup link repair.
+-- Issues.sq's twin; its comment is the long version.
+withAttachmentLinks:
+SELECT id, body FROM forum_posts WHERE body LIKE '%/api/attachments/%';

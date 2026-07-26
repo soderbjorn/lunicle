@@ -1,0 +1,52 @@
+-- Version 11 → 12: `users.is_admin` becomes `users.is_sys_admin`.
+--
+-- A rename, and nothing else. No column is added, dropped, widened or given a
+-- new default; every row keeps the value it had. What changes is what the name
+-- claims, and that claim was about to become wrong.
+--
+-- ── Why the name had to move ────────────────────────────────────────────────
+--
+-- Until now there was exactly one kind of administrator, so "admin" was
+-- unambiguous by having nothing to be ambiguous against. LNL-37 adds a second:
+-- `project_admin`, a per-project role in `project_roles` like every other role,
+-- holding the sprint lifecycle, the project's vocabulary, and the granting of
+-- the issue-scoped roles within its own project.
+--
+-- With two of them, a bare `is_admin` on `users` reads as "an administrator",
+-- which is now a question rather than an answer — and the reader most likely to
+-- get it wrong is the one writing a permission check. `is_sys_admin` says which:
+-- instance-wide, not per-project, and the thing that short-circuits every check
+-- in AccessControl. The per-project one is not a column here and never will be;
+-- it is a row in `project_roles`, because it is scoped to a project and that
+-- table is what holds per-project facts about a person.
+--
+-- The role itself needs no migration. `roles` is seeded unconditionally at
+-- startup with INSERT OR IGNORE (RoleStore.seed), so the new row arrives on a
+-- fresh volume and a deployed one by the same path, with nothing to keep in
+-- step. See 1.sqm's discussion of why that seed is not here.
+--
+-- ── Why ALTER TABLE suffices ────────────────────────────────────────────────
+--
+-- SQLite has supported `ALTER TABLE … RENAME COLUMN` since 3.25 (2018), and the
+-- driver here is well past that. It rewrites the stored schema text in place and
+-- touches no rows, so this is O(1) regardless of how many accounts exist — quite
+-- unlike 2.sqm, which had to rebuild `issues` wholesale.
+--
+-- One thing to know about that in-place rewrite, since it is the reason this is
+-- safe rather than merely convenient: SQLite also rewrites references to the
+-- column from other schema objects — views, triggers, indexes and CHECK
+-- constraints. There are none on this column, so there is nothing to check; the
+-- only other place the name appeared was `Sessions.sq`'s join, which is query
+-- text in this repo rather than schema in the database, and is renamed there.
+--
+-- ── The one thing this does NOT cover ───────────────────────────────────────
+--
+-- The name is also on the wire: `isSysAdmin` on SessionState, AdminSettingsState
+-- and ProjectSettingsState. Renaming those is a client/server lockstep change,
+-- which this project can make because both ship together in one bundle — but it
+-- means a browser holding an old bundle against a new server reads `isAdmin` as
+-- absent and renders as if signed in without privileges. That is an affordance
+-- being wrong, not a permission: every route re-derives the answer server-side
+-- (see AccessControl's preamble), so the stale client is misleading for one
+-- reload and cannot do anything it should not. A hard refresh fixes it.
+ALTER TABLE users RENAME COLUMN is_admin TO is_sys_admin;

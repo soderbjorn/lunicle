@@ -1,0 +1,74 @@
+-- Per-project board columns, ordered.
+
+CREATE TABLE statuses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- The board is "each column represents a status", so the columns need an
+    -- order. Without this they would come back in rowid order, which is
+    -- insertion order, which is right by luck until someone adds one.
+    position INTEGER NOT NULL,
+
+    -- Whether landing in this column demands a resolution. The "magic" in
+    -- "Closed is a magic status", made into data.
+    --
+    -- A flag rather than `name = 'Closed'`, for the reason firstForProject below
+    -- gives about not hardcoding "New": the seed names these and a project may
+    -- rename them, so a rule keyed on the name would switch itself off the moment
+    -- someone renamed the column — silently, letting issues close with no
+    -- resolution and with nothing on screen to explain why. It also means a
+    -- project can decide a second column needs one.
+    --
+    -- Enforced in BoardRoutes rather than here. A CHECK cannot express it: the
+    -- rule spans two tables ("resolution_id must be non-null iff this issue's
+    -- status has this flag") and SQLite's CHECK may only see its own row.
+    requires_resolution INTEGER NOT NULL DEFAULT 0,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    -- The target of issues' composite foreign key. See Issues.sq.
+    UNIQUE (id, project_id)
+);
+
+insert:
+INSERT INTO statuses (project_id, name, position, requires_resolution) VALUES (?, ?, ?, ?);
+
+-- Name and flag together, because the settings dialog edits them together and a
+-- separate setRequiresResolution would be a second write that can fail on its
+-- own — leaving a column renamed but still demanding a resolution nobody asked
+-- for. Position is not here on purpose: it is set by `setPosition` over a whole
+-- project at once (see VocabularyRepository.reorder), and a rename that also
+-- carried a position would let the two disagree.
+update:
+UPDATE statuses SET name = ?, requires_resolution = ? WHERE id = ?;
+
+-- One row's place in the order. Only ever called from inside the transaction
+-- that rewrites all of a project's positions: `position` has no UNIQUE
+-- constraint precisely so that a reorder can pass through duplicate positions
+-- mid-transaction, which every swap does.
+setPosition:
+UPDATE statuses SET position = ? WHERE id = ?;
+
+-- Deleting a column is refused by the database when an issue still sits in it:
+-- `issues.status_id` is NOT NULL with no ON DELETE clause, so SQLite's default
+-- RESTRICT fires. That refusal is the backstop and not the message — a raw
+-- constraint violation is a 500. VocabularyRepository counts first and says "3
+-- issues still have that status" instead.
+delete:
+DELETE FROM statuses WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, position, requires_resolution FROM statuses
+WHERE id = ? AND project_id = ?;
+
+forProject:
+SELECT id, project_id, name, position, requires_resolution FROM statuses
+WHERE project_id = ? ORDER BY position;
+
+-- The board's leftmost column, which is where a new issue lands. Read rather
+-- than hardcoded to "New": the seed names it, and a project whose statuses were
+-- renamed should still be able to take an issue.
+firstForProject:
+SELECT id, project_id, name, position, requires_resolution FROM statuses
+WHERE project_id = ? ORDER BY position LIMIT 1;

@@ -1,0 +1,68 @@
+# Gradle
+.gradle/
+# Matches build/ at any depth — server/build, web/build, and the rest.
+build/
+# No-op today (nothing here ignores *.jar), kept because the wrapper jar MUST
+# be committed: ./gradlew and the Docker build both need it, and a repo without
+# it can't bootstrap Gradle at all.
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# Kotlin / KMP
+.kotlin/
+*.klib
+# …except the ones in libs-repo, which are published artifacts rather than build
+# output. The rule above is aimed at build/ (already ignored anyway); catching
+# libs-repo too is silent and expensive: git commits the .pom, .module and every
+# checksum, and drops only the .klib the checksums describe. The result is a repo
+# that resolves fine on any machine with a sibling lunula checkout
+# (composite build, libs-repo unused) and fails only in the container.
+!libs-repo/**/*.klib
+# The Kotlin/JS yarn.lock. Ignored to match the sibling Lunamux repo, which
+# doesn't commit it either. Nothing depends on it being here: the Dockerfile
+# COPYs specific paths and this isn't one of them, so image builds resolve npm
+# fresh regardless.
+kotlin-js-store/
+
+# Node (Kotlin/JS toolchain)
+node_modules/
+
+# IDE — IntelliJ / Android Studio / Fleet / VS Code
+.idea/
+*.iml
+*.ipr
+*.iws
+.fleet/
+.vscode/
+
+# Claude Code — ignore local config, share commands/skills.
+# settings.local.json is machine-local (MCP toggles, permissions). It happens to
+# be covered by ~/.gitignore_global on this machine, but that file doesn't
+# travel with the repo — a fresh clone or CI has no such protection, so the rule
+# belongs here too.
+.claude/*
+!.claude/commands/
+!.claude/skills/
+.mcp.json
+
+# The local stand-in for Railway's volume — the SQLite file and the attachment
+# bytes a local run writes — now lives at ~/.lunicle/ and so needs no entry
+# here. This one is kept for the checkouts that predate the move: the directory
+# is still on those disks with real issues in it, and un-ignoring it would
+# present a developer's own data as a pile of untracked files to commit. Delete
+# this line once no clone you care about still has one.
+.localdata/
+
+# Secrets — the local OAuth credentials the dev scripts source. The committed
+# template is .env.example; the filled-in file never leaves this machine.
+# Negation is explicit rather than relying on the pattern not matching, because
+# `.env.example` is the only thing that makes `.env` discoverable at all.
+.env
+!.env.example
+
+# macOS
+.DS_Store
+
+# Logs & temp
+*.log
+*.tmp

@@ -1,0 +1,587 @@
+/**
+ * The account corner of the top bar, the picker it opens, and the popup behind
+ * one branch of that.
+ *
+ * Signed out it is one "Sign in…" button. Where that leads depends on what the
+ * deployment can do: with two methods configured it opens [SignInPickerDialog],
+ * with only Google it goes straight to the popup. Signed in it is the user's name
+ * and the profile mark, which open a menu holding sign-out.
+ *
+ * ── The one privilege this view has, and what is *not* covered by it ────────
+ *
+ * This is the one view in the project allowed to know something the backing view
+ * model doesn't: **how to open a popup**. That knowledge cannot be shared —
+ * Google's SDK is a browser global — so it stops here, and everything downstream
+ * of "we have a code" happens in [SessionBackingViewModel], which an iOS client
+ * reuses unchanged.
+ *
+ * That exception covers the Google branch and nothing else. LNL-74's e-mail
+ * sign-in opens no popup — it is a form and two HTTP calls — so **all of it lives
+ * in the view model**, beside `onGoogleCodeReceived`, and this file's share of it
+ * is markup. [SignInPickerDialog] holds the Google button's click only so it can
+ * hand it straight back here; the popup does not travel into a second file.
+ *
+ * Why a popup at all: Google's consent screen refuses to be framed
+ * (`X-Frame-Options: DENY`, verified) and Lunicle lives in an iframe on
+ * lunamux.dev. There is no header we can set to change that. See
+ * docs/oauth-instructions.html.
+ *
+ * @see SessionBackingViewModel
+ * @see SignInPickerDialog
+ */
+package se.soderbjorn.lunicle
+
+import kotlinx.browser.document
+import kotlinx.browser.window
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import org.w3c.dom.HTMLButtonElement
+import org.w3c.dom.HTMLElement
+import se.soderbjorn.lunicle.client.StorageRepository
+import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
+
+/**
+ * Renders the account corner.
+ *
+ * @param viewModel the shared backing view model; the view's only collaborator.
+ * @param dialogHost where the provider picker mounts — the same host the issue
+ *   and project dialogs use, so the modals stack in one place and Modal's
+ *   topmost-wins Escape handling keeps working.
+ */
+class SignInView(
+    private val viewModel: SessionBackingViewModel,
+    private val dialogHost: HTMLElement,
+    /**
+     * Handed to the profile modal's view model, which this view builds fresh on
+     * every opening — see [renderProfileDialog]. The same shared instance the rest
+     * of the app uses, so there is still exactly one HTTP client.
+     */
+    private val storage: StorageRepository,
+) {
+    private lateinit var root: HTMLElement
+    private lateinit var signInButton: HTMLButtonElement
+    private lateinit var accountButton: HTMLButtonElement
+    private lateinit var nameElement: HTMLElement
+    private lateinit var menuElement: HTMLElement
+    private lateinit var signOutButton: HTMLButtonElement
+
+
+    /** Google's code client, built lazily — the SDK may not have loaded yet. */
+    private var googleCodeClient: dynamic = null
+
+    /** The failure alert while it is up, and the message it is showing. */
+    private var alert: AlertDialog? = null
+    private var alertMessage: String? = null
+
+    /** The profile modal while it is up, and the scope collecting its view model. */
+    private var profileDialog: ProfileDialog? = null
+    private var profileScope: CoroutineScope? = null
+
+    /** The sign-in method picker while it is up. */
+    private var signInPicker: SignInPickerDialog? = null
+
+    /**
+     * The mandatory landing gate while it is up (LNL-115).
+     *
+     * A modal with a single Sign in button and no way out but signing in: on a
+     * deployment that requires sign-in, a signed-out visitor meets this instead of
+     * the app. It lives in this view rather than the shell because it is a sign-in
+     * surface like the picker and the corner — its button opens the very same
+     * [startSignIn] path, so the picker (or the Google popup) stacks over it and,
+     * the moment the session lands, the gate tears itself down. See
+     * [renderSignInGate].
+     */
+    private var signInGate: Modal? = null
+
+    /**
+     * The deployment's brand logo SVG (LNL-110), shown atop the sign-in picker.
+     * Set once at boot after the brand loads (see main.kt); null ⇒ the picker
+     * carries no logo, exactly as before. Read when a picker is built fresh per
+     * opening, so a value set after construction still reaches it.
+     */
+    var brandLogoSvg: String? = null
+
+    /**
+     * The deployment's Google Workspace domain (LNL-125), or null. Set once at boot
+     * after the brand loads (see main.kt), like [brandLogoSvg]. When set, it is
+     * passed as `hd` to `initCodeClient` so the account chooser is pre-filtered to
+     * that one domain instead of offering every signed-in Google account. Null
+     * leaves the chooser open — the unbranded default. The hint is UX only; the
+     * server's `exchangeGoogleCode` is what actually refuses a wrong domain.
+     */
+    var googleHostedDomain: String? = null
+
+    /** The impersonation submenu's rows, rebuilt only when the user list changes. */
+    private lateinit var impersonateItem: HTMLElement
+    private lateinit var impersonateSubmenu: HTMLElement
+    private lateinit var stopImpersonatingButton: HTMLButtonElement
+    private var renderedUserIds: List<Long> = emptyList()
+
+    /**
+     * Build the corner and attach it to [host].
+     *
+     * @param host the element to append into — the top bar's far right.
+     */
+    fun mount(host: HTMLElement) {
+        root = element("div", "account")
+
+        // Where "Sign in…" leads depends on what the deployment can actually do.
+        //
+        // This used to say "Google is the only provider now, so this opens its
+        // popup directly rather than a one-option picker", and that reasoning
+        // survives — it is conditional now. With two methods available it opens
+        // the picker; with one it still goes straight there, because a picker with
+        // a single option is a click charged for nothing. The view model owns the
+        // decision (`hasSignInChoice`), not this.
+        //
+        // Errors still surface through the same AlertDialog — see renderAlert.
+        signInButton = button("Sign in…", "btn account-signin") { startSignIn() } as HTMLButtonElement
+
+        // Name and mark are one button, not a label beside an icon button. The
+        // name is the bigger target and reads as the thing you would click, so a
+        // click on it doing nothing is the kind of dead spot nobody reports and
+        // everybody notices.
+        nameElement = element("span", "account-name")
+        accountButton = (document.createElement("button") as HTMLButtonElement).apply {
+            className = "account-btn"
+            type = "button"
+            onclick = { viewModel.onAccountTapped() }
+        }
+        accountButton.children(nameElement, profileIcon())
+        accountButton.setAttribute("aria-haspopup", "menu")
+
+        signOutButton = button("Sign out", "account-menu-item") { viewModel.onSignOutTapped() } as HTMLButtonElement
+
+        // "Impersonate ▸" and the submenu that folds out of it. The submenu is a
+        // child of the item, not a sibling: it opens on hover, and CSS hover only
+        // survives the pointer travelling from the item to the submenu if the
+        // submenu is inside the thing being hovered.
+        impersonateSubmenu = element("div", "account-submenu")
+        impersonateSubmenu.setAttribute("role", "menu")
+        impersonateItem = element("div", "account-menu-item account-menu-parent")
+        impersonateItem.setAttribute("role", "menuitem")
+        impersonateItem.setAttribute("aria-haspopup", "menu")
+        impersonateItem.children(
+            element("span", "account-menu-label", "Impersonate"),
+            element("span", "account-menu-arrow", "\u25B8"),
+            impersonateSubmenu,
+        )
+
+        stopImpersonatingButton =
+            button("Stop impersonating", "account-menu-item") { viewModel.onStopImpersonatingTapped() } as HTMLButtonElement
+
+        menuElement = element("div", "account-menu")
+        menuElement.setAttribute("role", "menu")
+        // Sign out first, then the impersonation control — which of the two
+        // appears is decided in render(), never both.
+        menuElement.children(signOutButton, impersonateItem, stopImpersonatingButton)
+
+        // The name appears without any surrounding text changing, so a screen
+        // reader would announce nothing at all when a sign-in lands. The corner
+        // has no visible label to carry that, so the live region is the name.
+        nameElement.setAttribute("aria-live", "polite")
+
+        root.children(signInButton, accountButton, menuElement)
+        host.appendChild(root)
+    }
+
+    /**
+     * Apply a state snapshot to the mounted DOM.
+     *
+     * Everything here is a visibility decision the view model already made; this
+     * only translates it into the DOM.
+     */
+    fun render(state: SessionBackingViewModel.State) {
+        // Before the first fetch returns, show nothing. Flashing "Sign in" at
+        // someone who already has a session is a worse first impression than a
+        // beat of empty space.
+        root.style.visibility = if (state.isLoaded) "visible" else "hidden"
+
+        val signedIn = state.user != null
+        // Impersonating a signed-out visitor: the effective account is null, so
+        // there is no name and the app shows the public view — but the corner must
+        // stay, or "Stop impersonating" vanishes with it and the admin is stranded
+        // in the borrowed identity (LNL-103). So the corner appears whenever there
+        // is a menu to show: a real account, or this preview.
+        val impersonatingSignedOut = state.isImpersonating && !signedIn
+        val showAccount = signedIn || impersonatingSignedOut
+
+        nameElement.setTextIfChanged(
+            when {
+                signedIn -> state.displayName ?: ""
+                impersonatingSignedOut -> "Signed-out visitor"
+                else -> ""
+            },
+        )
+        // The provider is the tooltip now that the corner shows the bare name.
+        // Both providers can supply the same display name, so this is the only
+        // thing that answers "which of my two accounts is this?".
+        accountButton.title = when {
+            signedIn -> state.greeting ?: ""
+            impersonatingSignedOut -> "Previewing the signed-out view"
+            else -> ""
+        }
+        accountButton.visible(showAccount, displayValue = "inline-flex")
+
+        // A CLASS, never an inline display. The menu opens on hover, in CSS, and
+        // `visible()` sets `style.display` — an inline style, which beats the
+        // stylesheet unconditionally. Toggling it here pinned the menu to
+        // `display: flex` forever: it hung open under the profile button from the
+        // moment you signed in and nothing could shut it, because the `:hover`
+        // rule it was fighting could never win. It did not read as "the hover rule
+        // is being overridden", it read as "the menu never goes away".
+        //
+        // The class only says *whether a menu exists at all* — signed out, there
+        // is nothing to open. When it opens is CSS's business alone.
+        root.classList.toggle("account-signed-in", showAccount)
+        // Hidden while impersonating (LNL-101): signing out here would mean the
+        // admin's real session, not the borrowed identity, and the borrowed
+        // identity is what the menu is showing — the way back out is "Stop
+        // impersonating" below, not "Sign out". It returns when impersonation ends.
+        signOutButton.visible(!state.isImpersonating, displayValue = "block")
+        signOutButton.disabled = state.isBusy
+
+        // "Impersonate" and "Stop impersonating" are the same slot, never both.
+        // Both hang off canImpersonate — the REAL user being an admin — and not
+        // off user.isSysAdmin, which is false for the whole time an admin is
+        // impersonating and would take "Stop impersonating" away exactly when it
+        // is the only thing needed. See SessionBackingViewModel.State.
+        impersonateItem.visible(state.canImpersonate && !state.isImpersonating, displayValue = "flex")
+        stopImpersonatingButton.visible(state.canImpersonate && state.isImpersonating, displayValue = "block")
+        stopImpersonatingButton.disabled = state.isBusy
+        renderImpersonatableUsers(state)
+
+        // A deployment with no credentials renders no sign-in at all, rather
+        // than a button that cannot work. The server decides this, not the
+        // bundle — only it knows which variables it was given. Not shown while
+        // previewing the signed-out view either: the corner is already given over
+        // to the account menu carrying "Stop impersonating" (LNL-103).
+        signInButton.visible(!showAccount && state.isSignInAvailable, displayValue = "inline-flex")
+        signInButton.disabled = state.isBusy
+
+        renderProfileDialog(state)
+        renderSignInGate(state)
+        renderSignInPicker(state)
+        renderAlert(state)
+    }
+
+    /**
+     * Raise or dismiss the landing gate to match the state (LNL-115).
+     *
+     * Keyed on presence, like the picker and the alert: the view model decides
+     * whether the gate belongs on screen ([SessionBackingViewModel.State.isSignInGateShown]),
+     * this only builds it when it should appear and tears it down when it should
+     * not — which is what makes a completed sign-in close it without a line here
+     * mentioning sign-in at all. Built once and left up; there is nothing inside it
+     * that goes stale, so unlike the picker it is not rebuilt per showing.
+     */
+    private fun renderSignInGate(state: SessionBackingViewModel.State) {
+        if (state.isSignInGateShown && signInGate == null) {
+            signInGate = buildSignInGate(state)
+        } else if (!state.isSignInGateShown && signInGate != null) {
+            signInGate?.dismiss()
+            signInGate = null
+        }
+    }
+
+    /**
+     * Build the landing gate: a brand mark, a line of explanation, and one big Sign
+     * in button — nothing else, and no way to dismiss it.
+     *
+     * `onDismiss = {}` so Escape does nothing (the backdrop already swallows
+     * clicks), and no footer button: the only way past it is to sign in, which is
+     * the whole point of a required-sign-in deployment. The button hands off to
+     * [startSignIn], the same path the top-bar button takes — so a two-method
+     * deployment gets the picker over the gate and a one-method one goes straight to
+     * it. When the deployment somehow requires sign-in but offers no method to
+     * perform it (a misconfiguration), a line says so rather than a dead button.
+     */
+    private fun buildSignInGate(state: SessionBackingViewModel.State): Modal {
+        val gate = Modal(
+            title = "Sign in to continue",
+            onDismiss = {},
+            panelClass = "modal-narrow modal-signin",
+        )
+        val methods = element("div", "signin-methods")
+        brandLogoSvg?.let {
+            methods.appendChild(brandLogo(it).also { el -> el.className += " signin-brand-logo" })
+        }
+        methods.appendChild(
+            element("p", "signin-hint", "This workspace requires you to sign in before you can use it."),
+        )
+        if (state.isSignInAvailable) {
+            // "Sign in…" with the ellipsis, matching the top-bar button (this hands
+            // off to the picker or an OAuth redirect, it does not sign you in on the
+            // spot) — the gate had the bare label alone (LNL-153).
+            methods.appendChild(button("Sign in…", "btn signin-provider") { startSignIn() })
+        } else {
+            // Required, but no provider configured to satisfy it. Nothing this
+            // surface can do about it, so it says the true thing rather than
+            // offering a button that cannot work.
+            methods.appendChild(
+                element("p", "signin-hint", "No sign-in method is configured on this server. Ask an administrator."),
+            )
+        }
+        gate.body.appendChild(methods)
+        gate.mount(dialogHost)
+        return gate
+    }
+
+    /**
+     * Where "Sign in…" goes.
+     *
+     * One method configured means no picker: a modal offering a single option is a
+     * click charged for nothing. Two means the picker. Zero cannot reach here —
+     * the button is not rendered at all in that case, see `render`.
+     */
+    private fun startSignIn() {
+        val state = lastState ?: return
+        when {
+            state.hasSignInChoice -> viewModel.onSignInPickerOpened()
+            state.isGoogleAvailable -> startGoogleSignIn()
+            state.isEmailSignInAvailable -> viewModel.onSignInPickerOpened()
+            else -> Unit
+        }
+    }
+
+    /**
+     * Open or close the picker to match the state.
+     *
+     * Built fresh per opening and torn down on dismissal, the shape
+     * [renderProfileDialog] uses — and for a simpler version of its reason: the
+     * dialog holds a half-typed address and a half-typed code, and a instance kept
+     * across openings would show the last visitor's attempt to the next one.
+     *
+     * Mounted on `dialogHost` so it stacks with the other modals and Modal's
+     * topmost-wins Escape handling keeps working.
+     */
+    private fun renderSignInPicker(state: SessionBackingViewModel.State) {
+        if (state.isSignInPickerOpen && signInPicker == null) {
+            signInPicker = SignInPickerDialog(
+                viewModel = viewModel,
+                // The popup stays this view's business — it is the one piece of
+                // platform knowledge that cannot be shared, so it does not travel
+                // into a second file. See SignInPickerDialog's preamble.
+                onGoogleTapped = { startGoogleSignIn() },
+                onDismiss = { viewModel.onSignInPickerDismissed() },
+                brandLogoSvg = brandLogoSvg,
+            ).also { it.mount(dialogHost) }
+        } else if (!state.isSignInPickerOpen && signInPicker != null) {
+            signInPicker?.dismiss()
+            signInPicker = null
+        }
+        signInPicker?.render(state)
+    }
+
+    /**
+     * Fill the impersonation submenu.
+     *
+     * Rebuilt only when the ids change, like the project picker: this runs on
+     * every session emission, and replacing the rows under a pointer that is
+     * hovering one of them makes the submenu flicker and lose the hover.
+     *
+     * The admin's own row is rendered and disabled rather than omitted, so the
+     * list matches the user table they are looking at — and "become myself" is
+     * spelled "Stop impersonating", which is a different item.
+     */
+    private fun renderImpersonatableUsers(state: SessionBackingViewModel.State) {
+        val ids = state.impersonatableUsers.map { it.id }
+        if (ids == renderedUserIds) return
+        renderedUserIds = ids
+        impersonateSubmenu.clear()
+        // A fixed choice, always first and always offered: see the app as a
+        // signed-out visitor does — no account at all — rather than as any named
+        // user (LNL-103). It stands even when there are no other accounts to pick,
+        // so the submenu is never truly empty.
+        impersonateSubmenu.appendChild(
+            button("Signed-out visitor", "account-menu-item") {
+                viewModel.onImpersonateSignedOutTapped()
+            } as HTMLButtonElement,
+        )
+        state.impersonatableUsers.forEach { option ->
+            val row = button(option.name, "account-menu-item") {
+                viewModel.onImpersonateTapped(option.id)
+            } as HTMLButtonElement
+            if (option.isSelf) {
+                row.disabled = true
+                row.title = "This is you."
+            }
+            impersonateSubmenu.appendChild(row)
+        }
+    }
+
+    /**
+     * Open or close the profile modal to match the state.
+     *
+     * A fresh [ConnectionsBackingViewModel] per opening, deliberately: connections
+     * are changed by things outside this browser — an agent authorizing, a token
+     * expiring — so a view model held across openings would show a list that was
+     * true the first time the dialog was opened and stale every time after. Each
+     * open re-fetches, and the scope dies with the dialog so a response arriving
+     * after it closed has nothing to render into.
+     */
+    private fun renderProfileDialog(state: SessionBackingViewModel.State) {
+        if (state.isProfileDialogOpen && profileDialog == null) {
+            val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+            profileScope = dialogScope
+            profileDialog = ProfileDialog(
+                viewModel = ConnectionsBackingViewModel(storage, dialogScope),
+                sessionViewModel = viewModel,
+                scope = dialogScope,
+                onDismiss = { viewModel.onProfileDialogDismissed() },
+            ).also { it.mount(dialogHost) }
+        } else if (!state.isProfileDialogOpen && profileDialog != null) {
+            profileDialog?.dismiss()
+            profileDialog = null
+            profileScope?.cancel()
+            profileScope = null
+        }
+        profileDialog?.render(state)
+    }
+
+    /**
+     * Put a sign-in failure up as a modal, or take it down.
+     *
+     * Covers everything the sign-in flow can fail at now that there is no picker
+     * to host an inline error: the Google popup declining to open, the exchange
+     * failing, a sign-out that failed, a session fetch that did.
+     *
+     * Keyed on the message rather than on "is there one", for the reason
+     * Dialogs.renderAlert gives: two different failures in a row would otherwise
+     * leave the first one on screen describing the second.
+     */
+    private fun renderAlert(state: SessionBackingViewModel.State) {
+        val message = state.errorMessage
+        if (message == alertMessage) return
+        alert?.dismiss()
+        alertMessage = message
+        alert = message?.let {
+            AlertDialog(
+                title = "Something went wrong",
+                message = it,
+                // Clears the error and the busy flag, which is exactly what
+                // dismissing the alert should do.
+                onDismiss = { viewModel.onSignInErrorDismissed() },
+            ).also { dialog -> dialog.mount(dialogHost) }
+        }
+    }
+
+    /**
+     * Open Google's popup via `initCodeClient`.
+     *
+     * `ux_mode: 'popup'` with a `callback` — deliberately no `redirect_uri`.
+     * Google's JS reference: when the mode is popup, `redirect_uri` "is ignored
+     * and defaults to the origin of the page that calls `initCodeClient`". The
+     * server sends that same origin in the token exchange; see
+     * `exchangeGoogleCode`.
+     */
+    private fun startGoogleSignIn() {
+        val clientId = currentGoogleClientId
+        if (clientId == null) {
+            viewModel.onSignInFailed("Google sign-in is not configured.")
+            return
+        }
+        val google = window.asDynamic().google
+        // The SDK is loaded from accounts.google.com by a script tag in
+        // index.html. If the network ate it, say so — the alternative is a
+        // button that does nothing, which reads as our bug.
+        if (google == undefined || google == null) {
+            viewModel.onSignInFailed("Google's sign-in script did not load.")
+            return
+        }
+
+        viewModel.onSignInStarted()
+        // Build and call inside a runCatching: initCodeClient throws
+        // synchronously for a malformed client id, and requestCode() can fail
+        // without ever reaching either callback below — most notably when
+        // Google declines the origin outright. Letting that escape would leave
+        // isBusy stuck true and the button disabled forever, which is precisely
+        // the "sign-in that silently does nothing" this whole stage is about
+        // being able to see.
+        val started = runCatching {
+            if (googleCodeClient == null) {
+                // Build the options object by plain assignment. NOT with
+                // .also/.apply: on a `dynamic`, Kotlin dispatches every member
+                // call at runtime, so `.also(…)` compiles to a literal
+                // JavaScript method lookup on `{}` — which has no such method.
+                // It type-checks and then dies on click with
+                // "{}.also is not a function". Extension functions do not apply
+                // to dynamic values; this is the idiom that works.
+                val options: dynamic = js("({})")
+                options.client_id = clientId
+                options.scope = "openid email profile"
+                options.ux_mode = "popup"
+                // Always force the account picker. Without this, Google silently
+                // reuses whatever single session the browser already has — so
+                // someone whose active session is the wrong account (a personal
+                // Gmail, the wrong Workspace login) is authenticated as that
+                // account with no chance to correct it, and on a domain-pinned
+                // deployment is thrown straight at the failure dialog. Forcing the
+                // chooser costs single-account users one extra click and lets
+                // everyone else pick the right account.
+                options.select_account = true
+                // Pin the chooser to one Workspace domain on a branded deployment
+                // (LNL-125). Only set when configured; `hd` is a *hint* that
+                // pre-selects/filters the picker to this domain. Absent it, the
+                // chooser lists every account, as before.
+                googleHostedDomain?.let { options.hd = it }
+                options.callback = { response: dynamic ->
+                    val code = response?.code as? String
+                    if (code.isNullOrBlank()) {
+                        // Includes the user closing the popup, which is not an
+                        // error worth shouting about.
+                        println("SignIn: Google popup returned no code")
+                        viewModel.onSignInFailed(null)
+                    } else {
+                        viewModel.onGoogleCodeReceived(code)
+                    }
+                    Unit
+                }
+                options.error_callback = { error: dynamic ->
+                    // GIS reports "popup_closed" for a deliberate close, and
+                    // "popup_failed_to_open" for the case this stage exists to
+                    // catch.
+                    val type = error?.type as? String
+                    println("SignIn: Google popup error: $type")
+                    viewModel.onSignInFailed(
+                        when (type) {
+                            "popup_closed", null -> null
+                            "popup_failed_to_open" -> "Google's sign-in window could not open."
+                            else -> "Google sign-in did not start ($type)."
+                        },
+                    )
+                    Unit
+                }
+                googleCodeClient = google.accounts.oauth2.initCodeClient(options)
+            }
+            googleCodeClient.requestCode()
+        }
+        started.onFailure { t ->
+            println("SignIn: requestCode threw: ${t.message}")
+            viewModel.onSignInFailed("Google would not open the sign-in window. See the console.")
+        }
+    }
+
+    /** The client id from the last rendered state. */
+    private var currentGoogleClientId: String? = null
+
+    /**
+     * The last state rendered, so a click can ask what it may do.
+     *
+     * Kept because `startSignIn` has to know which methods are configured, and a
+     * button's `onclick` fires long after `render` returned. The view still holds
+     * no *decision* — every question it asks of this is answered by a property the
+     * view model computed. See [SessionBackingViewModel.State.hasSignInChoice].
+     */
+    private var lastState: SessionBackingViewModel.State? = null
+
+    /** Keep the client id the popup will need, without the view holding state. */
+    fun onState(state: SessionBackingViewModel.State) {
+        currentGoogleClientId = state.googleClientId
+        lastState = state
+        render(state)
+    }
+}

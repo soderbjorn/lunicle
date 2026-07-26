@@ -1,0 +1,251 @@
+-- What happened to an issue, and when, and who did it.
+--
+-- Append-only in all but one narrow, admin-only respect. Nothing here is ever
+-- deleted except by the cascade when the issue itself goes, and *what happened*
+-- — `kind`, `value_text`, the child values — is never rewritten by anyone. That
+-- is the whole point of the table: a history whose events you can re-word is not
+-- a history.
+--
+-- The one exception is `reattribute` below. A system administrator, and only
+-- one, may correct *who and when* a row records — its author, its date and its
+-- agent label — never its content. It exists for the reason update_issue and
+-- update_comment carry admin-only backfill parameters: history imported from
+-- another tracker lands under a placeholder author, and the day that person gets
+-- a real account the CREATED and STATUS_CHANGED events they left behind have to
+-- be reattachable to it, or the audit trail names a stranger forever. See
+-- McpTools.updateHistoryEvent and AccessControl.canAttributeWrites. Every other
+-- caller writes only through `insert`; there is still no general `update`, and
+-- no `delete`, to reach for by accident.
+--
+-- ── Why `kind` and not a sentence ──────────────────────────────────────────
+--
+-- The obvious cheap version of this table is one TEXT column holding "Robert
+-- changed the title to Fix the login bug". It renders itself, needs no enum and
+-- no join. It is also unreadable by anything that is not a human eye: you
+-- cannot filter it, cannot count it, cannot re-word it after the fact, and
+-- cannot translate it. Worse, the sentence is written by the build that
+-- happened to be deployed that day, so a phrasing change makes the history
+-- speak in two voices forever.
+--
+-- So the row stores the *fact* and the client writes the sentence. `kind` is
+-- the fact's shape, and `value_text` / `value_user_id` / issue_event_values
+-- hold whatever that shape carries.
+--
+-- ── Why kind is TEXT and not an integer ────────────────────────────────────
+--
+-- Because the constant name is already the wire format. kotlinx.serialization
+-- encodes an enum by its name, so `IssueEventKind.TITLE_CHANGED` travels to the
+-- browser as "TITLE_CHANGED" whatever this column does; storing 3 here would
+-- add a second spelling, a mapping table to keep in step with it, and a class
+-- of bug where the two disagree and every historical row shifts by one. See
+-- AuthProvider in SessionState.kt, which settled the same question the same
+-- way. The cost is a few bytes a row on a table nobody joins against.
+--
+-- An unrecognised kind is possible — a row written by a newer build and read by
+-- an older one — and is handled by dropping it on the read, not by refusing the
+-- issue. See IssueEventStore.forIssue.
+
+CREATE TABLE issue_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- No project_id, for Comments.sq's reason: an event reaches its project
+    -- through its issue, and a second copy here would be a second source of
+    -- truth for a fact that already has one.
+    issue_id INTEGER NOT NULL,
+
+    -- The enum name. See the preamble.
+    kind TEXT NOT NULL,
+
+    -- What to render, when the kind carries a single value: the new title for
+    -- TITLE_CHANGED, the status's name for STATUS_CHANGED, the assignee's name
+    -- for ASSIGNEE_CHANGED. NULL for the kinds that carry nothing — CREATED and
+    -- DESCRIPTION_CHANGED — and, meaningfully, for an ASSIGNEE_CHANGED that
+    -- unassigned the issue.
+    --
+    -- ── Why a snapshot, and not a foreign key to the status or label ────────
+    --
+    -- Because a project's vocabulary is mutable in both directions: the settings
+    -- dialog renames statuses and labels, and deletes them. A foreign key from a
+    -- history row would force a choice between two wrong answers. SQLite's
+    -- default RESTRICT would make any label that ever appeared in history
+    -- permanently undeletable — the board would accumulate words nobody can
+    -- remove, for no reason a user could ever see. ON DELETE CASCADE would
+    -- silently rewrite the past: an event that read "labels: Bug, Feature"
+    -- becomes "labels: Feature" the day somebody tidies the board, and no
+    -- warning is printed because from the database's side nothing went wrong.
+    --
+    -- The snapshot is also the truer claim. The issue was moved into the column
+    -- *then called* "In progress". If that column is renamed to "Doing"
+    -- tomorrow, the sentence "moved to Doing" describes an event that did not
+    -- happen. Renaming a column is not a retroactive edit of everyone's Tuesday.
+    --
+    -- The cost, stated plainly: a rename does not propagate, so history and
+    -- board can name the same column differently. That is the intended
+    -- behaviour, not the shortfall.
+    value_text TEXT,
+
+    -- The *person* an ASSIGNEE_CHANGED event points at, and nothing else.
+    --
+    -- The opposite call to value_text above, on purpose. A vocabulary word is a
+    -- project's choice of language and belongs to the moment; a person is a
+    -- person. Renaming yourself does not change who was handed the work, so an
+    -- account stays a live reference and re-resolves on read — matching how
+    -- CommentView.authorName is already resolved server-side from users rather
+    -- than stored.
+    --
+    -- SET NULL rather than CASCADE, for created_by's reason one column down:
+    -- deleting an account must not delete the history it appears in.
+    --
+    -- ── The pair of columns is what makes "unassigned" legible ──────────────
+    --
+    -- ASSIGNEE_CHANGED sets both: this id, and the name in value_text. That
+    -- looks redundant and is not, because SET NULL will eventually empty this
+    -- column and the two states it would collapse into are genuinely different
+    -- events:
+    --
+    --   value_text NULL  → the issue was unassigned. Nobody was named.
+    --   value_text set, value_user_id NULL → somebody was named, and that
+    --                      account has since been deleted.
+    --
+    -- Without the snapshot both read as "assigned to nobody" and the history
+    -- lies about one of them. So value_text is the discriminator, and
+    -- value_user_id is the upgrade: when the account still exists, the reader
+    -- prefers its current name over the snapshot.
+    value_user_id INTEGER,
+
+    created_at INTEGER NOT NULL,
+
+    -- Who did it. These three columns and the CHECK below are copied from
+    -- issues, deliberately and exactly — same names, same nullability, same
+    -- exclusivity rule. The long version of why each one is shaped this way
+    -- lives in Issues.sq and is not repeated here.
+    --
+    -- Copied rather than re-derived because the degradation has to match. A
+    -- deleted account leaves a null author on its issues and on its events, and
+    -- both render as the same "A deleted account" through the same resolver. Two
+    -- similar-but-different author models would eventually disagree about a
+    -- deleted user on the very screen that shows both at once.
+    created_by INTEGER,
+    created_by_external TEXT,
+
+    -- The agent that made the change on the author's behalf. Not a third kind
+    -- of author; see issues.agent_name.
+    --
+    -- Worth one line of its own here: this column is why an event is written at
+    -- all rather than inferred from the issue's own columns. `issues.agent_name`
+    -- holds whoever last touched the issue through MCP, so it cannot answer
+    -- "was *this particular* change made by an agent". The event can.
+    agent_name TEXT,
+
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (value_user_id) REFERENCES users(id) ON DELETE SET NULL,
+
+    -- One author or the other, never both. See issues.
+    CHECK (created_by IS NULL OR created_by_external IS NULL)
+);
+
+-- The issue detail view reads every event for one issue and nothing else ever
+-- reads this table, so this is the only access path there is. Without it the
+-- history section is a full scan of every event in the instance, which is fine
+-- for a week and quietly is not later — this table grows monotonically and
+-- faster than `issues` does, because one issue produces many events.
+CREATE INDEX issue_events_issue_idx ON issue_events (issue_id, id);
+
+-- The set-valued half of an event: the labels, or the components, as they stood
+-- immediately after the change.
+--
+-- ── Why a child table rather than a delimited string ───────────────────────
+--
+-- Because a label may contain a comma. Every delimiter is a character somebody
+-- is allowed to type, so a joined string needs an escaping scheme, and an
+-- escaping scheme in a column is a parser that has to agree with itself across
+-- every version of the app that ever wrote a row. JSON in a TEXT column is the
+-- same bargain with extra steps.
+--
+-- ── The whole set, not a diff ──────────────────────────────────────────────
+--
+-- A row here is "the labels were, from this moment, exactly these" — not "Bug
+-- was added". Storing the delta would make every event depend on every earlier
+-- event being present and correct to be read at all, so one gap in the history
+-- corrupts everything after it, and the backfill in 5.sqm opens exactly such a
+-- gap by design: it writes CREATED for issues whose intervening edits were never
+-- recorded. Absolute values degrade gracefully across that gap. Deltas do not.
+--
+-- The reader may still show a delta by comparing against the previous event of
+-- the same kind — that is a rendering choice, and it can be changed later
+-- precisely because the stored form did not commit to it.
+CREATE TABLE issue_event_values (
+    event_id INTEGER NOT NULL,
+
+    -- Ordering, so the set comes back the way it was written rather than in
+    -- whatever order SQLite finds convenient. A history that reshuffles its own
+    -- labels between two page loads looks broken even though nothing changed.
+    position INTEGER NOT NULL,
+
+    -- A name snapshot, for value_text's reasons exactly.
+    value TEXT NOT NULL,
+
+    PRIMARY KEY (event_id, position),
+    FOREIGN KEY (event_id) REFERENCES issue_events(id) ON DELETE CASCADE
+);
+
+-- Append one event. The values, if any, follow through insertValue.
+--
+-- RETURNING id because the caller needs it to write those values, and a
+-- last_insert_rowid() round-trip would be a second statement that a concurrent
+-- writer could get between.
+insert:
+INSERT INTO issue_events (issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+insertValue:
+INSERT INTO issue_event_values (event_id, position, value) VALUES (?, ?, ?);
+
+-- Oldest first: this is read as a narrative, and a narrative runs forwards.
+--
+-- Ordered by id, not created_at. They almost always agree, and when they do not
+-- it is because two events landed in the same millisecond — at which point
+-- created_at is a tie SQLite breaks arbitrarily and differently between runs,
+-- so the history would reorder itself under a reload. `id` is monotonic by
+-- construction and is the order the events actually happened in. Same-
+-- millisecond pairs are not hypothetical: publishing a draft writes CREATED and
+-- the editor's field events together.
+forIssue:
+SELECT id, issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name
+FROM issue_events WHERE issue_id = ? ORDER BY id;
+
+-- One event by id, for the admin reattribution path — it needs the row's issue
+-- (to gate the caller against that project) and the event's current author, date
+-- and agent label (to default whatever the call leaves unspoken). The child
+-- values are not fetched: reattribution never touches them, so this deliberately
+-- does not do forIssue's second query. See McpTools.updateHistoryEvent.
+findById:
+SELECT id, issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name
+FROM issue_events WHERE id = ?;
+
+-- Correct who and when an event records — never what it records. `kind`,
+-- `value_text`, `value_user_id` and the child values in issue_event_values are
+-- all untouched, so the change stays exactly what it always was and only its
+-- attribution moves. The narrative order is unaffected: forIssue sorts by `id`,
+-- not created_at, so a re-dated event stays where it happened rather than
+-- reshuffling the history. Admin-only, and the only UPDATE this table has — see
+-- the preamble and McpTools.updateHistoryEvent.
+reattribute:
+UPDATE issue_events
+SET created_at = ?, created_by = ?, created_by_external = ?, agent_name = ?
+WHERE id = ?;
+
+-- The values for one issue's events, in one query rather than one per event —
+-- an issue with fifty events would otherwise be fifty round-trips to render a
+-- sidebar. Joined back to issue_events because issue_event_values has no
+-- issue_id of its own, for the reason issue_id gives above.
+--
+-- Ordered so the caller can group by event_id in a single pass.
+valuesForIssue:
+SELECT v.event_id, v.value
+FROM issue_event_values v
+JOIN issue_events e ON e.id = v.event_id
+WHERE e.issue_id = ?
+ORDER BY v.event_id, v.position;

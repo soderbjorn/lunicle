@@ -1,0 +1,52 @@
+-- What the toolkit shell remembers about a signed-in user: their appearance
+-- choice (dark / light / auto) and the theme picked for each of those two slots.
+--
+-- A key-value table rather than columns on `users`, and the reason is that the
+-- values are not Lunicle's. They are the lunula's own persistence
+-- format — an opaque JSON blob per `PersistKeys` key, written and read by the
+-- toolkit's theme manager, never parsed here. Columns would mean this schema
+-- claiming to know the shape of something it deliberately does not, and every
+-- toolkit upgrade that added a field would be a migration in a repo that has no
+-- opinion about that field. See ThemePersister in :web for the other end.
+--
+-- It also keeps the shape off the hot path. `users` is joined on every single
+-- authenticated request (Sessions.sq's findUser), and a theme blob is read
+-- exactly twice a page load — putting it on `users` would carry kilobytes of
+-- JSON through the one query that must stay cheap.
+--
+-- Which keys may land here is not this table's business either: the route
+-- enforces an allowlist (see UiSettingKeys), so this stays a table of settings
+-- rather than a per-user scratch space the client can put anything in.
+--
+-- Cascades on the user for the reason every other per-user table does: a theme
+-- belonging to a deleted account is not something anyone would miss.
+
+CREATE TABLE user_ui_settings (
+    user_id INTEGER NOT NULL,
+
+    -- A lunula `PersistKeys` constant, e.g. `darkness.theme.v2.selection`.
+    key TEXT NOT NULL,
+
+    -- The toolkit's blob for that key. NOT NULL because "no value" is spelled
+    -- as no row — there is no state between "never chosen" and "chosen", and a
+    -- null would be a third one the reader would have to fold back into the
+    -- first anyway.
+    value TEXT NOT NULL,
+
+    PRIMARY KEY (user_id, key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Everything this user has stored, in one query. The whole set is small — two
+-- keys today — so the client asks for all of it once at boot rather than
+-- naming keys it would have to know about in advance.
+selectForUser:
+SELECT key, value FROM user_ui_settings WHERE user_id = ?;
+
+-- Last write wins, which is the only sensible rule for a preference: two tabs
+-- open on the same account are two people telling us the same thing, and the
+-- most recent one is the one looking at the screen.
+upsert:
+INSERT INTO user_ui_settings (user_id, key, value)
+VALUES (?, ?, ?)
+ON CONFLICT (user_id, key) DO UPDATE SET value = excluded.value;

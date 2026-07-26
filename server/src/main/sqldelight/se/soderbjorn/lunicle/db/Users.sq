@@ -1,0 +1,324 @@
+-- Everyone who has ever signed in.
+--
+-- A row is created on first sign-in and then found again on every later one, so
+-- the identity here outlives any single session and any redeploy. That is what
+-- lets an issue belong to someone.
+
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- AuthProvider.name — GOOGLE or GITHUB. Stored as the enum's name rather
+    -- than its ordinal: an ordinal silently remaps if anyone ever reorders the
+    -- enum, and the failure would be users quietly resolving to the wrong
+    -- provider. The wire format already commits to these strings (see
+    -- AuthProvider's docs in SessionState.kt), so this costs nothing new.
+    provider TEXT NOT NULL,
+
+    -- The provider's own stable id for this account: Google's `sub`, GitHub's
+    -- numeric `id`. TEXT for both, because Google's is not a number and
+    -- GitHub's does not need to be one.
+    --
+    -- Deliberately NOT the email or the display name. Both are mutable — a user
+    -- can change either at any time — and matching on them would either create a
+    -- duplicate account on rename or, worse, hand one user another's row if an
+    -- address were ever recycled. `sub` and `id` are the only values the
+    -- providers promise not to reuse.
+    provider_id TEXT NOT NULL,
+
+    -- The name the provider gave us, refreshed on every sign-in. The sidebar
+    -- shows "Signed in via GitHub as <login>" but "via Google as <name>" — two
+    -- different upstream fields, resolved per provider in OAuthProviders.kt.
+    -- NOT NULL because every branch of that resolution terminates in something,
+    -- so a blank name here reads as a bug rather than as a user who has none.
+    provider_name TEXT NOT NULL,
+
+    -- The user's own override, and nothing else. Null means "no override"
+    -- rather than "no name", which is why it is nullable rather than defaulted
+    -- to the provider's — copying the account name in here once would freeze
+    -- it, and a later rename upstream would never follow. The UI shows
+    -- `display_name ?: provider_name`, so the override stays purely additive.
+    display_name TEXT,
+
+    -- **The account key**, when there is one.
+    --
+    -- ── This comment used to say the exact opposite ────────────────────────
+    --
+    -- It said: "Carries no UNIQUE constraint on purpose. The same human signing
+    -- in via both Google and GitHub is two accounts by design, and they will
+    -- share an address. Never an identity key; see provider_id above."
+    --
+    -- That reasoning was correct and it expired. GitHub sign-in was removed and
+    -- the one-time `AccountMerge` written to clean up after it was retired in
+    -- 4f05fb0, which left `UNIQUE (provider, provider_id)` as a more fragile
+    -- spelling of "the Google account" — and foreclosed adding any second way to
+    -- sign in without re-fragmenting people across rows all over again. Both a
+    -- Google sign-in and a mailed code establish current control of an address,
+    -- so a verified address is the only identifier two different sign-in methods
+    -- can agree on. See LNL-73.
+    --
+    -- Uniqueness is a partial index (`users_email_unique`, below) rather than a
+    -- constraint here, because SQLite cannot ALTER TABLE ADD UNIQUE and rebuilding
+    -- *this* table — the one every other table's foreign keys point at — is the
+    -- operation 3.sqm warns about. NULLs stay distinct either way, which is what
+    -- keeps unkeyed rows legal.
+    --
+    -- Still nullable, and still a fact rather than an oversight: a Google account
+    -- whose address Google has not confirmed produces a row with no key, found
+    -- again by (provider, provider_id) exactly as before. NULL means "we do not
+    -- know" — different from "" and different from "they have none".
+    --
+    -- Always normalized: trimmed and lowercased, by normalizeEmail, on every
+    -- write path and every lookup. Before that existed the two write paths
+    -- disagreed and `Alice@X.com` and `alice@x.com` were two rows.
+    email TEXT,
+
+    -- Whether anyone has ever proved control of the mailbox in `email`.
+    --
+    -- Introduced by LNL-71, which is the first thing that *can* honestly set it:
+    -- before the code lifecycle existed, `POST /api/user/email` let any signed-in
+    -- user claim any address with no verification of any kind, so every address
+    -- in this table was a claim rather than a fact.
+    --
+    -- ── Existing rows start at 0, and must ────────────────────────────────
+    --
+    -- No back-fill, and not for the usual "cheaper" reason. An address that was
+    -- never proved cannot be retroactively proved by a migration deciding it was
+    -- fine, and a column that lied in that direction would be worse than no
+    -- column: LNL-73 makes this the account key, and "verified" would then mean
+    -- "was in the table when we shipped". Rows are corrected the next time their
+    -- owner proves the address — by confirming it (LNL-71), by signing in with a
+    -- code (LNL-74), or by Google saying so (LNL-73).
+    --
+    -- Two paths write it and both are proofs of the same kind, which is why this
+    -- is one column rather than one per mechanism. A user with a null `email` has
+    -- nothing to have verified, so 0 is also the only sensible value there.
+    email_verified INTEGER NOT NULL DEFAULT 0,
+
+    is_sys_admin INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+
+    -- Whether this user HAS TURNED ON agent access. Their own choice, made from
+    -- the MCP tab of their profile dialog.
+    --
+    -- Off by default: MCP is a capability nobody gets until they ask for it, so
+    -- every account starts closed.
+    --
+    -- A real kill switch, not a UI flag. While this is 0, /oauth/authorize
+    -- refuses to start a flow for this user and /mcp rejects their tokens even
+    -- though the rows are still there and still valid — see McpServer. Turning it
+    -- off does NOT delete grants; turning it back on restores them. Deleting is
+    -- what Revoke is for, and conflating the two would surprise people.
+    --
+    -- ── Not the same thing as mcp_allowed, and the pair is the point ─────────
+    --
+    -- This one answers "did the user switch it on". The next one answers "is the
+    -- user permitted to have the switch at all". Those are two different people's
+    -- decisions and they must not share a column: an admin revoking permission
+    -- would otherwise erase the user's own preference, so restoring permission
+    -- would leave them switched off with nothing to say whether they had ever
+    -- turned it on. Every gate reads BOTH — see UserRecord.canUseMcp.
+    mcp_enabled INTEGER NOT NULL DEFAULT 0,
+
+    -- Whether an admin PERMITS this user to have agent access at all. Not theirs
+    -- to set; see the instance settings dialog and AdminRoutes.
+    --
+    -- Off by default, and 6.sqm adds it with DEFAULT 0 and no back-fill — so
+    -- every account that existed before this shipped lands on "not permitted",
+    -- deliberately. Permission is granted, never assumed, and a migration that
+    -- silently carried everyone forward as permitted would defeat the feature on
+    -- exactly the deployment where it matters. The consequence is real and was
+    -- accepted: agents stop at the next deploy until an admin grants access.
+    --
+    -- Admin-ness DOES short-circuit this, as it does every rule in AccessControl:
+    -- an admin is permitted whether or not this column says so. So this column is
+    -- the grant an admin makes to somebody else, and reading it alone is not the
+    -- permission question — see UserRecord.isMcpPermitted, which is the answer,
+    -- and canUseMcp, which is the only thing an MCP gate may read.
+    --
+    -- It follows that this column is never worth back-filling when an account
+    -- becomes an admin, and that an admin's own row sitting at 0 is not a state
+    -- anybody needs to repair.
+    --
+    -- (This paragraph used to say the opposite, and the code agreed with it. The
+    -- reversal is deliberate: a permission with a silent exception is hard to
+    -- reason about, but an admin who cannot administer is worse, and every other
+    -- rule in this codebase already lets an admin past.)
+    --
+    -- A column here rather than a row in `roles` for the same reason `is_sys_admin`
+    -- is: it is global to the account, not scoped to a project, and there is no
+    -- project it could hang off.
+    mcp_allowed INTEGER NOT NULL DEFAULT 0,
+
+    -- How this row was created, and — for a row with no verified address — still
+    -- the only way to find it again. Scoped by provider, not global: nothing stops
+    -- two providers from handing out the same id string, and they are different
+    -- people when they do.
+    --
+    -- No longer *the* identity. That is `email` now, when there is one; this is
+    -- the fallback and the record of provenance. The pair stays UNIQUE because
+    -- two rows claiming one provider account is still nonsense, and because the
+    -- upsert's ON CONFLICT needs it.
+    UNIQUE (provider, provider_id)
+);
+
+-- The account key, as an index rather than a constraint.
+--
+-- SQLite cannot `ALTER TABLE ... ADD UNIQUE`, and the worked precedent for adding
+-- uniqueness — 13.sqm — rebuilds the table. That was only safe there because
+-- `attachments` is a leaf, which 13.sqm says explicitly. `users` is the opposite:
+-- sessions, issues (on both created_by and assignee_id), comments, attachments,
+-- roles, subscriptions, ui_settings, email_codes and the oauth_* tables all point
+-- at it, and `migrateSchema` runs with foreign keys off (see Database.kt) so a
+-- botched rebuild goes wrong quietly. A partial unique index needs no ALTER at
+-- all.
+--
+-- `WHERE email IS NOT NULL` is not merely belt-and-braces over SQLite's
+-- NULLs-are-distinct rule: it says out loud that rows without an address are
+-- unkeyed *by design*, not merely tolerated. A Google account whose address
+-- Google would not confirm is one, and there may be any number of them.
+--
+-- MigrationTest compares indexes as part of its fact set, so this is covered by
+-- the existing guard.
+CREATE UNIQUE INDEX users_email_unique ON users(email) WHERE email IS NOT NULL;
+
+-- Create-or-refresh, in one statement.
+--
+-- The UPSERT matters: two sign-ins racing for the same new account would both
+-- see "no such user" on a find-then-insert and one would fail the UNIQUE
+-- constraint. ON CONFLICT makes the second a refresh instead of an error, which
+-- is also exactly the behaviour we want on every ordinary repeat sign-in.
+--
+-- RETURNING avoids a second round-trip for the id, and works because the
+-- 3.38 dialect is declared in server/build.gradle.kts.
+upsert:
+INSERT INTO users (provider, provider_id, provider_name, email, email_verified, is_sys_admin, created_at)
+VALUES (
+    :provider, :providerId, :providerName, :email,
+    -- Derived from the address rather than passed beside it, so the two cannot be
+    -- bound to values that disagree. A non-null `email` reaching this statement is
+    -- one a provider confirmed or a mailed code proved — see ProviderIdentity.email,
+    -- which drops an unconfirmed address rather than carrying it with a caveat.
+    CASE WHEN :email IS NOT NULL THEN 1 ELSE 0 END,
+    -- The first user to sign in becomes the instance admin.
+    --
+    -- Evaluated before this row lands, so it is 1 only on a genuinely empty
+    -- table. EXISTS rather than count(*) — it stops at the first row.
+    --
+    -- Inside the INSERT rather than a separate `SELECT count(*)` then insert,
+    -- because that races: two people signing in at once on a fresh database
+    -- would both see zero and both become admin. DatabaseDispatcher already
+    -- serializes every query to one thread so this cannot bite today; this is
+    -- belt to that brace, and it costs one subquery on a statement that runs
+    -- once per sign-in.
+    (SELECT CASE WHEN EXISTS(SELECT 1 FROM users) THEN 0 ELSE 1 END),
+    :createdAt
+)
+ON CONFLICT (provider, provider_id) DO UPDATE SET
+    provider_name = excluded.provider_name,
+    -- COALESCE, not assignment: a provider stops returning an address the moment
+    -- a user flips it private, and a later sign-in must not erase what an earlier
+    -- one learned. Absent means "no news", not "gone".
+    email = COALESCE(excluded.email, users.email),
+    -- Follows the address, and only when the address actually moves. A sign-in
+    -- carrying no address leaves both columns alone rather than un-verifying a row
+    -- that was proved last week; a sign-in carrying one has, by construction,
+    -- proved it. The alternative — a flat `= 1` — would mark an address verified
+    -- on the strength of a sign-in that said nothing about it.
+    email_verified = CASE WHEN excluded.email IS NOT NULL THEN 1 ELSE users.email_verified END
+    -- is_sys_admin, display_name, mcp_enabled and mcp_allowed are deliberately
+    -- absent. Recomputing admin on every sign-in would be a bug with teeth;
+    -- display_name is the user's — the provider has no business overwriting it —
+    -- and mcp_enabled is a setting the user chose, which signing in again is not
+    -- a request to revisit. Resetting it here would silently disconnect every
+    -- agent the moment its owner opened the web app.
+    --
+    -- mcp_allowed is absent for a sharper reason than any of those: it is an
+    -- admin's decision, and this statement runs on behalf of whoever is signing
+    -- in. A user who could reset their own permission by signing out and back in
+    -- would not have a permission.
+RETURNING id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed;
+
+findById:
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed
+FROM users
+WHERE id = ?;
+
+-- The account behind a verified address. **The find half of find-or-create.**
+--
+-- The address must already be normalized — trimmed and lowercased, by
+-- normalizeEmail — because this is an equality test and a lookup that spelled the
+-- address differently from the write would simply miss the row and create a
+-- second account. That is why normalization is one function called on every path
+-- rather than a rule each path remembers.
+--
+-- No `AND email_verified = 1`, deliberately. Every non-null address in this table
+-- after LNL-73 is one somebody proved: the OAuth path drops Google's unconfirmed
+-- ones before they arrive, and the only other writer is a redeemed code. The
+-- rows that predate all of that are unverified *and* are the ones their owner
+-- reunites with by proving the address — filtering them out here would strand
+-- exactly those people in a second account, which is the failure this ticket
+-- exists to prevent.
+findByEmail:
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed
+FROM users
+WHERE email = ?;
+
+-- Refresh a row found by address on a repeat sign-in.
+--
+-- The e-mail-keyed twin of `upsert`'s ON CONFLICT branch, and it updates exactly
+-- the same two things for exactly the same reasons: the provider's name, which is
+-- theirs to change, and the verified flag, because arriving here at all means the
+-- address was just proved again.
+--
+-- What it pointedly does not touch is the same list: `is_sys_admin`,
+-- `display_name`, `mcp_enabled`, `mcp_allowed` — and now also `provider` and
+-- `provider_id`, which record how the row was *created* and would otherwise be
+-- rewritten every time somebody signed in by a different method than they
+-- registered with. `email` itself is not touched either: it is what was matched
+-- on, so writing it would be writing the value back over itself.
+refreshOnSignIn:
+UPDATE users SET provider_name = ?, email_verified = 1 WHERE id = ?;
+
+-- Every account, for the admin's impersonation menu — and for nothing else.
+--
+-- The route that calls this is the only one, and it refuses anyone whose session
+-- is not an admin's. Worth saying here because a `selectAll` on `users` is the
+-- kind of query that gets reused casually: this table holds an email per row, so
+-- anything reaching for it must decide what it is allowed to send onward. See
+-- AuthRoutes' impersonation routes, which map to UserOption — a name and an id.
+--
+-- Ordered by the name the menu shows, not by id: the menu is a list a human
+-- scans, and insertion order is meaningless to them.
+selectAll:
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed
+FROM users
+ORDER BY COALESCE(display_name, provider_name) COLLATE NOCASE;
+
+-- The user's own display-name override. Null clears it, falling the UI back to
+-- provider_name.
+setDisplayName:
+UPDATE users SET display_name = ? WHERE id = ?;
+
+-- The user's own e-mail, and whether it has been proved. Null clears it, which
+-- also removes their ability to receive notifications — theirs to do. Unlike the
+-- upsert's COALESCE, this is a deliberate assignment: a user editing the field is
+-- stating the new value, not reporting "no news", so a cleared field must
+-- actually clear.
+--
+-- The two columns move together and there is deliberately no way to write one
+-- without the other. A `setEmail` that left `email_verified` alone would leave
+-- the flag describing the *previous* address — which is exactly the lie the
+-- column exists to prevent, and would be a silent one.
+setEmail:
+UPDATE users SET email = ?, email_verified = ? WHERE id = ?;
+
+-- The user's own MCP kill switch. See the column's comment for what it does and
+-- does not do. Called only on behalf of the user themselves.
+setMcpEnabled:
+UPDATE users SET mcp_enabled = ? WHERE id = ?;
+
+-- The admin's MCP permission. A separate statement from setMcpEnabled rather
+-- than one that writes both, because they are two different people's decisions
+-- and the whole point of the pair is that neither overwrites the other.
+setMcpAllowed:
+UPDATE users SET mcp_allowed = ? WHERE id = ?;

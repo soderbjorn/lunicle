@@ -1,0 +1,4395 @@
+/* ============================================================
+   Lunicle — content styles inside the lunula shell.
+
+   Every colour routes through the toolkit's flat `--t-<token>`
+   palette (painted on :root by the shell's applyTheme on every
+   theme change), so the board, the issue windows and the modals
+   follow whichever theme the user picks — Lunamux Dark by
+   default — in both appearances. The fallbacks are the original
+   hand-written "Lunamux Dark" values, so the content is legible
+   for the beat before the shell's first paint.
+
+   NOTE: the --green* custom-property names are historical, kept
+   from the pre-toolkit stylesheet (in step with lunamux-web) —
+   they hold "primary/accent/dim text", not green.
+   ============================================================ */
+
+:root {
+  --bg:        var(--t-bg, #04090f);          /* ground */
+  /* NOTE on tokens: a lunamux pane's INTERIOR is painted in --t-surface
+     (white-ish under Lemonade, raised navy under the dark themes) against
+     --t-bg/--t-canvas chrome. Window interiors here (board, issue) use
+     --panel for that reason, with --bg supplying the quieter tone for the
+     columns sitting on them. Measured, not assumed: under Lemonade,
+     --t-canvas equals --t-bg (the soft yellow) and --t-surface is the
+     near-white — the reverse of what the names suggest. */
+  --panel:     var(--t-surface, #070f1a);     /* surface — window interiors */
+  --panel-2:   var(--t-surface-alt, #0b1626); /* raised surface */
+  --green:     var(--t-text, #4dc8f5);        /* primary text */
+  --green-hi:  var(--t-accent, #66d9ff);      /* bright accent */
+  --green-dim: var(--t-text-dim, #5f7590);    /* secondary / comments */
+  --border:    var(--t-border, rgba(77, 200, 245, .20));
+  --border-hi: var(--t-accent-soft, rgba(77, 200, 245, .45));
+  --glow:      var(--t-glow, rgba(77, 200, 245, .35));
+  --red:       var(--t-danger, #ff5f57);
+  --yellow:    var(--t-warn, #febc2e);        /* validation */
+  --ok:        var(--t-add, #4dd6c0);         /* positive / "has this" */
+  --head:      var(--t-text-bright, #eaf3fb); /* headings and field text */
+  --body:      var(--t-text, #cfe0ee);        /* running text */
+  /* The role-split halves of the four signal colours (toolkit's `…On` /
+     `…Text` tokens). A colour used as a FIELD and the same colour used as
+     TYPE have opposite requirements, and until the toolkit split them a
+     single token had to satisfy both — which is how a palette ends up
+     pre-darkened everywhere to survive its worst context.
+
+       --*-on   → type that sits ON a fill of that colour.
+       --*-text → that colour rendered AS type on an ordinary surface.
+
+     Each falls back to the undivided token, so a theme that hasn't declared
+     the pair renders exactly as it did before. */
+  --yellow-on:   var(--t-warn-on, #1a1400);
+  --yellow-text: var(--t-warn-text, var(--t-warn, #febc2e));
+  --red-text:    var(--t-danger-text, var(--t-danger, #ff5f57));
+  --ok-text:     var(--t-add-text, var(--t-add, #4dd6c0));
+  --accent-on:   var(--t-accent-on, #000000);
+  /* The accent as TYPE. `--green-hi` is the accent's fill value — right for a
+     rail, a drop-target wash or a focus ring, and wrong for 11px text: under a
+     light brand theme whose accent is a bright amber, accent-on-pale lands
+     around 1.9:1. Anything that renders the accent as glyphs reads this
+     instead. Falls back to `--green-hi`, so a theme that hasn't declared the
+     pair keeps exactly the colour it had. */
+  --green-hi-text: var(--t-accent-text, var(--t-accent, #66d9ff));
+
+  /* ── The CHROME zone ─────────────────────────────────────────────
+     Everything above maps the toolkit's CONTENT tokens, which is correct for
+     the board and the issue windows: those live inside a pane, and a pane's
+     interior is the content zone.
+
+     Lunicle's top strip does not live there. It is chrome — the same band
+     that carries the tab strip in Lunamux — and the toolkit gives chrome its
+     own tokens precisely because a theme may paint the two zones
+     differently. Reading `--t-accent` up there was not a shade being
+     slightly off; it was the wrong zone, and it went unnoticed only because
+     every theme so far kept the two accents identical.
+
+     Framna is the theme that exposed it: its chrome accent is signal green
+     and its content accent is amber. So the same top strip came out green in
+     Lunamux (a tab strip, correctly on chrome tokens) and amber in Lunicle —
+     one bar, two colours, across two apps sharing one theme.
+
+     Each falls back to its content counterpart, so a theme that does not
+     split its zones renders exactly as it did before. */
+  --chrome-accent:      var(--t-chrome-accent, var(--t-accent, #66d9ff));
+  /* The chrome accent AS TYPE — glyphs and labels, where the fill value is
+     chosen for a field and can be far too light to read. The same role split
+     as `--green-hi-text` above. */
+  --chrome-accent-text: var(--t-chrome-accent-text, var(--chrome-accent));
+  --chrome-text:        var(--t-chrome-text, var(--t-text, #cfe0ee));
+  --chrome-text-dim:    var(--t-chrome-text-dim, var(--t-text-dim, #5f7590));
+  --chrome-head:        var(--t-chrome-text-bright, var(--t-text-bright, #eaf3fb));
+  --chrome-track:       var(--t-chrome-track, var(--t-surface-alt, #0b1626));
+  --chrome-border:      var(--t-chrome-border, var(--t-border, rgba(77, 200, 245, .20)));
+
+  /* The two CONTENT font faces, wired to lunula's per-surface content tokens
+     (LNL-118). lunula paints `--dt-font-mono` / `--dt-font-prop` on
+     documentElement when a user picks a Monospaced / Proportional (main-content)
+     font in the Appearance panel, or when a deployment brand defaults one; those
+     tokens are otherwise UNSET, so each `var()` here falls through to the exact
+     stack Lunicle always shipped. That fallthrough is what keeps an unbranded,
+     un-overridden instance byte-identical — prose and code both resolve to the
+     same monospace stack, the terminal look Lunicle was born with — while a
+     brand or a user pick lifts prose to a proportional face and leaves code
+     monospaced.
+
+       --mono  → code / fixed-width surfaces (`code`, `pre`, ticket numbers,
+                 copyable server URLs) — anything alignment-sensitive.
+       --prose → running content (issue titles, card text, dialog copy, fields,
+                 the rendered description). This is the `body` default below, so
+                 every content element inherits it unless it opts back into
+                 `--mono`. */
+  --mono:  var(--dt-font-mono, ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace);
+  --prose: var(--dt-font-prop, ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  /* Transparent rather than painted: inside the lunamux.dev iframe the
+     surrounding page's background shows through, so the embed has no seam.
+     Opened directly, the html background below supplies the ground. */
+  background: transparent;
+  color: var(--green);
+  /* Prose is the content default; code/fixed-width surfaces opt back into
+     `--mono` (see the `code, pre` rule below and .sprint-plan-key/.copy-value).
+     Unbranded, `--prose` resolves to the same monospace stack as `--mono`, so
+     this is byte-identical to the old `var(--mono)` here. */
+  font-family: var(--prose);
+  /* Reads the toolkit's prose-size var so an Appearance pick — or a
+     deployment brand's `defaultProseFontSizePx` — actually reaches the
+     content. The 15px fallback is the size Lunicle always shipped, so an
+     unbranded, un-overridden instance is unchanged. Without this the family
+     was themeable but the size was not, and a brand that asked for larger
+     type got the same 15px. */
+  font-size: var(--dt-font-prop-size, 15px);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+html { background: var(--bg); }
+
+/* Code and other fixed-width surfaces opt back out of the prose default (LNL-118).
+   `body` sets `--prose`, which every element inherits; these semantic elements —
+   inline code and code fences in a rendered description, the delete-confirm phrase
+   echo (a bare <code>, see Modal.kt), keyboard/sample runs — are alignment- or
+   glyph-sensitive and must track the Monospaced (main-content) font instead, so a
+   brand that lifts prose to a proportional face leaves them monospaced. Unbranded,
+   `--mono` is the same stack `body` used to carry, so this changes nothing on a
+   default instance. Class-based mono surfaces (.sprint-plan-key, .copy-value) name
+   `--mono` directly and are unaffected. */
+code, pre, kbd, samp { font-family: var(--mono); }
+
+/* ============================================================
+   Scrollbars
+
+   Painted from the palette rather than left to the browser. A native
+   scrollbar takes its colour from `color-scheme`, which the shell's
+   applyTheme sets from the *appearance* (Auto/Dark/Light) — not from the
+   lightness of the palette on screen (see isDarkActive). Lunicle seeds
+   appearance to Dark (main.kt), so a light theme like Lemonade paints a
+   near-black track across the bottom of the board: light palette, dark
+   scrollbar. Driving them off --t-* instead keeps them with whatever is
+   actually on screen, whichever way that mismatch falls.
+
+   Both spellings, and they are not redundant: scrollbar-color is the
+   standard one (Firefox, Chrome 121+), ::-webkit-scrollbar is what Safari
+   still needs. Neither the toolkit nor this stylesheet styled scrollbars
+   before, so this fills a gap rather than overriding anything — which is
+   also why it is unscoped: the shell's own scrolling chrome has the same
+   problem, and a thumb that changed colour at the pane border would be
+   worse than either tone alone.
+
+   --green-dim (text-dim) for the thumb, not --border-hi: the border tokens
+   are translucent by design and a .45-alpha thumb reads as a smudge. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--green-dim) transparent;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+/* Inset via a transparent border rather than a smaller thumb: background-clip
+   keeps the fill off the border box, so the thumb has breathing room without
+   the track having to be painted to supply it. */
+::-webkit-scrollbar-thumb {
+  background: var(--green-dim);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--green); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ============================================================
+   Windows — Lunicle's content inside the lunula shell.
+
+   The old page shell (layout grid, top bar, sticky footer) is
+   gone: the toolkit owns the app frame, the top bar and the
+   bottom bar now. What is left to lay out is the INSIDE of two
+   window kinds — the board pane and the issue panes — plus the
+   bits Lunicle contributes to the toolkit's chrome slots.
+   ============================================================ */
+
+/* The board window's content: switcher row on top, board taking
+   the rest, scrolling in both directions inside the pane. */
+.board-pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+  min-width: 0;
+  /* The surface tone — what a lunamux pane's interior is painted in
+     (white-ish under Lemonade, raised navy under the dark themes). Without
+     this the board interior kept the window-chrome tone and the columns
+     supplied the surface one — the same two colours, inverted, which read
+     as off against every lunamux pane. See the :root token note. */
+  background: var(--panel);
+}
+
+.board-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding-bottom: 12px;
+}
+
+/* The live filter box, at the leading (far-left) edge of the toolbar — LNL-94.
+   It is a `.field`, so the surface, border and focus glow come for free; only its
+   width and its place are set here. The `.board-toolbar` flex gap keeps the
+   sprint scope, when present, a comfortable step to its right. */
+.board-filter {
+  flex: none;
+  width: 220px;
+  max-width: 40%;
+  padding: 8px 12px;
+}
+
+.board-pane .board {
+  flex: 1;
+  min-height: 0;
+  /* The board scrolls sideways only; the vertical scroll belongs to each lane
+     (.column-list below). Scrolling the whole board vertically carried the
+     column heads off the top with the cards, so a long column left you reading
+     nameless lists — the heads have to stay put while their own cards move. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* An issue window's content: the body bands take the slack, the
+   footer buttons stay pinned at the bottom of the pane. */
+.issue-window-host { height: 100%; }
+
+.issue-window {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+  min-width: 0;
+  /* Surface interior, same reasoning as .board-pane: an issue window is a
+     document being read, and documents live on the content surface. */
+  background: var(--panel);
+}
+
+/* The body reuses the modal-large band layout (.modal-body /
+   .issue-fields / .issue-scroll / .editor-host below) — the
+   issue window IS the old issue dialog, re-housed.
+
+   With one deliberate difference: here the body itself is the scroll region,
+   so the identity band scrolls away with everything else. In the dialog that
+   band is pinned (see .issue-fields), which was right for a dialog sized to
+   the viewport but wrong for a pane the user can make short: a tall header —
+   byline, watchers, four field cells, two chip rows — could claim the whole
+   pane, leaving the description nothing to scroll in and no way to reach it. */
+.issue-window .modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  /* The scrollbar's gutter, moved up here from .issue-scroll along with the
+     scrolling itself. */
+  padding-right: 14px;
+}
+
+/* The reading face is no longer a scroll region of its own — it just flows in
+   the body's, under the fields. */
+.issue-window .issue-scroll {
+  flex: none;
+  overflow-y: visible;
+  padding-right: 0;
+}
+
+/* The editor still takes the pane's slack, but it no longer shrinks without
+   limit: below this the body overflows and the fields above scroll away
+   instead, which is the whole point. Deliberately overrides the `min-height: 0`
+   that the shared rule sets for the dialog. */
+.issue-window .modal-body.editing .editor-host {
+  min-height: 280px;
+}
+
+/* The loading state (LNL-135): shown in place of the whole body until the first
+   fetch returns, so the window never flashes the default-empty read face — a
+   byline reading "A deleted account", a title reading "Untitled" — for the
+   second the round-trip takes. Toggled from IssueWindow.render; hidden here by
+   default so it never shows on a loaded window. */
+.issue-loading {
+  display: none;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+}
+
+.issue-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  /* Track in a faded ink, the top arc in full ink, so the rotation reads. Uses
+     the theme's own text colour rather than a fixed grey — legible in light and
+     dark alike. */
+  border: 3px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  box-sizing: border-box;
+  animation: lnl-spin 0.8s linear infinite;
+}
+
+@keyframes lnl-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .issue-spinner { animation-duration: 1.6s; }
+}
+
+.issue-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* The bar's padding, rebalanced around the maximised board. The pane's
+   border sits 12px in from the frame edge (4px maximised-pane inset + the
+   8px frame pad), and that 12 is the measure the bar's content has to
+   agree with on every side: the same 12 above the text (the inset and the
+   frame pad supply it — the bar adds nothing on top), 12 below it, and 12
+   from the left edge to the brand icon so the brand lines up with the
+   pane's border rather than floating at its own indent. The toolkit's own
+   2px/16px is tuned for a bar inside busier chrome; here the bar borders
+   the pane directly and the pane sets the grid.
+
+   Doubled ancestor selector for the same reason as .dt-modal-backdrop
+   below: the toolkit's sheet is injected after this one, so a bare
+   .dt-bottombar here would lose the tie. */
+.dt-app-frame-bottombar .dt-bottombar {
+  padding: 0 12px 12px;
+}
+
+/* The "+" menu's rows, back in the chrome's proportional face.
+   The toolkit gives .dt-hover-menu-item `font: inherit` and mounts the menu
+   on the body, so Lunicle's mono body font — meant for the CONTENT, the board
+   and the issue windows — leaked into it, and "New issue"/"New project" came
+   out fixed-width while every other piece of chrome (sidebar, top bar,
+   tooltips) stayed proportional. Naming the family here on the menu box, not
+   the item, is enough: `font: inherit` then picks it up. Same fallback stack
+   the toolkit's own sidebar rule carries, so a theme that sets
+   --dt-font-sidebar still wins and the menu matches the sidebar either way. */
+.dt-hover-menu {
+  font-family: var(--dt-font-sidebar, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif);
+}
+
+/* The project navigator on the topbar's leading edge — the picker plus the
+   project gear and statistics buttons, moved up out of the board toolbar by
+   LNL-84 (see ProjectBar). No padding of its own: the topbar's leading cluster
+   already places it against the same edge the account corner lines up against,
+   and padding here would push it off. The 10px gap and centre alignment match
+   what these same controls had in .board-toolbar. */
+.topbar-project {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* The brand/identity line. It began life on a sticky footer, moved to the
+   topbar's leading edge, then to the bottom bar (LNL-84) when the project
+   navigator took that edge over, and now sits centered in the topbar's middle
+   slot (AppShellSpec.topbarCenter) between the project navigator and the "+"
+   cluster. No padding of its own: the toolkit's centered middle slot
+   (.dt-topbar-tabstrip--center) positions it. */
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* When a deployment brand is present, the Lunicle wordmark joins the project
+   picker in the leading slot (main.kt topbarLeading). This row holds the two,
+   left-aligned, with a bit more air between picker and wordmark than the brand
+   cluster's own 8px. */
+.topbar-leading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-brand-name {
+  color: var(--chrome-text-dim);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  /* One line: the bar is a slim fixed-height strip and the identity must not
+     wrap it taller on a narrow window. */
+  white-space: nowrap;
+}
+
+/* The "Open the full site" link shown in the leading slot when the tracker is
+   embedded in another site (see main.kt's fullSiteLink). Rides beside the brand
+   line at the same weight, accented so it is obviously the clickable part, and
+   set off from the brand by a separator pipe. */
+.topbar-full-site-link {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--chrome-text);
+  text-decoration: none;
+}
+
+.topbar-full-site-link::before {
+  content: "";
+  width: 1px;
+  height: 14px;
+  margin: 0 8px 0 4px;
+  background: var(--chrome-text-dim);
+  opacity: .4;
+}
+
+.topbar-full-site-link:hover { opacity: .8; }
+
+/* The sign-in/profile corner, now living in the toolkit's
+   trailing top-bar slot. */
+.topbar-account {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* The closed face of a Dropdown (see Dom.kt) — a <button> the user reads as a
+   value with a chevron. It is not a <select>: `appearance: none` takes the
+   platform's chrome off the *closed* control, but the OS draws the *open* list
+   itself — an Aqua popup with a system-blue selection, in nobody's palette but
+   the OS's — and that surface a stylesheet cannot reach. So the open list is our
+   own themed menu (.dt-hover-menu, mounted on the body), and the closed control
+   is this button, dressed to read exactly as the old <select> did.
+
+   This base carries only what both variants share: the native-chrome reset, the
+   chevron, and left-aligned text (a button centres its label; a value belongs at
+   the leading edge, where the menu's rows start beneath it). Surface — border,
+   radius, padding, background — is the variant's own, because the two live on
+   different surfaces on purpose: .picker sits in the top bar on --panel-2,
+   .dropdown.field sits in a dialog beside text inputs on --bg.
+
+   Deliberately no background-COLOR here, only the arrow image: a colour here
+   would paint over whichever surface the variant sets below. */
+.dropdown {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  color: var(--head);
+  text-align: left;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2366d9ff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px 8px;
+  cursor: pointer;
+}
+
+/* The chrome variant: this is the only .dropdown that lives on the top bar
+   rather than inside a pane, so it takes the chrome surface while
+   `.dropdown.field` (issue editor, inside a window) keeps the content one.
+   `color` is set here because the `.dropdown` base sets the content --head. */
+.picker {
+  font-size: 14px;
+  color: var(--chrome-head);
+  background-color: var(--chrome-track);
+  border: 1px solid var(--chrome-border);
+  border-radius: 4px;
+  padding: 8px 38px 8px 12px;
+  min-width: 200px;
+}
+
+/* The three dropdowns in the issue editor. `.field` brings the text-input
+   surface (border, radius, padding, --bg) so they sit level with the title
+   input beside them; this only reserves room for the chevron on the right.
+   The arrow's inset and the padding are one measurement made twice and must
+   agree — a padding smaller than inset + arrow width lets a long name run
+   under the arrow. Keep padding-right >= 14 + 12 + a few px of air. */
+.dropdown.field {
+  padding-right: 38px;
+}
+
+/* Focus: the picker rings in the CHROME accent (it is chrome), every other
+   dropdown in the content one. */
+.picker:focus { outline: none; border-color: var(--chrome-accent); box-shadow: 0 0 10px var(--glow); }
+.dropdown:focus { outline: none; border-color: var(--green-hi); box-shadow: 0 0 10px var(--glow); }
+
+/* The open list needs no chrome rules here: it is a .dt-hover-menu, so the
+   toolkit paints it as it paints the shell's "+" menu, under every theme,
+   without us. Its width is set inline as a FLOOR — min-width, to the control it
+   drops out of (see Dropdown.open) — and is otherwise left to shrink-wrap the
+   longest row. The toolkit's own 180px floor is tuned for a topbar icon's menu,
+   and a menu narrower than its own button reads as a different control's.
+
+   The marker class the box carries is `lunicle-dropdown-menu`, and the prefix is
+   load-bearing: the toolkit has a `.dropdown-menu` of its own whose `right: 0`
+   silently stretched every one of these menus across the viewport. See
+   Dom.kt's MENU_CLASS and LNL-54 — the reason there is still nothing to style
+   here is that the collision was removed rather than overridden. */
+
+.icon-btn {
+  font-family: inherit;
+  line-height: 1;
+  color: var(--green-hi);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color .12s, box-shadow .12s;
+}
+
+.icon-btn:hover { border-color: var(--border-hi); box-shadow: 0 0 12px var(--glow); }
+
+/* The chrome variant. `.icon-btn` is worn by three different controls — the
+   project gear and statistics buttons on the top bar, the lightbox close, and
+   a board column's ⋮ — and only the first pair are chrome; the other two sit
+   inside a pane, where the content tokens above are already correct. So the
+   zone is selected by where the button actually lives rather than by a
+   modifier class: anything ProjectBar puts on the top bar is chrome by virtue
+   of being there, and there is no new class anyone can forget to apply. Same
+   reasoning as `.picker` vs `.dropdown.field`.
+
+   Without this the gear and the chart stayed on the content accent — amber
+   under Framna — beside a picker and a logo that had already moved to the
+   chrome accent, so the bar disagreed with itself. */
+.topbar-project .icon-btn {
+  color: var(--chrome-accent-text);
+  background: var(--chrome-track);
+  border-color: var(--chrome-border);
+}
+.topbar-project .icon-btn:hover { border-color: var(--chrome-accent); }
+
+/* ============================================================
+   Icons — the hand-drawn SVGs. See Icons.kt.
+
+   The span is what gets sized; the svg fills it. Sizing the svg
+   from outside means every caller repeats a width AND a height,
+   and one of them eventually gets forgotten.
+
+   `stroke: currentColor` in the markup is the whole trick: an
+   icon takes the colour of the button around it, so hover,
+   :disabled and the palette all reach it with no rules here.
+   ============================================================ */
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none; /* or a flex parent squashes the icon before it wraps the text */
+}
+
+.icon > svg {
+  width: 100%;
+  height: 100%;
+  display: block; /* an inline svg sits on the text baseline and adds descender space */
+}
+
+/* 20 in a 36px button. The emoji this replaced was set at font-size 15px and
+   drew nothing like 15px — a glyph's ink fills whatever fraction of its em box
+   the font decided, which is why the cogwheel read as small in a box that was
+   already the right size. A vector has no such gap: 20px of viewBox is 20px of
+   drawing. */
+.icon-gear { width: 20px; height: 20px; }
+/* The statistics bars, sized to the gear it sits beside — the two share a
+   toolbar and a 36px .icon-btn, so anything else reads as one of them being
+   wrong. The size must be set per icon class: .icon alone does not constrain
+   an svg with no width attribute, and an unsized one draws its strokes at
+   whatever the layout gives it. */
+.icon-chart { width: 20px; height: 20px; }
+/* 16, matching the size .dt-topbar-icon-button forces on every svg it wraps:
+   this one sits in the topbar's trailing slot with that whole row of toolkit
+   icons, and an icon there is read against its neighbours, not against the
+   36px .icon-btn the 20-in-36 note above is about. It is also what keeps
+   .account-btn inside .account's 30px row — 16 + 10 padding + 2 border = 28. */
+.icon-profile { width: 16px; height: 16px; }
+/* The brand mark takes the chrome accent's FILL value, not its text value —
+   the one place in the top strip that does. A logo is a graphic, not type: it
+   should be the brand's actual colour, and it is the same mark, in the same
+   band, as the tab strip Lunamux paints from `--t-chrome-accent`. Using the
+   text role here made Lunicle's mark a darker green than Lunamux's under the
+   same theme, which is precisely the cross-app inconsistency the chrome zone
+   exists to remove. (WCAG exempts logotypes from contrast minima for this
+   reason; the UI icons beside it keep the text role, where the floor does
+   apply.) */
+.icon-logo { width: 18px; height: 18px; color: var(--chrome-accent); }
+/* A deployment's brand logo (LNL-110). The built-in .icon-logo above is an 18px
+   square because the mark it holds is authored square; a brand SVG is usually a
+   wide wordmark, and forcing that into a square letterboxes it to a few pixels
+   tall. So size it by HEIGHT and let width follow the art's own aspect ratio
+   (overriding the .icon > svg stretch), capped so a very wide mark cannot crowd
+   the topbar's centre slot. Taller than .icon-logo's 18px — a wordmark's ink is
+   shorter than a solid glyph, so it needs the extra height to read as its equal;
+   24px still clears the 30px topbar row. */
+.icon-brand-logo { width: auto; height: 24px; max-width: 220px; color: var(--chrome-accent); }
+.icon-brand-logo > svg { width: auto; height: 100%; }
+/* Extra room between the "Hosted by" label and the brand mark it introduces —
+   on top of .topbar-brand's own 8px gap — so the attribution reads as label +
+   logo rather than one tight cluster. */
+.topbar-hosted-by { margin-right: 8px; }
+/* On the sign-in surface the brand mark is the hero, not a chrome accent, so it
+   gets more room than the topbar's 18px. (This selector was an unused hook until
+   the brand logo stopped being a fixed square — see SignInPickerDialog.) */
+/* Space beneath the mark: `.signin-methods` sets no gap, so without this the
+   logo sits right on top of the hint line. A clear step down separates the
+   brand from the words below it (LNL-153). */
+.signin-brand-logo { height: 40px; max-width: 280px; margin-bottom: 22px; }
+/* Sits inside .agent-badge beside 12px text; 13px keeps the drawing level with
+   the cap height rather than towering over it. Colour comes from the badge. */
+.icon-agent { width: 13px; height: 13px; }
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+
+/* The centring is load-bearing, not decoration. A button's text centres itself
+   only while the button is a *button* box; the moment the views show one with
+   `visible(displayValue = "inline-flex")` it becomes a flex container, and a
+   flex container ignores text-align and packs its line box at flex-start. With
+   .modal-footer's min-width the box is wider than the word, so "OK" sat left of
+   centre while "Cancel" — never toggled, so never inline-flex — stayed centred.
+   Declaring the flex box here means every .btn is the same box whether or not a
+   view has toggled it, and justify-content is what centres a flex line. */
+/* The .dt-modal-btn recipe from lunula.css, applied to every Lunicle
+   button so a button in an issue window is indistinguishable from one in a
+   toolkit dialog: 7px/18px padding, 6px radius, 13px, quiet --t-bg surface
+   with a --t-border border. Primary is the toolkit's confirm shape — accent
+   fill, bg-coloured label, weight 600, brightness hover. Danger is the
+   toolkit's muted `.dt-destructive` treatment — a translucent danger tint
+   with danger text/border — rather than the old solid-red border. */
+.btn {
+  font-family: inherit;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--green);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 18px;
+  cursor: pointer;
+  appearance: none;
+  transition: background .12s, border-color .12s, box-shadow .12s, color .12s, filter .12s;
+}
+
+/* Hover LIGHTS UP, deliberately beyond the dt recipe's surface swap. The
+   resting shape still matches a toolkit dialog's, but --bg → --panel is one
+   near-black to a neighbouring near-black and read as a dead button; the
+   border and the glow are what the eye actually catches, same treatment the
+   lunamux site's buttons use. */
+.btn:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--border-hi);
+  box-shadow: 0 0 10px var(--glow);
+}
+.btn:disabled { opacity: .5; cursor: default; }
+
+.btn-primary {
+  background: var(--green-hi);
+  color: var(--bg);
+  border-color: transparent;
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--green-hi);
+  border-color: transparent;
+  filter: brightness(1.12);
+  box-shadow: 0 0 14px var(--glow);
+}
+.btn-quiet { color: var(--green-dim); background: transparent; }
+/* A quiet button rests on whatever surface its dialog painted, so the base
+   hover's --panel fill can vanish into it — a translucent accent wash shows
+   on every surface, and the dim label brightens with it. */
+.btn-quiet:hover:not(:disabled) {
+  color: var(--green-hi);
+  background: color-mix(in srgb, var(--green-hi) 8%, transparent);
+}
+.btn-danger {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+}
+/* The danger variants restate border and glow in their own colour: without
+   this the base hover paints a cyan edge and cyan halo on a red button. */
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 26%, transparent);
+  border-color: color-mix(in srgb, var(--red) 60%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--red) 30%, transparent);
+}
+.btn-danger-quiet {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 30%, transparent);
+  background: transparent;
+}
+.btn-danger-quiet:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border-color: color-mix(in srgb, var(--red) 55%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--red) 25%, transparent);
+}
+
+/* A button that reads as a link — for per-comment actions, which must be
+   available without competing with the dialog's real buttons. */
+.link-btn {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--green-dim);
+  background: none;
+  border: none;
+  padding: 0 6px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn:hover { color: var(--green-hi); }
+.link-btn-danger:hover { color: var(--red); }
+
+/* ============================================================
+   Board
+   ============================================================ */
+
+.board {
+  display: flex;
+  gap: 12px;
+  /* `stretch`, not `flex-start`: the columns fill the board's height so each can
+     own its own vertical scroll (see .column-list). Left at flex-start every
+     column shrank to its cards and the board itself had to scroll. */
+  align-items: stretch;
+  /* The columns scroll sideways rather than squeezing. The default board is five
+     statuses and a project can add more, so the count is not ours to bound —
+     and narrowing columns to fit whatever it is makes every card unreadable. */
+  overflow-x: auto;
+  padding-bottom: 20px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* `flex: 1 1 220px` — grow to share the width, but never shrink below 220px.
+
+   The three parts each do a job, and the middle one is the one worth naming:
+     - grow 1: the columns divide whatever width is left between them, so a wide
+       monitor gets wide columns rather than a 1100px board and a lake of empty
+       space to its right.
+     - shrink 1 with min-width: they may not squeeze past 220px. Without the
+       min-width, `flex-shrink` would happily compress eight columns into a
+       phone's width and every card would be one word per line.
+     - basis 220px: the width they start from, and therefore the width they all
+       agree on before any growing happens.
+
+   Below that floor .board's `overflow-x: auto` takes over and the board scrolls,
+   which is the behaviour that was here before — it is now the fallback rather
+   than the norm. */
+.column {
+  /* A sunken well, not an outlined box. `--panel-2` is the toolkit's
+     surface-alt — the tone reserved for recessed areas (code blocks, gutters,
+     tracks) — and a column IS one: a trough the cards rest in.
+
+     Saying that with a tone lets the border go, and the border was doing real
+     damage. A five-column board drew five rectangles around groups of
+     rectangles, so the cards — the only things anyone came to read — competed
+     for edges with their own containers. With the well carrying the shape, the
+     white cards are the only outlined objects left, which is what makes them
+     read as objects. */
+  background: var(--panel-2);
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 13px 11px;
+  min-width: 220px;
+  flex: 1 1 220px;
+  transition: border-color .12s, background .12s;
+  /* A column of its own: the head pins, the list (below) takes the slack and
+     scrolls. `min-height: 0` lets that list actually shrink below its content
+     — without it a flex child refuses to, and the scroll never engages. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The drop target, while something is over it. Without this, dragging is
+   guesswork — nothing else tells you which column will take the card.
+
+   An accent wash, not a fill: the old #0a1524 was a fixed navy, which is the
+   ground tone of exactly one theme. Under Lemonade it dropped a black slab on
+   a yellow board. Washing the accent over whatever --bg the column already
+   paints tints the column instead of replacing it — same reasoning as
+   .btn-quiet:hover. */
+.column-drop {
+  border-color: var(--green-hi);
+  background: color-mix(in srgb, var(--green-hi) 10%, transparent);
+}
+
+.column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+/* The column's name, in the headline tone rather than the accent.
+
+   On the old outlined column the accent was what separated the head from the
+   cards. The well does that now, so the accent here was spending the board's
+   one attention colour on six labels that never change — leaving nothing left
+   to mark the cards that actually need attention. Weight and letterspacing
+   carry the hierarchy instead, which is what they are for. */
+.column-name {
+  color: var(--head);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+/* Title and its count, together at the head's leading edge (LNL-123). */
+.column-head-leading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The count rides right beside the title in a ring the same colour as the number,
+   so it reads as a small badge belonging to the column (LNL-123). Sized off a
+   min-width equal to its height: a one- or two-digit count is a circle, a longer
+   one relaxes into a pill rather than being clipped. */
+/* A filled slug on the well, not a ring. Against the sunken column the ring
+   read as a third outline weight competing with the card borders below it;
+   filling it with the card surface makes the count read as a small chip of the
+   same material the cards are made of. Still sized off a min-width equal to
+   its height, so one or two digits make a circle and a longer count relaxes
+   into a pill rather than clipping. */
+.column-count {
+  color: var(--green-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 20px;
+  height: 19px;
+  padding: 0 6px;
+  background: var(--panel);
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+/* The ⋮ menu, alone at the head's trailing edge. */
+.column-head-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The ⋮ overflow trigger. A quieter, smaller `.icon-btn`: it lives inside a title
+   row, not a toolbar, so the 36px chrome and the panel fill would both shout. No
+   border and no background until hover, and — the point of it — no presence at all
+   until the column is hovered or the button is focused, so a board nobody is
+   customising is exactly the board it was before this feature. Focus keeps it
+   reachable by keyboard, where hover cannot help. */
+.column-menu {
+  width: 22px;
+  height: 22px;
+  border-color: transparent;
+  background: transparent;
+  opacity: 0;
+  /* Kept in flow (not display:none) so showing it on hover does not reflow the
+     head and nudge the count sideways. */
+  transition: opacity .12s, border-color .12s, box-shadow .12s;
+}
+
+.column:hover .column-menu,
+.column-menu:focus-visible {
+  opacity: 1;
+}
+
+.column-menu:hover { border-color: var(--border-hi); box-shadow: 0 0 12px var(--glow); }
+
+.icon-ellipsis { width: 16px; height: 16px; }
+
+/* The rail of collapsed columns, at the board's leading edge (LNL-100).
+
+   A column-direction flex box that WRAPS: the boxes stack top-to-bottom, and when
+   a stack reaches the board's height they flow into a second stack to the right,
+   and so on. `align-self: stretch` (inherited from .board's align-items) is what
+   bounds the height so the wrap has something to wrap against; `flex: 0 0 auto`
+   keeps the rail as narrow as its content instead of claiming a lane's share of
+   the width the way a real column does. */
+.board-hidden-rail {
+  display: flex;
+  flex-flow: column wrap;
+  align-content: flex-start;
+  gap: 8px;
+  flex: 0 0 auto;
+  align-self: stretch;
+}
+
+/* One collapsed column: a narrow button whose title is turned on its side. Just
+   the name, turned 90° to read BOTTOM-TO-TOP — see .hidden-column-name. A whole
+   click restores the column (see BoardWindow). */
+.hidden-column {
+  flex: 0 0 auto;
+  width: 34px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 0;
+  font-family: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color .12s, box-shadow .12s, background .12s;
+}
+
+.hidden-column:hover { border-color: var(--border-hi); box-shadow: 0 0 12px var(--glow); }
+.hidden-column:focus-visible { outline: none; border-color: var(--green-hi); box-shadow: 0 0 10px var(--glow); }
+
+/* `writing-mode: vertical-rl` turns the name 90° and — unlike `transform: rotate`
+   alone — reserves the vertical space the turned text needs, so the box is exactly
+   as tall as its title rather than overlapping its neighbours. The added
+   `rotate(180deg)` flips the run to read bottom-to-top (the tilt you make reading
+   a book spine on a shelf), rather than vertical-rl's default top-to-bottom. The
+   rotate is in-place about the span's centre, so it changes the reading direction
+   without disturbing the space the writing-mode already reserved. */
+.hidden-column-name {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  color: var(--green-hi);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+/* Takes the column's slack and scrolls its own cards, so a long lane moves
+   under a head that stays put. `min-height: 0` for the same reason as .column:
+   a flex child needs it before `overflow-y: auto` will engage. */
+.column-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 40px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* The header over each run of cards — a priority's name, or a resolution's in a
+   closing column. See BoardColumn.groups.
+
+   Quieter than .column-name, and that hierarchy is the point: the column head is
+   the thing you navigate by, and a group header that shouted as loudly would make
+   a five-column board read as fifteen. Same uppercase letterspacing so they read
+   as the same *kind* of thing, two steps down in weight.
+
+   The negative top margin pulls each header closer to the cards under it than to
+   the ones above, against .column-list's uniform 8px gap. Without it the header
+   floats equidistant between two groups and stops belonging to either — the
+   oldest bug in list typography. First-child is exempt: there is nothing above
+   it to pull away from. */
+.group-head {
+  margin: 6px 0 -2px;
+  padding: 0 2px;
+  color: var(--green-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.group-head:first-child { margin-top: 0; }
+
+/* LNL-49, the other half. The header is where the priority is actually NAMED, so
+   it is where the colour is cheapest to read — "HIGH" in the warn colour teaches
+   what the amber rail on the cards below it means, and the rails then carry that
+   meaning down the lane on their own.
+
+   The same two tokens as the rails, and only those two: --t-warn and --t-danger
+   are the whole of what this palette says "attend to" with, and a third urgency
+   colour would have to be invented here rather than themed — which would mean a
+   board that stopped matching its theme the moment someone picked a different
+   one. See .agent-badge for when going outside the palette IS right; this is not
+   that case, because urgency is exactly what --t-warn and --t-danger are for. */
+/* The text-role halves of the two urgency tokens. A group header is 10px type
+   on the column well, which is the exact context `--red` / `--yellow` are NOT
+   chosen for — those are field colours, picked to look right as a 4px rail on
+   a white card. Reading the `…Text` siblings means the header can be the same
+   *concept* as the rail below it without having to be the same *value*, which
+   is the whole reason the toolkit split the roles. Each falls back to the
+   undivided token, so a theme that hasn't declared the pair is unchanged. */
+.group-head.priority-urgent { color: var(--red-text); }
+.group-head.priority-high { color: var(--yellow-text); }
+
+/* The resolution picker's buttons, stacked full width — the same shape as the
+   provider picker's, for the same reason: they are the choice, not a preview of
+   it. See ResolutionDialog. */
+.resolution-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.resolution-choice { width: 100%; padding: 11px 16px; }
+
+/* The radio variant (LNL-134): the resolutions become a radio list because a done
+   one now reveals a second question — the fixed version — before the dialog can be
+   confirmed. Each row is a clickable label so the whole strip, not just the dot, is
+   the target. */
+.resolution-choices-radio { gap: 4px; }
+.resolution-choice-radio {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.resolution-choice-radio:hover { background: var(--surface-hover, rgba(127, 127, 127, .08)); }
+.resolution-choice-label { font-size: 14px; }
+
+/* The fixed-version picker inside the resolution dialog. A field cell like the
+   editor's, revealed only once a done resolution is chosen — hidden with display,
+   so it takes no space until it is needed. */
+.resolution-version-cell {
+  margin-top: 14px;
+  flex-direction: column;
+  gap: 6px;
+}
+.resolution-version-cell .field-label { font-size: 12px; color: var(--text-dim); }
+
+/* The version dropdown's per-row ellipsis (LNL-134): a quiet control that only
+   asserts itself on hover, so a row of versions reads as a list of choices rather
+   than a list of menus. */
+.version-row-menu {
+  margin-left: auto;
+  padding: 0 6px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: .5;
+}
+.version-row-menu:hover { opacity: 1; }
+
+/* The inline "Add new version…" row and the field it becomes. The field fills the
+   menu it replaced, so naming a version happens without leaving the open dropdown. */
+.version-add-row { color: var(--text-dim); }
+.version-add-field { width: 100%; }
+
+/* Sprint planning: a scrollable list of tickable issues.
+
+   Bounded height with its own scrollbar, rather than letting the modal grow: a
+   backlog is however long a backlog is, and a dialog taller than the viewport
+   puts its own Save button off-screen — which on this list is the one control
+   you definitely need, since the ticks mean nothing until it is pressed. */
+.sprint-plan-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+  max-height: 45vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* A <label> wrapping the checkbox, so the whole row is the hit target. Ticking
+   fifteen issues by aiming at fifteen 13px boxes is the difference between a
+   planning tool and a chore. */
+.sprint-plan-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 7px 11px;
+  cursor: pointer;
+}
+
+.sprint-plan-row:hover { background: var(--panel-2); }
+
+.sprint-plan-check { cursor: pointer; }
+
+/* The ticket number, monospaced and dim: it is how you find the row you are
+   looking for, not what you read the row for. */
+.sprint-plan-key {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--green-dim);
+  flex: none;
+}
+
+/* One line, clipped. A wrapped title would make rows different heights and turn
+   a scannable list into a paragraph — and the title is a reminder of which issue
+   this is, not the issue itself. */
+.sprint-plan-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card {
+  /* The surface tone — same as a terminal pane's interior (and this board
+     window's own background). On the --bg-toned column the card reads as a
+     bright slip of the content surface, which is the most readable pairing
+     the palette offers: under Lemonade a near-white card on the soft-yellow
+     column, instead of the deeper-yellow-on-yellow that --panel-2 gave. */
+  background: var(--panel);
+  border: 1px solid var(--border);
+  /* The colour of the priority rail, painted below. A custom property rather
+     than the rule itself, because two other rules have to draw the rail as well
+     — see .card-drop-before — and this is what lets them do it without knowing
+     which priority the card has. */
+  --rail: transparent;
+  box-shadow: inset 4px 0 0 0 var(--rail);
+  /* Rounder, and padded off the rail. The card is the one object on the board
+     now that the column is a well, so it is allowed to look like one — and at
+     4px the corner read as a clipped rectangle rather than a considered
+     radius. The extra left padding clears the widened rail so the title does
+     not start on top of it. */
+  border-radius: 11px;
+  padding: 11px 12px 11px 14px;
+  cursor: pointer;
+  transition: border-color .12s;
+}
+
+/* Hover goes to the headline tone rather than the accent-soft border. The
+   accent now means "this card is urgent" (the rail) and "this pill is the one
+   to read" (the priority tag); reusing a weaker version of it for hover made
+   pointing at a card look like a claim about the card. A neutral darkening is
+   unambiguous — it says "you are here" and nothing else. */
+.card:hover { border-color: var(--head); }
+.card-dragging { opacity: .4; }
+
+/* LNL-49: how urgent this card is, repeating what the group header above it
+   says so that the answer is still on screen once that header has scrolled away.
+   Which cards get one is decided in MainScreenBackingViewModel.emphasisFor —
+   by position in the project's own scale, never by a priority's name.
+   Nothing here for the ordinary majority, and that is the design rather than an
+   omission: a board where every card is coloured highlights nothing.
+
+   Painted INSIDE the card by an inset shadow rather than as a fat left border.
+   The border version had to be reserved on every card — 3px of transparent edge
+   — or a card would widen the moment it was reprioritised and shove its title
+   sideways. But a transparent border is a gap in the outline: an ordinary card
+   was drawn with three sides and an open left edge, which read as a box someone
+   had cut the side off. An inset shadow paints within the existing box, so it
+   costs no width, needs nothing reserved, and leaves an unemphasised card as the
+   plain bordered rectangle it should have been all along. It follows the corner
+   radius, which a square-ended pseudo-element would not, and it no longer
+   collides with `.card:hover` — the rail and the border are now different
+   properties, so neither can overwrite the other. */
+.card.priority-urgent { --rail: var(--red); }
+.card.priority-high { --rail: var(--yellow); }
+
+/* Where the card will land. A line above or below the card under the pointer,
+   decided by which half of it the pointer is in — see makeReorderTarget.
+
+   An inset box-shadow rather than a border: a border would change the card's
+   height by 2px and nudge every card below it down as the pointer crossed the
+   midpoint, so the list would twitch under the drag. An inset shadow paints
+   inside the existing box and moves nothing.
+
+   Cyan, matching .column-drop's border: both answer "where does this land?", and
+   they are frequently on screen together — the column lights up while a card in
+   it shows the line.
+
+   Each carries the priority rail along with it. `box-shadow` is one property, so
+   a rule that sets it replaces the rail rather than adding to it, and a
+   two-class selector like `.card.priority-urgent` would otherwise outrank a
+   one-class `.card-drop-before` and leave the drop line invisible on exactly the
+   cards that draw the most attention. Re-stating the rail here — via `--rail`,
+   whose value the card already holds — keeps both marks on screen at once. */
+.card.card-drop-before { box-shadow: inset 0 2px 0 0 var(--green-hi), inset 4px 0 0 0 var(--rail); }
+.card.card-drop-after { box-shadow: inset 0 -2px 0 0 var(--green-hi), inset 4px 0 0 0 var(--rail); }
+
+/* Still clickable — a reader may open it — but it does not offer to move. */
+.card-readonly { cursor: pointer; }
+
+/* Three lines, then an ellipsis. A title is free text and someone will paste a
+   paragraph into one; a card that grows to fit pushes every card below it down
+   and turns the column into a wall.
+
+   `-webkit-line-clamp` with `display: -webkit-box` is the only thing that clamps
+   by LINE rather than by height, and despite the prefix it is not a WebKit
+   quirk — Firefox and Chrome both implement it under these exact names, which is
+   why the prefixed spelling is the portable one here. Clamping by `max-height`
+   instead would cut the fourth line in half rather than removing it, and would
+   have to be kept in step with line-height by hand.
+
+   The full title is in the tooltip and in the issue dialog, so nothing is
+   unreachable — see .card-title's title attribute in MainView. */
+.card-title {
+  margin: 0;
+  color: var(--body);
+  /* Brand display face when set, else inherit — see .issue-title above. */
+  font-family: var(--dt-font-display, inherit);
+  font-size: 12.5px;
+  line-height: 1.45;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* A URL pasted into a title is a link (LNL-112). Same accent as body links
+   (.markdown a) so a link reads as one wherever it appears, and underlined so it
+   is legible as one against the card without relying on colour alone. */
+.card-title a { color: var(--green-hi-text); text-decoration: underline; }
+
+/* LNL-154: the title line of an epic. A flex row so the child-count badge can sit
+   at the end of the line while the title takes the rest — the title is line-clamped
+   (display:-webkit-box) and cannot hold an inline sibling, so the badge rides beside
+   it here instead. Only epics get this wrapper; an ordinary card's title is a plain
+   child, unchanged. `align-items: flex-start` keeps the badge on the first line when
+   the title wraps to two or three. */
+.card-head { display: flex; align-items: flex-start; gap: 6px; }
+.card-head .card-title { flex: 1; min-width: 0; }
+
+/* The epic's child count — a FILLED pill, and deliberately unlike the outlined
+   label/component chips below (LNL-154). Those catalogue what the issue IS and share
+   the bordered, unfilled treatment; this is metadata ABOUT the card — how many
+   children hang off it — so it reads as a solid, muted slug rather than one more
+   property chip. Muted (the --green-dim secondary tone), because a relationship hint
+   should not outshout the title it annotates. --mono so the digit sits like the
+   ticket numbers elsewhere. flex-shrink:0 so a long title never squeezes it away. */
+.card-epic {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--green-dim);
+  color: var(--panel);
+  white-space: nowrap;
+}
+
+/* LNL-154: a child's back-reference to its epic — a thin muted line under the title,
+   carrying the parent's key ("↳ LMX-98") and clickable to open the parent. Muted
+   (--green-dim) because it points AT context rather than being the card's own
+   headline, and it brightens on hover like any link so it reads as one. --mono so
+   the key matches every other ticket key on screen. Its own line rather than beside
+   a tag: it is a different axis from the label/component chips — a relationship, not
+   a property — and the priority rail and chip row stay clear of it either way. */
+.card-parent { margin-top: 4px; }
+.card-parent-link {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--green-dim);
+  cursor: pointer;
+}
+.card-parent-link:hover { color: var(--green-hi); text-decoration: underline; }
+
+.card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+/* The author footer (LNL-157): a quiet muted line at the bottom of the card, clear
+   of the tags above it. The name is dim; when an agent filed it the .agent-badge
+   rides alongside, so the row wraps and stays baseline-aligned. */
+.card-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--green-dim);
+}
+.card-author .agent-badge { font-size: 11px; padding: 1px 6px 1px 4px; }
+
+/* Filled pills, not outlined ones.
+
+   A card carrying four chips used to draw four more rectangles inside a
+   rectangle inside a well, and outlines are the most expensive way to say
+   "this is a discrete thing" — they add an edge at every boundary. A quiet
+   fill says it with a tone instead, so the card's own border stays the only
+   line on it and the chips read as a row rather than as a grid.
+
+   The per-kind HUE survives, as the pill's text colour. It is not decoration:
+   each hue marks a different axis (what the issue is / when it is scheduled /
+   which release), and collapsing them to one grey would answer the shape
+   problem by deleting the information. What goes is the border, not the
+   meaning. */
+.tag {
+  /* inline-block, NOT inline-flex, and the difference is load-bearing rather
+     than stylistic. In the issue read view a `.tag-caption` ("STATUS",
+     "PRIORITY") is an inline caption sitting directly beside its tag inside a
+     plain block cell, so the two align on a shared text baseline — see
+     `.tag-caption`, whose own comment states the dependency.
+
+     An inline-flex box with a fixed height and centred content takes its
+     baseline from that centred line box instead, which dropped every pill a
+     couple of pixels below the caption beside it. Sizing from padding keeps
+     the pill shape and puts the baseline back where the caption expects it;
+     inside `.card-tags` (a flex row) the display is blockified anyway, so the
+     board cards are unaffected either way. */
+  display: inline-block;
+  font-size: 11.5px;
+  line-height: 1.45;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--panel-2);
+  color: var(--green-dim);
+  white-space: nowrap;
+}
+
+/* The accent's TEXT role, not its fill: these are 11px glyphs on a pale pill,
+   which is the exact context the fill value is not chosen for. */
+.tag-label { color: var(--green-hi-text); }
+.tag-component { color: #5fa8ff; }
+.tag-status { color: var(--green-hi-text); }
+/* The one filled pill in the set, and the only chip that earns a field of its
+   own colour. This chip appears in the issue window's read view (board cards
+   carry priority as the group head plus the card's rail, not as a tag), where
+   it sits in a row with status, resolution, sprint and version — and priority
+   is the only one of those that asks the reader to DO something. A row where
+   five chips shout is a row where none of them does.
+
+   `--yellow-on` is the type colour the theme declares for a warn-coloured
+   field, which is the thing that makes writing type directly on the brand
+   amber safe at all; before the roles were split there was no such colour and
+   this pill had to stay an outline. */
+.tag-priority {
+  background: var(--yellow);
+  color: var(--yellow-on);
+  font-weight: 600;
+}
+/* Dimmer than the rest, and the only one with no fill. A resolution exists
+   only on a closed issue, which is finished business — it should be the
+   quietest thing on the card, not merely one of the quiet ones. */
+.tag-resolution { background: transparent; color: var(--green-dim); }
+/* Violet, and the only tag that is. A sprint answers a different question from
+   every other chip here — those say what an issue IS, this says WHEN it is meant
+   to happen — so it reads as a different axis rather than as one more property.
+   Most boards never show it at all; see Sprints.sq. */
+.tag-sprint { color: #b294ff; }
+/* Planned and fixed version (LNL-134). A third axis again — which release the work
+   is scheduled for, or went out in — so a teal that is neither the sprint's violet
+   nor the resolution's green. Most boards never show it; see Versions.sq. */
+.tag-version { color: #5ec8d6; }
+
+/* The "made by an agent" badge, on an issue byline or a comment head.
+
+   Deliberately NOT a .tag. The tags catalogue what an issue IS — its labels, its
+   status — and share the outlined, unfilled treatment for that reason. This flags
+   where a row came FROM, which is a louder thing to say, so it is filled and
+   carries an icon the tags do not.
+
+   The colour is a violet the rest of the palette never reaches. Green, blue and
+   yellow are all "a human working"; a fourth hue that belongs to nothing else is
+   how the eye is told, before it reads a word, that this row was not typed by
+   hand. Not a --token because there is no theme slot for "machine" and inventing
+   one would let a theme quietly turn the signal green — but it still has to hold
+   in both themes, so `light-dark()` picks the shade off the `color-scheme` the
+   toolkit sets on :root: a deep violet on a light board, a bright one on a dark
+   one. A single fixed violet washed out on whichever background it was not tuned
+   for. The icon takes `currentColor`, so it follows the text either way. */
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 7px 2px 5px;
+  border-radius: 3px;
+  border: 1px solid light-dark(rgba(124, 58, 237, .55), rgba(185, 140, 255, .5));
+  background: light-dark(rgba(124, 58, 237, .1), rgba(185, 140, 255, .13));
+  color: light-dark(#6d28d9, #c4a2ff);
+  white-space: nowrap;
+}
+.agent-badge-label { line-height: 1; }
+
+/* On a board card the badge is the icon alone (LNL-157): the "Agent · …" label
+   costs more width than it earns there, and the name is on the title attribute
+   instead. Same pill, but the padding loses the asymmetry that only existed to
+   sit a label beside the glyph. */
+.agent-badge-icononly { gap: 0; padding: 2px 4px; }
+
+/* On the issue, the badge is its own line under the byline. Pulled up close to
+   the byline it belongs to (which carries 14px below it), and carrying that 14px
+   itself so the fields below keep their spacing whether or not the badge is
+   shown. */
+.issue-fields > .agent-badge { margin: -8px 0 14px; }
+
+.board-empty { color: var(--green-dim); font-size: 13px; }
+
+/* ============================================================
+   Modals
+   ============================================================ */
+
+/* Lunicle modals ride the toolkit's `.dt-modal*` classes for their entire
+   visual identity — surface, border, shadow, title, message, button row — so
+   they are indistinguishable from the lunula/lunamux dialogs and track any
+   toolkit restyle for free (see Modal.kt). The rules below carry only what dt
+   deliberately doesn't decide for us: our width band, and a scroll-friendly
+   backdrop. The doubled selectors are for specificity — the toolkit's styles
+   are injected at mount time, AFTER this sheet, so a single-class rule here
+   would lose every tie. */
+
+.dt-modal-backdrop.modal-backdrop {
+  /* flex-start + margin:auto on the panel, instead of dt's center: a flex
+     item centred that way and taller than the viewport overflows BOTH ends,
+     and the top half becomes unreachable — the scroll container will not
+     scroll above its content's start. Auto margins collapse to zero instead
+     of going negative, so a tall dialog pins to the top and scrolls
+     normally, while a short one still sits in the middle. */
+  align-items: flex-start;
+  padding: 40px 20px;
+  overflow-y: auto;
+  /* Same layer as the toolkit's own .dt-modal-backdrop (10000): a maximised
+     lunula pane is `z-index: 1000 !important`, and at the old page-era 10
+     the sign-in picker opened BEHIND the maximised board. One shared layer
+     means whichever dialog opened last paints on top (both mount into body
+     in open order). */
+  z-index: 10000;
+}
+
+.dt-modal.modal {
+  width: 100%;
+  max-width: 640px;
+  margin: auto; /* the vertical centring — see the backdrop comment above */
+}
+
+/* The prose dialogs — an issue with its comments, and a comment being written.
+
+   They differ from the default panel in two ways, and the second is the point:
+   they are WIDER, and they do not GROW. The default panel is fit-content and
+   lets the backdrop scroll, which is right for a form of six fields and wrong
+   for a thread: the panel got taller with every comment, so the title scrolled
+   off the top and the OK button sat somewhere below the fold, and reaching
+   either meant scrolling the whole dialog rather than the thing you were
+   reading.
+
+   Fixed height instead, with the body scrolling inside it. `height` and not
+   `max-height`: at max-height a short issue still produces a short panel, so the
+   dialog changes size as you click between issues — and the buttons move under
+   the cursor. A constant panel is worth more than a snug one here.
+
+   dvh, not vh: on a mobile browser vh counts the URL bar's space even while the
+   bar is covering it, which puts the footer under it. The 80px is the backdrop's
+   40px padding, twice. */
+.dt-modal.modal-large {
+  max-width: 880px;
+  height: calc(100dvh - 80px);
+  /* Beyond this the measure gets unreadable and the buttons end up a long way
+     from the text, on a desktop monitor in particular. */
+  max-height: 860px;
+  /* So .modal-body can be the flex child that takes the slack and scrolls. */
+  display: flex;
+  flex-direction: column;
+}
+
+/* The body is the flex child that takes the slack — but it does NOT scroll.
+   Its children do, and which one depends on the face being shown: the editor's
+   surface while editing, .issue-scroll while reading. See below.
+
+   min-height: 0 is load-bearing, not defensive. A flex item's default
+   `min-height: auto` refuses to shrink below its content, so any overflow-y
+   below this would never engage — the body would size to its whole content and
+   push the footer out of the panel, which is the bug this section fixes. It has
+   to be repeated on every nested flex child for the same reason; that is why it
+   appears four times between here and .editor-surface. */
+.modal-large .modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The issue's identity: title, status, priority, labels. Fixed — it does not
+   scroll away.
+
+   This is the whole point of the three-band split. Before it, the modal body
+   scrolled as one, so typing into a long description pushed the title, the
+   status and the priority off the top of the dialog: the fields describing the
+   thing you were editing were only visible when you were not editing it. */
+.issue-fields { flex: none; }
+
+/* The reading face — rendered description plus the comment thread — scrolling as
+   one. The fields above it stay put. */
+.issue-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* The scrollbar's gutter — same reasoning as .settings-body: it is laid out
+     inside this element, so without this the comment cards' right border ends
+     exactly where the thumb starts. .editor-surface, the other face of this
+     window, needs nothing: its own 12px padding already supplies the room. */
+  padding-right: 14px;
+}
+
+/* Emptying it is not enough. Every child of the reading face hides itself while
+   editing, but the box stays, and `flex: 1` on an empty box still claims its
+   half of the slack next to .editor-host — which is why the editor stopped
+   halfway down the dialog with nothing under it. */
+.modal-body.editing .issue-scroll { display: none; }
+
+/* The editor fills the rest of the dialog while editing, and its SURFACE is what
+   scrolls. The chain of `flex: 1; min-height: 0` from .modal-body down to
+   .editor-surface is what carries the height: break it at any link and the
+   editor either collapses to nothing or grows until the footer is gone. */
+/* `display: flex` belongs here and not only on the issue dialog's inline toggle.
+   The issue dialog shows and hides this box by face and so sets the display
+   itself (see IssueDialog.render); the comment dialog is only ever editing and
+   has nothing to toggle, so it inherited a plain block, `flex: 1` on .editor
+   meant nothing, and the editor sat at content height in a dialog twice its
+   size. The inline `none`/`flex` still outranks this, so the issue dialog is
+   unaffected. */
+.editor-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.editor-host .editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-host .editor-toolbar { flex: none; }
+
+.editor-host .editor-surface {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* A file being dragged over the editor: the surface advertises itself as the
+   drop target. The class rides on .editor (the root) — see MarkdownEditor's
+   drop wiring. */
+.editor-drop .editor-surface {
+  outline: 2px dashed var(--green-hi);
+  outline-offset: -4px;
+}
+
+/* Status and priority share a row — but the two faces of the dialog want
+   genuinely different rows, and giving them the same one was a bug worth naming.
+
+   READING is the default here: two tags, side by side, sized to their words. The
+   grid below applied to read mode too, which put "New" in a half-width track and
+   "Normal" marooned at the midpoint of the dialog with a hand's width of nothing
+   between them — two labels pretending to be columns of a table that does not
+   exist. */
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* EDITING wants the grid: two full-width selects sized to their content would
+   jump between "New" and "Ready for development" as the value changed, so the
+   tracks are equal and fixed. */
+/* auto-fit with a floor, not a fixed `1fr 1fr` or `1fr 1fr 1fr`: the row holds
+   two cells or three depending on whether the chosen status demands a resolution,
+   and the resolution cell appears and disappears as the status changes. A fixed
+   three-track grid would leave a hole where it was; a fixed two-track one would
+   wrap it to a second line. This sizes to whatever is actually there, and drops
+   to fewer columns rather than crushing them when the dialog is narrow. */
+/* The row owes its cells the 16px their labels cannot claim: a cell's <label> is
+   its first child, so `.field-label:first-child` zeroes the margin every other
+   label in the dialog uses to stand off the field above it. Without this, STATUS
+   sits on top of the title input. */
+.modal-body.editing .field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+.field-cell { min-width: 0; }
+
+/* Reading, the row is two or three cells of "CAPTION Tag" sitting next to each
+   other, so the space BETWEEN cells has to beat the space inside one — at the
+   8px the row uses by default, "PRIORITY" was as close to the status tag on its
+   left as to the priority tag it names on its right, which is precisely the
+   ambiguity the captions exist to remove. */
+.modal-body:not(.editing) .field-row { gap: 20px; }
+
+/* Label and component chips ride at the end of the read status/priority row
+   (LNL-14), so status, priority and the tags read as one wrapping chip line
+   instead of the tags claiming a band below. Drop the top margin .card-tags
+   carries for standing on its own line, so the chips sit level with the tags
+   beside them; scoped to read mode, where the row is a flex line — in edit mode
+   the row is a grid and .card-tags is hidden. */
+.modal-body:not(.editing) .field-row > .card-tags { margin-top: 0; }
+
+/* The read face's answer to .field-label-edit: the <label> above each select
+   names it while editing, this names the tag while reading. Neither is ever
+   visible at the same time as the other. Kept `inline` rather than made a flex
+   row on .field-cell on purpose — the resolution cell's display is driven by an
+   inline style (see render()), which no rule here can outrank. An inline caption
+   next to an inline-block tag flows onto one line inside a plain block cell, so
+   the layout does not depend on the cell's display at all. */
+.tag-caption { display: none; }
+
+.modal-body:not(.editing) .tag-caption {
+  display: inline;
+  margin-right: 7px;
+  color: var(--green-dim);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+/* Against a caption the tag's baseline sits low — it is an inline-block with
+   its own padding, so its baseline is its last line's, not its box's centre. */
+.issue-fields .field-cell .tag { vertical-align: middle; }
+
+/* Sized for a dialog, not for a card. .tag's 10px is right on a board where a
+   card carries four of them and the title is what matters; here they are two of
+   the six facts about the issue you are reading, and they were rendering as
+   fine print. */
+.issue-fields .tag {
+  font-size: 11px;
+  padding: 3px 8px;
+  line-height: 1.5;
+}
+
+/* The label above the FIRST field, which sits directly under the title bar and
+   needs no separation from it.
+
+   `:first-of-type` rather than `:first-child`, because in edit mode the first
+   child is the read-mode <h3> — hidden, but still first — so `:first-child`
+   matched nothing and the gap stayed.
+
+   The `>` is load-bearing and was missing. `:first-of-type` is scoped to an
+   element's own PARENT, not to the ancestor named on the left of the selector, so
+   without the child combinator this also matched the first label inside each
+   `.field-cell` — which is every one of them, since a cell holds exactly one
+   label. STATUS and PRIORITY lost their 16px and sat jammed under the title
+   field. The rule is about one label at the top of the dialog; the combinator is
+   what says so. */
+.issue-fields > label.field-label:first-of-type { margin-top: 0; }
+
+/* Title, message and button-row visuals come from the toolkit's
+   .dt-modal-title / .dt-modal-message / .dt-modal-buttons — see Modal.kt.
+   What remains here is layout the dt rules don't decide: the body band
+   between title and buttons, and the footer's vertical rhythm. */
+
+.modal-body { padding: 12px 0 0; }
+
+.dt-modal-buttons.modal-footer {
+  align-items: center;
+  margin-top: 16px;
+}
+
+/* A floor, not a fixed width. The footer buttons already share .btn's padding,
+   so they agree on height; what they disagreed on was width, because that came
+   from the text and "OK" is two characters against "Cancel"'s six. The dismissal
+   thereby ended up the bigger target of the pair, which is backwards. A min-width
+   evens the common cases without truncating a longer label like "Delete project",
+   which simply grows past it. */
+.modal-footer .btn { min-width: 92px; }
+
+.modal-footer-spacer { flex: 1; }
+.modal-error { color: var(--red); font-size: 12px; margin: 12px 0 0; }
+
+/* ============================================================
+   Fields
+   ============================================================ */
+
+.field-label {
+  display: block;
+  color: var(--green-dim);
+  font-size: 12px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin: 16px 0 6px;
+}
+
+.field-label:first-child { margin-top: 0; }
+
+/* Everything that only belongs in edit mode rides on one class on the body,
+   rather than being toggled element by element — there are six of them, and
+   forgetting one leaves a stray "Components" heading over a read-only issue. */
+.field-label-edit { display: none; }
+.modal-body.editing .field-label-edit { display: block; }
+
+.field {
+  width: 100%;
+  font-family: inherit;
+  /* Tracks the prose size like the body copy it sits among — a form whose
+     fields stay 15px while the prose around them grows reads as two documents. */
+  font-size: var(--dt-font-prop-size, 15px);
+  color: var(--head);
+  /* `background-color`, not the `background` shorthand: a .field is also worn by
+     the issue editor's dropdowns (.dropdown.field), and .dropdown draws its
+     chevron with `background-image`. The shorthand resets background-image to
+     none, and since this rule follows .dropdown at equal specificity it would
+     win and strip the arrow off every editor picker — which is exactly what it
+     did. The color longhand leaves the image alone. */
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 9px 11px;
+}
+
+.field:focus { outline: none; border-color: var(--green-hi); box-shadow: 0 0 10px var(--glow); }
+
+/* Ghost text, and it has to *look* ghosted. Unstyled, Chrome picks its own grey
+   — tuned for a white page, and bright enough against this near-black --bg that
+   a placeholder read as a filled-in value: the project dialog appeared to come
+   pre-filled with "Lunamux" / "LMX". --green-dim is what every other piece of
+   secondary text here uses (.field-hint, .field-label), so an example now reads
+   as an example. */
+.field::placeholder { color: var(--green-dim); opacity: 1; }
+.field-multiline { min-height: 180px; resize: vertical; line-height: 1.6; }
+
+.field-hint { color: var(--green-dim); font-size: 12px; margin: 6px 0 0; }
+.field-validation { color: var(--yellow); font-size: 13px; margin: 12px 0 0; }
+
+/* ── The sign-in method picker ───────────────────────────────────────────────
+
+   Two ways in — a provider popup and a mailed code — and the layout's whole job
+   is to make that an obvious either/or rather than a stack of controls. A
+   full-width provider button, an "or" rule, then the e-mail form as one grouped
+   unit reading as its peer. When only one method is configured the picker is not
+   shown at all (SignInView goes straight to the one method), so the "or" and the
+   second option only ever appear when there genuinely is a choice.
+
+   ── Its own measure, and its own padding ──────────────────────────────────
+
+   The default 640px modal is a form of six fields; an auth card of one field and
+   two buttons reads as stretched and empty at that width, and the toolkit's 20px
+   panel padding is tighter than a sign-in box should ever feel. So the panel
+   gets `modal-narrow` (a sign-in measure) and `modal-signin` (real breathing
+   room), and every gap below is sized for that column rather than inherited.
+
+   See SignInPickerDialog.kt and Modal's `panelClass`. */
+.dt-modal.modal-narrow { max-width: 460px; }
+
+/* Generous, even padding on all four sides — the toolkit's own 20px is the floor
+   for a dense form and the wrong feel for an auth card. The body's default
+   `padding: 12px 0 0` is overridden to nothing so this padding is the only inset
+   and the title, body and footer share one rhythm. */
+.modal-signin { padding: 32px; }
+.modal-signin .modal-body { padding: 22px 0 0; }
+.modal-signin .modal-footer { margin-top: 24px; }
+
+/* `text-wrap: pretty` keeps the last word off a line of its own: the wider panel
+   (see modal-narrow) is what a branded, proportional face needs to fit this line,
+   but the guard holds whatever the deployment's font measures — a lone "it." on
+   the last line was what LNL-153 called out. */
+.signin-hint { color: var(--green-dim); font-size: 13px; line-height: 1.55; margin: 0 0 22px; text-wrap: pretty; }
+
+.signin-methods { display: flex; flex-direction: column; }
+
+/* The provider button and the e-mail action share this: full width, real height,
+   so each reads as a way IN rather than a minor control. */
+.signin-provider,
+.signin-submit {
+  width: 100%;
+  justify-content: center;
+  padding: 13px 16px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* The submit button is an action taken ON the field above it, so it wants clear
+   separation from it — more than the group's base gap gives — without drifting so
+   far it stops reading as part of the same form. Added to the 16px group gap,
+   this puts the action a clear step below its field. */
+.signin-submit { margin-top: 10px; }
+
+/* "or", centred between two hairlines that grow to fill the width. Given plenty
+   of room top and bottom so the two paths sit clearly apart. */
+.signin-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 22px 0;
+  color: var(--green-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+}
+.signin-divider::before,
+.signin-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* The e-mail path as one unit: label, field, button, stacked and evenly spaced
+   so it stands beside the provider button rather than trailing off it. The label
+   loses .field-label's default top margin — the group's own gap carries the
+   rhythm. The field gets a touch more height to match the buttons' presence. */
+.signin-email,
+.signin-code { display: flex; flex-direction: column; gap: 16px; }
+.signin-email .field-label,
+.signin-code .field-label { margin: 0; }
+.signin-email .field,
+.signin-code .field { padding: 12px 13px; }
+.signin-code .field-hint { margin: 0; }
+
+/* "We sent a code to …" — brighter than a hint, since it is the thing the reader
+   is acting on, and given room above the field. */
+.signin-sent { color: var(--head); font-size: 14px; line-height: 1.55; margin: 0 0 4px; }
+
+/* The step-two "Use a different address" is a quiet retreat, not an action, so
+   it sits apart from the primary Sign in button above it and does not stretch. */
+.signin-code .btn-quiet { align-self: flex-start; margin-top: 4px; }
+
+/* A boolean and its label on one line, lunula's On/Off pair standing where
+   the checkbox used to. See Dom.kt's Toggle.
+
+   Label leads, pair trails. The label takes the slack, so the pairs land on a
+   common right edge and a column of them reads as one control per row rather
+   than as a ragged line of buttons each at its own indent. The pair keeps its
+   intrinsic width (`flex: none` on .toggle), so a long label — "Public —
+   anyone can read this project's issues…" — wraps and pushes the row taller
+   rather than squeezing the buttons.
+
+   `align-items: center` reads right for the one-line labels; a wrapped label
+   centres against the pair, which beats the checkbox row's old top-alignment
+   now that the control is 28px tall rather than a 13px box. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 0;
+  color: var(--body);
+  font-size: 13px;
+}
+
+.toggle-label { flex: 1; min-width: 0; }
+
+/* The pair itself. The buttons are the toolkit's own .dt-settings-choice-btn,
+   so they arrive themed; only the row's own gap is ours, tightened from the
+   sidebar's 6px because On/Off is a pair rather than a list of choices. */
+.toggle {
+  flex: none;
+  gap: 4px;
+}
+
+/* The toolkit sizes its choice buttons for a settings sidebar, where they are
+   the only thing on the row. In a dialog they sit next to running text and a
+   14px pad on a two-letter word left them looking like Submit buttons — so:
+   narrower, and a fixed min-width so "On" and "Off" come out the same size
+   rather than one being visibly slimmer than its twin. */
+.toggle .dt-settings-choice-btn {
+  padding: 5px 0;
+  min-width: 44px;
+  text-align: center;
+}
+
+/* A dead toggle still has to look like one — see .vocab-delete below for the
+   same reasoning. Dim both sides, and say with the cursor that the answer to a
+   click is no, rather than leaving the accented side looking live. */
+.toggle .dt-settings-choice-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* Label/component pickers. Buttons rather than a multi-select, which is
+   unusable on touch and invisible about what is selected. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.chip {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--green-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color .12s, color .12s;
+}
+
+/* Scoped off the on-state: an unscoped .chip:hover would out-specify .chip-on
+   and dim a selected chip's solid accent border back to the translucent one
+   the moment the mouse reached it. */
+.chip:not(.chip-on):hover { border-color: var(--border-hi); color: var(--green); }
+
+.chip-on { color: var(--head); border-color: var(--green-hi); background: color-mix(in srgb, var(--green-hi) 14%, transparent); }
+
+/* ============================================================
+   Editor
+   ============================================================ */
+
+.editor { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-btn {
+  font-family: inherit;
+  font-size: 12px;
+  min-width: 26px;
+  color: var(--green-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.editor-btn:hover { color: var(--green-hi); border-color: var(--border); }
+
+/* The formatting the caret is currently inside. See refreshToolbar().
+
+   This has to out-shout :hover, and it is the same treatment .chip-on uses for
+   the same reason — "this is on" and "your mouse is here" are different claims,
+   and the first one has to survive the second. Filled and bordered rather than
+   only re-coloured: hover already re-colours, so a colour-only "on" state is
+   indistinguishable from hovering, and the button would go back to looking off
+   the moment you moved the mouse to read it. */
+.editor-btn-on {
+  color: var(--head);
+  border-color: var(--green-hi);
+  background: color-mix(in srgb, var(--green-hi) 14%, transparent);
+}
+
+.editor-btn-on:hover { color: var(--head); border-color: var(--green-hi); }
+
+/* The way out of every other button, so it is set apart from the set it undoes.
+   A margin alone would read as a gap rather than as a division, hence the rule.
+
+   The rule is a pseudo-element and NOT the button's own right border, which is
+   what this was first: a border-right in --border, restated at higher
+   specificity so it would survive .editor-btn-on recolouring the other three.
+   That worked exactly as written and looked broken — Plain lights up whenever
+   the caret is in ordinary text, so most of the time it drew three --green-hi
+   edges and one dim one, which does not read as "separator", it reads as a
+   border that got cut off. The divider is not part of the button, so it is not
+   drawn as part of the button. */
+.editor-btn-plain {
+  position: relative;
+  margin-right: 9px;
+}
+
+.editor-btn-plain::after {
+  content: "";
+  position: absolute;
+  /* Centred in the 9px margin: 4px of gap either side of a 1px rule. */
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  /* Short of full height, so it reads as a divider between buttons rather than
+     as an edge belonging to one of them. */
+  height: 60%;
+  border-right: 1px solid var(--border);
+}
+
+/* The toolbar buttons look like what they do — the conventional cue, and the
+   only thing that makes a one-letter button readable. */
+.editor-btn-bold { font-weight: 700; }
+.editor-btn-italic { font-style: italic; }
+.editor-btn-underline { text-decoration: underline; }
+.editor-btn-strike { text-decoration: line-through; }
+
+.editor-btn:disabled { opacity: .4; cursor: default; }
+.editor-btn:disabled:hover { color: var(--green-dim); border-color: transparent; }
+
+/* The editable surface. It carries .markdown too, so what is being typed is
+   drawn by the very same rules that draw the issue once it is saved — which is
+   the entire claim a WYSIWYG editor makes, and it only holds while there is one
+   stylesheet for both. */
+.editor-surface {
+  padding: 12px;
+  min-height: 180px;
+  background: var(--bg);
+  outline: none;
+  overflow-wrap: break-word;
+}
+
+.editor-surface:focus { box-shadow: inset 0 0 0 1px var(--border-hi); }
+
+/* contenteditable has no placeholder attribute, so this draws one. :empty is
+   true only with no child nodes at all, which is exactly the state the surface
+   is in before the first keystroke. */
+.editor-surface:empty::before {
+  content: attr(data-placeholder);
+  color: var(--green-dim);
+  opacity: .6;
+}
+
+.editor-disabled .editor-surface { opacity: .5; }
+
+.editor-link-row {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-link-row .field { flex: 1; }
+
+/* ============================================================
+   Rendered markdown
+
+   Everything in here was produced by renderMarkdown, which emits
+   only tags it built itself. See client/Markdown.kt.
+   ============================================================ */
+
+.markdown { color: var(--body); font-size: var(--dt-font-prop-size, 15px); }
+.markdown p { margin: 0 0 10px; }
+.markdown h1, .markdown h2, .markdown h3,
+.markdown h4, .markdown h5, .markdown h6 {
+  color: var(--head);
+  margin: 16px 0 8px;
+  font-size: 16px;
+}
+.markdown h1 { font-size: 20px; }
+.markdown h2 { font-size: 18px; }
+.markdown ul { margin: 0 0 10px; padding-left: 18px; }
+.markdown a { color: var(--green-hi); }
+/* A ticket reference (LNL-139) — "LNL-12" linked to the issue it names, wherever
+   it is rendered: a description, a comment, a card or an issue title. Underlined
+   on purpose, including inside .markdown where ordinary links are not, because the
+   affordance is the whole point — this word is a link to another ticket. */
+.ticket-ref {
+  color: var(--green-hi);
+  text-decoration: underline;
+  cursor: pointer;
+}
+/* The issue title appended after a reference (LNL-144). Dimmed and un-underlined
+   so the key stays the emphatic part and the title reads as the gloss it is,
+   while the whole anchor remains one link. Matches the ticket autocomplete, which
+   draws the key in --green-hi and the title in --green-dim. */
+.ticket-ref-title {
+  color: var(--green-dim);
+  text-decoration: none;
+}
+.markdown code {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: .9em;
+}
+/* An oversized screenshot must not blow out the modal. */
+/* Scaled down to a thumbnail, not shown at whatever size the camera produced.
+
+   A screenshot pasted into an issue is routinely 2000px tall, and at full size it
+   *is* the issue — the description above it and the comments below it are a
+   scroll away in either direction. The height cap is what keeps an image an
+   illustration rather than the page. `width: auto` with `max-height` preserves
+   the aspect ratio; setting both dimensions would squash it.
+
+   The full-size view is a click away — see .lightbox, and Lightbox.kt. That is
+   what makes capping the height honest rather than lossy: nothing is hidden, it
+   is one click away instead of thirty centimetres of scroll. */
+.markdown img {
+  max-width: 100%;
+  max-height: 260px;
+  width: auto;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+  /* An image is inline by default, so it sits on the text baseline and drags a
+     descender's worth of gap under itself — visible as a stray few pixels inside
+     the border. */
+  display: block;
+}
+
+/* Inside the editor a click means "put the caret here", so the cursor must not
+   promise a viewer that deliberately does not open there. See Lightbox.kt. */
+.editor-surface img { cursor: default; }
+
+/* A file that is not an image — a PDF, a zip of logs, a screen recording.
+
+   Drawn as a box rather than as underlined blue text because it is not a link,
+   whatever its markup says: clicking it does not take you anywhere, it puts a
+   file on your disk. Something that looks like a link and behaves like a button
+   is the sort of thing people click once and then never trust again.
+
+   The label already carries the filename and the size — the renderer puts them
+   there, because markdown has nowhere else to keep them; see attachmentMarkdown.
+   So this adds only the one thing the label cannot say, which is what will
+   happen when you click it: the arrow, and the frame around it that says the
+   whole thing is one target.
+
+   `display: inline-flex` and not `block`: the anchor sits inside whatever
+   paragraph the editor dropped it in, and a block-level anchor inside a <p> is
+   invalid markup the browser then re-parents, which moves the caret. */
+.markdown a.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--body);
+  text-decoration: none;
+  font-size: 12px;
+  /* A long filename must not push the dialog wider than the screen. It wraps
+     rather than being clipped: the end of a filename is where the extension is,
+     which is the part a reader is looking for. */
+  overflow-wrap: anywhere;
+}
+
+.markdown a.attachment:hover {
+  border-color: var(--green-hi);
+  color: var(--head);
+}
+
+/* The download arrow, drawn in CSS rather than shipped as an icon: it is two
+   characters, and an <img> here would be a network request — and, in the editor's
+   surface, a second element for the serialiser to have opinions about. ::before
+   is not in the DOM at all, so it cannot end up in the stored markdown. */
+.markdown a.attachment::before {
+  content: "↓";
+  flex: none;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--green-hi);
+}
+
+/* ============================================================
+   Lightbox — the full-size image viewer
+   ============================================================ */
+
+/* Above .modal-backdrop's 10000. An image is almost always opened from
+   inside a modal — an issue's description, a comment — and a viewer that
+   appeared behind the dialog it was opened from would look like nothing
+   happened. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px;
+  /* Darker than .modal-backdrop's .75: this one is showing a picture, and the
+     less of the page bleeding through the better. */
+  background: rgba(2, 6, 12, .92);
+  cursor: zoom-out;
+}
+
+/* Bounded by the VIEWPORT, not by the image's own size. `object-fit: contain`
+   keeps the aspect ratio while fitting inside both bounds — without it a tall
+   image would be squashed to the height cap. A small image is left at its own
+   size rather than blown up: there is nothing to reveal, and upscaling it would
+   just make it blurry. */
+.lightbox-image {
+  max-width: 92vw;
+  max-height: 84vh;
+  object-fit: contain;
+  border-radius: 4px;
+  border: 1px solid var(--border-hi);
+}
+
+/* The corner close button. Absolute, not a flex child: .lightbox centres its
+   column, and a button left in that flow would sit above the image rather than
+   over the corner. .lightbox's `position: fixed` is the positioned ancestor
+   this resolves against. `cursor: default` overrides the overlay's zoom-out so
+   the button reads as a button, not more backdrop. */
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  cursor: pointer;
+}
+
+.icon-close { width: 18px; height: 18px; }
+
+.lightbox-hint {
+  margin: 0;
+  color: var(--green-dim);
+  font-size: 11px;
+  letter-spacing: .06em;
+}
+
+/* Headings take the brand DISPLAY face when a deployment (or user) sets one
+   (`--dt-font-display`, e.g. Framna Serif); otherwise `inherit` keeps them on
+   whatever they always inherited — NOT `--prose`, whose unbranded fallback is
+   monospace and would force titles to a fixed-width face. */
+.issue-title { color: var(--head); font-size: 18px; margin: 0 0 4px; font-family: var(--dt-font-display, inherit); }
+/* A URL in the title is a link (LNL-112) — same accent and underline as the
+   card-title and body links, so a link reads as one wherever it appears. */
+.issue-title a { color: var(--green-hi); text-decoration: underline; }
+.issue-byline { color: var(--green-dim); font-size: 13px; margin: 0; }
+
+/* The read face's one line of identity (LNL-14): who filed it and when, who is on
+   it, and who else is watching, all composed into the byline text, with the assign
+   button trailing it as the only live control. One dim line in place of the three
+   bands — byline, assignee, "Watched by" — the header used to stack before a word
+   of the issue showed.
+
+   Wraps rather than truncates on a narrow window. `align-items: center` rather than
+   baseline: the button has padding the text does not, and baseline alignment leaves
+   it sitting visibly low against the line it trails. */
+.issue-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.issue-description { margin-top: 12px; }
+
+/* ============================================================
+   Comments
+   ============================================================ */
+
+.comments-heading {
+  color: var(--green-dim);
+  font-size: 12px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin: 24px 0 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* The gap has to beat the padding inside a comment, or the space between two
+   comments reads as part of one — at 10px against .comment's 10px, a thread was
+   a single wall of text with hairlines through it. */
+.comments { display: flex; flex-direction: column; gap: 20px; margin-bottom: 12px; }
+.comments-empty { color: var(--green-dim); font-size: 13px; margin: 0; }
+
+/* Outlined, not filled. A comment sits directly on the issue window's own
+   --panel interior, so it is not raised above anything and --panel-2's raised
+   tone had nothing to raise off — under Lemonade --t-surface-alt is a deep
+   yellow, and a thread read as a stack of muddy slabs under the description's
+   near-white. This is the same deeper-yellow-on-yellow trap .card hit; there
+   the fix was --panel-2 → --panel because a card lies on a --bg column, but a
+   comment's parent is already --panel, so the equivalent fix is no fill at all.
+   The border and the 20px gap carry the card shape on their own. */
+.comment { border: 1px solid var(--border); border-radius: 4px; padding: 10px; }
+.comment-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+/* Author and its agent badge, grouped on the left. This carries the flex the
+   author span used to, so the Edit/Delete buttons still land far right while the
+   badge stays beside the name it names. min-width:0 lets the group shrink rather
+   than shoving the buttons off the edge on a narrow modal. */
+.comment-meta { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+/* The byline is author AND timestamp in one span (see commentByline) — they
+   cannot be sized apart without splitting it, and at 11px they read as fine
+   print beside 15px body text. */
+.comment-author { color: var(--green-hi); font-size: 13px; }
+.comment-body p:last-child { margin-bottom: 0; }
+/* ============================================================
+   History
+   ============================================================ */
+
+/* Lighter than .comment on purpose, and the difference is the point: a comment
+   is something a person wrote and is worth a card, an event is a line in a log.
+   Fifty bordered history rows would out-shout the conversation above them, so
+   these get no border, no fill and no padding — just rhythm.
+
+   The gap is tighter than .comments' 20px for the same reason: these rows are
+   two short lines each rather than paragraphs of markdown, and 20px between
+   them would spread a dozen events over a screen of mostly nothing. */
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.history-event {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The sentence — what happened. Full-strength text, because this is the line
+   being scanned. */
+.history-what {
+  color: var(--green-hi);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Who and when, dimmed and one step smaller. Inverted against .comment, where
+   the author leads: a history is read for what changed, with the attribution as
+   the follow-up. Same flex row as .comment-meta so the agent badge sits beside
+   the name rather than under it. */
+.history-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.history-who {
+  color: var(--green-dim);
+  font-size: 12px;
+}
+
+
+/* ============================================================
+   The account corner — far right of the top bar.
+
+   Was a 260px sidebar with two stacked provider buttons. It is
+   now one button: "Sign in…", which opens the picker, or the
+   user's name and mark, which open a menu holding sign-out. The
+   provider buttons moved into the modal (see .signin-option),
+   where there is room to say what choosing one costs.
+   ============================================================ */
+
+.account {
+  /* The anchor for .account-menu, which is absolutely positioned. Without a
+     positioned ancestor the menu would hang off the viewport's top-left rather
+     than off the name it belongs to. */
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Reserve the row before the first session fetch returns. The view toggles
+     `visibility` rather than `display` for the same reason: a top bar that grows
+     a button's width once the server answers shoves the whole row sideways, and
+     that reads as a glitch.
+
+     30px, not the 36px this reserved back when the account corner was its own
+     bar and could pick any height it liked. It now rides the toolkit's trailing
+     top-bar slot, alongside .dt-topbar-icon-button, whose chrome row is 30px.
+     The slot sizes to its tallest child, so a 36px reservation here made the
+     whole trailing cluster 36 and pushed the toolkit's own icons 3px below the
+     brand opposite. Whatever this number is, .topbar-brand must match it. */
+  min-height: 30px;
+}
+
+/* Name and mark are one button. */
+.account-btn {
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--chrome-accent-text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.account-btn:hover { border-color: var(--chrome-border); background: var(--chrome-track); }
+
+.account-name {
+  font-size: 12px;
+  color: var(--head);
+  /* A display name is whatever the provider had on file — it can be a sentence.
+     Truncate rather than wrap: the top bar is one row, and a name that wraps
+     takes the whole bar's height with it. */
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-signin { font-size: 12px; }
+
+/* The menu. Right-aligned to the corner it hangs from — `left: auto; right: 0`
+   rather than a left offset, because it is wider than the button above it and
+   growing leftward is the only direction with room.
+
+   Opened by HOVER, in CSS, with no state in the view model behind it. That is
+   why there is no `.account-menu-open` class: a hover menu driven by JS needs
+   mouseenter/mouseleave plus a close timer to survive the pointer crossing the
+   gap, and every one of those is a way to strand the menu open.
+
+   Keyboard access is `:has(:focus-visible)` and NOT `:focus-within`, which is a
+   distinction with a bug behind it. :focus-within is true for a MOUSE click too
+   — clicking the account button focuses it — so the menu stayed open after the
+   pointer had left and nothing but a click elsewhere would dismiss it. It read as
+   a menu that never goes away. :focus-visible is set only when the browser judges
+   focus should be *shown*, which is keyboard navigation and not a click, so the
+   two cases stop fighting: hover governs the mouse, focus-visible governs the
+   keyboard, and neither strands the other. */
+.account-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  /* The menu hangs off the topbar's account button, so it must clear the
+     maximised-pane layer (1000) or it would open behind a maximised board.
+     Below the modal layer (10000) so dialogs still cover it. */
+  z-index: 2000;
+  display: none;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+}
+
+/* The bridge across the 6px gap above.
+
+   Without it the menu is unreachable: the pointer leaves the button, crosses six
+   pixels of nothing, :hover goes false, and the menu vanishes before it can be
+   entered. Invisible and unclickable, purely a hover surface — the alternative,
+   removing the gap, glues the menu to the button and reads as one shape. */
+.account-menu::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -7px; /* the 6px gap, plus this element's own 1px border */
+  height: 7px;
+}
+
+.account-signed-in:hover .account-menu,
+.account-signed-in:has(:focus-visible) .account-menu { display: flex; }
+
+.account-menu-item {
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--green-dim);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  padding: 8px 10px;
+  cursor: pointer;
+  /* The buttons are <button> and the submenu parent is a <div>; without this the
+     two sit at different widths and the hover highlight is visibly ragged. */
+  width: 100%;
+}
+
+.account-menu-item:hover:not(:disabled) { background: color-mix(in srgb, var(--green-hi) 12%, transparent); color: var(--green-hi); }
+.account-menu-item:disabled { opacity: .5; cursor: default; }
+
+/* ── The impersonation submenu ──────────────────────────────────────────────
+
+   "Impersonate ▸" with the user list folding out of it. The submenu is a CHILD
+   of this item rather than a sibling, which is what makes the hover survive the
+   pointer travelling into it — a sibling would drop :hover the moment the
+   pointer left the parent's box. */
+.account-menu-parent {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-menu-label { flex: 1; }
+.account-menu-arrow { color: var(--green-dim); font-size: 10px; }
+
+/* Leftward, not rightward. The account corner is already at the right edge of
+   the viewport, so a submenu opening to the right would open off-screen —
+   `right: 100%` hangs it off the menu's left edge instead.
+
+   `right: 100%` — the boxes TOUCH. No gap, and therefore no bridge.
+
+   This took three goes and the history is worth keeping, because the obvious fix
+   is the one that does not work. A gap of any size is dead space: crossing it
+   leaves .account-menu-parent, :hover goes false, and the submenu closes under
+   the pointer on its way to being used. The first attempt left 4px while claiming
+   the boxes touched. The second bridged the gap with an ::after — which was
+   invisible for a reason that has nothing to do with hover: `overflow-y: auto`
+   below establishes a clipping box, and a pseudo-element positioned OUTSIDE its
+   own element's padding box is clipped by it. The bridge was never on screen.
+
+   Touching sidesteps both. Nested menus that share an edge are what every desktop
+   menu bar does, and the 1px borders read as a seam rather than a mistake. */
+.account-submenu {
+  position: absolute;
+  top: -5px; /* aligns the first row with the parent, allowing for padding */
+  right: 100%;
+  display: none;
+  flex-direction: column;
+  min-width: 170px;
+  max-height: 320px;
+  /* A long user list must not run off the bottom of the viewport. It scrolls
+     inside itself, like every other overflow in this app. */
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+}
+
+.account-menu-parent:hover .account-submenu,
+.account-menu-parent:has(:focus-visible) .account-submenu { display: flex; }
+
+.account-submenu-empty {
+  color: var(--green-dim);
+  font-size: 11px;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+/* ── The profile modal's Connections section ────────────────────────────────
+   The toggle is the least interesting thing here after the first day; the list
+   of what is connected is what people come back for. Styled so the list reads
+   as the subject and the setup instructions read as reference material. */
+
+.section-title {
+  color: var(--head);
+  font-size: 13px;
+  margin: 20px 0 0;
+}
+
+/* A value nobody should be asked to type: the server URL, and the command.
+   The value wraps rather than truncating — a URL cut off at the panel edge is
+   one somebody will copy by hand and get wrong, which is the whole failure this
+   row exists to prevent. */
+.copy-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.copy-value {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--body);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  /* anywhere, not break-word: these have no spaces to break at, so break-word
+     would leave the line overflowing exactly as if nothing had been set. */
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.btn-small { font-size: 11px; padding: 6px 10px; }
+
+.connections-setup { margin-top: 4px; }
+
+.connections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.connection-text { flex: 1; min-width: 0; }
+
+/* The agent's self-reported name. Truncated rather than wrapped: it is chosen
+   by whoever registered the client, so a long one is as likely to be someone
+   pushing at the layout as it is to be honest. The row must stay one row. */
+.connection-name {
+  color: var(--head);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-detail {
+  color: var(--green-dim);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* ============================================================
+   The project dialog's settings sections — vocabularies and
+   privileges.
+
+   These only appear when EDITING a project, which is why they
+   share the dialog rather than getting one of their own: what an
+   admin actually wants is "configure this project", and a name,
+   its board columns and who may post on it are all that one
+   thing. The panel is .modal-large in that mode — see
+   .settings-body below for the one thing that borrows from the
+   issue modal and must not.
+   ============================================================ */
+
+/* This dialog's body scrolls as ONE column, and has to say so.
+   `.modal-large .modal-body` above is `overflow: hidden` on purpose — the issue
+   modal is a three-band split whose MIDDLE band scrolls, so a scrolling body
+   there would scroll the title out from over the description. This dialog has no
+   inner band to hand the job to: it is a form, then five vocabularies, then a
+   privileges table, all of it one continuous read.
+
+   Without this rule the body inherits that `overflow: hidden` and simply clips.
+   Found by opening the dialog and finding the privileges section unreachable —
+   1300 of 2035 pixels of content, below the fold of a panel that would not
+   scroll, with no scrollbar to suggest anything was missing. `display: block`
+   goes with it: the inherited flex column is the shape the three bands need, and
+   this content is not three bands. */
+.modal-large .modal-body.settings-body {
+  display: block;
+  overflow-y: auto;
+  /* Air between the content and the scrollbar. Not cosmetic: the scrollbar is
+     laid out INSIDE this element, so without a gutter the fields and the
+     On/Off pairs end exactly where the thumb begins and the column reads as
+     jammed against it. Nothing needed this while scrollbars were the macOS
+     overlay kind, which float over the content and take no width — styling
+     them (see the Scrollbars section) made them real, and this is the room
+     they now need. */
+  padding-right: 14px;
+}
+
+/* One tab's worth of settings, scrolling on its own inside the tabbed body
+   (LNL-102). Every tab is a pane and only the selected one shows; the body is
+   the fixed-height flex column of `.modal-large .modal-body`, so flex:1 hands the
+   visible pane the slack and min-height:0 lets its own overflow engage — the same
+   band arrangement the issue window and the instance dialog use. The 14px gutter
+   keeps the styled scrollbar off the controls, `.settings-body`'s reason for the
+   same padding. In the small (new-project / non-admin) modal the body is a plain
+   block: flex is inert there and the pane simply grows with its content, which is
+   all the lone General tab ever holds. */
+.project-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 14px;
+}
+
+/* The env-variable / paste-token field group under the token-source row (LNL-141).
+   Its <label> is the group's :first-child, so .field-label:first-child zeroes the
+   top margin that would otherwise space it off the row of buttons above — leaving
+   the label crowding the buttons. Give the group that margin back, matching the
+   16px .field-label carries between fields elsewhere. */
+.token-field-group { margin-top: 16px; }
+
+.vocab-section { margin-top: 20px; }
+
+/* The rows, and then the add field under them — in that order because the list
+   is the subject. An add field above its list reads as a search box.
+
+   ── One grid for both, and why ────────────────────────────────────────────
+   These used to be two independent flex rows, and the mismatch showed: a row's
+   name field ends where its buttons begin, the add row had only one button, so
+   its field ran further right than every field above it and the section came to
+   a ragged stop. Two columns fixes it at the root — the second column is `auto`,
+   so it is as wide as the widest button cluster in the section, and every field
+   in the first column ends on the same pixel.
+
+   The two children are `display: contents` because the DOM has to stay two
+   elements: the rows are rebuilt wholesale whenever they change and the add
+   field must survive that, since it is where the cursor is when Add is pressed.
+   `contents` is what lets the grid see through the wrappers to the cells. */
+.vocab-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 10px;
+}
+
+.vocab-rows,
+.vocab-row,
+.vocab-add { display: contents; }
+
+/* Everything after the name, as one cell. Grouping them is what keeps the grid
+   at two columns for a vocabulary that has a flag toggle and one that does not
+   — and what gives the Add button below a single cell to fill. */
+.vocab-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Reset .toggle-row's stacked-form margins: inside a row it is one control
+   among several, not a paragraph. Its label never wraps here — the row lays out
+   horizontally and a wrapped "needs a resolution" would push the row taller
+   than the field it sits beside. */
+.vocab-flag {
+  margin: 0;
+  flex: none;
+  white-space: nowrap;
+  font-size: 11px;
+  gap: 8px;
+}
+
+/* No right edge to reach for here — this row sits among the field and the
+   buttons rather than spanning the dialog, so the label sizes to its text and
+   the pair follows it directly. */
+.vocab-flag .toggle-label { flex: none; }
+
+/* Square, so the two arrows read as one pair of nudges rather than as two
+   buttons with words missing. */
+.vocab-move {
+  flex: none;
+  padding: 6px 9px;
+  line-height: 1;
+}
+
+.vocab-delete { flex: none; }
+
+/* A disabled control still has to look like it exists, and — for Delete — still
+   has to be hoverable: its title says WHY it is dead ("3 issues are in this
+   status"), and a control with pointer-events off never shows a tooltip. That
+   is the whole reason this sets opacity rather than pointer-events. */
+.vocab-row .btn:disabled,
+.vocab-add .btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* A little air before the add field, so it reads as a separate act from the list
+   above it. On the cells rather than on `.vocab-add`, which is `display:
+   contents` and has no box for a margin to sit on. */
+.vocab-add .field,
+.vocab-add-btn { margin-top: 6px; }
+
+/* Fills its cell — which is exactly as wide as the button cluster on every row
+   above, because they share the column. That is the whole of what makes the
+   section end on a straight edge. */
+.vocab-add-btn { width: 100%; }
+
+/* ── Privileges ─────────────────────────────────────────────────────────────
+   One block per account rather than a grid with role columns. A grid is the
+   obvious shape and the wrong one here: the roles are sentences ("Edit issues
+   they did not create"), not words, so a header row would either truncate them
+   or be three columns wide on a phone. Stacked, each checkbox carries its own
+   explanation and the row reads as a person. */
+
+.member-row {
+  border-top: 1px solid var(--border);
+  padding: 12px 0;
+}
+
+.member-row:last-child { padding-bottom: 0; }
+
+.member-name {
+  color: var(--head);
+  font-size: 13px;
+}
+
+.role-row { margin-top: 4px; }
+
+/* Tighter than a standalone .toggle-row: these come in threes under one name,
+   and the default 18px would make one person's privileges a screenful. */
+.role-row .toggle-row { margin-top: 6px; }
+
+/* ── The settings modals' tabs and master-detail ────────────────────────────
+   Born with the instance settings modal — the first dialog here that was a
+   master-detail rather than a scrolling column — and now shared: the project
+   settings dialog reuses this whole block for its own tab strip (`.admin-tabs`)
+   and its Privileges tab (`.admin-split` and the account list), so the two
+   settings surfaces read as one family (LNL-102). The `admin-` prefix is
+   historical; the rules are not admin-only.
+
+   Note what is NOT here: `.settings-body`. Every other large modal adds that
+   class to opt OUT of the `overflow: hidden` that `.modal-large .modal-body`
+   sets, because they are one column and want the body itself to scroll. These
+   ones want the inherited flex column kept, so the two panes below can scroll
+   independently — picking the twentieth account must not scroll the rights
+   table away, and reading a long rights table must not lose the list. That is
+   the same three-band arrangement the issue window uses, with two bands. */
+
+.admin-body { gap: 4px; }
+
+/* Underline tabs, not boxed segmented buttons: these are the two top-level
+   sections of the dialog, and a labelled underline is the plainest thing that
+   reads as "you are here". The row carries the full-width baseline; each tab
+   sits on it and the selected one paints over it in the accent. */
+.admin-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  /* A transparent 2px underline held in reserve, so selecting a tab swaps its
+     colour rather than nudging the row's height. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;   /* overlap the row's baseline so the accent replaces it */
+  color: var(--green-dim);
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: color 80ms ease, border-color 80ms ease;
+}
+.admin-tab:hover { color: var(--body); }
+.admin-tab-selected,
+.admin-tab-selected:hover {
+  color: var(--green-hi);
+  border-bottom-color: var(--green-hi);
+  font-weight: 600;
+}
+
+.admin-split {
+  flex: 1;
+  min-height: 0;      /* or the panes' own overflow never engages */
+  display: flex;
+  gap: 16px;
+}
+
+/* Fixed rather than a fraction of the panel: names are short and roughly the
+   same length, so a list that grew with the dialog would be mostly whitespace
+   while the rights sentences beside it wrapped. flex: none stops the long
+   sentences in the detail pane from pushing on it. */
+.admin-user-list {
+  flex: none;
+  width: 232px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding-right: 8px;
+}
+
+.admin-detail-pane {
+  flex: 1;
+  min-width: 0;       /* or a long e-mail widens the pane instead of wrapping */
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+/* A real <button>, so the list is keyboard-navigable and every row announces
+   itself as pressable — but styled flat, because a list of twenty buttons drawn
+   as buttons is a wall of chrome. Left-aligned text, since a centred name in a
+   list reads as a heading. */
+.admin-user-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 7px 9px;
+  margin-bottom: 2px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--body);
+}
+
+.admin-user-row:hover { background: var(--panel-2); }
+
+/* The selection is carried by background AND border, not by colour alone: this
+   is the one piece of state in the dialog that says which account everything on
+   the right belongs to, and getting it wrong means editing the wrong person. */
+.admin-user-selected,
+.admin-user-selected:hover {
+  background: var(--panel-2);
+  border-color: var(--border-hi);
+}
+
+.admin-user-name {
+  display: block;
+  color: var(--head);
+  font-size: 13px;
+}
+
+/* Trailing the name rather than on its own line — "you" and "admin" are
+   adjectives on the name, and a line of their own would give them the weight of
+   the e-mail below, which is the more useful fact. */
+.admin-user-badge {
+  margin-left: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--green-dim);
+}
+
+/* Truncated, unlike the copy-row's URL: an address here is a disambiguator
+   between two identical names, so its first half does the whole job, and
+   wrapping would make every row two lines tall for a fact most rows do not
+   need. The full value is in the detail pane, where it does wrap. */
+.admin-user-subtitle {
+  display: block;
+  font-size: 11px;
+  color: var(--body);
+  opacity: .7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-detail-name {
+  color: var(--head);
+  font-size: 14px;
+  margin: 0;
+}
+
+/* Wraps, unlike its counterpart in the list — see .admin-user-subtitle. */
+.admin-detail-subtitle {
+  font-size: 12px;
+  color: var(--body);
+  opacity: .8;
+  margin: 2px 0 14px;
+  overflow-wrap: anywhere;
+}
+
+/* The sentence standing in for an admin's rights table. Bordered rather than
+   merely tinted, because it is a correction to what the reader is about to
+   see below it, and a correction that reads as a caption gets skipped. */
+.admin-note {
+  font-size: 12px;
+  color: var(--body);
+  border-left: 2px solid var(--green-dim);
+  padding: 2px 0 2px 10px;
+  margin: 0 0 14px;
+}
+
+/* The read-only line reporting the user's OWN switch, under the admin's
+   permission toggle. Indented and dimmed so it reads as a consequence of the
+   switch above it rather than as a second control — there is nothing to click
+   here, it is a status line. */
+.admin-user-switch {
+  font-size: 12px;
+  color: var(--body);
+  opacity: .8;
+  margin: 8px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-hi);
+}
+
+.admin-placeholder {
+  font-size: 12px;
+  color: var(--body);
+  opacity: .7;
+  margin-top: 24px;
+}
+
+.admin-rights { margin-top: 10px; }
+
+/* ── The Projects tab (LNL-93) ──
+   One scrolling column of rows, each a name, the two move arrows and Delete. The
+   grid keeps the arrows and the button in a fixed trailing block so names of
+   different lengths do not shove the controls around. */
+.admin-projects {
+  flex: 1;
+  min-height: 0;      /* or the list overflows the dialog instead of scrolling */
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* The General tab (LNL-115): a scrolling column of instance switches. Each switch
+   is a toggle row followed by a hint; the hint carries the gap to the next switch
+   so the two read as one group. */
+.admin-general {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.admin-general .field-hint { margin: 6px 0 22px; }
+.admin-general .field-hint:last-child { margin-bottom: 0; }
+
+.admin-project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.admin-project-row:first-child { border-top: none; }
+
+.admin-project-row-name {
+  color: var(--head);
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The prefix trails the name, muted — the same disambiguator the picker shows. */
+.admin-project-row-prefix {
+  color: var(--body);
+  opacity: .6;
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+.admin-project {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+}
+
+.admin-project:last-child { padding-bottom: 0; }
+
+.admin-project-name {
+  color: var(--head);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.admin-right {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* Holds a tick or a cross (LNL-68), so it is sized to the mark rather than to a
+   word: a fixed-width slot the icon centres in, keeping the sentences on one
+   straight left edge down the pane so the list stays skimmable. The colour is
+   carried here and the icon inherits it through `currentColor` — red by
+   default (not held), green on a held row (below). */
+.admin-right-mark {
+  flex: none;
+  width: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--red);
+}
+
+.admin-right-mark .icon { width: 14px; height: 14px; }
+
+/* Held rows are the ones being looked for, so their mark goes positive; a
+   not-held row keeps the red cross above. Both stay fully legible — "does not
+   have" is half of what this screen answers, so a not-held row must not fade
+   into the background the way a disabled control would.
+
+   `--ok` maps to the toolkit's `--t-add` — the palette's own additive/positive
+   colour, the same hue it paints an inserted diff line. Not `--green-hi`, which
+   *reads* green by name but is the theme accent (teal on Lunamux Dark) and so
+   would come out the same hue as every other accented thing on screen — the
+   "green tick / red cross" LNL-68 asked NOT to have to squint at. And no longer
+   a fixed `#2ea043` hex, which ignored the theme entirely: `--t-add` tracks the
+   active palette (green on the green themes, teal on the cyan house look, amber
+   on Amber CRT), which is what LNL-89 asked for — a themed token, accepting that
+   "held" is not literally green on every palette. `--red` stays a themed token
+   too (`--t-danger`), so both marks now follow the active palette. */
+.admin-right-held .admin-right-mark {
+  color: var(--ok);
+}
+
+.admin-right-text {
+  color: var(--body);
+  opacity: .65;
+}
+
+.admin-right-held .admin-right-text { opacity: 1; }
+
+/* ============================================================
+   The @mention autocomplete
+
+   Fixed to the viewport and mounted on <body>, not inside the
+   editor: it has to escape .editor-host's overflow and the
+   modal's, or it is clipped exactly when the caret is near the
+   bottom of the surface. See MarkdownEditor.buildMentionMenu.
+   ============================================================ */
+
+.mention-menu {
+  position: fixed;
+  /* Above .modal-backdrop (10000) and the lightbox (10010): a mention is
+     typed inside a modal, and a list drawn behind it would look like the
+     "@" did nothing. */
+  z-index: 10020;
+  min-width: 200px;
+  max-width: 320px;
+  /* Tall enough to hold a full eight rows (the ticket list is capped at
+     TICKET_OPTION_LIMIT = 8, ~256px including padding + border), then it
+     scrolls — the old 240px cut the eighth row in half and left it out of
+     reach, since the last row is only scrollable-to when the browser counts
+     the container's bottom padding, which not all do (LNL-139). A list as
+     tall as the window would cover the very text being written, so this
+     stays modest; longer @-mention lists still scroll. */
+  max-height: 288px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+
+.mention-menu-item {
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  color: var(--body);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One highlight class, driven by the arrow keys AND by hover — the row
+   the mouse is over is the row Enter would take, so there is only ever
+   one "this one" on screen. See drawMentionMenu's mouseenter. */
+.mention-menu-item-on {
+  color: var(--head);
+  background: color-mix(in srgb, var(--green-hi) 18%, transparent);
+}
+
+/* A ticket-autocomplete row (LNL-139): the reference in the accent, the issue's
+   title beside it in the dim tone, truncating so a long title cannot widen the
+   popup. Same menu, same highlight — only the row has two parts. */
+.ticket-menu-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.ticket-menu-key {
+  color: var(--green-hi);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ticket-menu-title {
+  color: var(--green-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Epics (LNL-55): the parent link and the children list in the issue window.
+
+   The parent rides in the identity band as a wrapping row — a "Parent" label
+   (edit-only, hidden in read mode by the shared .field-label-edit rule), the
+   clickable chip, the picker, and the detach button. */
+.issue-parent {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 6px;
+}
+.issue-parent-chip { font-variant-numeric: tabular-nums; }
+
+/* The add/set picker reuses .mention-menu's chrome — including its `position:
+   fixed`, which escapes the scroll pane and footer that would clip an absolute
+   menu. IssuePicker.position() anchors it to the input's box (and flips it above
+   the field when the field is low in the viewport). */
+.issue-picker { flex: 1 1 220px; min-width: 180px; }
+.issue-picker > .field { width: 100%; }
+.mention-menu.issue-picker-menu { min-width: 0; max-width: none; }
+
+.issue-children-section { margin-bottom: 14px; }
+.issue-children {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.issue-child-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.issue-child-link { font-variant-numeric: tabular-nums; }
+.issue-child-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+/* Square-ish reorder buttons, disabled to a dim state at the ends. */
+.btn-arrow {
+  min-width: 28px;
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+.btn-arrow:disabled { opacity: .4; cursor: default; }
+
+/* A rendered mention: the name in the accent, the syntax gone.
+
+   Inside .markdown because that is where renderMarkdown's output lands —
+   the read face, a comment, and the editor surface alike, so a mention
+   looks the same while it is being written as it does once posted.
+
+   Deliberately colour and weight rather than a pill with a background:
+   mentions sit inside sentences, and a box around one breaks the line
+   it is part of. */
+.markdown .mention {
+  color: var(--green-hi);
+  font-weight: 600;
+}
+
+/* ============================================================
+   Watch button (LNL-46)
+   ============================================================ */
+
+/* The pill that replaced two labelled toggle rows — one on the issue window,
+   one in project settings. Both used to spend a full row on a sentence and a
+   switch to carry a single bit; the identity band on a short issue pane
+   competes with the description for height, and that sentence was the least of
+   what belonged there.
+
+   Its two states are the whole design. NOT watching is quiet — dim text, a
+   hairline border, nothing that pulls the eye. Watching is loud: accent text,
+   accent border, a soft wash behind it. The word flips with the styling
+   ("Watch" → "Watching"), so the control reads correctly whether you notice
+   the colour or the label first, which is what lets it live without a caption
+   next to it. See WatchButton, which owns that pairing. */
+.watch-btn {
+  font-family: inherit;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--green-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  appearance: none;
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
+}
+
+.watch-btn:hover:not(:disabled) {
+  color: var(--green-hi);
+  border-color: color-mix(in srgb, var(--green-hi) 45%, transparent);
+  background: color-mix(in srgb, var(--green-hi) 8%, transparent);
+}
+
+.watch-btn:disabled { opacity: .5; cursor: default; }
+
+/* The on state. Border at full accent rather than the 20%-alpha --border, which
+   is the "strong border" the issue asks for and the thing that separates this
+   from its own hover. */
+.watch-btn.watch-on {
+  color: var(--green-hi);
+  border-color: var(--green-hi);
+  background: color-mix(in srgb, var(--green-hi) 10%, transparent);
+}
+
+.watch-btn.watch-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--green-hi) 18%, transparent);
+  box-shadow: 0 0 10px var(--glow);
+}
+
+.icon-eye { width: 16px; height: 16px; flex: none; }
+
+/* The pill shares the title's row, hard right. A row of its own would cost the
+   same height as the labelled row it replaced, which is the whole complaint.
+
+   `flex-start` is what makes the sharing work: a title that wraps to two lines
+   on a narrow pane grows downwards and the pill stays level with the first one,
+   instead of being centred against a block that is now twice as tall. The title
+   takes the slack and `min-width: 0` lets it wrap rather than push the pill off
+   the edge; the pill never shrinks. `margin-left: auto` keeps it right even in
+   edit mode, where the title is hidden and it is alone on the row. */
+.issue-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 4px;
+}
+
+.issue-title-row .issue-title { flex: 1; min-width: 0; margin: 0; }
+
+.issue-title-row .watch-btn { flex: none; margin-left: auto; }
+
+/* In the dialog the pill keeps a caption, because "watching a project" is not
+   self-evident the way watching the issue you are reading is — what arrives is
+   an e-mail about issues that do not exist yet. Sentence left, pill right, on
+   one row, which is still one row less than the toggle row plus its heading. */
+.project-watch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 6px;
+}
+
+.watch-caption { color: var(--green-dim); font-size: 13px; }
+/* ── The statistics dialog ────────────────────────────────────────────
+
+   A four-column grid rather than a <table>: the widths are fixed here
+   rather than negotiated from content, each row carries an optional
+   footnote that a <tr> has nowhere to put, and three labelled
+   measurements are not tabular data a reader gains from being told is a
+   table. See StatisticsDialog.renderTable. */
+.statistics-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The label takes what is left; the three windows are equal and fixed,
+   so the numbers line up in columns down the dialog. Equal rather than
+   sized to content, because content-sized columns would shift every
+   time a count gained a digit. */
+.statistics-row {
+  display: grid;
+  grid-template-columns: 1fr 84px 84px 84px;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+}
+
+.statistics-header {
+  color: var(--green-dim);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.statistics-label { color: var(--head); }
+
+/* Right-aligned and tabular: digits share a width, so a column of
+   counts aligns on its ones place and two numbers of the same
+   magnitude are the same length on screen. Without font-variant-
+   numeric, "111" is visibly narrower than "999" in most UI faces and
+   the column looks ragged. */
+.statistics-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The age line, and the "Counting…" that replaces it. One slot, because
+   they are two answers to one question — see StatisticsDialog.render. */
+.statistics-status {
+  color: var(--green-dim);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+/* The sentence shown when commit counts could not be fetched. Dimmed and
+   small: it explains a missing number rather than being one. (The closed-row
+   footnote that also used this class is gone — LNL-69.) */
+.statistics-note {
+  color: var(--green-dim);
+  font-size: 12px;
+  margin: 4px 0 0;
+}
+
+.statistics-empty { color: var(--green-dim); }
+
+/* ── The Discussion tab ────────────────────────────────────────────────────
+   Laid out like the board pane above it: a header row of controls, then the
+   content. The forum picker follows the design's dropdown rather than a list
+   down the side — a project with a dozen forums would otherwise spend the
+   pane's whole width on a list nobody reads twice. */
+.forum-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.forum-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding-bottom: 12px;
+}
+
+/* The header's trailing group: "Manage forums" and the Watch pill, pushed to the
+   far end away from the picker. Neither is another way to choose a forum —
+   one is an administrator's control over the whole list, the other (LNL-63) is
+   the reader's own subscription to the forum they are in.
+
+   The `auto` is on the group rather than on the two buttons, because flexbox
+   *shares* free space between auto margins rather than giving it to the first:
+   two of them would leave a gap between the pair instead of a pair at the end.
+   And "Manage forums" is hidden for everybody but a project administrator, so
+   the alignment cannot hang off it. */
+.forum-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.forum-description {
+  color: var(--green-dim);
+  font-size: 13px;
+  margin: 0 0 12px;
+  max-width: 72ch;
+}
+
+.forum-empty,
+.forum-posts-empty {
+  color: var(--green-dim);
+  font-size: 13px;
+  margin: 0;
+}
+
+.forum-posts {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Beside the picker rather than at the far end with "Manage forums": one is a
+   thing everybody does, the other is an administrator's control over the list,
+   and grouping them would read as two settings. */
+.forum-new-post { flex: none; }
+
+/* ── A post in the forum list ──────────────────────────────────────────────
+   One pressable block per post, the way a board card is one pressable block:
+   the whole row opens it, so there is no small link to aim at.
+
+   Three columns, per the design: what the thread is, how many replies it has,
+   and who last spoke and when. LNL-61 folded all of that into one byline
+   reading "soderbjorn · 20 Jul 2026, 22:11 · 1 comment", which is a sentence to
+   be read per row where the design's card is three columns to be scanned down.
+   The right-hand pair is what answers "which thread is busy, and is it still
+   moving" — the question a forum list exists for.
+
+   Grid rather than flex, so the numbers and the dates line up down the list
+   whatever the titles do. Only the first column may shrink; the last has a
+   floor so a one-word name and a long one do not shift the column under each
+   other. */
+.forum-post-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(120px, auto);
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.forum-post-row:hover { border-color: var(--green-dim); }
+
+/* The post currently in the window. Since LNL-62 the list stays on screen
+   beside what is being read, so it can — and should — say which row that is;
+   without it, clicking the open post again looks like it did nothing. */
+/* An unread post: a dot in the card's left padding, and the title in the bright
+   head colour.
+
+   A pseudo-element rather than a fourth column, because .forum-post-row is a
+   three-column grid whose tracks are load-bearing (LNL-62) — a fourth would
+   move every count and every last-replier along by a mark that is 6px wide.
+   Absolute inside the row's own padding, which is what leaves the columns
+   untouched.
+
+   A dot and not a number, throughout the discussion side: LNL-30 settles that
+   forum volume is unbounded, so nothing here counts anything. */
+.forum-post-row-unread { position: relative; }
+
+.forum-post-row-unread::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 15px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green-hi);
+}
+
+.forum-post-row-unread .forum-post-row-title {
+  color: var(--head);
+  font-weight: 600;
+}
+
+.forum-post-row-open {
+  border-color: var(--border-hi);
+  background: color-mix(in srgb, var(--green-hi) 6%, transparent);
+}
+
+.forum-post-row-subject { min-width: 0; }
+
+.forum-post-row-title {
+  color: var(--head);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  /* One line, clipped. A post title may be 200 characters and a list of them
+     wrapping to three lines each stops being a list. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forum-post-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.forum-post-row-byline {
+  color: var(--green-dim);
+  font-size: 12px;
+}
+
+/* The middle column: the count, then its unit under it. Centred, because a
+   column of numbers is compared down its middle — left-aligning would put "9"
+   and "12" out of step with each other. */
+.forum-post-row-comments { text-align: center; }
+
+.forum-post-row-count {
+  color: var(--green-hi);
+  font-size: 14px;
+}
+
+/* The word COMMENTS, as a label rather than as text: uppercase and tracked out
+   so it reads as the number's unit and not as something to be read per row. */
+.forum-post-row-count-label {
+  color: var(--green-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+/* The right column: who last replied, over how long ago. Empty when nobody
+   has — see ForumPane.postActivityColumn — and it keeps its width either way,
+   so a forum where half the threads are quiet does not render ragged. */
+.forum-post-row-activity {
+  min-width: 120px;
+  text-align: right;
+}
+
+.forum-post-row-last-author {
+  color: var(--body);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forum-post-row-last-age {
+  color: var(--green-dim);
+  font-size: 11px;
+}
+
+/* ── One post, read ────────────────────────────────────────────────────────
+   A column: back link, header, the scrolling body-and-comments, and the
+   composer pinned under it. The middle section is the only part that scrolls,
+   so the title stays put while a long thread is read and the composer never
+   has to be scrolled to — exactly the arrangement .conversation uses one tab
+   over, which is the surface this was matched to. */
+/* The window's stable content element — see ForumWindows, which swaps posts
+   inside it rather than handing the toolkit a new one. It has to carry the
+   pane's height and its interior, because the .forum-post inside it is
+   replaced and a style on that would go with it. */
+.forum-post-host {
+  height: 100%;
+  min-height: 0;
+  background: var(--panel);
+}
+
+.forum-post {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  /* Padded here rather than on the host, so the view stays re-hostable: the
+     class owns its own margins and does not depend on what it is mounted in.
+     Same split as .issue-window against .issue-window-host. */
+  padding: 12px 16px;
+}
+
+.forum-post-back {
+  align-self: flex-start;
+  margin-bottom: 8px;
+}
+
+.forum-post-header { flex: none; }
+
+.forum-post-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.forum-post-title {
+  color: var(--green-hi);
+  font-size: 16px;
+  margin: 0;
+  min-width: 0;
+}
+
+/* LNL-63's Watch button, at the design's right-hand end of the title row. The
+   slot was reserved empty by LNL-61 and `margin-left: auto` is what made
+   appending the button enough, exactly as intended.
+
+   `flex: none` for `.issue-title-row .watch-btn`'s reason: the pill must not be
+   squeezed by a long title, which is the one thing on this row that can be 200
+   characters. The title takes the slack — it already carries `min-width: 0`. */
+.forum-post-actions { margin-left: auto; }
+.forum-post-actions .watch-btn { flex: none; }
+
+.forum-post-byline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.forum-post-byline {
+  color: var(--green-dim);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* The delete button sits at the far end of the byline row rather than beside
+   the title: it is about this post, but it is not part of what the post says,
+   and next to the heading it would compete with the Watch button above it. */
+.forum-post-byline-row .link-btn-danger { margin-left: auto; }
+
+.forum-post-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.forum-post-body { margin-bottom: 20px; }
+
+/* The footer bar. "Add comment" is right-aligned and drawn primary, which is
+   the design's shape and is the honest one: it is the action of this screen,
+   and it sits where a dialog's confirm button sits. LNL-61 had it quiet and on
+   the left, which read as a secondary control beside nothing. */
+.forum-post-footer {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── The composers ─────────────────────────────────────────────────────────
+   Both of them: the comment bar pinned under a thread, and the new-post pane.
+   These are `.conversation-composer` one tab over, near enough line for line,
+   because they are the same object — a WYSIWYG editor, the mention hint, a
+   validation line and one primary button — and the two would otherwise drift
+   into looking like different features.
+
+   A column, not a row. Without these rules the children laid out as inline
+   blocks and the hint and the button ended up floating *beside* a shrunken
+   editor rather than under it, which is what a missing stylesheet looks like
+   rather than a design.
+
+   There is deliberately no max-height and no inner scroll. The pane is
+   draggable, resizable and maximisable, so how much room the editor has is the
+   writer's to decide with the affordances the toolkit already gives them —
+   the same deal the issue editor has in the issue window. A cap would be a
+   number nobody chose, solving a problem the window manager already solves. */
+.forum-post-composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.forum-post-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* The new-post pane has no thread above it, so the composer takes the slack
+   instead of sitting under something that scrolls — .new-conversation makes
+   the same move for the same reason. The editor grows with it, which is what
+   puts a full-height writing surface in a pane somebody has just opened to
+   write in.
+
+   How the editor grows is not written here: the host wears `.editor-host` too
+   (see NewForumPostView), which is the issue window's class for exactly this
+   and carries all four of the rules it takes. This block had its own copy,
+   missing the one that made `.editor` itself grow — so the editor stayed at
+   its natural width, which for a flex item is the width of its widest row: the
+   toolbar. That is what LNL-81 saw as "the editor does not use full width". */
+.new-forum-post .forum-post-composer {
+  flex: 1;
+  min-height: 0;
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+/* Breathing room the read view does not need but the composer does. Reading, the
+   title sits flush over its byline and body; writing, "New post" over the title
+   field over the editor is three stacked controls, and with no gaps they read as
+   one crowded block. A margin under the heading and under the title row spaces
+   them out — matching .conversation-heading, which already carries a bottom
+   margin one tab over. Scoped to .new-forum-post so the read view is untouched. */
+.new-forum-post .forum-post-header { margin-bottom: 14px; }
+.new-forum-post .field-row { margin-bottom: 14px; }
+
+/* ── A comment on a post ───────────────────────────────────────────────────
+   The design bands a comment's byline row: its own --surface fill and a rule
+   under it, with the body below on the window's own ground. A long thread
+   separates far better for it — the eye finds where each comment starts
+   without having to read who wrote it.
+
+   That means the card's padding moves inside, onto the two halves, rather than
+   sitting on the card: a band that stops 10px short of the border is a stripe
+   rather than a header. Hence the padding reset — .comment supplies 10px for
+   the issue window's comments, which are not banded.
+
+   The design's pair is --surface over --bg. Lunicle's tokens are one step up:
+   this card already sits ON --panel (the window interior is --t-surface), so
+   the head takes --panel-2, the raised tone, and the body is left unfilled.
+   Filling the body with --bg would read as a hole punched through the window
+   rather than as a card with a header — and .comment's own note warns what
+   happens when --panel-2 fills a whole card under Lemonade, which is why it is
+   a band here and nothing more. */
+.forum-comment { padding: 0; overflow: hidden; }
+
+.forum-comment .comment-head {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 12px;
+  margin-bottom: 0;
+}
+
+.forum-comment .comment-body { padding: 10px 12px; }
+
+/* Where a `?comment=` deep link landed. Marks the arrival rather than the
+   comment, so it is applied once when the thread first renders and is gone the
+   next time it does — see ForumPostView.renderComments. `.message-card-linked`
+   is the twin, and they are deliberately the same treatment: arriving from a
+   link should look the same wherever the link pointed. */
+.forum-comment-linked {
+  border-color: var(--green-hi);
+  background: color-mix(in srgb, var(--green-hi) 10%, transparent);
+}
+
+/* The avatar circle from the design, as an initial rather than a picture: no
+   provider avatar is stored anywhere in this schema. Fixed size and
+   `flex: none` so a long byline beside it cannot squash it into an oval. */
+.forum-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--green-hi);
+  font-size: 11px;
+}
+
+/* ── The forum manager ─────────────────────────────────────────────────────
+   A row per forum: name, description, the two move buttons, save, delete.
+   Grid rather than flex so every row's fields line up down the dialog — with
+   flex, a long forum name would push its neighbours' Save buttons out of
+   column and the list would read as ragged. */
+.forum-manager-rows { margin-bottom: 16px; }
+
+.forum-manager-row,
+.forum-manager-new {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto auto auto auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+/* The new-forum row has no move buttons, so its two trailing columns collapse
+   and the Add button sits under the Save column above it. */
+.forum-manager-new {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Square, so the arrows read as a pair rather than as two more words. */
+.forum-manager-move {
+  min-width: 32px;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.forum-manager-empty {
+  color: var(--green-dim);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+
+.forum-manager-error {
+  color: var(--red);
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   The Messages tab
+
+   ONE column, since LNL-64. It was two: a hand-drawn
+   `grid-template-columns: 280px minmax(0, 1fr)` with a `.conversation-sidebar`
+   whose `border-right` stood in for a splitter, all inside a single lunula
+   pane — while Discussion, the same list-to-detail interaction one tab over,
+   used two real panes.
+
+   The thread is now a pane of its own (see CONVERSATION_PANE_ID), so what is
+   left here is the list, and it is styled like the forum's post list rather
+   than like a sidebar: the same padding, the same card rows. The whole
+   argument for the change is in main.kt; this comment exists so that anyone
+   wondering where the second column went is not left looking for it.
+   ══════════════════════════════════════════════════════════════════════════ */
+.messages-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 16px;
+}
+
+.messages-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding-bottom: 12px;
+}
+
+.messages-heading {
+  color: var(--head);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+/* Pushed to the far end, away from the heading. */
+.messages-new { margin-left: auto; flex: none; }
+
+.messages-error { margin: 0 0 8px; }
+
+.conversation-list-empty,
+.conversation-empty {
+  color: var(--green-dim);
+  font-size: 13px;
+  margin: 0;
+}
+
+.conversation-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* One pressable CARD per conversation, which is the design's shape: an article
+   with its own surface, a border, a 6px radius and 12px 14px of padding. The
+   prototype draws it that way because the list IS the content of this tab, and
+   LNL-60's unbordered rows made it read as a sidebar — a fair reading of a
+   column that genuinely was one, and wrong the moment it stopped being one.
+
+   The whole row opens it, the way a board card and a post row do, so there is
+   no small link to aim at. */
+.conversation-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.conversation-row:hover { border-color: var(--border-hi); }
+
+/* Selection — the conversation whose window is open. Named after LNL-62's
+   `.forum-post-row-open` in spirit: since the list stays on screen beside the
+   thread, "which of these am I in" is a question it can be asked, and without
+   an answer clicking the already-open row looks like it did nothing. */
+.conversation-row-on {
+  border-color: var(--green-dim);
+  background: color-mix(in srgb, var(--green-hi) 8%, var(--panel-2));
+}
+
+/* The design's 34px circle — bigger than the 22px `.forum-avatar` used inside a
+   byline, because here it is the card's leading element rather than a mark
+   beside a name. Its own class rather than a modifier on .forum-avatar: the two
+   differ in every value, so sharing would be one rule overriding another
+   entirely. */
+.conversation-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--border-hi);
+  color: var(--green-hi);
+  font-size: 14px;
+}
+
+.conversation-row-text { flex: 1; min-width: 0; }
+
+.conversation-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* One line, clipped. A group of four names would otherwise wrap and the list
+   would stop being scannable down its left edge. */
+.conversation-row-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--green-hi);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-row-time {
+  flex: none;
+  color: var(--green-dim);
+  font-size: 11px;
+}
+
+/* Unread, as the design draws it: the title in the bright head colour and at
+   600, so the row stands out reading down the list, and a pill at the end
+   carrying how many.
+
+   Both, rather than either — the weight answers "is there something here" at a
+   glance and the number answers "how much", and a treatment that were only a
+   colour would be one nobody with a colour deficiency could read. */
+.conversation-row-unread .conversation-row-name {
+  color: var(--head);
+  font-weight: 600;
+}
+
+.conversation-row-unread .conversation-row-preview { color: var(--green); }
+
+/* The prototype's pill exactly: accent fill, the ground colour for the text so
+   it reads against it, 9px radius, 1px 7px, 11px/600. --bg rather than a light
+   token, because the fill is --accent-hi in every theme and the text has to be
+   whatever that is not. */
+.conversation-row-pill {
+  flex: none;
+  background: var(--green-hi);
+  color: var(--bg);
+  border-radius: 9px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+/* The preview is already cut to length in Kotlin — see
+   MessagesBackingViewModel.preview — so this only has to keep it on one line
+   when a shorter body happens to be wide. */
+.conversation-row-preview {
+  color: var(--green-dim);
+  font-size: 12px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── One conversation, in its own window ───────────────────────────────────
+   A column: header, the scrolling transcript, and the composer pinned under
+   it. Only the transcript scrolls, so the heading stays put while a long
+   thread is read and the composer never has to be scrolled to — exactly the
+   arrangement .forum-post uses one tab over. */
+.conversation-host,
+.conversation {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Padded on the view, not on the host — the same split .forum-post makes
+   against .forum-post-host, and for the same reason: the class owns its own
+   margins and does not depend on what it is mounted in.
+
+   The measurement is .forum-post's, deliberately. These are sibling panes one
+   tab over from each other showing the same shape (a heading, a scrolling
+   body, a composer pinned under it), and they were visibly out of step: this
+   one had no horizontal padding at all, so the transcript ran flush into the
+   pane's edge while the forum's stood off it. Two panes that differ by a
+   gutter read as one of them being broken. */
+.conversation {
+  padding: 12px 16px;
+}
+
+.conversation-header { flex: none; }
+
+.conversation-heading {
+  color: var(--green-hi);
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+
+.conversation-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The composer, pinned under the thread as the design shows: a border-top, the
+   editor, then Send at the right.
+
+   Note what is NOT here: any height rule for the editor. `flex: none` lets it
+   take its own natural size — `.editor-surface`'s min-height plus a toolbar —
+   and the transcript above takes the rest. There is deliberately no max-height
+   and no inner scroll region: the thread is a draggable, resizable,
+   maximisable pane, so how much room the composer has is the reader's to
+   decide with the affordances the toolkit already gives them, which is the
+   same deal the issue editor has in the issue window. A cap would be a number
+   nobody chose, solving a problem the window manager already solves. */
+.conversation-composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.conversation-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Starting a conversation uses the same pane, so it needs the same column —
+   with the recipient row where the transcript would be, and the composer
+   taking the slack rather than sitting under something that scrolls. The
+   editor's own growth comes from `.editor-host`, which the host wears; see
+   .new-forum-post above, which says why that is one class rather than four
+   rules copied per composer. */
+.new-conversation .conversation-composer {
+  flex: 1;
+  min-height: 0;
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+/* Full width, both sides.
+
+   This carried `margin-right: 15%`, with its own comment claiming that
+   "leaving a margin is what the design does". It does not: the prototype's
+   message card is a plain bordered box in a gapped flex column, with no margin
+   and no width constraint, and the two sides are told apart purely by the tint
+   triple below. The pair of leans — theirs held off the right, yours off the
+   left — was invented here, and it looked like slipped boxes rather than like
+   an exchange, because neither side was actually aligned to anything.
+
+   The margin also cost the thing these bodies are for. A message holds
+   markdown, so its code blocks and images want the pane's width; giving 15% of
+   every line back to make a phone-messenger silhouette is a trade against the
+   content people came to read. */
+.message-card {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* The byline band, exactly as .forum-comment has one and for the design's
+   reason: a long thread separates far better when the eye can find where each
+   message starts without reading who wrote it. Hence the padding moving off
+   the card and onto the two halves — a band that stops short of the border is
+   a stripe rather than a header. */
+.message-card .comment-head {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 12px;
+  margin-bottom: 0;
+}
+
+.message-card .comment-body { padding: 10px 12px; }
+
+/* Your own, drawn differently — by tint alone, and deliberately not by indent.
+
+   The design tints three things at once — the card, its header band and the
+   avatar — in ascending strengths of the accent, and that triple is what makes
+   a two-person thread readable at a glance rather than a wall of identical
+   boxes. Through color-mix over the theme tokens rather than the prototype's
+   literal rgba(77, 200, 245, …), so it follows whichever palette is on: the
+   hard-coded blue would be a stripe of Lunamux Dark sitting inside Lemonade.
+
+   Mixed against --panel and --panel-2 rather than laid over `transparent`,
+   because a message body holds markdown — code blocks, images, quotes — all of
+   which are styled against an opaque background.
+
+   ── Why there is no indent, having briefly had one ────────────────────────
+
+   This carried `margin-left: 15%` for a while: the chat convention of pushing
+   your own messages away from the other person's. It is not in the prototype,
+   whose cards are all full width, and it looked broken rather than aligned —
+   the card started 15% in but still ran to the right edge, so it read as a box
+   that had slipped rather than as a side of the conversation.
+
+   Doing it properly would mean a max-width and right alignment, and that fights
+   the one thing these bodies are for: a message holds markdown, so code blocks
+   and images want the pane's full width, and narrowing them to look like a
+   phone messenger would make the wide content the reason people paste it here
+   worse. Tint carries the distinction at no cost to the content. */
+.message-card-mine {
+  border-color: var(--border-hi);
+  background: color-mix(in srgb, var(--green-hi) 6%, var(--panel));
+}
+
+.message-card-mine .comment-head {
+  background: color-mix(in srgb, var(--green-hi) 8%, var(--panel-2));
+}
+
+.message-card-mine .forum-avatar {
+  background: color-mix(in srgb, var(--green-hi) 16%, transparent);
+  border-color: var(--border-hi);
+}
+
+/* Where a `?message=` deep link landed. Marks the arrival rather than the
+   message, so it is applied once when the thread first renders and is gone
+   the next time it does — see ConversationView.renderMessages. */
+.message-card-linked {
+  border-color: var(--green-hi);
+  background: color-mix(in srgb, var(--green-hi) 10%, transparent);
+}
+
+/* ── The recipient picker ──────────────────────────────────────────────────
+   LNL-30 replaces the design's pills with a search box and an autocomplete
+   "very similar to the WYSIWYG editor's @ mention popup", so this borrows
+   .mention-menu's look deliberately: the two are one control appearing in
+   two places and should not look like two.
+
+   It is NOT positioned like that one, though. The mention menu is fixed to
+   the viewport and mounted on <body> because it has to escape .editor-host's
+   overflow; this sits under a text field near the top of a dialog with room
+   below it, so it is absolutely positioned inside the modal and moves with
+   it. */
+.recipient-row { position: relative; }
+
+.recipient-chosen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* The chips are what survives of the design's pills: the ticket replaces how
+   names are *found*, not how the chosen ones are shown. */
+.recipient-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--green-hi);
+  font-size: 12px;
+}
+
+.recipient-chip-remove {
+  border: 0;
+  background: none;
+  color: var(--green-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.recipient-chip-remove:hover { color: var(--red); }
+
+.recipient-search-wrap { position: relative; }
+
+.recipient-search { width: 100%; }
+
+.recipient-menu {
+  position: absolute;
+  left: 0;
+  /* Sized to the names in it, not stretched across the pane. `right: 0` made it
+     as wide as the (full-width) search field, which in a maximised Messages pane
+     is the whole window — a short list of names floating in a bar of empty
+     dropdown (LNL-82). Content-width with a floor so a single short name still
+     makes a clickable target, and a ceiling so a long display name does not run
+     off. Matches how .mention-menu sizes itself. */
+  width: max-content;
+  min-width: 200px;
+  max-width: 320px;
+  top: calc(100% + 4px);
+  /* Above the modal's own body, but below .mention-menu (10020): both can be
+     open at once — a name being picked while the editor below has a mention
+     half-typed — and the one belonging to the caret must win. */
+  z-index: 10015;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+
+.recipient-menu-item {
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  color: var(--body);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One highlight class, driven by the arrow keys AND by hover — the row the
+   mouse is over is the row Enter would take, so there is only ever one "this
+   one" on screen. .mention-menu-item-on is the same rule. */
+.recipient-menu-item-on {
+  color: var(--head);
+  background: color-mix(in srgb, var(--green-hi) 18%, transparent);
+}
+
+/* Why the picker stopped accepting names. A sentence rather than a disabled
+   control on its own: membership is fixed at creation, and "the file you
+   attached started the conversation" is not something anybody would guess
+   from a greyed-out box. */
+.recipient-lock-note {
+  color: var(--green-dim);
+  font-size: 12px;
+  margin: 6px 0 0;
+  max-width: 60ch;
+}
+
+/* ============================================================
+   Notifications — the alarm bell and its sidebar list (LNL-109).
+
+   The bell is Lunicle's own custom topbar element (main.kt's
+   extraTopbarTrailing), sitting among the toolkit's trailing
+   icons. Its whole appearance is driven by two <body> attributes
+   set from the unread state — data-lnl-signed-in and
+   data-lnl-notif — mirroring how Lunamux flashes its news bell
+   from a body attribute rather than a class on the button, so a
+   top-bar rebuild cannot drop the state. The panel fills the
+   toolkit-owned sidebar's body slot.
+   ============================================================ */
+
+/* Hidden until a session resolves: a signed-out visitor owns no
+   notifications, so an always-present bell would open an empty
+   panel. */
+.lnl-notif-bell { display: none; }
+
+.icon-bell { width: 18px; height: 18px; }
+
+body[data-lnl-signed-in="1"] .lnl-notif-bell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  /* Muted when nothing is unread — a quiet member of the icon row,
+     not an alert light. */
+  color: var(--green-dim);
+  opacity: .75;
+  transition: color .12s, opacity .12s;
+}
+body[data-lnl-signed-in="1"] .lnl-notif-bell:hover { color: var(--green-hi); opacity: 1; }
+
+/* Unread: the warn/amber accent, pulsing — colour AND opacity, so
+   motion is the signal rather than colour alone (Lunamux's rule). */
+body[data-lnl-notif="1"] .lnl-notif-bell {
+  color: var(--yellow);
+  opacity: 1;
+  animation: lnl-notif-pulse 2.5s ease-in-out infinite;
+}
+@keyframes lnl-notif-pulse {
+  0%, 100% { color: var(--yellow); opacity: 1; }
+  50%      { color: color-mix(in srgb, var(--yellow) 45%, transparent); opacity: .55; }
+}
+/* Reduced-motion: keep the colour, drop the pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .lnl-notif-bell { animation: none !important; }
+}
+
+/* ── The panel body ─────────────────────────────────────────── */
+
+.notif-panel { display: flex; flex-direction: column; min-height: 0; }
+
+.notif-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.notif-action {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--green-hi);
+  background: transparent;
+  border: 0;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.notif-action:hover { background: var(--panel-2); }
+.notif-action-danger { color: var(--red); }
+
+.notif-empty {
+  color: var(--green-dim);
+  font-size: 13px;
+  padding: 16px 4px;
+  text-align: center;
+}
+
+.notif-list { display: flex; flex-direction: column; }
+
+.notif-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.notif-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notif-title {
+  font-size: 13px;
+  color: var(--green-dim);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.notif-row-unread .notif-title { color: var(--head); font-weight: 600; }
+.notif-time { font-size: 11px; color: var(--green-dim); opacity: .8; }
+
+.notif-dismiss {
+  flex: none;
+  background: transparent;
+  border: 0;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--green-dim);
+  opacity: .6;
+  display: inline-flex;
+}
+.notif-dismiss:hover { opacity: 1; color: var(--red); }
+.notif-dismiss .icon { width: 14px; height: 14px; }

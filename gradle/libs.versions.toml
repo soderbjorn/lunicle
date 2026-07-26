@@ -1,0 +1,76 @@
+[versions]
+kotlin = "2.3.20"
+# lunula UI shell. Resolved from the committed libs-repo (see
+# settings.gradle.kts); a sibling lunula checkout transparently
+# substitutes these with project builds during development.
+lunula = "0.2.54"
+ktor = "3.4.1"
+kotlinx-coroutines = "1.10.2"
+kotlinx-serialization = "1.9.0"
+kotlinx-datetime = "0.7.0"
+logback = "1.5.32"
+sqldelight = "2.1.0"
+# Angus Mail — the Jakarta Mail reference implementation, for the SMTP email
+# transport. Ktor ships no SMTP client, so this is the mail library the SMTP
+# path needs (see EmailTransport / SmtpEmailTransport). Pulls jakarta.mail-api
+# and the Angus activation impl in transitively.
+angusMail = "2.0.3"
+# Google Cloud client libraries, for the LNL-111 Firestore backend (and its GCS
+# attachment store). Pinned as the libraries-BOM rather than per-artifact: the
+# Firestore client drags in gRPC, protobuf, gax and auth, and those must move as
+# one set — the BOM is the single knob that keeps them aligned. `google-cloud-*`
+# artifacts below take their versions from it. Server-side only; inert unless
+# LUNICLE_DB_BACKEND=firestore constructs a client (see FirestoreProvider).
+googleCloud = "26.51.0"
+
+[libraries]
+lunula-core = { module = "se.soderbjorn.lunula:lunula-core", version.ref = "lunula" }
+lunula-web = { module = "se.soderbjorn.lunula:lunula-web", version.ref = "lunula" }
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+# Multiplatform date/time. Here so the view models can turn an epoch millis into
+# the sentence the view shows — the alternative was `Date(ms).toLocaleString()`
+# in the JS view, which is a label decided outside a view model and would have to
+# be written a second time for iOS. See client/…/Dates.kt.
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
+logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+ktor-serverCore = { module = "io.ktor:ktor-server-core-jvm", version.ref = "ktor" }
+ktor-serverNetty = { module = "io.ktor:ktor-server-netty-jvm", version.ref = "ktor" }
+ktor-serverContentNegotiation = { module = "io.ktor:ktor-server-content-negotiation-jvm", version.ref = "ktor" }
+ktor-serverDefaultHeaders = { module = "io.ktor:ktor-server-default-headers-jvm", version.ref = "ktor" }
+ktor-serverCallLogging = { module = "io.ktor:ktor-server-call-logging-jvm", version.ref = "ktor" }
+ktor-serializationKotlinxJson = { module = "io.ktor:ktor-serialization-kotlinx-json-jvm", version.ref = "ktor" }
+ktor-serverTestHost = { module = "io.ktor:ktor-server-test-host-jvm", version.ref = "ktor" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-contentNegotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-client-serializationKotlinxJson = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ktor-client-js = { module = "io.ktor:ktor-client-js", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+# Test-only: an HttpClient engine that answers from a lambda instead of the
+# network, so an outbound call can be asserted without making one. See
+# McpSendEmailTest.
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+# The JDBC driver SQLDelight talks to SQLite through, on the JVM. It brings
+# org.xerial:sqlite-jdbc — and therefore the SQLite engine itself, as a bundled
+# native library — in transitively.
+sqldelight-sqliteDriver = { module = "app.cash.sqldelight:sqlite-driver", version.ref = "sqldelight" }
+# Only used to name the dialect in server/build.gradle.kts. Declared here rather
+# than as a bare string so the version stays pinned in one place with the rest.
+sqldelight-sqlite338Dialect = { module = "app.cash.sqldelight:sqlite-3-38-dialect", version.ref = "sqldelight" }
+# The SMTP email transport's mail library. See the version note above.
+angus-mail = { module = "org.eclipse.angus:angus-mail", version.ref = "angusMail" }
+# Google Cloud client libraries — Firestore (the parallel backend) and Storage
+# (its attachment bytes). Versions come from the libraries-BOM below; declared
+# without version.ref so the BOM is the one place the version lives.
+google-cloud-bom = { module = "com.google.cloud:libraries-bom", version.ref = "googleCloud" }
+google-cloud-firestore = { module = "com.google.cloud:google-cloud-firestore" }
+google-cloud-storage = { module = "com.google.cloud:google-cloud-storage" }
+
+[plugins]
+kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
+sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }

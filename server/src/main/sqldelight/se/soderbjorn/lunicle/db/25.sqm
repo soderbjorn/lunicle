@@ -1,0 +1,44 @@
+-- Version 25 → 26: the system administrator becomes the owner of every project.
+--
+-- LNL-107 introduces `project_owner`, the per-project role senior to
+-- `project_admin` — it holds a project's identity (name, prefix, visibility), its
+-- repository, its deletion, and the granting of the two senior roles. The ticket
+-- asks that on migration the sys admin become the owner of all projects, so that
+-- every board has an owner of record from the moment the role exists, rather than
+-- an owner-shaped hole that only a sys admin's blanket rights happen to fill.
+--
+-- ── Why this migration exists at all, when 11.sqm's did not ─────────────────
+--
+-- Roles are seeded, not migrated: `roles` is filled unconditionally at startup by
+-- RoleStore.seed() with INSERT OR IGNORE, so a new Role enum value arrives on a
+-- fresh volume and a deployed one by the same path with nothing to keep in step.
+-- 11.sqm says exactly this, and `project_admin` needed no migration for that
+-- reason. `project_owner` is different in one way only: it must be *granted* to
+-- existing sys admins, and a grant is a row in `project_roles` that names a
+-- `role_id` — which cannot exist until the role row does. Seeding runs *after*
+-- migrations, so at this point the role is not there yet.
+--
+-- So this migration seeds the role itself first, and the description string below
+-- MUST match the Role.PROJECT_OWNER enum's verbatim: seed() is INSERT OR IGNORE
+-- keyed on role_key, so whichever of the two writes first wins and the other is a
+-- no-op. If they disagreed, a migrated instance would carry a different sentence
+-- under the checkbox than a fresh one, and nothing would ever reconcile them. The
+-- INSERT OR IGNORE here means seed()'s later call is the harmless no-op, not this.
+INSERT OR IGNORE INTO roles (role_key, description)
+VALUES ('project_owner', 'Own this project: everything an administrator can do, plus its name, its repository, and deleting it.');
+
+-- Grant it to every system administrator on every project. A cross join, because
+-- "the sys admin owns all projects" is literally every (sys admin, project) pair.
+-- INSERT OR IGNORE so a re-run — or a deployment with a single sys admin who is
+-- already, somehow, a member — cannot fail on the composite primary key.
+--
+-- Read off `users.is_sys_admin`, the flag 11.sqm renamed. An instance with no sys
+-- admin, or no projects, inserts nothing, which is correct: there is no owner to
+-- seat and nothing to seat them on. This runs once; an owner deliberately revoked
+-- later stays revoked, because a migration is not a startup seed.
+INSERT OR IGNORE INTO project_roles (user_id, project_id, role_id)
+SELECT users.id, projects.id, roles.id
+FROM users
+CROSS JOIN projects
+JOIN roles ON roles.role_key = 'project_owner'
+WHERE users.is_sys_admin = 1;

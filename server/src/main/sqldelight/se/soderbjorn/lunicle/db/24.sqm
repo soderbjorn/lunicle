@@ -1,0 +1,24 @@
+-- Version 24 → 25: a project can require a label and/or a component on a new ticket.
+--
+-- LNL-106 lets a project administrator turn on, independently, whether filing a
+-- new ticket must carry a label and whether it must carry a component. Two
+-- columns rather than one, because the ticket asks for the two to be switched
+-- separately: a project may want to insist on a component and not a label, or the
+-- reverse. One flag could not express that — the same reasoning 23.sqm gives for
+-- the discussions/messages pair.
+--
+-- ── Default 0, and why back-fill is a no-op ─────────────────────────────────
+--
+-- Off is the state every project has had until now — nothing has ever rejected a
+-- ticket for want of a label — so 0 is what keeps this upgrade invisible.
+-- `ALTER TABLE ADD COLUMN` can only supply a constant, and here the constant is
+-- exactly right for every existing row (no project was requiring anything), so
+-- there is no follow-up UPDATE: they all want the same one.
+--
+-- The DEFAULT 0 matches the columns as Projects.sq now declares them, so a fresh
+-- database ends up with the same PRAGMA as a migrated one — MigrationTest holds
+-- that line.
+
+ALTER TABLE projects ADD COLUMN require_label INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE projects ADD COLUMN require_component INTEGER NOT NULL DEFAULT 0;

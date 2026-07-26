@@ -1,0 +1,30 @@
+-- Version 1 → 2: the agent-name columns on issues and comments.
+--
+-- create_issue and add_comment let an MCP agent stamp the rows it writes with
+-- its own name, so the board can show an agent — not a human typing by hand —
+-- made them. See the `agent_name` column comments in Issues.sq and Comments.sq
+-- for what it means and why it is orthogonal to the author columns.
+--
+-- Two paths reach that schema, and this file is the one the other cannot cover.
+-- A fresh volume runs `CREATE TABLE` from the .sq files and gets the column for
+-- free; a volume that already exists at version 1 — Railway's — runs this
+-- instead. Without it, the deployed database stays at the old shape and every
+-- board query dies on `no such column: agent_name`, which is exactly the failure
+-- that shipped before this file existed. See MigrationTest for the guarantee
+-- that this lands on the same schema `CREATE TABLE` does.
+--
+-- ── Why ADD COLUMN, and why that is safe here ────────────────────────────────
+--
+-- The column is nullable with no default, so SQLite appends it to every existing
+-- row as NULL — which is precisely "no agent wrote this", the correct answer for
+-- every issue and comment that predates the feature. That is what makes a plain
+-- ADD COLUMN right rather than a table rebuild: there is no backfill to compute
+-- and no old value to preserve.
+--
+-- ADD COLUMN can only append, so the column lands physically last here while the
+-- .sq CREATE places it mid-table. That difference is invisible to everything
+-- that matters: every generated query names its columns explicitly rather than
+-- by position, and MigrationTest compares sorted structural facts, so neither the
+-- code nor the test treats column order as part of the schema.
+ALTER TABLE issues ADD COLUMN agent_name TEXT;
+ALTER TABLE comments ADD COLUMN agent_name TEXT;

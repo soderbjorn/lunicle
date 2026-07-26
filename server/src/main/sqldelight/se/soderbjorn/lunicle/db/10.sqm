@@ -1,0 +1,49 @@
+-- Version 10 → 11: every project gains a "Duplicate" resolution.
+--
+-- 4.sqm's twin, and its comment is the long version of this one: no schema
+-- changes at all, because `resolutions` already stores the vocabulary as rows,
+-- one per project, so a new default is data. MigrationTest is blind to it by
+-- construction — it compares PRAGMA output, which is identical either side of an
+-- INSERT — so `11.db` is a byte-for-byte-equivalent shape to `10.db` and exists
+-- only because the version moved. The row is covered by ResolutionMigrationTest
+-- instead.
+--
+-- The create path does not run this. A fresh volume gets its resolutions from
+-- ProjectRepository's DEFAULT_RESOLUTIONS at the moment each project is created,
+-- and that list now carries the same name. This file is the other half: the
+-- projects on the deployed volume that already exist and would otherwise keep
+-- their two resolutions forever.
+--
+-- ── Why the end, and not beside "Done" ─────────────────────────────────────
+--
+-- `position` is not decoration here: the board groups closed issues by it, and
+-- Resolutions.sq's convention is 0-first ascending. Inserting in the middle would
+-- shuffle every existing resolution one to the right on every board — a silent
+-- re-grouping of issues nobody asked to have re-grouped, on a volume serving real
+-- boards. Appending changes the position of nothing that already exists, which is
+-- why this file has no UPDATE at all and 4.sqm needed one.
+--
+-- MAX(position) + 1 is read per project rather than assumed to be 2: a project
+-- may have added resolutions of its own through the settings dialog, and a
+-- constant would collide with one. The COALESCE tail is for a project with no
+-- resolutions at all — unreachable, because seeding is one transaction with the
+-- project insert, but `position` is NOT NULL and an unreachable NULL here would
+-- be a failed migration on startup rather than one bad row.
+--
+-- ── Why the guard ──────────────────────────────────────────────────────────
+--
+-- `UNIQUE (project_id, name)` on a COLLATE NOCASE column. A project whose admin
+-- already made a "Duplicate" resolution by hand — or a "duplicate" one — would
+-- violate it, and a violation here is not a bad row: it aborts the migration,
+-- which aborts startup, on the deployed volume, for everyone.
+
+INSERT INTO resolutions (project_id, name, position)
+SELECT
+    p.id,
+    'Duplicate',
+    COALESCE((SELECT MAX(r.position) + 1 FROM resolutions r WHERE r.project_id = p.id), 0)
+FROM projects p
+WHERE NOT EXISTS (
+    SELECT 1 FROM resolutions e
+    WHERE e.project_id = p.id AND e.name = 'Duplicate'
+);

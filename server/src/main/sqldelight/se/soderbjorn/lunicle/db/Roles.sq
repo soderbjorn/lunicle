@@ -1,0 +1,125 @@
+-- The permission vocabulary, and who holds what where.
+--
+-- Hardcoded and not user-editable: rows are seeded when the database is created
+-- and there is no route that writes to `roles`. Which roles exist is a fact about
+-- this build — AccessControl branches on each one by name — so a role invented at
+-- runtime would grant nothing at all. See the Role enum.
+--
+-- `project_roles` is a different matter and always has been: it ASSOCIATES users
+-- with the roles above, and the settings dialog writes it through grant/revoke
+-- below. That is the line this file draws — you may say who holds what, never
+-- what a role means.
+--
+-- Only AccessControl reads these to answer a *permission*, one user and one role
+-- at a time, from the session. `grantsForProject` reads them to answer the
+-- administrative question "who holds what here", which is a different question
+-- with a different audience and never a way to decide a write.
+
+CREATE TABLE roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- `key` is a keyword in enough dialects to be worth dodging.
+    role_key TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL
+);
+
+-- A user may hold many roles in one project, hence the composite primary key
+-- rather than a single role column on some membership row.
+CREATE TABLE project_roles (
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, project_id, role_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+);
+
+-- Seeding. INSERT OR IGNORE rather than a bare INSERT so RoleStore.seed() can
+-- run on every startup without caring whether the database was just created,
+-- just migrated, or has been serving for a month. One code path, no branch to
+-- get wrong. See RoleStore.
+seed:
+INSERT OR IGNORE INTO roles (role_key, description) VALUES (?, ?);
+
+-- Does this user hold this role in this project? The question AccessControl
+-- asks, phrased exactly as it asks it — a role_key rather than a role id,
+-- because the caller has a constant and should not have to look one up first.
+hasRole:
+SELECT EXISTS(
+    SELECT 1 FROM project_roles
+    JOIN roles ON roles.id = project_roles.role_id
+    WHERE project_roles.user_id = ?
+      AND project_roles.project_id = ?
+      AND roles.role_key = ?
+);
+
+-- Is this user a member of this project at all — do they hold ANY role here?
+--
+-- What `canReadProject` asks once `is_public` has said no. Deliberately not
+-- "do they hold view_project": holding create_issue on a project you cannot see
+-- was always incoherent, and phrasing membership as "holds something here"
+-- retires that rather than adding a second thing to keep in step. view_project
+-- exists so a read-only member has something to hold; it is not the only answer.
+--
+-- Separate from `rolesFor` even though that would answer it too, because this
+-- runs on every read of every project — including the project list, once per
+-- project — and EXISTS stops at the first row where the other builds a list to
+-- throw away. See AccessControl.canReadProject.
+isMember:
+SELECT EXISTS(
+    SELECT 1 FROM project_roles
+    WHERE user_id = ? AND project_id = ?
+);
+
+-- Everyone who holds any role in this project — `isMember` turned around.
+--
+-- The set-shaped question, for the callers that need the whole membership rather
+-- than a yes about one person: who may be @mentioned in a forum, and who may be
+-- messaged privately. See ProjectAudience, which is the only reader.
+--
+-- DISTINCT because `project_roles` is keyed on (user, project, role), so somebody
+-- holding three roles here is three rows. Not joined to `roles`, deliberately:
+-- membership is "holds a row", exactly as `isMember` reads it, so a grant naming
+-- a role_key this build has never heard of still counts as membership. The join
+-- would silently narrow the set — and it would narrow it differently from the
+-- function that decides whether the same person may READ the project, which is
+-- the disagreement worth not having.
+memberIds:
+SELECT DISTINCT user_id FROM project_roles WHERE project_id = ?;
+
+-- Every role this user holds in this project, for the client's affordances.
+-- The client renders these; it never enforces them. See AccessControl.
+rolesFor:
+SELECT roles.role_key
+FROM project_roles
+JOIN roles ON roles.id = project_roles.role_id
+WHERE project_roles.user_id = ? AND project_roles.project_id = ?;
+
+-- Every grant in one project, for the settings dialog's privileges table.
+--
+-- The whole table at once rather than `rolesFor` per user: that dialog renders a
+-- row per account on the instance, so per-user queries would make opening it cost
+-- a query per person who has ever signed in.
+--
+-- Note the direction this is read in. It answers "who holds what here", which is
+-- an *administrative* question — never a permission one. AccessControl asks
+-- `hasRole` about one user and one role, from the session, and nothing here is a
+-- shortcut around that. See AccessControl's preamble.
+grantsForProject:
+SELECT project_roles.user_id, roles.role_key
+FROM project_roles
+JOIN roles ON roles.id = project_roles.role_id
+WHERE project_roles.project_id = ?;
+
+-- INSERT OR IGNORE, and the SELECT is what turns a role_key into a role_id: a
+-- key naming a role this instance does not have inserts nothing rather than
+-- failing, which is the same reading `rolesFor` takes of an unknown key —
+-- an unknown role grants nothing.
+grant:
+INSERT OR IGNORE INTO project_roles (user_id, project_id, role_id)
+SELECT ?, ?, roles.id FROM roles WHERE roles.role_key = ?;
+
+revoke:
+DELETE FROM project_roles
+WHERE user_id = ? AND project_id = ?
+  AND role_id = (SELECT id FROM roles WHERE role_key = ?);

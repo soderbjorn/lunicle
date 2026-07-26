@@ -1,0 +1,50 @@
+-- "One issue can have many labels, out of the labels available to the project."
+--
+-- The trickery that makes the second half of that sentence structural rather
+-- than a Kotlin check you can forget on the seventh route.
+--
+-- A plain label_id foreign key would happily let a Project A issue carry a
+-- Project B label — the constraint you actually want spans two tables. Carrying
+-- project_id redundantly here and pointing *composite* foreign keys at both
+-- parents makes the mismatch impossible to write down: both keys must agree on
+-- this one column, so a label from another project cannot satisfy them at the
+-- same time. The database refuses the row.
+--
+-- All of it rests on `PRAGMA foreign_keys = ON`, which Database.kt sets and
+-- already documents as the line that makes every FK in the schema mean
+-- anything.
+
+CREATE TABLE issue_labels (
+    issue_id INTEGER NOT NULL,
+    label_id INTEGER NOT NULL,
+    -- Redundant on purpose. See above — it is what ties the two keys to one
+    -- project.
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (issue_id, label_id),
+    FOREIGN KEY (issue_id, project_id) REFERENCES issues(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (label_id, project_id) REFERENCES labels(id, project_id) ON DELETE CASCADE
+);
+
+insert:
+INSERT OR IGNORE INTO issue_labels (issue_id, label_id, project_id) VALUES (?, ?, ?);
+
+deleteForIssue:
+DELETE FROM issue_labels WHERE issue_id = ?;
+
+forIssue:
+SELECT label_id FROM issue_labels WHERE issue_id = ?;
+
+-- The board needs every issue's labels at once; one query per card would be a
+-- request per issue.
+forProject:
+SELECT issue_id, label_id FROM issue_labels WHERE project_id = ?;
+
+-- How many issues wear each label, for the settings dialog's confirmation.
+--
+-- Unlike a status, a label in use does not *refuse* deletion — the foreign keys
+-- above are ON DELETE CASCADE, so deleting a label unlabels those issues and the
+-- issues themselves are untouched. So this count is not a gate, it is the
+-- sentence: "3 issues will lose that label". A confirm that cannot name the
+-- consequence is a confirm nobody reads.
+usageByLabel:
+SELECT label_id, COUNT(*) AS uses FROM issue_labels WHERE project_id = ? GROUP BY label_id;

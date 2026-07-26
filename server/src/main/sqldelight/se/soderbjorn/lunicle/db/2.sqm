@@ -1,0 +1,30 @@
+-- Version 2 → 3: the two e-mail-notification subscription tables.
+--
+-- The same dual-path story as 1.sqm: a fresh volume runs `CREATE TABLE` from
+-- Subscriptions.sq and gets these for free; a volume already at version 2 —
+-- Railway's — runs this instead. Without it the deployed database would stay at
+-- the old shape and every subscription query would die on `no such table`.
+-- MigrationTest is the guarantee that this lands on exactly the schema the .sq
+-- files declare; see its preamble.
+--
+-- Pure CREATE TABLE, so there is nothing to back-fill: a table that did not
+-- exist has no rows, and "nobody is subscribed yet" is the correct state for
+-- every account that predates the feature. The statements below are a verbatim
+-- copy of Subscriptions.sq's CREATE TABLE blocks, minus the prose — see that
+-- file for what each column and cascade is for.
+
+CREATE TABLE project_new_issue_subscriptions (
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, project_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE issue_update_subscriptions (
+    user_id INTEGER NOT NULL,
+    issue_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, issue_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);

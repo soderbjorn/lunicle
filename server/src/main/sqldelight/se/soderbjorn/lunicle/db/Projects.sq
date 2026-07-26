@@ -1,0 +1,291 @@
+-- Projects: a name, a ticket prefix, and whether the world may read it.
+
+CREATE TABLE projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- COLLATE NOCASE on the column makes both the UNIQUE index and every `=`
+    -- against it case-insensitive. Trimmed server-side first — "Lunamux " and
+    -- "Lunamux" are the same project to a human, and a trailing space is
+    -- invisible in the very UI that would show the clash.
+    --
+    -- The guarantee is ~95% structural: NOCASE folds ASCII A–Z only, so
+    -- Ärenden/ärenden would both get in on the constraint alone.
+    -- ProjectRepository runs a Unicode-aware lowercase() comparison before
+    -- insert and rename to catch the rest. See its nameIsTaken().
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+
+    -- The "FOO" in FOO-123. Unique across all projects, not merely non-null: if
+    -- two projects shared a prefix, FOO-123 would name two different issues and
+    -- every ticket reference in every commit message would be ambiguous.
+    -- Upper-cased server-side by convention.
+    name_prefix TEXT NOT NULL COLLATE NOCASE UNIQUE,
+
+    -- The one read gate that says yes to a caller with no session at all.
+    -- Enforced in AccessControl.canReadProject, never in the browser.
+    is_public INTEGER NOT NULL DEFAULT 0,
+
+    -- The middle read tier (LNL-138): yes to any signed-in account, no to a caller
+    -- with no session. `is_public` says yes to a stranger; this says yes to
+    -- everyone with a login and nobody without one, so a project can be browsable
+    -- across the instance without being exposed to the anonymous web. It grants
+    -- reading only — every write gate stays membership-scoped, so a project turned
+    -- on here is read-only to the signed-in users it newly admits. Enforced in
+    -- AccessControl.canReadProject beside is_public, never in the browser.
+    --
+    -- Independent of is_public rather than an enum replacing it: a fresh row
+    -- defaults 0 like is_public, and the two OR together in the read rule, so
+    -- turning on "public" already implies signed-in visibility and this adds the
+    -- signed-in-only middle. Default 0 — the tier every project had before this
+    -- column existed. See 30.sqm, which adds it to an existing volume.
+    visible_to_all_signed_in INTEGER NOT NULL DEFAULT 0,
+
+    -- Whether this project offers a discussion forum and private messages. Two
+    -- flags a project administrator sets, independently — a project may want
+    -- discussions and no messages, or the reverse (LNL-96).
+    --
+    -- These do NOT gate the forum/message APIs on the server: like the forum
+    -- master toggle (see ShellBackingViewModel), they hide the tabs rather than
+    -- lock the data, and LNL-30 settled that the forum surface is not access-
+    -- controlled beyond project visibility. They ride on ProjectSummary so the tab
+    -- shell can read them off the board it already loads, and default enabled
+    -- because that is the state every project had before this column existed.
+    discussions_enabled INTEGER NOT NULL DEFAULT 1,
+    messages_enabled INTEGER NOT NULL DEFAULT 1,
+
+    -- Whether filing a NEW ticket in this project must carry a label, and whether
+    -- it must carry a component — two switches a project administrator sets
+    -- independently (LNL-106). Enforced at issue-publish time (see BoardRoutes'
+    -- PUT /api/issues/{id}) and mirrored as an editor affordance on the client;
+    -- they gate the first publish of a draft, not later edits of an old issue, so
+    -- turning a requirement on never strands an existing label-less ticket.
+    --
+    -- They ride on ProjectRecord and ProjectSummary, the way the forum flags do,
+    -- so the issue editor can read them off the board it already loads. Default 0
+    -- (not required) — the state every project had before these columns existed.
+    require_label INTEGER NOT NULL DEFAULT 0,
+    require_component INTEGER NOT NULL DEFAULT 0,
+
+    -- Whether closing an issue with a *done* resolution must carry a fixed version
+    -- (LNL-134). A third new-work requirement flag beside the two above, and set by
+    -- the same project-administrator gesture on the Structure tab. It gates a move
+    -- into a resolution whose `is_done` is set — closing as Duplicate or Won't fix
+    -- is never blocked — so "resolve" here means "finish", not merely "close". See
+    -- Resolutions.sq's is_done and BoardRoutes' resolveResolution.
+    --
+    -- Rides on ProjectRecord and ProjectSummary like the two above, so the board and
+    -- the resolution dialog read it off what they already load. Default 0 (not
+    -- required) — the state every project had before this column existed; 24.sqm's
+    -- reasoning for require_label applies verbatim.
+    require_fixed_version_on_resolve INTEGER NOT NULL DEFAULT 0,
+
+    -- Whether the board shows each card's author on a muted footer line (LNL-157).
+    -- A per-project DISPLAY setting a project administrator flips — not a
+    -- requirement like the three above, and not a per-user preference: the whole
+    -- project sees the same board, so the choice belongs to the project, not the
+    -- viewer. Rides on ProjectRecord and ProjectSummary the way the requirement
+    -- flags do, so the board reads it off what it already loads and the card render
+    -- can gate on it.
+    --
+    -- Default 0 (off), unlike the two forum flags: the board is currently sparse and
+    -- this is opt-in, so a fresh row and every migrated one start hidden — the state
+    -- every project had before this column existed. See 32.sqm; 24.sqm's reasoning
+    -- for a DEFAULT that reproduces the prior state applies verbatim.
+    show_issue_author INTEGER NOT NULL DEFAULT 0,
+
+    created_at INTEGER NOT NULL,
+
+    -- Where this project sits in the instance-wide list, 0 first — the same
+    -- convention the vocabulary tables use (see Labels.sq). It decides the order
+    -- the picker offers projects in, which is a curation decision a system
+    -- administrator gets to make in the instance settings dialog; the alphabetical
+    -- order `selectAll` used before was only a default nobody chose. See LNL-93.
+    --
+    -- Deliberately not UNIQUE: every reorder passes through a state where two rows
+    -- share a position, and the rewrite is one transaction over the whole list
+    -- rather than a pair of careful steps. See ProjectRepository.reorder.
+    --
+    -- The DEFAULT is not for any caller — `insert` always names a position — it is
+    -- there because 22.sqm added this column with `ALTER TABLE ADD COLUMN`, which
+    -- cannot omit one, and a fresh database must end up with the same PRAGMA as a
+    -- migrated one. MigrationTest enforces that.
+    position INTEGER NOT NULL DEFAULT 0,
+
+    -- Which sprint the board scopes to by default, or NULL because this project
+    -- has none active — which is every project that has never made one.
+    --
+    -- A column here rather than a `sprints.is_active` flag, so "at most one
+    -- active sprint per project" is true by construction instead of an invariant
+    -- something has to enforce across rows. Two writers racing to activate can
+    -- only produce one winner and one loser; with a flag they could produce two
+    -- active sprints and no error. Same taste as statuses.requires_resolution
+    -- being data rather than a rule about names.
+    --
+    -- Single-column and SET NULL, so deleting the active sprint deactivates the
+    -- project rather than being refused or leaving a dangling id.
+    --
+    -- Not carried on ProjectRecord: a project's identity is its name, prefix and
+    -- visibility, and what it is currently working on is board state — read
+    -- alongside the sprint list, the way statuses are, not alongside the name.
+    active_sprint_id INTEGER,
+
+    -- The GitHub repository this project's work lands in, as the owner/name pair
+    -- typed into the settings dialog, or NULL because nobody has linked one.
+    --
+    -- Stored split rather than as the URL the admin pasted, because every reader
+    -- wants the pair and none wants the URL: the API paths are
+    -- /repos/{owner}/{repo}/..., so a stored URL would be re-parsed on every
+    -- call, by code that would have to agree with itself about ssh remotes,
+    -- trailing .git and enterprise hosts. Parsing once, at the moment somebody
+    -- can still be told their URL is wrong, is the only point where a bad value
+    -- has an owner to report to.
+    --
+    -- Not on ProjectRecord, for active_sprint_id's reason exactly: the picker,
+    -- the prefix uniqueness check and the embed's ?project= lookup would all
+    -- carry a value they never read. It has its own query below — which is also
+    -- what keeps it away from non-admins, since the only code that reads it is
+    -- the code entitled to.
+    repository_owner TEXT,
+    repository_name TEXT,
+
+    -- The NAME of the environment variable holding the GitHub token, never the
+    -- token. A secret in this column would be a secret in every backup of this
+    -- file and on the screen of anyone who could read the row; a variable name
+    -- is not a secret at all, and the value it points at lives where deployment
+    -- secrets already live.
+    --
+    -- Constrained to a prefix at the moment it is written — see
+    -- StatisticsConfig.parseTokenEnvName. An admin who could name any variable
+    -- could name LUNICLE_GOOGLE_CLIENT_SECRET and have the server send it to github.com
+    -- as an Authorization header, which turns a settings field into an
+    -- exfiltration path. The prefix is not defence against the database; it is
+    -- defence against the form.
+    --
+    -- NULL means no token, which is a supported state and not a broken one: the
+    -- commit counts go unavailable and every other statistic still answers.
+    github_token_env TEXT,
+
+    -- The GitHub token itself, stored literally, or NULL because this project uses
+    -- an environment variable (the column above) or no token at all (LNL-107).
+    --
+    -- This is the column github_token_env was written to avoid — see its comment —
+    -- and it exists anyway because a deployment that cannot set environment
+    -- variables had no other way to link a private repository. So it is a real
+    -- secret at rest, and the security that used to be the prefix rule moves to the
+    -- role that may write it (owner only) and to the wire never echoing it back.
+    --
+    -- At most one of (github_token_env, github_token_literal) is ever non-NULL: the
+    -- write clears the other, and which one holds a value is how the token's
+    -- *source* is read back, there being no separate mode column. See
+    -- ProjectStore.repositoryConfig and TokenSource.
+    github_token_literal TEXT,
+
+    FOREIGN KEY (active_sprint_id) REFERENCES sprints(id) ON DELETE SET NULL
+);
+
+insert:
+INSERT INTO projects (name, name_prefix, is_public, visible_to_all_signed_in, position, created_at)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at;
+
+update:
+UPDATE projects SET name = ?, name_prefix = ?, is_public = ?, visible_to_all_signed_in = ? WHERE id = ?;
+
+-- The two forum feature flags, together, project-administrator only (LNL-96).
+-- Its own query rather than folded into `update`, because that one is the
+-- system-administrator identity write (name, prefix, visibility) and these are a
+-- narrower role's — keeping them apart keeps a project administrator's toggle
+-- from having to carry the identity fields it may not change. See
+-- ProjectStore.setFeatures.
+setFeatures:
+UPDATE projects SET discussions_enabled = ?, messages_enabled = ? WHERE id = ?;
+
+-- The two new-ticket requirement flags, together, project-administrator only
+-- (LNL-106). Its own query rather than folded into `update` for setFeatures'
+-- reason: `update` is the system-administrator identity write (name, prefix,
+-- visibility), and these are a project administrator's, who may not touch those.
+-- See ProjectStore.setRequirements.
+setRequirements:
+UPDATE projects SET require_label = ?, require_component = ?, require_fixed_version_on_resolve = ? WHERE id = ?;
+
+-- The one board-display flag, project-administrator only (LNL-157). Its own query
+-- rather than folded into setRequirements, because that one is a "requirement" set
+-- (what a ticket must carry) and this is a display choice (what the card shows) —
+-- keeping them apart keeps the two concerns from having to travel together, and a
+-- display setting is cleanly not a requirement. See ProjectStore.setShowIssueAuthor.
+setShowIssueAuthor:
+UPDATE projects SET show_issue_author = ? WHERE id = ?;
+
+-- One row at a time, inside the transaction that rewrites the whole instance's
+-- order. See ProjectRepository.reorder and Labels.sq's setPosition.
+setPosition:
+UPDATE projects SET position = ? WHERE id = ?;
+
+-- The next free position, for an insert that appends a new project to the end of
+-- the list. MAX + 1 rather than a count, so an instance with a deleted project in
+-- the middle does not hand out a position somebody already has. See Forums.sq.
+nextPosition:
+SELECT COALESCE(MAX(position) + 1, 0) FROM projects;
+
+delete:
+DELETE FROM projects WHERE id = ?;
+
+findById:
+SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+FROM projects WHERE id = ?;
+
+-- Name lookup for the embed's ?project= parameter. NOCASE on the column makes
+-- this case-insensitive without a function on either side, so the UNIQUE index
+-- is still usable.
+findByName:
+SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+FROM projects WHERE name = ?;
+
+-- Every project, for the picker and for the Unicode-fold uniqueness check.
+--
+-- Ordered by the position a system administrator arranged (LNL-93), 0 first, and
+-- no longer by name: the picker shows projects in the chosen order, and the
+-- uniqueness check does not care which order it reads them in. Ties — which the
+-- non-UNIQUE `position` column permits transiently mid-reorder — break by id so
+-- the order is at least stable rather than whatever SQLite feels like.
+--
+-- Unfiltered on purpose: filtering by readability is AccessControl's job and it
+-- needs the whole list to do it. A store makes no decisions. See §2 — the route
+-- is what must never ship a private project's name to a signed-out visitor.
+selectAll:
+SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+FROM projects ORDER BY position, id;
+
+-- Which sprint this project is working on. Its own query rather than a column on
+-- every project read, because only the board asks and every other caller —
+-- the picker, the prefix uniqueness check, the embed's ?project= lookup — would
+-- be paying to carry a value it never looks at.
+activeSprintId:
+SELECT active_sprint_id FROM projects WHERE id = ?;
+
+-- Activate a sprint, or pass NULL to leave the project with none.
+--
+-- The route is what checks the sprint belongs to this project and is not already
+-- completed; a store makes no decisions. Note there is no "deactivate the
+-- previous one" step to forget: at-most-one is the column, so writing the new id
+-- IS the deactivation of the old.
+setActiveSprint:
+UPDATE projects SET active_sprint_id = ? WHERE id = ?;
+
+-- Which repository this project tracks, and where its token lives. Its own query
+-- rather than three more columns on every project read, for activeSprintId's
+-- reason — and for a second one that matters more here: these three columns are
+-- admin-only, and a query nothing else calls cannot leak them by accident into a
+-- response somebody widened later.
+repositoryConfig:
+SELECT repository_owner, repository_name, github_token_env, github_token_literal FROM projects WHERE id = ?;
+
+-- Link a repository, or pass NULLs to unlink one. All four columns together,
+-- never one at a time: a token naming a repo that is no longer set is
+-- configuration that cannot be acted on, and an owner without a name is half a
+-- path. The two token columns are mutually exclusive by construction — the route
+-- derives them from one TokenSource, so setting a literal passes NULL for the env
+-- name and vice versa, which is what keeps "which column is set" a faithful record
+-- of the token's source. The route validates the shape; a store makes no
+-- decisions.
+setRepositoryConfig:
+UPDATE projects SET repository_owner = ?, repository_name = ?, github_token_env = ?, github_token_literal = ? WHERE id = ?;

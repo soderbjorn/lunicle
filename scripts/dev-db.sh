@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+#
+# The local volume: inspect it, seed it, wipe it.
+#
+#   ./scripts/dev-db.sh path              # where it is
+#   ./scripts/dev-db.sh inspect           # tables and row counts
+#   ./scripts/dev-db.sh dump [table]      # everything, or one table
+#   ./scripts/dev-db.sh sql "SELECT …"    # ad-hoc query
+#   ./scripts/dev-db.sh seed              # a project with issues to look at
+#   ./scripts/dev-db.sh admin             # make yourself the admin
+#   ./scripts/dev-db.sh wipe              # delete it; next run recreates it
+#
+# ── Why the database lives at ~/.lunicle ─────────────────────────────────────
+#
+# It has run away from two homes, for two different reasons, and both are worth
+# knowing before you move it again.
+#
+# It was at server/build/lunicle.db, so that `./gradlew clean` discarded it.
+# That was right when the payload was a counter and wiping cost nothing. It is
+# wrong now: `clean` is something you run to fix a build problem, and it would
+# take every issue you had typed in with it — silently, as a side effect of an
+# unrelated command.
+#
+# Then it was at .localdata/ in the repo root, gitignored. Better, but still
+# your real data sitting inside a checkout: it goes with any `rm -rf` of the
+# clone, a second clone starts empty, and one gitignore line is all that keeps
+# it out of a commit.
+#
+# So it lives in your home directory, where your data already lives, and wiping
+# is a thing you ask for by name, with this script. The `create` path is still
+# worth exercising — it is the one code path production runs exactly once, on a
+# fresh volume, where getting it wrong is most expensive — which is what `wipe`
+# is for.
+#
+# ── What this is standing in for ─────────────────────────────────────────────
+#
+# Railway mounts a volume at $RAILWAY_VOLUME_MOUNT_PATH and the server puts
+# lunicle.db and attachments/ inside it (see Database.kt). Locally there is no
+# Railway, so a local run takes the `lunicle.databasePath` branch instead —
+# defaulted to ~/.lunicle by server/build.gradle.kts, or pointed elsewhere with
+# LUNICLE_LOCAL_DATA, which this script and the run-dev-*.sh scripts both read. Same directory layout, same create and
+# migrate paths, same orphan sweep — a real directory on your disk rather than a
+# mount. That is the whole trick, and it is why you can test all of this without
+# building a container.
+#
+set -euo pipefail
+
+# Kept in step with the databasePath default in server/build.gradle.kts — this
+# script and the server must resolve the same directory or `inspect` reports on
+# a file the server has never opened. Override to keep several databases around
+# — say, one mid-migration and one fresh. Note the default is per-USER, not
+# per-checkout: two clones share it unless you say otherwise here.
+LOCAL_DATA_DIR="${LUNICLE_LOCAL_DATA:-$HOME/.lunicle}"
+DB_PATH="$LOCAL_DATA_DIR/lunicle.db"
+ATTACHMENTS_DIR="$LOCAL_DATA_DIR/attachments"
+
+have_sqlite() { command -v sqlite3 > /dev/null 2>&1; }
+
+require_sqlite() {
+  if ! have_sqlite; then
+    echo "error: sqlite3 is not installed." >&2
+    echo "       macOS ships it; otherwise: brew install sqlite" >&2
+    exit 1
+  fi
+}
+
+require_db() {
+  if [[ ! -f "$DB_PATH" ]]; then
+    echo "error: no database at $DB_PATH" >&2
+    echo "       Start the server once (./scripts/run-dev.sh) — it creates the schema on boot." >&2
+    exit 1
+  fi
+}
+
+# Refuse to touch a database the server has open.
+#
+# SQLite would *let* us: it takes the lock, our write succeeds, and the running
+# server carries on with its own view of things. The damage is quiet — a seeded
+# project that the server does not show until it restarts, or a wipe that leaves
+# the server holding a deleted file's handle and writing into nowhere. Both
+# present as "the script did nothing", which is the worst way to spend an hour.
+refuse_if_running() {
+  if curl -sf -o /dev/null "http://localhost:${LUNICLE_PORT:-8080}/api/session" 2>/dev/null; then
+    echo "error: the server is running on :${LUNICLE_PORT:-8080} and has this database open." >&2
+    echo "       Stop it first (Ctrl-C in the run script's window), then re-run." >&2
+    exit 1
+  fi
+}
+
+cmd_path() {
+  echo "database:    $DB_PATH"
+  echo "attachments: $ATTACHMENTS_DIR"
+  if [[ -f "$DB_PATH" ]]; then
+    echo "size:        $(du -h "$DB_PATH" | cut -f1)"
+    local count
+    count=$(find "$ATTACHMENTS_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+    echo "files:       $count attachment(s)"
+  else
+    echo "state:       does not exist yet — start the server once"
+  fi
+}
+
+cmd_inspect() {
+  require_sqlite; require_db
+  echo "== $DB_PATH"
+  echo
+  # user_version is what decides create-vs-migrate on the next boot, so it is
+  # the first thing worth seeing. See createOrMigrateSchema() in Database.kt.
+  echo "schema version (user_version): $(sqlite3 "$DB_PATH" "PRAGMA user_version;")"
+  echo
+  printf '%-20s %s\n' "TABLE" "ROWS"
+  printf '%-20s %s\n' "─────" "────"
+  for table in $(sqlite3 "$DB_PATH" \
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"); do
+    printf '%-20s %s\n' "$table" "$(sqlite3 "$DB_PATH" "SELECT count(*) FROM \"$table\";")"
+  done
+  echo
+  echo "== Projects"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT id, name, name_prefix AS prefix, is_public AS public FROM projects ORDER BY id;" 2>/dev/null
+  echo
+  echo "== Users"
+  # The email column is deliberately not selected: it never crosses the wire,
+  # and it does not need to be on your terminal either.
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT id, provider, provider_name, display_name, is_admin FROM users ORDER BY id;" 2>/dev/null
+  echo
+  echo "== Issues"
+  sqlite3 -header -column "$DB_PATH" "
+    SELECT p.name_prefix || '-' || i.number AS ticket,
+           substr(i.title, 1, 40) AS title,
+           s.name AS status,
+           i.is_draft AS draft
+    FROM issues i
+    JOIN projects p ON p.id = i.project_id
+    JOIN statuses s ON s.id = i.status_id
+    ORDER BY i.project_id, i.number;" 2>/dev/null
+}
+
+cmd_dump() {
+  require_sqlite; require_db
+  if [[ $# -gt 0 ]]; then
+    sqlite3 -header -column "$DB_PATH" "SELECT * FROM \"$1\";"
+  else
+    sqlite3 "$DB_PATH" .dump
+  fi
+}
+
+cmd_sql() {
+  require_sqlite; require_db
+  [[ $# -gt 0 ]] || { echo "usage: $0 sql \"SELECT …\"" >&2; exit 2; }
+  sqlite3 -header -column "$DB_PATH" "$1"
+}
+
+# Make the first user the admin.
+#
+# The first person to sign in becomes the admin automatically (see the upsert in
+# Users.sq), so this is only needed when you have already signed in as someone
+# else first — or when you wiped and want the bit back without re-signing-in.
+cmd_admin() {
+  require_sqlite; require_db; refuse_if_running
+  local count
+  count=$(sqlite3 "$DB_PATH" "SELECT count(*) FROM users;")
+  if [[ "$count" -eq 0 ]]; then
+    echo "There are no users yet. Sign in once — the first user to do so becomes the admin."
+    exit 0
+  fi
+  sqlite3 "$DB_PATH" "UPDATE users SET is_admin = 1;"
+  echo "Every user is now an admin ($count):"
+  sqlite3 -header -column "$DB_PATH" "SELECT id, provider, provider_name, is_admin FROM users;"
+  echo
+  echo "Sign out and back in if the UI is already open — the admin bit rides on the session lookup."
+}
+
+# A project with issues in it, so there is something to look at.
+#
+# Deliberately NOT part of the server's startup. Seeding real content on boot
+# would mean production came up with a fake project in it, and the only thing
+# stopping that would be an environment check nobody remembers to write.
+cmd_seed() {
+  require_sqlite; require_db; refuse_if_running
+
+  if [[ "$(sqlite3 "$DB_PATH" "SELECT count(*) FROM projects WHERE name = 'Lunamux';")" != "0" ]]; then
+    echo "There is already a project called \"Lunamux\". Nothing to do."
+    echo "(./scripts/dev-db.sh wipe, then start the server, to begin again.)"
+    exit 0
+  fi
+
+  local now
+  now=$(( $(date +%s) * 1000 ))
+
+  # The vocabularies are seeded exactly as ProjectRepository.create does it —
+  # same names, same order, same positions. If you change the defaults there,
+  # change them here: this script is a stand-in for that transaction, not a
+  # second definition of it.
+  sqlite3 "$DB_PATH" <<SQL
+BEGIN;
+INSERT INTO projects (name, name_prefix, is_public, created_at)
+VALUES ('Lunamux', 'LMX', 1, $now);
+
+INSERT INTO labels (project_id, name)
+SELECT id, value FROM projects, (
+  SELECT 'Bug' AS value UNION ALL SELECT 'Feature' UNION ALL
+  SELECT 'Improvement' UNION ALL SELECT 'Codebase'
+) WHERE projects.name = 'Lunamux';
+
+INSERT INTO components (project_id, name)
+SELECT id, value FROM projects, (
+  SELECT 'Desktop' AS value UNION ALL SELECT 'Server' UNION ALL
+  SELECT 'Android' UNION ALL SELECT 'iOS'
+) WHERE projects.name = 'Lunamux';
+
+-- Keep this list in step with DEFAULT_STATUSES in ProjectRepository.kt. It is a
+-- copy, and copies drift: a status renamed there and not here seeds a local
+-- board that no longer matches a real one, which is the opposite of what a seed
+-- script is for.
+-- requires_resolution marks the "magic" closing column — see Statuses.sq. It is
+-- data, not a name match: the running server never keys this rule on 'Closed'.
+INSERT INTO statuses (project_id, name, position, requires_resolution)
+SELECT id, value, pos, req FROM projects, (
+  SELECT 'New' AS value, 0 AS pos, 0 AS req UNION ALL
+  SELECT 'Backlog', 1, 0 UNION ALL
+  SELECT 'Ready for development', 2, 0 UNION ALL
+  SELECT 'In progress', 3, 0 UNION ALL
+  SELECT 'Ready for test', 4, 0 UNION ALL
+  SELECT 'Closed', 5, 1
+) WHERE projects.name = 'Lunamux';
+
+-- Keep in step with DEFAULT_PRIORITIES in ProjectRepository.kt, as above.
+-- Highest first: position 0 is "Very high". See Priorities.sq.
+INSERT INTO priorities (project_id, name, position)
+SELECT id, value, pos FROM projects, (
+  SELECT 'Very high' AS value, 0 AS pos UNION ALL
+  SELECT 'High', 1 UNION ALL
+  SELECT 'Normal', 2 UNION ALL
+  SELECT 'Low', 3 UNION ALL
+  SELECT 'Very low', 4
+) WHERE projects.name = 'Lunamux';
+
+-- Keep in step with DEFAULT_RESOLUTIONS in ProjectRepository.kt.
+INSERT INTO resolutions (project_id, name, position)
+SELECT id, value, pos FROM projects, (
+  SELECT 'Done' AS value, 0 AS pos UNION ALL
+  SELECT 'Will not fix', 1 UNION ALL
+  SELECT 'Duplicate', 2
+) WHERE projects.name = 'Lunamux';
+COMMIT;
+SQL
+
+  # Issues, spread across columns so the board has something to show. Authored
+  # by whoever signed in first, or by nobody — a null author is a real state
+  # (the account was deleted), and it is worth seeing it render.
+  sqlite3 "$DB_PATH" <<SQL
+BEGIN;
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by)
+SELECT p.id, 1, 'Unable to remove user',
+       'Removing a user from a project **fails silently**. Steps:
+
+- Open project settings
+- Remove a user
+- Nothing happens
+
+See the <u>console</u> for the 403.',
+       (SELECT id FROM statuses WHERE project_id = p.id AND name = 'New'),
+       (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
+       0, $now, $now, (SELECT id FROM users ORDER BY id LIMIT 1)
+FROM projects p WHERE p.name = 'Lunamux';
+
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by)
+SELECT p.id, 2, 'Board columns should be reorderable',
+       'Dragging a *column* should reorder it, not just the cards in it.',
+       (SELECT id FROM statuses WHERE project_id = p.id AND name = 'Backlog'),
+       (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
+       0, $now, $now, (SELECT id FROM users ORDER BY id LIMIT 1)
+FROM projects p WHERE p.name = 'Lunamux';
+
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by)
+SELECT p.id, 3, 'Attachment sweep runs on every boot',
+       'Confirm the startup sweep only removes files with no matching storage_key.',
+       (SELECT id FROM statuses WHERE project_id = p.id AND name = 'In progress'),
+       (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
+       0, $now, $now, (SELECT id FROM users ORDER BY id LIMIT 1)
+FROM projects p WHERE p.name = 'Lunamux';
+
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, resolution_id, is_draft, created_at, updated_at, created_by)
+SELECT p.id, 4, 'Ship the volume', 'Done — see docs/volume-instructions.html.',
+       (SELECT id FROM statuses WHERE project_id = p.id AND name = 'Closed'),
+       (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
+       -- Closed, so it must have one: the column's requires_resolution is set.
+       (SELECT id FROM resolutions WHERE project_id = p.id AND name = 'Done'),
+       0, $now, $now, NULL
+FROM projects p WHERE p.name = 'Lunamux';
+
+-- A draft, to prove it stays off the board. It is invisible in the UI; you can
+-- only see it here or in \`inspect\`.
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by)
+SELECT p.id, 5, 'A draft nobody finished', 'If you can see this on the board, is_draft is being ignored.',
+       (SELECT id FROM statuses WHERE project_id = p.id AND name = 'New'),
+       (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
+       1, $now, $now, NULL
+FROM projects p WHERE p.name = 'Lunamux';
+
+-- Imported history: an author with no account, which is the other real state
+-- worth seeing render. The card should say "octocat" and be uneditable by
+-- anyone but an admin — there is no account for it to belong to. Note
+-- created_by is NULL and must stay that way; the CHECK forbids the pair.
+INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by, created_by_external)
+SELECT p.id, 6, 'Imported from GitHub', 'Filed by somebody who has never signed in here.',
+       (SELECT id FROM statuses WHERE project_id = p.id AND name = 'Backlog'),
+       (SELECT id FROM priorities WHERE project_id = p.id AND name = 'Normal'),
+       0, $now, $now, NULL, 'octocat'
+FROM projects p WHERE p.name = 'Lunamux';
+COMMIT;
+SQL
+
+  # Labels and components on the first two issues. The join carries project_id
+  # redundantly on purpose — the composite foreign keys need it, and it is what
+  # makes another project's label unstorable. See IssueLabels.sq.
+  sqlite3 "$DB_PATH" <<SQL
+BEGIN;
+INSERT INTO issue_labels (issue_id, label_id, project_id)
+SELECT i.id, l.id, i.project_id
+FROM issues i JOIN labels l ON l.project_id = i.project_id
+WHERE i.number = 1 AND l.name = 'Bug' AND i.project_id = (SELECT id FROM projects WHERE name = 'Lunamux');
+
+INSERT INTO issue_components (issue_id, component_id, project_id)
+SELECT i.id, c.id, i.project_id
+FROM issues i JOIN components c ON c.project_id = i.project_id
+WHERE i.number = 1 AND c.name = 'Server' AND i.project_id = (SELECT id FROM projects WHERE name = 'Lunamux');
+
+INSERT INTO issue_labels (issue_id, label_id, project_id)
+SELECT i.id, l.id, i.project_id
+FROM issues i JOIN labels l ON l.project_id = i.project_id
+WHERE i.number = 2 AND l.name = 'Feature' AND i.project_id = (SELECT id FROM projects WHERE name = 'Lunamux');
+COMMIT;
+SQL
+
+  echo "Seeded \"Lunamux\" (LMX), public, with 5 issues and 1 invisible draft."
+  echo "LMX-6 is imported history: its author is a name, not an account."
+  echo
+  # Foreign keys are OFF by default in the sqlite3 CLI — unlike the server,
+  # which sets the pragma on every connection. So this checks that the rows just
+  # written would have been accepted by the running server, rather than assuming.
+  local violations
+  violations=$(sqlite3 "$DB_PATH" "PRAGMA foreign_key_check;" | wc -l | tr -d ' ')
+  if [[ "$violations" != "0" ]]; then
+    echo "warning: the seed left $violations foreign key violation(s):" >&2
+    sqlite3 "$DB_PATH" "PRAGMA foreign_key_check;" >&2
+    exit 1
+  fi
+  echo "Foreign keys check out. Start the server and pick Lunamux in the picker."
+  echo
+  echo "Note: nobody has a role in this project yet, so a signed-in non-admin can"
+  echo "read it and nothing more. Make yourself the admin:  $0 admin"
+}
+
+cmd_wipe() {
+  refuse_if_running
+  if [[ ! -e "$LOCAL_DATA_DIR" ]]; then
+    echo "Nothing to wipe — $LOCAL_DATA_DIR does not exist."
+    exit 0
+  fi
+  echo "This deletes $LOCAL_DATA_DIR — the database and every attachment in it."
+  printf 'Type "wipe" to confirm: '
+  read -r answer
+  if [[ "$answer" != "wipe" ]]; then
+    echo "Left alone."
+    exit 0
+  fi
+  rm -rf "$LOCAL_DATA_DIR"
+  echo "Gone. The next server start creates the schema from nothing —"
+  echo "which is the code path a fresh Railway volume takes, so it is worth watching."
+}
+
+# The usage block only: line 2 down to the first `── section ──` heading, which
+# is where the rationale starts. It used to be the fixed range 2,28 — which
+# spilled paragraphs of history onto the terminal of anyone who typed --help,
+# and truncated mid-sentence the moment the header above was edited. A line
+# number cannot know where the usage ends; the heading does.
+usage() {
+  sed -n '2,/^# ──/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-}" in
+  path)    cmd_path ;;
+  inspect) cmd_inspect ;;
+  dump)    shift; cmd_dump "$@" ;;
+  sql)     shift; cmd_sql "$@" ;;
+  seed)    cmd_seed ;;
+  admin)   cmd_admin ;;
+  wipe)    cmd_wipe ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "unknown command: $1" >&2; echo >&2; usage >&2; exit 2 ;;
+esac

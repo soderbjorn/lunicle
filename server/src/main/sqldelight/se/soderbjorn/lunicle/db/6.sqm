@@ -1,0 +1,58 @@
+-- Version 6 → 7: an admin decides who is allowed agent access.
+--
+-- One column on `users`, and the interesting thing about it is what it does NOT
+-- do: it does not back-fill. See Users.sq's mcp_allowed for what the column
+-- means and why it must not share one with mcp_enabled.
+--
+-- ── The back-fill that is deliberately absent ───────────────────────────────
+--
+-- DEFAULT 0 means every account that already exists lands on "not permitted".
+-- That is the whole intent — a permission that assumed itself for everyone who
+-- happened to sign up before it existed would be no permission at all, and the
+-- deployment where that matters is precisely the one that has been running for
+-- months.
+--
+-- The consequence is real and was accepted rather than overlooked: at the deploy
+-- that runs this, every connected agent stops working. Not "stops being
+-- authorized at its next token refresh" — stops at its next request, because
+-- /mcp re-reads this per request (McpServer.resolveMcpUser). Nothing is deleted;
+-- the tokens and grants survive untouched, so an admin opening the instance
+-- settings dialog and granting access restores every agent with no reconnection
+-- and no second trip through the browser. That asymmetry is exactly why this is
+-- a gate and not a purge — see Users.sq.
+--
+-- The admin themselves is not exempt. There is no `WHERE is_admin = 1` here, and
+-- adding one is the tempting change: it would spare whoever deploys this from
+-- locking out their own agent. It is still wrong. Admin-ness short-circuits
+-- AccessControl's rules about projects; it has never exempted anybody from the
+-- mcp_enabled gate, and a permission with a silent exception is one nobody can
+-- reason about from the column alone.
+--
+-- SUPERSEDED, and left standing because a migration is history rather than
+-- doctrine: the statement about this migration remains true — it still back-fills
+-- nothing, and it still lands every existing account on 0 — but the conclusion no
+-- longer holds. UserRecord.isMcpPermitted now reads `mcp_allowed || is_admin`, so
+-- an admin left on 0 by this migration is permitted anyway and never needed the
+-- `WHERE is_admin = 1` this paragraph talks anybody out of. See Users.sq.
+--
+-- RENAMED SINCE, and the name above is deliberately left alone for the same
+-- "history rather than doctrine" reason: 11.sqm renames this column to
+-- `is_sys_admin`, to tell the instance-wide administrator apart from the
+-- per-project one that arrived with it. At version 6 the column really was
+-- `is_admin`, so that is what this file says; read every `is_admin` above as
+-- today's `is_sys_admin`. Nothing else about the paragraph changes.
+--
+-- ── Why ALTER TABLE suffices ────────────────────────────────────────────────
+--
+-- No REFERENCES clause and a constant non-null default, which is the case
+-- SQLite's ALTER TABLE handles directly. 2.sqm had to rebuild `issues` because
+-- its column was NOT NULL and composite-keyed; there is nothing like that here.
+-- Rebuilding anyway would be strictly worse — a rebuild runs with foreign keys
+-- off (see Database.migrateSchema), and a DROP TABLE users with the constraints
+-- off would take every issue, comment and grant in the database with it.
+--
+-- NOT NULL with DEFAULT 0 is legal in ALTER TABLE ADD COLUMN precisely because
+-- the default is a constant: SQLite can fill every existing row without reading
+-- one. A non-constant default would be rejected.
+
+ALTER TABLE users ADD COLUMN mcp_allowed INTEGER NOT NULL DEFAULT 0;

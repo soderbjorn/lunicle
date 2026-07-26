@@ -1,0 +1,164 @@
+-- What each user has already read: two high-water marks, and nothing per item.
+--
+-- ── The shape LNL-30 chose, and why it is the whole point ───────────────────
+--
+-- The obvious schema for "has this person read this message" is a row per user
+-- per message. On an instance with fifty accounts and a busy forum that is a
+-- table that grows as the product of two things people are encouraged to make
+-- more of, written to on every read, and needing a fan-out INSERT at every
+-- publish so that "unread" can be expressed as a row that is missing.
+--
+-- LNL-30 rejected it before either table existed, and the alternative is here:
+-- one row per user per *container*, holding how far they have got. Unread is
+-- then a comparison rather than a set difference, publishing writes nothing at
+-- all, and a thousand-message conversation costs each participant one row.
+--
+-- ── The two marks are deliberately not the same kind of thing ───────────────
+--
+-- `conversation_reads` holds a **message id** and `forum_reads` holds a
+-- **timestamp**, which looks like an inconsistency and is the honest encoding of
+-- two different gestures.
+--
+-- A conversation is read as a whole: you open it and the transcript is in front
+-- of you, so the mark is "the last message that was on screen", which is an id
+-- because that is what the client and the routes name a message by.
+--
+-- A forum is not read as a whole — you open *one post* out of a list. So its
+-- mark is the moment that post was written, and everything older than it counts
+-- as read. See `ForumReadStore.markPostRead`, where the consequence of that is
+-- argued: it is the one thing a high-water mark cannot express, and it is
+-- recorded rather than worked around.
+--
+-- ── `last_read_message_id` is NOT a foreign key, and that is load-bearing ───
+--
+-- Every other id-shaped column in this schema references its table. This one
+-- must not: a message can be deleted, and `ON DELETE CASCADE` would take the
+-- read row with it — quietly marking a whole conversation unread again because
+-- somebody removed the last thing they said in it. `SET NULL` is no better; the
+-- column would have to become nullable and "read up to nothing" and "never
+-- read" would stop being distinguishable.
+--
+-- What it actually is is a watermark: a number that happens to be spelled the
+-- same way ids are, compared against ids and never resolved to a row. Nothing
+-- reads it back as a message, so nothing can be surprised by it naming one that
+-- is gone.
+--
+-- The user and container sides *are* keys and do cascade, for the reason
+-- Subscriptions.sq gives about its four: a mark against a deleted account or a
+-- deleted conversation is not a mark anybody would miss.
+
+-- How far a user has read in one conversation.
+CREATE TABLE conversation_reads (
+    user_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL,
+
+    -- The newest published message this user has seen. A watermark, not a
+    -- reference — see the preamble.
+    last_read_message_id INTEGER NOT NULL,
+
+    PRIMARY KEY (user_id, conversation_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+-- ...and in one forum: everything written up to and including this instant
+-- counts as read.
+CREATE TABLE forum_reads (
+    user_id INTEGER NOT NULL,
+    forum_id INTEGER NOT NULL,
+    last_read_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, forum_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
+);
+
+-- Move a conversation's mark forward, never back.
+--
+-- The `MAX` in the DO UPDATE is not decoration. Two tabs open on the same
+-- account, or a read arriving after a reply, would otherwise let a stale value
+-- overwrite a fresher one and un-read messages somebody has already seen. A
+-- watermark that can go backwards is not a watermark.
+markConversationRead:
+INSERT INTO conversation_reads (user_id, conversation_id, last_read_message_id)
+VALUES (?, ?, ?)
+ON CONFLICT (user_id, conversation_id)
+DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id);
+
+-- The same, for a forum. See above for why it is MAX and not an assignment.
+markForumRead:
+INSERT INTO forum_reads (user_id, forum_id, last_read_at)
+VALUES (?, ?, ?)
+ON CONFLICT (user_id, forum_id)
+DO UPDATE SET last_read_at = MAX(last_read_at, excluded.last_read_at);
+
+-- How far this user has read in this forum, or nothing if they never have.
+forumMark:
+SELECT last_read_at FROM forum_reads WHERE user_id = ? AND forum_id = ?;
+
+-- How many unread messages this user has, per conversation, across all of them.
+--
+-- One statement for the whole Messages tab rather than one per row: the list is
+-- already one query (see Conversations.sq's `forUser`), and asking each
+-- conversation for its own count would be the N+1 that file's `participantsForUser`
+-- exists to avoid.
+--
+-- Three clauses, none optional:
+--
+--  * `p.user_id = :userId` — only conversations this caller is in. The join is
+--    what scopes the whole answer; without it this counts the instance.
+--  * `m.is_draft = 0` — a draft is somebody's unsent text, and counting one would
+--    show its own author a badge for a message they have not sent.
+--  * `m.created_by IS NOT :userId` — **you are not unread on your own writing.**
+--    `IS NOT` rather than `!=` deliberately: `created_by` is nullable (an author
+--    whose account is gone, or an imported one), and `NULL != 5` is NULL, which
+--    is not true, so `!=` would silently drop every authorless message from the
+--    count. The same trap `recipientsForProjectNewIssue` avoids by joining.
+--
+-- Conversations with nothing unread simply do not appear, which is why the
+-- caller reads this into a map with a zero default rather than expecting a row
+-- per conversation.
+unreadMessageCounts:
+SELECT m.conversation_id, COUNT(*) AS unread
+FROM messages m
+JOIN conversation_participants p
+    ON p.conversation_id = m.conversation_id AND p.user_id = :userId
+WHERE m.is_draft = 0
+  AND m.created_by IS NOT :userId
+  AND m.id > COALESCE(
+      (
+          SELECT r.last_read_message_id FROM conversation_reads r
+          WHERE r.user_id = :userId AND r.conversation_id = m.conversation_id
+      ),
+      0
+  )
+GROUP BY m.conversation_id;
+
+-- Is there an unread post anywhere in these projects?
+--
+-- EXISTS rather than a count, because the Discussion tab's badge is a **dot**:
+-- LNL-30 settles that forum volume is unbounded and a number there would create
+-- inbox-zero pressure for something nobody is obliged to read. So the question
+-- really is a boolean, and asking it as one lets SQLite stop at the first row.
+--
+-- The project ids are bound in rather than derived here, and that is the
+-- visibility rule arriving from where it belongs: `AccessControl.canReadProject`
+-- is the only thing that decides what a caller may see, and re-spelling it in SQL
+-- is how the two come to disagree. Subscriptions.sq refuses to do it for exactly
+-- the same reason. The caller narrows the projects first; see
+-- `discussionUnreadFor`.
+--
+-- The author exclusion is `IS NOT` for `unreadMessageCounts`' reason, which bites
+-- harder here: an imported post has no `created_by` at all.
+hasUnreadPosts:
+SELECT EXISTS(
+    SELECT 1
+    FROM forum_posts po
+    JOIN forums f ON f.id = po.forum_id
+    WHERE f.project_id IN ?
+      AND po.is_draft = 0
+      AND po.created_by IS NOT :userId
+      AND po.created_at > COALESCE(
+          (SELECT r.last_read_at FROM forum_reads r WHERE r.user_id = :userId AND r.forum_id = f.id),
+          0
+      )
+);

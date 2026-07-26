@@ -1,0 +1,733 @@
+/**
+ * Who may read the account directory, and who may change somebody's agent access.
+ *
+ * Every route in AdminRoutes is admin-only with no narrowed half, and that is a
+ * stronger claim than the one VocabularyTest makes about project settings — so it
+ * is worth pinning rather than inferring. Two things would break it quietly:
+ *
+ *  - **A missing gate on the read.** The response is a directory of every account
+ *    on the instance *including their e-mail addresses*, which nothing else on this
+ *    wire carries. A handler that forgot [AccessControl] would not fail, throw or
+ *    look wrong in a browser — the admin who wrote it sees exactly what they
+ *    expect. It only shows up as a privacy failure for somebody else.
+ *  - **A missing gate on the write.** `POST /api/admin/users/mcp` names its target
+ *    in the body, so an ungated version is not "a user can change their own
+ *    setting twice over", it is *any signed-in user permitting agent access for any
+ *    account*, which is one half of the real credential gate rather than an
+ *    affordance. See McpServer.resolveMcpUser and UserRecord.canUseMcp.
+ *
+ * The flag this route writes is `mcp_allowed` — the admin's permission — never
+ * `mcp_enabled`, which is the user's own switch and belongs to /api/mcp/enabled.
+ * The two are asserted to stay separate here: withdrawing permission must not
+ * touch the user's preference.
+ *
+ * Through the real routes with real session cookies, for VocabularyTest's reason:
+ * `canMutateProjects` returning false is not the property that matters, because a
+ * route that never called it would pass that test and ship an open endpoint.
+ *
+ * @see adminRoutes
+ * @see se.soderbjorn.lunicle.clientserver.AdminSettingsState
+ */
+package se.soderbjorn.lunicle
+
+import io.ktor.client.call.body
+import io.ktor.client.request.cookie
+import io.ktor.client.request.delete
+import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
+import io.ktor.server.routing.routing
+import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
+import se.soderbjorn.lunicle.clientserver.AdminSettingsState
+import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.ProjectOrder
+import se.soderbjorn.lunicle.clientserver.UserMcpAccess
+import java.io.File
+import java.nio.file.Files
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+
+class AdminSettingsTest {
+    private val file: File = Files.createTempFile("lunicle-admin", ".db").toFile().also { it.delete() }
+    private val opened = openDatabase(DatabaseLocation(file, isPersistent = false, reason = "test"))
+    private val database = opened.database
+
+    private val users = UserStore(database)
+    private val sessions = SessionStore(database)
+    private val roles = RoleStore(database)
+    private val projects = ProjectStore(database)
+    private val labels = LabelStore(database)
+    private val components = ComponentStore(database)
+    private val statuses = StatusStore(database)
+    private val priorities = PriorityStore(database)
+    private val resolutions = ResolutionStore(database)
+    private val sprints = SprintStore(database)
+    private val versions = VersionStore(database)
+    private val issues = IssueStore(database)
+    private val comments = CommentStore(database)
+    private val attachmentStore = AttachmentStore(database)
+    private val attachments = AttachmentRepository(attachmentStore, File(file.parentFile, "attachments-${file.name}"))
+    private val projectRepository = ProjectRepository(database, projects, attachments, attachmentStore)
+    private val issueRepository =
+        IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
+    private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
+    private val vocabularies =
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+    private val access = AccessControl(roles)
+
+    @AfterTest
+    fun tearDown() {
+        opened.close()
+        file.delete()
+        File("${file.absolutePath}-wal").delete()
+        File("${file.absolutePath}-shm").delete()
+    }
+
+    // ── Who may ──────────────────────────────────────────────────────────────
+
+    /**
+     * A signed-in non-admin gets nothing: 403 on the read, 403 on the write, and
+     * the flag they tried to set is unchanged afterwards.
+     *
+     * The last assertion is the one worth writing out. A 403 that had already
+     * written would still be a 403, and the response alone cannot tell the two
+     * apart — so the store is checked directly rather than through the route that
+     * just refused.
+     */
+    @Test
+    fun `a non-admin is refused the directory and cannot grant agent access`(): Unit = runBlocking {
+        val fixture = seed()
+        val ordinary = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
+        )
+        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
+        assertTrue(!ordinary.isMcpAllowed, "Agent access is meant to be unpermitted by default.")
+        val cookie = sessions.create(ordinary.id)
+
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }.status,
+                "A non-admin was handed the account directory, e-mail addresses and all.",
+            )
+
+            // Themselves — the most sympathetic version of the request, and still
+            // refused. A user cannot grant their own permission; that is the whole
+            // point of it being a permission. See ApiRoutes.ADMIN_USER_MCP.
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/admin/users/mcp") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(UserMcpAccess(ordinary.id, isAllowed = true))
+                }.status,
+                "A non-admin permitted their own agent access through the admin route.",
+            )
+
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/admin/users/mcp") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(UserMcpAccess(fixture.adminId, isAllowed = true))
+                }.status,
+                "A non-admin changed the admin's agent access.",
+            )
+        }
+
+        assertTrue(
+            users.findById(ordinary.id)?.isMcpAllowed == false,
+            "A refused request wrote the permission anyway.",
+        )
+    }
+
+    /**
+     * No session at all is a 403 too, not a 401.
+     *
+     * There is nothing here to sign in *for* unless you are already the admin, and
+     * answering differently would make the route a probe for whether a given
+     * deployment has an admin session going.
+     */
+    @Test
+    fun `a signed-out caller is refused`(): Unit = runBlocking {
+        seed()
+        withRoutes { client ->
+            assertEquals(HttpStatusCode.Forbidden, client.get("/api/admin/settings").status)
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/admin/users/mcp") {
+                    contentType(ContentType.Application.Json)
+                    setBody(UserMcpAccess(1L, isAllowed = true))
+                }.status,
+            )
+        }
+    }
+
+    /**
+     * The admin gets through — otherwise the tests above prove only that the
+     * routes are broken for everybody.
+     *
+     * Also pins the two things the directory is *for*: the e-mail that tells two
+     * same-named accounts apart, and the per-project rights of somebody who holds
+     * one role in one project and nothing in another.
+     */
+    @Test
+    fun `the admin reads the directory, with e-mails and per-project rights`(): Unit = runBlocking {
+        val fixture = seed()
+        val other = projectRepository.create("Beta", "BET", isPublic = false)
+        val ordinary = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
+        )
+        roles.grant(ordinary.id, fixture.projectId, Role.CREATE_ISSUE)
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes { client ->
+            val response = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.body<AdminSettingsState>()
+
+            assertEquals(
+                Role.entries.map { it.key }.toSet(),
+                body.roles.map { it.key }.toSet(),
+                "The dialog renders held rights against this list; a short one hides rights.",
+            )
+
+            val row = body.users.firstOrNull { it.userId == ordinary.id }
+            assertNotNull(row, "An account is missing from the directory.")
+            assertEquals("ordinary@example.com", row.email)
+            assertTrue(!row.isSysAdmin)
+            assertTrue(!row.isSelf)
+            assertTrue(!row.isMcpAllowed, "A fresh account is unpermitted by default.")
+            assertTrue(!row.isMcpEnabled, "A fresh account has not switched agent access on.")
+
+            assertEquals(
+                setOf(fixture.projectId, other.id),
+                row.projects.map { it.projectId }.toSet(),
+                "Every project must be listed, including the ones they hold nothing in — " +
+                    "\"no rights here\" is the answer this screen exists to give.",
+            )
+            val onFixture = row.projects.first { it.projectId == fixture.projectId }
+            val onOther = row.projects.first { it.projectId == other.id }
+            assertEquals(listOf(Role.CREATE_ISSUE.key), onFixture.heldRoleKeys)
+            assertEquals(emptyList(), onOther.heldRoleKeys)
+
+            // "Can they see it" is not "do they hold view_project". Holding any role
+            // — here create_issue, and no view_project grant in sight — makes a
+            // private project visible, so the fixture project reads as seen while
+            // the one they hold nothing in does not. See AccessControl.canReadProject.
+            assertTrue(
+                onFixture.canSeeProject,
+                "A user who holds a role on a project cannot see it, per the directory.",
+            )
+            assertTrue(
+                !onOther.canSeeProject,
+                "A user who holds nothing on a private project can somehow see it.",
+            )
+
+            val self = body.users.firstOrNull { it.userId == fixture.adminId }
+            assertNotNull(self)
+            assertTrue(self.isSelf && self.isSysAdmin)
+        }
+    }
+
+    /**
+     * A public project reads as visible to a user who holds nothing in it.
+     *
+     * The bug this pins: the directory showed a red cross on "see this project" for
+     * an ordinary account on a *public* board, because it asked "do they hold
+     * view_project" when the rule is [AccessControl.canReadProject] — public means
+     * visible to everyone, grant or no grant. The account here holds nothing at all,
+     * which is the exact state that was showing the wrong answer, so `heldRoleKeys`
+     * stays empty while `canSeeProject` is true. The two together are the point:
+     * the row is not driven by the grant list, and this proves it is not.
+     */
+    @Test
+    fun `a public project reads as visible to a user who holds nothing in it`(): Unit = runBlocking {
+        val fixture = seed()
+        val open = projectRepository.create("Open", "OPN", isPublic = true)
+        val ordinary = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
+        )
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes { client ->
+            val body = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                .body<AdminSettingsState>()
+            val onOpen = body.users.first { it.userId == ordinary.id }
+                .projects.first { it.projectId == open.id }
+
+            assertEquals(
+                emptyList(),
+                onOpen.heldRoleKeys,
+                "The account is meant to hold nothing here — that is the case under test.",
+            )
+            assertTrue(
+                onOpen.canSeeProject,
+                "A public project showed as unseeable to a user who can in fact read it.",
+            )
+        }
+    }
+
+    /**
+     * The write lands, and the response reports the row that landed rather than
+     * the one that was asked for.
+     *
+     * Every settings write here returns the whole new state, so the dialog never
+     * patches its own copy — and the assertion is made against that response
+     * rather than only against the store, because a route that wrote correctly and
+     * answered with a stale read would leave the toggle snapping back.
+     */
+    @Test
+    fun `the admin permits and withdraws another user's agent access`(): Unit = runBlocking {
+        val fixture = seed()
+        val ordinary = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
+        )
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes { client ->
+            val on = client.post("/api/admin/users/mcp") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(UserMcpAccess(ordinary.id, isAllowed = true))
+            }
+            assertEquals(HttpStatusCode.OK, on.status)
+            assertTrue(
+                on.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpAllowed,
+                "The response did not report the write it had just made.",
+            )
+            assertTrue(users.findById(ordinary.id)?.isMcpAllowed == true)
+
+            val off = client.post("/api/admin/users/mcp") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(UserMcpAccess(ordinary.id, isAllowed = false))
+            }
+            assertEquals(HttpStatusCode.OK, off.status)
+            assertTrue(!off.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpAllowed)
+        }
+        assertTrue(users.findById(ordinary.id)?.isMcpAllowed == false)
+    }
+
+    /**
+     * Permission and the user's own switch are two columns, and this proves the
+     * admin route touches only its own.
+     *
+     * The scenario is the one the whole two-column design exists for: a user has
+     * turned agent access on for themselves, an admin withdraws permission and
+     * later restores it, and the user's preference has to be exactly where they
+     * left it — otherwise "restore" would silently mean "switched off", and the
+     * user would come back to a preference they never changed.
+     */
+    @Test
+    fun `withdrawing and restoring permission leaves the user's own switch untouched`(): Unit = runBlocking {
+        seed()
+        val ordinary = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
+        )
+        // The user's own switch, set as if from their profile dialog.
+        users.setMcpEnabled(ordinary.id, true)
+        users.setMcpAllowed(ordinary.id, true)
+        assertTrue(users.findById(ordinary.id)?.canUseMcp == true, "Precondition: agent access is live.")
+
+        // Admin withdraws permission. The user's switch must not move.
+        users.setMcpAllowed(ordinary.id, false)
+        users.findById(ordinary.id)!!.let {
+            assertTrue(!it.isMcpAllowed, "Permission was not withdrawn.")
+            assertTrue(it.isMcpEnabled, "Withdrawing permission cleared the user's own switch.")
+            assertTrue(!it.canUseMcp, "Access is somehow still live without permission.")
+        }
+
+        // Admin restores it. The user is back exactly where they were — live —
+        // with no second trip through the browser.
+        users.setMcpAllowed(ordinary.id, true)
+        assertTrue(
+            users.findById(ordinary.id)?.canUseMcp == true,
+            "Restoring permission did not restore the access the user had.",
+        )
+    }
+
+    /**
+     * An admin's agent survives a token refresh, with `mcp_allowed` still 0.
+     *
+     * The regression this pins is the whole reason [UserRecord.canUseMcp] insists
+     * on being the only thing a gate reads. There are five gates, and refresh
+     * rotation is the one that lives inside a transaction on the generated row
+     * type — so it was the one written by hand against the raw columns, and the
+     * one left behind when admins became permitted by being admins. Nothing failed
+     * to compile. The other four said yes and this one said no, which does not
+     * present as a permission bug: the agent connects, works, and then dies at the
+     * first refresh with `invalid_grant`, an hour later, looking like an expiry
+     * problem.
+     *
+     * The admin here is deliberately left on `mcp_allowed = 0` — the state every
+     * pre-existing admin is in, since 6.sqm back-fills nothing — because a test
+     * that granted permission first would pass against the bug.
+     */
+    @Test
+    fun `an admin can refresh an agent's token without ever being granted permission`(): Unit = runBlocking {
+        val fixture = seed()
+        val admin = users.findById(fixture.adminId)!!
+        assertTrue(admin.isSysAdmin, "Precondition: the fixture's first user is the admin.")
+        assertTrue(!admin.isMcpAllowed, "Precondition: the admin was never granted permission.")
+
+        // Their own switch, which admin-ness does NOT substitute for.
+        users.setMcpEnabled(admin.id, true)
+
+        val tokens = OAuthTokenStore(database)
+        val client = OAuthClientStore(database).register(
+            clientName = "Claude Code",
+            redirectUris = listOf("http://127.0.0.1:9999/callback"),
+            grantTypes = listOf("authorization_code", "refresh_token"),
+        )
+        val issued = tokens.issueTokens(
+            userId = admin.id,
+            clientId = client.clientId,
+            scope = "mcp",
+            resource = "https://example.invalid/mcp",
+        )
+
+        val rotated = tokens.rotateRefresh(issued.refreshToken)
+        assertTrue(
+            rotated is OAuthTokenStore.RefreshResult.Rotated,
+            "An admin's agent was refused at token refresh; got ${rotated::class.simpleName}. " +
+                "The refresh gate has drifted from UserRecord.canUseMcp again.",
+        )
+    }
+
+    /**
+     * The other half: admin-ness permits, it does not enable.
+     *
+     * Guards the over-correction of the bug above — making the refresh gate ignore
+     * admins entirely, rather than only their missing permission. An admin who has
+     * not turned agent access on for themselves must still be refused, exactly
+     * like anybody else who has not.
+     */
+    @Test
+    fun `an admin who has not turned agent access on is still refused at refresh`(): Unit = runBlocking {
+        val fixture = seed()
+        val admin = users.findById(fixture.adminId)!!
+        // Note what is NOT done here: setMcpEnabled. Permission without the
+        // person's own switch is not access.
+        assertTrue(!admin.isMcpEnabled, "Precondition: the admin has not enabled agent access.")
+        users.setMcpAllowed(admin.id, true)
+
+        val tokens = OAuthTokenStore(database)
+        val client = OAuthClientStore(database).register(
+            clientName = "Claude Code",
+            redirectUris = listOf("http://127.0.0.1:9999/callback"),
+            grantTypes = listOf("authorization_code", "refresh_token"),
+        )
+        val issued = tokens.issueTokens(
+            userId = admin.id,
+            clientId = client.clientId,
+            scope = "mcp",
+            resource = "https://example.invalid/mcp",
+        )
+
+        assertTrue(
+            tokens.rotateRefresh(issued.refreshToken) is OAuthTokenStore.RefreshResult.Refused,
+            "Admin-ness substituted for the user's own agent-access switch.",
+        )
+    }
+
+    /** An id naming nobody is a 404, not a silent success. */
+    @Test
+    fun `setting agent access for a user who does not exist is a 404`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.NotFound,
+                client.post("/api/admin/users/mcp") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(UserMcpAccess(9_999L, isAllowed = true))
+                }.status,
+            )
+        }
+        assertNull(users.findById(9_999L))
+    }
+
+    /**
+     * An admin who is impersonating loses this, like every other admin affordance.
+     *
+     * Impersonation exists to see what somebody else sees, and the account
+     * directory is precisely what they do not see. The gate reads the **effective**
+     * user, so this is the test that says the effective user is what it reads —
+     * a handler reaching for the session's real user would pass every other test
+     * in this file.
+     */
+    @Test
+    fun `an admin who is impersonating cannot read the directory`(): Unit = runBlocking {
+        val fixture = seed()
+        val ordinary = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
+        )
+        val cookie = sessions.create(fixture.adminId)
+        val impersonations = Impersonations()
+        impersonations.start(cookie, ordinary.id)
+
+        withRoutes(impersonations) { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }.status,
+                "An admin wearing somebody else's face read the account directory.",
+            )
+        }
+    }
+
+    /**
+     * The directory is ordered admins first, then by name.
+     *
+     * Two facts in one list, and the order of them is the point: an admin holds
+     * every privilege in every project, so they are the rows an admin opening this
+     * screen is most often looking for, and burying them alphabetically among
+     * twenty ordinary accounts is what the ticket was about.
+     *
+     * The names are chosen so the two rules disagree: sorted by name alone the
+     * admin would land in the middle, and grouped without a secondary sort the
+     * ordinary accounts would come back in whatever order the table felt like. The
+     * grouping leans on `sortedWith` being stable over `selectAll`'s own ORDER BY
+     * — so an unstable sort, or a query that stopped ordering, fails here rather
+     * than in a screenshot months later.
+     */
+    @Test
+    fun `the directory lists admins first, then by name`(): Unit = runBlocking {
+        val fixture = seed()
+        // "Admin" is the seeded first account and therefore the instance admin.
+        // Two of these sort *before* it, which is what makes the assertion below
+        // fail on a directory that only sorts by name.
+        listOf("Zoe", "Aaron", "Abby").forEach { name ->
+            users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-${name.lowercase()}", name, null))
+        }
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes { client ->
+            val body = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                .body<AdminSettingsState>()
+            assertEquals(listOf("Admin", "Aaron", "Abby", "Zoe"), body.users.map { it.name })
+        }
+    }
+
+    // ── Fixture ──────────────────────────────────────────────────────────────
+
+    // ── Projects: reorder and delete (LNL-93) ────────────────────────────────
+
+    /**
+     * The admin arranges the projects, and the order persists — in the store the
+     * picker reads, and in the state the dialog re-renders from.
+     *
+     * The whole list is sent, reversed, and both surfaces are checked: a route
+     * that answered with a fresh state built from a stale read would look right in
+     * the response and be wrong on the next page load.
+     */
+    @Test
+    fun `the admin reorders projects and the order sticks`(): Unit = runBlocking {
+        val fixture = seed(name = "Alpha", prefix = "ALP")
+        val beta = projectRepository.create("Beta", "BET", isPublic = false)
+        val gamma = projectRepository.create("Gamma", "GAM", isPublic = false)
+        val cookie = sessions.create(fixture.adminId)
+
+        // Created in order, so they start Alpha, Beta, Gamma — the alphabetical
+        // order the migration back-fills and the append-on-create keeps.
+        assertEquals(
+            listOf("Alpha", "Beta", "Gamma"),
+            projects.selectAll().map { it.name },
+            "Projects did not start in creation order.",
+        )
+
+        val reversed = listOf(gamma.id, beta.id, fixture.projectId)
+        withRoutes { client ->
+            val response = client.post("/api/admin/projects/order") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(ProjectOrder(reversed))
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                reversed,
+                response.body<AdminSettingsState>().projects.map { it.id },
+                "The response did not report the new order.",
+            )
+        }
+
+        assertEquals(
+            reversed,
+            projects.selectAll().map { it.id },
+            "The picker's own read did not come back in the new order.",
+        )
+    }
+
+    /**
+     * A reorder that does not name exactly the instance's projects is refused
+     * whole — a 409, and nothing moved.
+     *
+     * The usual cause is a second admin deleting a project while this dialog was
+     * open; the stale client must be told rather than have its partial order
+     * applied. See ProjectRepository.reorder.
+     */
+    @Test
+    fun `a reorder that does not name the projects is refused`(): Unit = runBlocking {
+        val fixture = seed(name = "Alpha", prefix = "ALP")
+        val beta = projectRepository.create("Beta", "BET", isPublic = false)
+        val cookie = sessions.create(fixture.adminId)
+        val before = projects.selectAll().map { it.id }
+
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.Conflict,
+                client.post("/api/admin/projects/order") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    // Missing Alpha entirely — not this instance's set.
+                    setBody(ProjectOrder(listOf(beta.id)))
+                }.status,
+            )
+        }
+
+        assertEquals(before, projects.selectAll().map { it.id }, "A refused reorder moved something.")
+    }
+
+    /** The admin deletes a project through the settings dialog, and gets the fresh directory back. */
+    @Test
+    fun `the admin deletes a project from the settings dialog`(): Unit = runBlocking {
+        val fixture = seed(name = "Alpha", prefix = "ALP")
+        val beta = projectRepository.create("Beta", "BET", isPublic = false)
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes { client ->
+            val response = client.delete("/api/admin/projects/${beta.id}") { cookie(SESSION_COOKIE, cookie) }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                listOf(fixture.projectId),
+                response.body<AdminSettingsState>().projects.map { it.id },
+                "The deleted project was still in the returned directory.",
+            )
+        }
+
+        assertNull(projects.findById(beta.id), "The project outlived its deletion.")
+    }
+
+    /**
+     * A non-admin may neither reorder nor delete projects, and nothing they aimed
+     * at is touched.
+     *
+     * The store is checked directly afterwards, for [`a non-admin is refused the
+     * directory and cannot grant agent access`]'s reason: a 403 that had already
+     * written would still read as a 403.
+     */
+    @Test
+    fun `a non-admin cannot reorder or delete projects`(): Unit = runBlocking {
+        val fixture = seed(name = "Alpha", prefix = "ALP")
+        val beta = projectRepository.create("Beta", "BET", isPublic = false)
+        val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
+        val cookie = sessions.create(ordinary.id)
+        val before = projects.selectAll().map { it.id }
+
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/admin/projects/order") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(ProjectOrder(before.reversed()))
+                }.status,
+            )
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.delete("/api/admin/projects/${beta.id}") { cookie(SESSION_COOKIE, cookie) }.status,
+            )
+        }
+
+        assertEquals(before, projects.selectAll().map { it.id }, "A refused reorder moved something.")
+        assertFalse(projects.findById(beta.id) == null, "A refused delete removed the project anyway.")
+    }
+
+    private class Fixture(val adminId: Long, val projectId: Long)
+
+    /**
+     * A seeded project and the instance admin.
+     *
+     * The admin is whoever signs in first — see Users.sq's upsert — so the first
+     * call here produces one and every later user in a test is ordinary.
+     *
+     * `roles.seed()` is not optional here, and the reason is worth writing down:
+     * `Roles.sq`'s grant is an `INSERT OR IGNORE … SELECT … WHERE role_key = ?`,
+     * which silently inserts *nothing* when the roles vocabulary is empty. Without
+     * this line every grant in this file would quietly do nothing and the rights
+     * assertions would be checking that an empty list is empty. Application.kt
+     * seeds it at startup; a test that mounts the routes without the startup has
+     * to do it too.
+     */
+    private suspend fun seed(name: String = "Lunamux", prefix: String = "LMX"): Fixture {
+        roles.seed()
+        val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", null))
+        val project = projectRepository.create(name, prefix, isPublic = false)
+        return Fixture(admin.id, project.id)
+    }
+
+    /** Mount the real routes and hand back a client. See VocabularyTest.withRoutes. */
+    private fun withRoutes(
+        impersonations: Impersonations = Impersonations(),
+        block: suspend (io.ktor.client.HttpClient) -> Unit,
+    ) = testApplication {
+        application {
+            install(ServerContentNegotiation) { json() }
+            routing { boardRoutes(dependencies(impersonations)) }
+        }
+        val client = createClient {
+            install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) { json() }
+        }
+        block(client)
+    }
+
+    private fun dependencies(impersonations: Impersonations) = BoardDependencies(
+        access = access,
+        projects = projects,
+        projectRepository = projectRepository,
+        roles = roles,
+        vocabularies = vocabularies,
+        forums = ForumRepository(ForumStore(database), attachments, attachmentStore),
+        forumPosts = ForumPostRepository(
+            ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
+        ),
+        audience = ProjectAudience(users, roles),
+        // Not exercised by this file; here because a route bundle is one object
+        // and there is no half of it. See MessageTest for the tests that do.
+        conversations = ConversationRepository(
+            ConversationStore(database), MessageStore(database), attachments, attachmentStore,
+        ),
+        labels = labels,
+        components = components,
+        statuses = statuses,
+        priorities = priorities,
+        resolutions = resolutions,
+        versions = versions,
+        sprints = sprintRepository,
+        sprintRepository = sprintRepository,
+        issues = issues,
+        issueRepository = issueRepository,
+        comments = comments,
+        attachments = attachmentStore,
+        attachmentRepository = attachments,
+        attachmentTickets = AttachmentTicketStore(),
+        sessions = sessions,
+        users = users,
+        impersonations = impersonations,
+        subscriptions = SubscriptionStore(database),
+        reads = ReadStore(database),
+    )
+}

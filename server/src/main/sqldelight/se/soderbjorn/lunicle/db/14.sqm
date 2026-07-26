@@ -1,0 +1,35 @@
+-- Version 14 → 15: discussion forums.
+--
+-- The same dual-path story as 1.sqm and 2.sqm: a fresh volume runs `CREATE
+-- TABLE` from Forums.sq and gets this for free; a volume already at version 14
+-- — the deployed one — runs this instead. Without it the deployed database
+-- would stay at the old shape and every forum query would die on `no such
+-- table`. MigrationTest is the guarantee that this lands on exactly the schema
+-- the .sq files declare; see its preamble.
+--
+-- Pure CREATE TABLE, so there is nothing to back-fill: a table that did not
+-- exist has no rows, and "this project has no forums yet" is the correct state
+-- for every project that predates the feature. Note that it is also the correct
+-- state *afterwards* — unlike 4.sqm, which had to give existing projects the
+-- board columns that ProjectRepository seeds into new ones, there is no forum
+-- every project ought to have. A project with no forums shows an empty
+-- Discussion tab, which is what a project nobody has set one up in should show.
+--
+-- The statement below is a verbatim copy of Forums.sq's CREATE TABLE block,
+-- minus the prose — see that file for what each column and constraint is for,
+-- and for the two things (per-forum access, history) it deliberately omits.
+
+CREATE TABLE forums (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    description TEXT,
+
+    position INTEGER NOT NULL,
+
+    created_at INTEGER NOT NULL,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name)
+);

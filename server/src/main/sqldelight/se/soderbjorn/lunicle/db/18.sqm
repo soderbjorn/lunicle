@@ -1,0 +1,56 @@
+-- Version 18 → 19: what each user has already read.
+--
+-- Two new tables and nothing else — the same shape as 17.sqm, and for the same
+-- reason: LNL-64's whole storage is two high-water marks, and there is nowhere
+-- else in the schema for "how far have I got" to be recorded.
+--
+-- The dual-path story is 1.sqm's and 2.sqm's: a fresh volume runs `CREATE TABLE`
+-- out of Reads.sq and gets both of these for free; a volume already at version
+-- 18 runs this instead. MigrationTest migrates every earlier snapshot forward
+-- and compares PRAGMA output against a fresh `Schema.create`, so drift between
+-- the two files fails the build rather than the volume.
+--
+-- ── Order does not matter, as in 17.sqm ─────────────────────────────────────
+--
+-- Both point at things that already exist — `users`, `conversations`, `forums` —
+-- and neither points at the other.
+--
+-- ── What existing rows get: nothing, and the alternative is worse ───────────
+--
+-- Neither table is backfilled, so on the morning this deploys **everything is
+-- unread**: every conversation shows its whole history as new, and the Discussion
+-- tab wears a dot.
+--
+-- That is deliberate, and the two alternatives were both written out. Marking
+-- everything read would be the server claiming, on everybody's behalf, that they
+-- have seen messages they may well not have — and the one thing a read state must
+-- not do is lie in that direction, because an unread badge that was never true is
+-- how people stop trusting the badge. Marking everything from *now* would need a
+-- row per user per conversation and per forum at migration time, which is the
+-- fan-out this design exists to avoid, written once at the worst possible moment.
+--
+-- A day of stale-looking badges, cleared by opening the things, is the cheapest
+-- honest answer. Worth stating rather than being discovered by whoever deploys it.
+--
+-- The statements below reproduce Reads.sq's two CREATE TABLE blocks, minus the
+-- prose. See that file for what each constraint is for — and in particular for
+-- why `last_read_message_id` has no foreign key, which is the one thing here that
+-- would look like an omission.
+
+CREATE TABLE conversation_reads (
+    user_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL,
+    last_read_message_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, conversation_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE forum_reads (
+    user_id INTEGER NOT NULL,
+    forum_id INTEGER NOT NULL,
+    last_read_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, forum_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
+);

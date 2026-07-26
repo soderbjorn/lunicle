@@ -1,0 +1,69 @@
+-- Version 9 → 10: sprints.
+--
+-- One new table and two nullable columns. See Sprints.sq for what a sprint is,
+-- Issues.sq's sprint_id for why that reference is single-column, and Projects.sq's
+-- active_sprint_id for why "which sprint is active" is a column on the project
+-- rather than a flag on the sprint.
+--
+-- ── Nothing to back-fill, and that is the whole design ──────────────────────
+--
+-- Unlike 4.sqm, which had to seed a status row into every project that predated
+-- it, this file seeds nothing. It does not create a first sprint, a "Sprint 1",
+-- or a synthetic backlog sprint for anybody.
+--
+-- That is not laziness about the deployed volume — it is the property the
+-- feature rests on. The backlog is `sprint_id IS NULL`, an absence rather than a
+-- row, so a project with zero sprints has an empty sprint list, no board control,
+-- and every issue correctly un-scheduled. Seeding a backlog sprint into every
+-- project would give pure-kanban boards a sprint axis they never asked for and
+-- turn "invisible by absence" into "invisible by feature flag", which is a
+-- different and worse design. The state after this migration runs is therefore
+-- indistinguishable from the state before it for every project that exists —
+-- 7.sqm's situation, and for a related reason.
+--
+-- That is the opposite of its immediate neighbour: 8.sqm adds a `position` to
+-- every label and component and must back-fill each one, because the column is
+-- NOT NULL and a constant default would replace alphabetical order with an
+-- arbitrary one. The difference is that 8.sqm changes something every project
+-- already has, and this adds something no project has yet.
+--
+-- ── Why plain ALTER TABLE, when 2.sqm's sibling had to rebuild ──────────────
+--
+-- Both new columns are single-column, nullable references, which is precisely
+-- the case SQLite's ALTER TABLE ADD COLUMN accepts — the same ground 3.sqm
+-- covered for assignee_id, and its comment is the long version of this one. The
+-- default is omitted rather than stated because SQLite REQUIRES the default of
+-- an added column with a REFERENCES clause to be NULL.
+--
+-- issues.sprint_id could not have been rebuilt into a composite key instead even
+-- if a rebuild were free, and Issues.sq says why: composite and ON DELETE SET
+-- NULL are mutually exclusive here, because SET NULL would null project_id too.
+--
+-- ── Order matters ──────────────────────────────────────────────────────────
+--
+-- `sprints` is created first because both ALTERs point at it. SQLite resolves a
+-- REFERENCES target lazily and would accept them in either order on a database
+-- with foreign keys off — which is how Database.migrateSchema runs — but a file
+-- that only works with the constraints disabled is a trap for whoever edits it
+-- next.
+--
+-- The CREATE below is duplicated from Sprints.sq minus its prose, and must stay
+-- in step with it. MigrationTest is the enforcement: it applies every .sqm to
+-- the previous snapshot and compares the result column for column and foreign
+-- key for foreign key against what the .sq files create from scratch.
+
+CREATE TABLE sprints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    position INTEGER NOT NULL,
+    completed_at INTEGER,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+ALTER TABLE issues ADD COLUMN sprint_id INTEGER REFERENCES sprints(id) ON DELETE SET NULL;
+
+ALTER TABLE projects ADD COLUMN active_sprint_id INTEGER REFERENCES sprints(id) ON DELETE SET NULL;

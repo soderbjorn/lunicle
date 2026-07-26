@@ -1,0 +1,44 @@
+-- Version 8 → 9: labels and components become ordered vocabularies.
+--
+-- They were the two kinds a project owner could not arrange: statuses,
+-- priorities and resolutions all carry a `position` and get move arrows in the
+-- project settings, while these two sorted by name and the dialog said so. But
+-- the order labels appear in — on a card, in the picker, in the issue detail —
+-- is a curation decision, and alphabetical is not a decision, it is what you
+-- get when nobody made one. See LNL-28.
+--
+-- ── The back-fill ────────────────────────────────────────────────────────────
+--
+-- `ALTER TABLE ADD COLUMN` can only supply a constant, so every row lands on 0
+-- and the order becomes arbitrary — which is worse than alphabetical, not
+-- better. The UPDATE that follows each ALTER therefore seeds the position each
+-- row *already had*: its rank in its own project's alphabetical list. So the
+-- upgrade changes nothing anybody can see, and the feature starts from the
+-- order they are used to.
+--
+-- The rank is a correlated count of the rows that sort before this one, with id
+-- as the tie-break. The tie-break is not decorative: `name` is COLLATE NOCASE
+-- and UNIQUE per project, so two names cannot actually tie — but a comparison
+-- that could return 0 for two different rows would give them the same position,
+-- and the arrows would then swap two rows that both claim the same slot. The id
+-- costs nothing and removes the question.
+--
+-- `l2.name < labels.name` uses the column's own NOCASE collation on both sides,
+-- which is the same comparison `ORDER BY name` was making. The seeded order is
+-- therefore exactly the list the old `forProject` returned.
+
+ALTER TABLE labels ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+
+UPDATE labels SET position = (
+    SELECT COUNT(*) FROM labels l2
+    WHERE l2.project_id = labels.project_id
+      AND (l2.name < labels.name OR (l2.name = labels.name AND l2.id < labels.id))
+);
+
+ALTER TABLE components ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+
+UPDATE components SET position = (
+    SELECT COUNT(*) FROM components c2
+    WHERE c2.project_id = components.project_id
+      AND (c2.name < components.name OR (c2.name = components.name AND c2.id < components.id))
+);

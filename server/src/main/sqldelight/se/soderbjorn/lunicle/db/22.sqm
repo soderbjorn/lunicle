@@ -1,0 +1,37 @@
+-- Version 22 → 23: projects become an ordered list.
+--
+-- Until now the picker sorted projects by name — `selectAll ... ORDER BY name`
+-- in Projects.sq — and a system administrator could not arrange them. But which
+-- project comes first is a curation decision, the same one the vocabulary tables
+-- already let a project owner make (see Labels.sq), and alphabetical is not a
+-- decision, it is what you get when nobody made one. LNL-93 gives that decision a
+-- home in the instance settings dialog.
+--
+-- ── The back-fill ────────────────────────────────────────────────────────────
+--
+-- Exactly 9.sqm's shape, which did this for labels and components. `ALTER TABLE
+-- ADD COLUMN` can only supply a constant, so every row would land on 0 and the
+-- order become arbitrary — worse than alphabetical, not better. The UPDATE seeds
+-- each row's position with the rank it already had: its place in the instance's
+-- alphabetical list. So the upgrade changes nothing anybody can see, and the
+-- feature starts from the order they are used to.
+--
+-- The rank is a correlated count of the rows that sort before this one, with id
+-- as the tie-break. `name` is COLLATE NOCASE and UNIQUE across the instance, so
+-- two names cannot actually tie — but a comparison that could return 0 for two
+-- different rows would give them the same position, and the arrows would then
+-- swap two rows that both claim the same slot. The id costs nothing and removes
+-- the question. `p2.name < projects.name` uses the column's own NOCASE collation
+-- on both sides, the same comparison `ORDER BY name` was making, so the seeded
+-- order is exactly the list the old `selectAll` returned.
+--
+-- The DEFAULT 0 matches the column as Projects.sq now declares it: a fresh
+-- database must end up with the same PRAGMA as a migrated one, and MigrationTest
+-- is what enforces that.
+
+ALTER TABLE projects ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+
+UPDATE projects SET position = (
+    SELECT COUNT(*) FROM projects p2
+    WHERE p2.name < projects.name OR (p2.name = projects.name AND p2.id < projects.id)
+);
