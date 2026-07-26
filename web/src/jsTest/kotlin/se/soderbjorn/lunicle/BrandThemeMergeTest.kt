@@ -5,7 +5,6 @@ import kotlinx.serialization.json.Json
 import se.soderbjorn.lunula.core.DEFAULT_DARK_THEME
 import se.soderbjorn.lunula.core.DEFAULT_LIGHT_THEME
 import se.soderbjorn.lunula.core.Theme
-import se.soderbjorn.lunula.core.ThemeGroup
 import se.soderbjorn.lunula.core.ThemeSnapshotV2
 import se.soderbjorn.lunula.core.builtinTheme
 import kotlin.test.Test
@@ -34,8 +33,8 @@ class BrandThemeMergeTest {
     private val json = Json { ignoreUnknownKeys = true }
     private val listSer = ListSerializer(Theme.serializer())
 
-    private fun theme(name: String, group: ThemeGroup = ThemeGroup.Dark, accent: String = "#ff00ff") = Theme(
-        name = name, group = group, tag = "t", desc = "d",
+    private fun theme(name: String, accent: String = "#ff00ff") = Theme(
+        name = name, tag = "t", desc = "d",
         bg = "#000000", surface = "#111111", surfaceAlt = "#222222", border = "#333333",
         text = "#ffffff", textDim = "#aaaaaa", textBright = "#ffffff", accent = accent,
         warn = "#ffcc00", danger = "#ff0000", add = "#00ff00", addText = "#000000",
@@ -53,7 +52,7 @@ class BrandThemeMergeTest {
     @Test
     fun merge_layers_brand_on_top_of_own() {
         val own = encode(theme("My Theme"))
-        val merged = mergeBrandThemesJson(own, listOf(theme("Acme Dark"), theme("Acme Light", ThemeGroup.Light)))
+        val merged = mergeBrandThemesJson(own, listOf(theme("Acme Dark"), theme("Acme Light")))
         assertEquals(listOf("My Theme", "Acme Dark", "Acme Light"), names(merged))
     }
 
@@ -77,7 +76,7 @@ class BrandThemeMergeTest {
 
     @Test
     fun strip_removes_only_brand_themes() {
-        val brand = listOf(theme("Acme Dark"), theme("Acme Light", ThemeGroup.Light))
+        val brand = listOf(theme("Acme Dark"), theme("Acme Light"))
         val merged = mergeBrandThemesJson(encode(theme("My Theme")), brand)!!
         // What the toolkit would hand back to write() carries the brand themes;
         // strip must leave only the user's own for persistence.
