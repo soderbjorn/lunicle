@@ -51,18 +51,11 @@ sealed interface ActiveDialog {
     /** None. */
     data object None : ActiveDialog
 
-    /**
-     * "You have unsaved changes" — the guard on a project switch.
-     *
-     * LNL-84 makes switching project reset the tabs it leaves: open issue windows
-     * close, the Discussion tab reloads. When an editor is mid-edit that reset
-     * would throw the work away, so the switch stops here first and offers to
-     * abort. Carries nothing — the project it was heading for is held on
-     * [pendingSwitchProjectId], not in the dialog, because the dialog is a yes/no
-     * and the destination is the view model's to remember. [confirmProjectSwitch]
-     * and [cancelProjectSwitch] are the two answers.
-     */
-    data object ConfirmProjectSwitch : ActiveDialog
+    // There used to be a ConfirmProjectSwitch here — "you have unsaved changes",
+    // the guard on LNL-84's project switch, which reset the whole window when it
+    // went ahead. LNL-160 removed the switch itself: a project is a board pane
+    // now, and opening one takes nothing away, so there is no longer a destructive
+    // act to stop and ask about.
 
     /** The project dialog, creating. */
     data object NewProject : ActiveDialog
@@ -147,6 +140,14 @@ sealed interface ActiveDialog {
      *   That is what makes the dialog a controlled component; see onResolutionPicked.
      */
     data class ChooseResolution(
+        /**
+         * The project whose board the drag started on.
+         *
+         * Carried because the dialog outlives the gesture: the move it finishes
+         * (see `onResolutionConfirmed`) has to name a board, and since LNL-160
+         * "the board" is not a thing the view model can look up on its own.
+         */
+        val projectId: Long,
         val issueId: Long,
         val statusId: Long,
         val ticket: String,
@@ -388,12 +389,15 @@ class MainScreenBackingViewModel(
     private val storage: StorageRepository = StorageRepository(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     /**
-     * The app-wide register of open editors. Read on a project switch to decide
-     * whether unsaved work is at stake ([onProjectSelected]), and closed out when
-     * the switch goes ahead ([performSwitch]). Defaults to a private instance so
-     * callers and tests that do not care about the switch dialog need not supply
-     * one; main.kt threads the shared instance it also gives the editors. LNL-84.
+     * The app-wide register of open editors.
+     *
+     * LNL-84 read it to guard a project switch, which was destructive because a
+     * switch tore down every window. LNL-160 removed the switch — a project is a
+     * pane now, and opening one takes nothing away — so nothing here asks about
+     * dirty editors any more. Kept as a collaborator because the *windows* still
+     * join it and the bootstrap still threads one shared instance through.
      */
+    @Suppress("unused")
     private val editorRegistry: EditorDirtyRegistry = EditorDirtyRegistry(),
 ) {
     private val _stateFlow = MutableStateFlow(State())
@@ -402,35 +406,30 @@ class MainScreenBackingViewModel(
     val stateFlow: StateFlow<State> = _stateFlow.asStateFlow()
 
     /**
-     * The embed's `?project=`, remembered across reloads of the list.
+     * The projects with a board or issue pane open, pushed by the workspace.
      *
-     * Only ever used to pick the *initial* project: once the user chooses
-     * something in the picker, [selectedProjectId] wins. Otherwise a background
-     * refresh would yank them back to whatever the embed asked for, which is the
-     * kind of bug that looks like the picker is broken.
+     * The membership rule for [State.boards], held here rather than derived from
+     * the state because it has to survive a reload that empties the map: it says
+     * what to fetch, and the map says what has arrived.
+     *
+     * @see onOpenProjectsChanged
      */
-    private var preferredName: String? = null
-    private var selectedProjectId: Long? = null
+    private var openProjectIds: Set<Long> = emptySet()
 
     /**
-     * The project a switch is heading for while the unsaved-changes dialog is up.
+     * Ask for a project's board to be opened somewhere sensible.
      *
-     * Set when [onProjectSelected] finds dirty editors and stops to ask; spent by
-     * [confirmProjectSwitch] or cleared by [cancelProjectSwitch]. Held here rather
-     * than on the dialog because the picker is not the source of truth mid-question
-     * — [selectedProjectId] is not moved until the switch actually goes ahead, so
-     * the picker keeps showing the current project until then. LNL-84.
-     */
-    private var pendingSwitchProjectId: Long? = null
-
-    /**
-     * The issue a deep link asked for, until it has been opened.
+     * Set by the bootstrap to the workspace's `onBoardOpened`. A lambda rather
+     * than a direct call because *where* a board goes is the workspace's
+     * decision — the tab that already holds it, or the one in front — and this
+     * view model deliberately has no notion of which tab anybody is on. The one
+     * caller is [onDialogClosed]: a project that has just been created should be
+     * on screen, or making it reads as having failed.
      *
-     * One-shot, and cleared the moment it resolves — see [reload]. Left set, it
-     * would re-open the same modal on every later board refresh: dismiss the
-     * issue, drag a card, and it would spring open again.
+     * A no-op by default, so a test or a caller that has not wired it simply gets
+     * no navigation rather than a crash.
      */
-    private var preferredTicket: Ticket? = null
+    var projectToOpen: (Long) -> Unit = {}
 
     /**
      * The last session fact acted on, so a repeated one is ignored.
@@ -468,7 +467,24 @@ class MainScreenBackingViewModel(
         val isLoaded: Boolean = false,
         val isBusy: Boolean = false,
         val projects: List<ProjectSummary> = emptyList(),
-        val board: BoardState? = null,
+        /**
+         * Every board that is open somewhere, by project id.
+         *
+         * The plural is the whole of what LNL-160 changed here. A tab is a
+         * working set rather than a project (see [WorkspaceBackingViewModel]),
+         * so two boards from two projects can be on screen at once and neither
+         * of them is "the" board. What used to be a single nullable field is a
+         * map, and everything derived from it moved to [BoardScreen], which is
+         * that map's entry plus the state around it.
+         *
+         * Membership is driven from outside, by [onOpenProjectsChanged]: the
+         * workspace says which projects have a pane, and this holds exactly
+         * those. A project with a pane but no entry yet is loading; an entry
+         * with no pane is dropped, because keeping boards for panes nobody has
+         * open is a cache with no eviction rule and a straight path to serving
+         * hours-old cards on a tab reopened tomorrow.
+         */
+        val boards: Map<Long, BoardState> = emptyMap(),
         val canCreateProject: Boolean = false,
         val dialog: ActiveDialog = ActiveDialog.None,
         /**
@@ -518,19 +534,23 @@ class MainScreenBackingViewModel(
         val isSysAdmin: Boolean = false,
         val errorMessage: String? = null,
         /**
-         * The board's live text filter, or empty for "show everything".
+         * Each open board's live text filter, by project id; absent means "show
+         * everything".
          *
          * A view concern in the shallowest sense — it changes nothing on the
          * server and survives no reload worth speaking of — but a filter is a
-         * decision about which cards the board shows, and that is [columns]'
-         * business, not the view's. Kept here so the one place that builds
-         * columns is the one place that hides them, and so switching project can
-         * clear it (see [onProjectSelected]).
+         * decision about which cards a board shows, and that is
+         * [BoardScreen.columns]' business, not the view's.
+         *
+         * Per project rather than one for the app, because two boards on screen
+         * are two searches: filtering one to "auth" while the other keeps showing
+         * everything is the ordinary case, and a single field would have made
+         * typing in one board silently narrow the other.
          */
-        val filterQuery: String = "",
+        val filterQueries: Map<Long, String> = emptyMap(),
         /**
-         * Which sprint the board is scoped to — a sprint id, or one of the two
-         * sentinels below.
+         * Which sprint each open board is scoped to — a sprint id, or one of the
+         * two sentinels below — by project id.
          *
          * A single `Long` rather than a sealed type, because it is exactly what
          * the dropdown deals in and every value it can hold is a row in that
@@ -543,13 +563,13 @@ class MainScreenBackingViewModel(
          *    scope rather than "all minus the sprints", because during planning
          *    "what is not scheduled yet" is the question being asked.
          *
-         * Set to the project's active sprint when a board loads, so somebody with
-         * a sprint running opens onto their sprint. Like [filterQuery] this is a
-         * decision about which cards show, so it lives beside it and is [columns]'
-         * business — and like it, it is cleared on project switch, because a
-         * sprint id from the board being left names nothing on the one arriving.
+         * Set to the project's active sprint when its board first loads, so
+         * somebody with a sprint running opens onto their sprint. Per project for
+         * [filterQueries]' reason, and more sharply: a sprint id is meaningless
+         * on another project's board, so a shared field would not merely be
+         * surprising, it would name nothing.
          */
-        val sprintScope: Long = SCOPE_ALL,
+        val sprintScopes: Map<Long, Long> = emptyMap(),
         /**
          * This user's own view choices, for every project they have, keyed by
          * project id — the decoded [UiSettingKeys.PROJECT_PREFS] blob (LNL-100).
@@ -569,8 +589,184 @@ class MainScreenBackingViewModel(
          */
         val projectPrefs: Map<Long, UserProjectPrefs> = emptyMap(),
     ) {
-        /** The project in the top bar, or null. */
-        val currentProject: ProjectSummary? get() = board?.project
+        /**
+         * Everything one board pane needs, for the project it shows.
+         *
+         * The seam LNL-160 turns on. A board pane knows its project and nothing
+         * else about the app; handing it one of these gives it the board, the
+         * columns, the filter, the scope and the permissions *for that project*,
+         * with no way to reach another one's by accident. Cheap — a value over
+         * this state, computed on read — so a view may hold it for the length of
+         * a render and throw it away.
+         *
+         * Valid for any project id, including one with no board loaded (yet, or
+         * ever): every accessor answers the empty/false/null case, because "the
+         * board has not arrived" and "the board is empty" have to be tellable
+         * apart by the caller rather than by a crash. See [BoardScreen.isLoading].
+         */
+        fun screen(projectId: Long): BoardScreen = BoardScreen(this, projectId)
+
+        /**
+         * Whether to offer the instance settings gear.
+         *
+         * Admins only, and unlike [BoardScreen.canOpenProjectSettings] this needs
+         * no board: the accounts on a deployment exist before its first project
+         * does. An affordance — the route refuses a non-admin regardless.
+         */
+        val canOpenAdminSettings: Boolean
+            get() = isSysAdmin
+
+        /**
+         * The ids of [openIssues], in the same order.
+         *
+         * The shell builds one pane per open issue and knows nothing else about
+         * them, so it takes this rather than the rows.
+         */
+        val openIssueIds: List<Long> get() = openIssues.map { it.issueId }
+
+        /**
+         * The focused issue window's ticket — "LMX-12" — or null.
+         *
+         * What the address bar should say, handed to the bootstrap to put there;
+         * see main.kt. A *string* rather than a URL, because a URL is a fact about
+         * the browser and this view model does not have one — an iOS client would
+         * take the same ticket and build a `lunicle://` link out of it.
+         *
+         * With several windows open the URL follows *focus*: the link is to what
+         * the user is looking at, and there is only one address bar.
+         *
+         * Read off the window's own row rather than off the board, because since
+         * LNL-48 the focused window need not belong to the board on screen — and
+         * a ticket looked up in the wrong project's issue list is either nothing
+         * or, worse, a real ticket naming somebody else's issue.
+         *
+         * Null for a draft, and that is deliberate rather than incidental: a draft
+         * is not on anyone's board, so a link to it would resolve to nothing for
+         * everyone including its author. A draft's row carries a null number, so
+         * this falls out rather than needing a check.
+         */
+        val openIssueTicket: String? get() =
+            focusedIssueId?.let { id -> openIssues.firstOrNull { it.issueId == id } }?.ticket
+
+        /**
+         * The window title for an open issue: "LMX-12", or "New issue" for a
+         * draft (which has no public ticket yet — its row is invisible on the
+         * board, so the number would name nothing anyone else can see).
+         *
+         * Read against the issue's OWN project's board rather than whatever board
+         * happens to be in front — the window outlives the board it was opened
+         * from, and since LNL-160 there may be several to be wrong about.
+         */
+        fun issueWindowTitle(issueId: Long): String {
+            val open = openIssues.firstOrNull { it.issueId == issueId } ?: return "Issue"
+            val screen = screen(open.projectId)
+            // Hiding issue numbers (LNL-105) reaches the window's pane label too: it
+            // shows the issue's own title in place of its key — the key is what is
+            // being hidden. A draft has no title on the board yet, so it keeps "New
+            // issue"; a saved issue whose title has not arrived falls back to a word.
+            if (screen.hideIssueNumbers) {
+                val title = screen.board?.issues?.firstOrNull { it.id == issueId }
+                    ?.title?.takeIf { it.isNotBlank() }
+                return title ?: if (open.ticket == null) "New issue" else "Issue"
+            }
+            return open.ticket ?: "New issue"
+        }
+
+        /**
+         * What to say when a tab has no panes at all, or null when it has some.
+         *
+         * The app-level nothing, as against [BoardScreen.emptyMessage], which is
+         * one board's. Several different nothings, and they mean different things
+         * to the person reading them: still loading, nothing to show, or nothing
+         * open — and "nothing to show" has a different next step depending on who
+         * is looking. Each branch names the one action its reader can actually
+         * take, which is the whole job of an empty state; a message that points at
+         * a control the reader does not have is worse than no message, because it
+         * reads as the app being broken.
+         */
+        val emptyTabMessage: String? get() = when {
+            !isLoaded -> null
+            // The "+" in the top bar: "New project…" lives in the shell's add
+            // menu. Pointing a brand new admin anywhere else sends them to a
+            // control that cannot do this.
+            projects.isEmpty() && canCreateProject ->
+                "No projects yet. Use the + button in the top bar to make one."
+            // Signed in and still shown nothing: either the instance is empty or
+            // every project on it is private to somebody else, and this reader
+            // cannot tell those apart and should not have to. Deliberately not
+            // told to use the "+" — they do not have it, only an admin does.
+            projects.isEmpty() && isSignedIn ->
+                "No projects to show. Ask an administrator to create one, " +
+                    "or to give you access to an existing one."
+            projects.isEmpty() ->
+                "No projects to show. Sign in if you have an account here."
+            else -> "Nothing open in this tab. Use + to add a board."
+        }
+    }
+
+    /**
+     * One project's board, and everything drawn from it.
+     *
+     * What a board pane reads. Every accessor that used to hang off `State` and
+     * silently mean "the current project" lives here instead, where the project
+     * is named — which is the whole of how two boards coexist without either
+     * being able to reach the other's cards, filter or permissions.
+     *
+     * A value, not a store: it holds the state it was made from and derives on
+     * read, so it is correct for exactly as long as that state is current and is
+     * meant to be rebuilt (`state.screen(id)`) on every render rather than kept.
+     *
+     * @property state the whole app state; this is a view onto it.
+     * @property projectId the project this is the board of. Need not be loaded —
+     *   see [isLoading].
+     */
+    data class BoardScreen(
+        private val state: State,
+        val projectId: Long,
+    ) {
+        /** This project's board, or null while it is still on its way. */
+        val board: BoardState? get() = state.boards[projectId]
+
+        /**
+         * The project itself.
+         *
+         * Off the board when it has arrived, and off the accessible project list
+         * otherwise — so a pane can title itself "Board · Lunamux" during the
+         * moment before its cards land, rather than reading "Board · …" and then
+         * flickering into a name.
+         */
+        val project: ProjectSummary?
+            get() = board?.project ?: state.projects.firstOrNull { it.id == projectId }
+
+        /**
+         * Whether this board is still being fetched.
+         *
+         * Distinct from "empty" and from "gone": a pane showing a spinner, a
+         * pane showing a board with no cards on it, and a pane whose project the
+         * reader can no longer see are three different things to draw, and only
+         * this one is temporary.
+         */
+        val isLoading: Boolean get() = board == null && state.projects.any { it.id == projectId }
+
+        /** This board's filter text; empty for "show everything". */
+        val filterQuery: String get() = state.filterQueries[projectId].orEmpty()
+
+        /**
+         * Whether anybody is signed in — an app fact, forwarded so a board pane
+         * needs only this one object to draw itself. The signed-in-only column ⋮
+         * menu is the one thing on a board that asks.
+         */
+        val isSignedIn: Boolean get() = state.isSignedIn
+
+        /**
+         * Every accessible project's ticket prefix, for turning a `PREFIX-N` in a
+         * card title into a link (LNL-139). App-wide rather than this project's,
+         * deliberately: a card may refer to an issue anywhere the reader can see.
+         */
+        val prefixes: List<String> get() = state.projects.map { it.namePrefix }
+
+        /** This board's sprint scope, as chosen; see [effectiveSprintScope]. */
+        val sprintScope: Long get() = state.sprintScopes[projectId] ?: SCOPE_ALL
 
         /**
          * Whether the sprint scope control renders at all.
@@ -580,7 +776,7 @@ class MainScreenBackingViewModel(
          * control beside the filter box, and nothing to configure off. Presence of
          * sprints is the feature flag — see Sprints.sq.
          */
-        val showsSprintScope: Boolean get() = board?.sprints.orEmpty().isNotEmpty()
+        val showsSprintScope: Boolean get() = scopeSprints.isNotEmpty()
 
         /**
          * The sprints the scope dropdown offers, planning order.
@@ -609,7 +805,7 @@ class MainScreenBackingViewModel(
                 ScopeItem(SCOPE_ALL, "All issues"),
                 ScopeItem(SCOPE_BACKLOG, "Backlog"),
             ) + scopeSprints.map { ScopeItem(it.id, it.name) }
-            if (!canEditCurrentProject) return scopes
+            if (!canEditProject) return scopes
 
             val scoped = scopeSprints.firstOrNull { it.id == sprintScope }
             val actions = buildList {
@@ -648,9 +844,6 @@ class MainScreenBackingViewModel(
             SCOPE_BACKLOG -> "Backlog"
             else -> scopeSprints.firstOrNull { it.id == scope }?.name ?: "All issues"
         }
-
-        /** What the picker's button says. */
-        val pickerLabel: String get() = currentProject?.name ?: "No project"
 
         /**
          * The columns, in order, each with its cards.
@@ -693,12 +886,12 @@ class MainScreenBackingViewModel(
         }
 
         /**
-         * The status ids this user has hidden on the board on screen (LNL-100).
+         * The status ids this user has hidden on this board (LNL-100).
          *
-         * The current project's slice of [projectPrefs], as a set because the board
+         * This project's slice of [State.projectPrefs], as a set because the board
          * only ever asks "is this column hidden?" — membership, never order. Empty
-         * for a board with no project, for a project this user has hidden nothing
-         * on, and for a signed-out visitor, all of which draw every column.
+         * for a project this user has hidden nothing on and for a signed-out
+         * visitor, both of which draw every column.
          *
          * A set of ids and not of columns on purpose: an id in here that names no
          * current status — a column deleted since it was hidden — simply matches
@@ -706,7 +899,7 @@ class MainScreenBackingViewModel(
          * cleaned up to stop mattering.
          */
         val hiddenColumnIds: Set<Long> get() =
-            currentProject?.id?.let { projectPrefs[it]?.hiddenColumnIds?.toSet() }.orEmpty()
+            state.projectPrefs[projectId]?.hiddenColumnIds?.toSet().orEmpty()
 
         /**
          * The columns to draw as full lanes: every column this user has not hidden,
@@ -802,60 +995,10 @@ class MainScreenBackingViewModel(
             get() = board?.resolutions.orEmpty().associate { it.id to it.name }
 
         /**
-         * The ids of [openIssues], in the same order.
-         *
-         * The shell builds one pane per open issue and knows nothing else about
-         * them, so it takes this rather than the rows.
-         */
-        val openIssueIds: List<Long> get() = openIssues.map { it.issueId }
-
-        /**
-         * The focused issue window's ticket — "LMX-12" — or null.
-         *
-         * What the address bar should say, handed to the bootstrap to put there;
-         * see main.kt. A *string* rather than a URL, because a URL is a fact about
-         * the browser and this view model does not have one — an iOS client would
-         * take the same ticket and build a `lunicle://` link out of it.
-         *
-         * With several windows open the URL follows *focus*: the link is to what
-         * the user is looking at, and there is only one address bar.
-         *
-         * Read off the window's own row rather than off the board, because since
-         * LNL-48 the focused window need not belong to the board on screen — and
-         * a ticket looked up in the wrong project's issue list is either nothing
-         * or, worse, a real ticket naming somebody else's issue.
-         *
-         * Null for a draft, and that is deliberate rather than incidental: a draft
-         * is not on anyone's board, so a link to it would resolve to nothing for
-         * everyone including its author. A draft's row carries a null number, so
-         * this falls out rather than needing a check.
-         */
-        val openIssueTicket: String? get() =
-            focusedIssueId?.let { id -> openIssues.firstOrNull { it.issueId == id } }?.ticket
-
-        /**
-         * The window title for an open issue: "LMX-12", or "New issue" for a
-         * draft (which has no public ticket yet — its row is invisible on the
-         * board, so the number would name nothing anyone else can see).
-         */
-        fun issueWindowTitle(issueId: Long): String {
-            val open = openIssues.firstOrNull { it.issueId == issueId } ?: return "Issue"
-            // Hiding issue numbers (LNL-105) reaches the window's pane label too: it
-            // shows the issue's own title in place of its key — the key is what is
-            // being hidden. A draft has no title on the board yet, so it keeps "New
-            // issue"; a saved issue whose title has not arrived falls back to a word.
-            if (hideIssueNumbers) {
-                val title = board?.issues?.firstOrNull { it.id == issueId }?.title?.takeIf { it.isNotBlank() }
-                return title ?: if (open.ticket == null) "New issue" else "Issue"
-            }
-            return open.ticket ?: "New issue"
-        }
-
-        /**
-         * Whether the caller may *configure* the current project — admin only; an
+         * Whether the caller may *configure* this project — admin only; an
          * affordance. Decides the settings form, not whether the cog appears.
          */
-        val canEditCurrentProject: Boolean
+        val canEditProject: Boolean
             get() = board?.permissions?.canMutateProject == true
 
         /**
@@ -864,24 +1007,24 @@ class MainScreenBackingViewModel(
          * ProjectPermissionsView.canMutateProjectIdentity for why those are two
          * questions and not one.
          */
-        val canRenameCurrentProject: Boolean
+        val canRenameProject: Boolean
             get() = board?.permissions?.canMutateProjectIdentity == true
 
         /**
          * Whether to offer the cogwheel at all.
          *
-         * Any signed-in user with a board in front of them: the dialog opens for
-         * everyone now, showing an admin the settings and everyone else just the
-         * new-issue notification toggle. A signed-out visitor gets no cog — they
-         * have nothing to set and no address to notify.
+         * Any signed-in user with this board in front of them: the dialog opens
+         * for everyone now, showing an admin the settings and everyone else just
+         * the new-issue notification toggle. A signed-out visitor gets no cog —
+         * they have nothing to set and no address to notify.
          */
         val canOpenProjectSettings: Boolean
-            get() = board != null && isSignedIn
+            get() = board != null && state.isSignedIn
 
         /**
-         * Whether to offer the statistics button beside the cogwheel.
+         * Whether to offer the statistics button in this board's pane header.
          *
-         * A board is the whole condition — no sign-in required, unlike
+         * A loaded board is the whole condition — no sign-in required, unlike
          * [canOpenProjectSettings]. Somebody reading a public project is reading
          * the issues these numbers count, so there is nothing here they are not
          * already looking at. The one exception is the commit count, which is a
@@ -892,49 +1035,25 @@ class MainScreenBackingViewModel(
         val canOpenStatistics: Boolean
             get() = board != null
 
-        /**
-         * Whether to offer the instance settings button beside the cogwheel.
-         *
-         * Admins only, and unlike [canOpenProjectSettings] this needs no board:
-         * the accounts on a deployment exist before its first project does. An
-         * affordance — the route refuses a non-admin regardless.
-         */
-        val canOpenAdminSettings: Boolean
-            get() = isSysAdmin
-
-        /** Whether to offer "New issue". */
+        /** Whether to offer "New issue" on this board. */
         val canCreateIssue: Boolean get() = board?.permissions?.canCreateIssue == true
 
         /**
-         * What to say when there is no board, or null when there is one.
+         * What this board's pane should say instead of columns, or null when it
+         * has some to draw.
          *
-         * Several different nothings, and they mean different things to the
-         * person reading them: still loading, nothing chosen, or nothing to show
-         * — and that last one has a different next step depending on who is
-         * looking. Each branch names the one action its reader can actually take,
-         * which is the whole job of an empty state; a message that points at a
-         * control the reader does not have is worse than no message, because it
-         * reads as the app being broken.
+         * One board's nothing, as against [State.emptyTabMessage], which is the
+         * app's. Loading is null rather than a message: the pane draws a spinner
+         * for that (LNL-135), and a sentence that is about to be replaced by
+         * cards reads as an error for the beat it is up.
          */
         val emptyMessage: String? get() = when {
             board != null -> null
-            !isLoaded -> null
-            // The "+" in the top bar, not the picker: "New project…" left the
-            // switcher for the shell's add menu (see BoardWindow's preamble), and
-            // the picker will not even open while it has no rows. Pointing a brand
-            // new admin at it sent them to the one control that cannot do this.
-            projects.isEmpty() && canCreateProject ->
-                "No projects yet. Use the + button in the top bar to make one."
-            // Signed in and still shown nothing: either the instance is empty or
-            // every project on it is private to somebody else, and this reader
-            // cannot tell those apart and should not have to. Deliberately not
-            // told to use the "+" — they do not have it, only an admin does.
-            projects.isEmpty() && isSignedIn ->
-                "No projects to show. Ask an administrator to create one, " +
-                    "or to give you access to an existing one."
-            projects.isEmpty() ->
-                "No projects to show. Sign in if you have an account here."
-            else -> "Pick a project to see its issues."
+            isLoading -> null
+            // The project is not in the accessible list at all: deleted, or access
+            // withdrawn while the pane was open. The workspace prunes the pane on
+            // the next project-list tick, so this is what shows for that beat.
+            else -> "This project is no longer available."
         }
 
         /**
@@ -943,13 +1062,13 @@ class MainScreenBackingViewModel(
          */
         fun cardLabel(issue: IssueSummary): String =
             if (hideIssueNumbers) issue.title
-            else "${currentProject?.namePrefix ?: "?"}-${issue.number}: ${issue.title}"
+            else "${project?.namePrefix ?: "?"}-${issue.number}: ${issue.title}"
 
         /**
          * The key of this card's epic — "LMX-98" — or null when it has no parent, or
          * when the parent's number did not travel (LNL-154). The web draws it as the
          * card's "↳ LMX-98" back-reference and opens the parent by
-         * [IssueSummary.parentId]. Built from the current project's prefix because a
+         * [IssueSummary.parentId]. Built from this project's prefix because a
          * parent shares its child's project, exactly as [cardLabel] forms this card's
          * own key — so the two keys read the same way. Deliberately over
          * [IssueSummary.parentNumber] (the authoritative number the server sent
@@ -959,7 +1078,7 @@ class MainScreenBackingViewModel(
          */
         fun parentKey(issue: IssueSummary): String? {
             val number = issue.parentNumber ?: return null
-            val prefix = currentProject?.namePrefix ?: return null
+            val prefix = project?.namePrefix ?: return null
             return "$prefix-$number"
         }
 
@@ -969,45 +1088,43 @@ class MainScreenBackingViewModel(
          * its ticket key even when the key is not drawn. See [columns]' filter.
          */
         fun cardSearchText(issue: IssueSummary): String =
-            "${currentProject?.namePrefix ?: "?"}-${issue.number}: ${issue.title}"
+            "${project?.namePrefix ?: "?"}-${issue.number}: ${issue.title}"
 
         /**
          * Whether this user has hidden the issue number on this project's board and
          * issue detail (LNL-105). A per-user, per-project view choice, read from the
-         * same [projectPrefs] blob the hidden columns live in.
+         * same [State.projectPrefs] blob the hidden columns live in.
          */
         val hideIssueNumbers: Boolean get() =
-            currentProject?.id?.let { projectPrefs[it]?.hideIssueNumbers } ?: false
+            state.projectPrefs[projectId]?.hideIssueNumbers ?: false
     }
 
     /**
-     * Start, with the embed's optional project name.
+     * The project a name — the embed's `?project=` — refers to, or null.
      *
-     * Called by the app bootstrap. Deliberately does not fetch: the session
-     * decides which projects come back, so there is nothing to ask for until
-     * [onSessionChanged] says who is asking.
-     */
-    /**
-     * Remember what the URL asked for. Called once by the bootstrap, before the
-     * session arrives.
+     * The deep links used to be resolved in here, because there was one board and
+     * this owned it. There are several now and none of them is "current", so
+     * *placing* a deep link is the workspace's decision and this only answers the
+     * lookup half of it. See main.kt, which reads `?project=`, `?projectId=` and
+     * `?issue=` and turns each into an `onBoardOpened` / `onIssueOpened`.
      *
-     * @param preferredProjectName the embed's `?project=`, if any.
-     * @param ticket the deep link's `?issue=`, if any — "LMX-12", already parsed.
-     *   It decides both which board to open and which issue to put up.
-     * @param preferredProjectId the address bar's `?projectId=`, if any — the
-     *   project this tab was last looking at, so a reload comes back to it. Seeded
-     *   straight into [selectedProjectId] because it *is* a selection: the URL is
-     *   written from the picker, so reading it back is restoring the user's own
-     *   choice rather than honouring somebody else's request. Being an id and not
-     *   a name is the point — the project can be renamed and the link still works.
-     *   It loses to a deep link, and to the picker the moment it is touched; see
-     *   `StorageRepository.resolve`.
+     * Matched case-insensitively, as the picker's resolution always did: a name in
+     * a URL is typed by a person.
      */
-    fun start(preferredProjectName: String?, ticket: Ticket? = null, preferredProjectId: Long? = null) {
-        preferredName = preferredProjectName?.takeIf { it.isNotBlank() }
-        preferredTicket = ticket
-        selectedProjectId = preferredProjectId
+    fun projectIdNamed(name: String?): Long? {
+        val wanted = name?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return _stateFlow.value.projects.firstOrNull { it.name.equals(wanted, ignoreCase = true) }?.id
     }
+
+    /**
+     * The project whose prefix is [prefix] — "LMX" — or null.
+     *
+     * A prefix is unique across the instance, so it alone says which project a
+     * ticket reference belongs to. What turns a `?issue=LMX-12` or a clicked
+     * `LMX-12` in a comment into a board to open.
+     */
+    fun projectIdWithPrefix(prefix: String): Long? =
+        _stateFlow.value.projects.firstOrNull { it.namePrefix.equals(prefix, ignoreCase = true) }?.id
 
     /**
      * The session changed: someone signed in, or out, an admin started or stopped
@@ -1062,40 +1179,43 @@ class MainScreenBackingViewModel(
         reload()
     }
 
-    /** Re-fetch everything. */
+    /**
+     * Re-fetch the project list, the caller's preferences, and every open board.
+     *
+     * Since LNL-160 the *list* and the *boards* are two separate answers rather
+     * than one: which projects exist depends on who is asking, and which of them
+     * are on screen depends on the workspace. So this fetches the list, drops
+     * boards for anything that just became inaccessible, and re-fetches whatever
+     * is still open under the new identity.
+     */
     fun reload() {
         _stateFlow.value = _stateFlow.value.copy(isBusy = true, errorMessage = null)
         scope.launch {
-            val result = runCatching { storage.load(preferredName, selectedProjectId, preferredTicket) }
+            val result = runCatching { storage.projects() }
             // The caller's own view preferences, read on the same trigger as the
-            // board and for the same reason: they belong to the effective user, so
+            // boards and for the same reason: they belong to the effective user, so
             // an identity change — sign-in, sign-out, impersonation — is exactly
             // when they must be re-read, and reload() is what fires on it. A failed
             // read degrades to "no preferences", which is the default board rather
-            // than a boot failure; the board itself is what a hard failure below
-            // reports on. Read whether or not the board loaded, so signed-in
+            // than a boot failure; the boards themselves are what a hard failure
+            // below reports on. Read whether or not the list loaded, so signed-in
             // preferences are ready the moment a board does arrive.
             val prefs = runCatching { UserProjectPreferences.decode(storage.uiSettings().settings[UiSettingKeys.PROJECT_PREFS]) }
                 .getOrDefault(emptyMap())
-            _stateFlow.value = result.fold(
-                onSuccess = { loaded ->
-                    selectedProjectId = loaded.board?.project?.id
-                    val previous = _stateFlow.value
-                    // Open what the link asked for, if it is there — a window,
-                    // as if the user had clicked the card. Consumed either
-                    // way: a ticket that names an issue this caller cannot see
-                    // resolves to nothing, and retrying it on every refresh
-                    // would never start working.
-                    val linkedWindow = deepLinkedWindow(loaded.board)
-                    val linked = linkedWindow?.issueId
-                    previous.copy(
+            result.fold(
+                onSuccess = { projects ->
+                    val accessible = projects.projects.mapTo(mutableSetOf()) { it.id }
+                    _stateFlow.value = _stateFlow.value.copy(
                         isLoaded = true,
                         isBusy = false,
-                        projects = loaded.projects.projects,
-                        canCreateProject = loaded.projects.canCreateProject,
-                        board = loaded.board,
-                        sprintScope = loaded.board?.defaultScope() ?: SCOPE_ALL,
-                        // Replaced wholesale, like the board itself: these are the
+                        projects = projects.projects,
+                        canCreateProject = projects.canCreateProject,
+                        // Every board goes: they were loaded for whoever was asking
+                        // before, and the permissions baked into them are that
+                        // person's. Re-fetched immediately below, so the gap is one
+                        // paint of the spinner rather than an empty app.
+                        boards = emptyMap(),
+                        // Replaced wholesale, like the boards: these are the
                         // effective user's preferences, and a reload is where a
                         // different user's arrive over the last one's. Merging would
                         // leave one account holding another's hidden columns.
@@ -1104,21 +1224,16 @@ class MainScreenBackingViewModel(
                         // null for a signed-out visitor). null means signed out.
                         isSignedIn = knownIdentity != null,
                         errorMessage = null,
-                        // Reconcile first, THEN add the deep link's window, so a
-                        // link to an issue whose window is already open re-focuses
-                        // it rather than opening a second one on the same issue.
-                        openIssues = previous.openIssues.reconciledWith(loaded.board).let { open ->
-                            when {
-                                linkedWindow == null || open.any { it.issueId == linked } -> open
-                                else -> open + linkedWindow
-                            }
-                        },
-                        focusedIssueId = linked ?: previous.focusedIssueId,
+                        // Windows for projects this identity cannot reach are not
+                        // theirs to keep open. The rest survive the reload and are
+                        // reconciled against their board as it lands.
+                        openIssues = _stateFlow.value.openIssues.filter { it.projectId in accessible },
                     )
+                    openProjectIds.filter { it in accessible }.forEach { fetchBoard(it, resetScope = true) }
                 },
                 onFailure = { t ->
                     println("MainScreen: load failed: ${t.message ?: t::class.simpleName}")
-                    _stateFlow.value.copy(
+                    _stateFlow.value = _stateFlow.value.copy(
                         isBusy = false,
                         errorMessage = t.userMessage("Could not reach the server."),
                     )
@@ -1128,51 +1243,87 @@ class MainScreenBackingViewModel(
     }
 
     /**
-     * The issue a deep link wants a window for, or null.
+     * The workspace says these projects have a pane open.
      *
-     * Consumes [preferredTicket] whether or not it resolved — see the field's
-     * comment. A link to a deleted issue, or to one in a project this caller may
-     * not read, lands on the board with nothing open, which is the honest answer
-     * and is what the picker is for.
+     * The one input that decides which boards this holds. Fetches what is newly
+     * open, drops what is no longer, and leaves the rest alone — so adding a
+     * second board to a tab costs one request and touches nothing already on
+     * screen.
+     *
+     * Idempotent and cheap to call on every workspace tick: an unchanged set does
+     * nothing at all.
      */
-    private fun deepLinkedWindow(board: BoardState?): OpenIssueWindow? {
-        val ticket = preferredTicket ?: return null
-        preferredTicket = null
-        if (board == null) return null
-        if (!board.project.namePrefix.equals(ticket.prefix, ignoreCase = true)) return null
-        val issue = board.issues.firstOrNull { it.number == ticket.number } ?: return null
-        return OpenIssueWindow(
-            issueId = issue.id,
-            projectId = board.project.id,
-            namePrefix = board.project.namePrefix,
-            number = issue.number,
-        )
+    fun onOpenProjectsChanged(projectIds: Set<Long>) {
+        if (openProjectIds == projectIds) return
+        val added = projectIds - openProjectIds
+        openProjectIds = projectIds
+        val state = _stateFlow.value
+        val kept = state.boards.filterKeys { it in projectIds }
+        if (kept.size != state.boards.size) {
+            _stateFlow.value = state.copy(
+                boards = kept,
+                // The per-board view choices go with the board. A filter typed on
+                // a board that has since been closed is not a preference anyone
+                // holds; keeping it would have it silently re-apply if the same
+                // board were opened again an hour later.
+                filterQueries = state.filterQueries.filterKeys { it in projectIds },
+                sprintScopes = state.sprintScopes.filterKeys { it in projectIds },
+            )
+        }
+        // Only once the identity is settled: before that there is nobody to fetch
+        // as, and reload() will fetch the whole open set the moment there is.
+        if (!hasLoadedForIdentity) return
+        added.forEach { fetchBoard(it, resetScope = true) }
     }
 
-    /** The board currently on screen, or null. */
-    private fun board(): BoardState? = _stateFlow.value.board
-
-    /** Refresh only the current board, leaving the picker alone. */
-    fun refreshBoard() {
-        val projectId = selectedProjectId ?: return
+    /**
+     * Re-fetch one board, keeping the reader's place on it.
+     *
+     * @param resetScope whether the sprint scope is re-derived from the board's
+     *   active sprint. True when the board is arriving for the first time — so
+     *   somebody with a sprint running opens onto it — and false for a refresh,
+     *   where yanking them back to the active sprint because a card moved would
+     *   undo a choice they made on purpose.
+     */
+    private fun fetchBoard(projectId: Long, resetScope: Boolean) {
         scope.launch {
             runCatching { storage.board(projectId) }
-                // The scope is deliberately NOT reset to the board's default here,
-                // unlike the two load paths: a refresh is the same board arriving
-                // again, and yanking somebody back to the active sprint because a
-                // card moved would undo a choice they made on purpose. It is only
-                // re-derived when the board being looked at genuinely changes.
-                .onSuccess {
-                    _stateFlow.value = _stateFlow.value.copy(
-                        board = it,
+                .onSuccess { board ->
+                    // The pane may have been closed while this was in flight;
+                    // storing the board then would resurrect an entry the eviction
+                    // above just removed, and nothing would ever clear it.
+                    if (projectId !in openProjectIds) return@onSuccess
+                    val current = _stateFlow.value
+                    _stateFlow.value = current.copy(
+                        boards = current.boards + (projectId to board),
+                        sprintScopes =
+                            if (resetScope) current.sprintScopes + (projectId to board.defaultScope())
+                            else current.sprintScopes,
                         // A refresh is how a just-saved draft stops being one: the
                         // row is on the board now, so its window can finally be
                         // titled with the number it was given.
-                        openIssues = _stateFlow.value.openIssues.reconciledWith(it),
+                        openIssues = current.openIssues.reconciledWith(board),
                     )
                 }
-                .onFailure { println("MainScreen: board refresh failed: ${it.message}") }
+                .onFailure { println("MainScreen: board $projectId load failed: ${it.message}") }
         }
+    }
+
+    /**
+     * Refresh the board an issue belongs to, after a write to that issue.
+     *
+     * Takes the project rather than assuming one: a window outlives the board it
+     * was opened from, and since LNL-160 there may be several open, so "the
+     * board" is not a thing this can guess at.
+     */
+    fun refreshBoard(projectId: Long) {
+        if (projectId !in openProjectIds) return
+        fetchBoard(projectId, resetScope = false)
+    }
+
+    /** Refresh every open board — after a change that could touch any of them. */
+    fun refreshAllBoards() {
+        openProjectIds.forEach { fetchBoard(it, resetScope = false) }
     }
 
     /**
@@ -1183,9 +1334,10 @@ class MainScreenBackingViewModel(
      * repeated value (the box re-emitting the same text) still re-emits state,
      * which is harmless: nothing downstream of an unchanged query changes.
      */
-    fun onFilterChanged(query: String) {
-        if (_stateFlow.value.filterQuery == query) return
-        _stateFlow.value = _stateFlow.value.copy(filterQuery = query)
+    fun onFilterChanged(projectId: Long, query: String) {
+        val state = _stateFlow.value
+        if (state.filterQueries[projectId].orEmpty() == query) return
+        _stateFlow.value = state.copy(filterQueries = state.filterQueries + (projectId to query))
     }
 
     /**
@@ -1196,16 +1348,17 @@ class MainScreenBackingViewModel(
      * is holding would be a round-trip to learn something it already knows —
      * and would lose the cards while it waited.
      */
-    fun onSprintScopeSelected(scope: Long) {
+    fun onSprintScopeSelected(projectId: Long, scope: Long) {
         // The action rows share this dropdown, so this is also where they arrive.
         // Split here rather than in the view, so the view stays a renderer: which
         // ids mean "act" rather than "scope" is a fact about the model.
         if (isSprintAction(scope)) {
-            onSprintActionSelected(scope)
+            onSprintActionSelected(projectId, scope)
             return
         }
-        if (_stateFlow.value.sprintScope == scope) return
-        _stateFlow.value = _stateFlow.value.copy(sprintScope = scope)
+        val state = _stateFlow.value
+        if (state.screen(projectId).sprintScope == scope) return
+        _stateFlow.value = state.copy(sprintScopes = state.sprintScopes + (projectId to scope))
     }
 
     /**
@@ -1218,22 +1371,22 @@ class MainScreenBackingViewModel(
      * hold up the frame that shows it — the same bargain [ThemePersister] strikes
      * for the theme.
      */
-    fun onHideColumn(statusId: Long) = setColumnHidden(statusId, hidden = true)
+    fun onHideColumn(projectId: Long, statusId: Long) = setColumnHidden(projectId, statusId, hidden = true)
 
     /**
      * Restore a hidden column — a click on its collapsed box in the rail
      * (LNL-100). The inverse of [onHideColumn], through the same path.
      */
-    fun onShowColumn(statusId: Long) = setColumnHidden(statusId, hidden = false)
+    fun onShowColumn(projectId: Long, statusId: Long) = setColumnHidden(projectId, statusId, hidden = false)
 
     /**
      * Fold one column's hidden-ness into [State.projectPrefs] and persist.
      *
-     * Keyed on the project on screen; a call with no board does nothing, since a
-     * hidden column is a fact about a board and there is none to state it about.
-     * A no-op change — hiding what is already hidden, showing what is already shown
-     * — returns without touching state or the server, so a stray double-click costs
-     * neither a repaint nor a write.
+     * Keyed on the project whose board the ⋮ was opened on, which since LNL-160
+     * is the pane's own rather than "the" board's. A no-op change — hiding what is
+     * already hidden, showing what is already shown — returns without touching
+     * state or the server, so a stray double-click costs neither a repaint nor a
+     * write.
      *
      * A project whose last hidden column is shown again drops out of the map
      * entirely rather than lingering as an empty record: "this user has no
@@ -1241,9 +1394,8 @@ class MainScreenBackingViewModel(
      * hide nothing, and [UserProjectPreferences.encode] prunes on the way out to
      * keep the two the same fact on the wire.
      */
-    private fun setColumnHidden(statusId: Long, hidden: Boolean) {
+    private fun setColumnHidden(projectId: Long, statusId: Long, hidden: Boolean) {
         val state = _stateFlow.value
-        val projectId = state.currentProject?.id ?: return
         val current = state.projectPrefs[projectId]?.hiddenColumnIds.orEmpty()
         val next = when {
             hidden && statusId !in current -> current + statusId
@@ -1304,124 +1456,23 @@ class MainScreenBackingViewModel(
         }
     }
 
-    /**
-     * The user picked a project.
-     *
-     * LNL-84 makes this a top-level move that redraws everything below it: the
-     * board reloads and the tabs it leaves reset (see [performSwitch]). Because
-     * that reset throws away open windows, a switch first checks the app-wide
-     * [editorRegistry] — if anything is being edited unsaved, it stops to ask
-     * ([ActiveDialog.ConfirmProjectSwitch]) rather than discarding it silently.
-     * With nothing dirty there is nothing to lose, so it switches at once.
-     */
-    fun onProjectSelected(id: Long) {
-        if (selectedProjectId == id) return
-        if (editorRegistry.hasDirtyEditors) {
-            pendingSwitchProjectId = id
-            _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.ConfirmProjectSwitch)
-            return
-        }
-        performSwitch(id)
-    }
-
-    /**
-     * The unsaved-changes dialog's "Discard changes & switch" was pressed.
-     *
-     * The destination was parked on [pendingSwitchProjectId] while the question was
-     * up; spend it now and go through with the switch, which discards the dirty
-     * editors as part of the reset.
-     */
-    fun confirmProjectSwitch() {
-        val id = pendingSwitchProjectId ?: return
-        pendingSwitchProjectId = null
-        _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None)
-        performSwitch(id)
-    }
-
-    /**
-     * The unsaved-changes dialog's "Keep editing" was pressed — abort the switch.
-     *
-     * [selectedProjectId] was never moved, so the picker is already showing the
-     * project we are staying on; there is nothing to put back. Just drop the
-     * pending destination and close the dialog.
-     */
-    fun cancelProjectSwitch() {
-        pendingSwitchProjectId = null
-        _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None)
-    }
-
-    /**
-     * Actually switch to [id]: reset the tabs being left, then load the new board.
-     *
-     * LNL-84's reset-on-switch. The open editors are closed through the registry
-     * ([EditorDirtyRegistry.closeAllForSwitch]) rather than by clearing state here,
-     * which is what keeps a draft's deletion safe: each issue window and composer
-     * runs its own close in its own scope, deleting the row it owns before the
-     * window is disposed — force-clearing [openIssues] would cancel those scopes
-     * mid-delete and orphan the rows. The windows drop out of [openIssues]
-     * themselves as they finish, so it is left untouched here; the Discussion tab
-     * resets on its own when the board's new project reaches ForumBackingViewModel
-     * (see main.kt's board collector). Messages is instance-wide and deliberately
-     * unaffected.
-     *
-     * The filter goes — it belonged to the board being left, and a search matching
-     * three cards there would hide most of a different project's board. Focus goes
-     * to the board (null), since every window it could name is closing.
-     */
-    private fun performSwitch(id: Long) {
-        selectedProjectId = id
-        // The embed's preference and any deep link have been overridden by a
-        // deliberate choice, and must not win the next reload. The ticket goes too:
-        // someone who picked a different project is not still asking for an issue
-        // in the old one.
-        preferredName = null
-        preferredTicket = null
-        editorRegistry.closeAllForSwitch()
-        _stateFlow.value = _stateFlow.value.copy(
-            isBusy = true,
-            errorMessage = null,
-            filterQuery = "",
-            focusedIssueId = null,
-        )
-        scope.launch {
-            val result = runCatching { storage.board(id) }
-            _stateFlow.value = result.fold(
-                onSuccess = {
-                    // No reconcile of [openIssues] here, unlike a background reload:
-                    // the switch is closing every window through the registry, so the
-                    // list empties itself rather than being rewritten against the new
-                    // board. Reconciling would rebuild windows against a project they
-                    // do not belong to.
-                    _stateFlow.value.copy(
-                        board = it,
-                        isBusy = false,
-                        errorMessage = null,
-                        sprintScope = it.defaultScope(),
-                    )
-                },
-                onFailure = { t ->
-                    _stateFlow.value.copy(isBusy = false, errorMessage = t.userMessage("Could not open that project."))
-                },
-            )
-        }
-    }
-
     // ── Dialogs ──────────────────────────────────────────────────────────────
 
     fun onNewProjectTapped() {
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.NewProject)
     }
 
-    fun onProjectSettingsTapped() {
+    fun onProjectSettingsTapped(projectId: Long) {
         val state = _stateFlow.value
-        val project = state.currentProject ?: return
+        val screen = state.screen(projectId)
+        val project = screen.project ?: return
         // Opens for any signed-in user now; canConfigure is the admin affordance
         // that decides whether they get the settings form or only the toggle.
         _stateFlow.value = state.copy(
             dialog = ActiveDialog.EditProject(
                 project,
-                canConfigure = state.canEditCurrentProject,
-                canConfigureIdentity = state.canRenameCurrentProject,
+                canConfigure = screen.canEditProject,
+                canConfigureIdentity = screen.canRenameProject,
             ),
         )
     }
@@ -1433,10 +1484,11 @@ class MainScreenBackingViewModel(
      * [onAdminSettingsTapped]'s reason: a click that lands after the board has
      * gone opens nothing rather than a dialog with no project to count.
      */
-    fun onStatisticsTapped() {
+    fun onStatisticsTapped(projectId: Long) {
         val state = _stateFlow.value
-        val project = state.currentProject ?: return
-        if (!state.canOpenStatistics) return
+        val screen = state.screen(projectId)
+        val project = screen.project ?: return
+        if (!screen.canOpenStatistics) return
         _stateFlow.value = state.copy(dialog = ActiveDialog.Statistics(project))
     }
 
@@ -1460,13 +1512,13 @@ class MainScreenBackingViewModel(
      * same issue never gets two windows. The shell reads [State.focusedIssueId]
      * and raises the matching pane.
      */
-    fun onIssueOpened(issueId: Long) {
+    fun onIssueOpened(projectId: Long, issueId: Long) {
         val current = _stateFlow.value
-        // Only ever from the board on screen: a card can only be clicked where it
-        // is drawn. That is what makes the row below describable at all — the
-        // prefix and number come from the board this issue is on, once, and are
-        // then the window's own.
-        val board = current.board ?: return
+        // The board named by the pane the card was clicked in — a card can only be
+        // clicked where it is drawn. That is what makes the row below describable
+        // at all: the prefix and number come from the board this issue is on,
+        // once, and are then the window's own.
+        val board = current.boards[projectId] ?: return
         _stateFlow.value = current.copy(
             openIssues = if (current.openIssues.any { it.issueId == issueId }) {
                 current.openIssues
@@ -1497,9 +1549,8 @@ class MainScreenBackingViewModel(
      *   the draft opens filed there (LNL-124); null for the plain "+" / hotkey,
      *   which lets the draft take the server's default status.
      */
-    fun onNewIssueTapped(initialStatusId: Long? = null) {
-        val projectId = selectedProjectId ?: return
-        val namePrefix = _stateFlow.value.currentProject?.namePrefix ?: return
+    fun onNewIssueTapped(projectId: Long, initialStatusId: Long? = null) {
+        val namePrefix = _stateFlow.value.screen(projectId).project?.namePrefix ?: return
         _stateFlow.value = _stateFlow.value.copy(isBusy = true, errorMessage = null)
         scope.launch {
             val result = runCatching { storage.createIssueDraft(projectId) }
@@ -1511,9 +1562,9 @@ class MainScreenBackingViewModel(
                         // No number: the row exists but is not on anybody's board
                         // yet, so the window is titled "New issue" until a save
                         // publishes it and the board that comes back says what it
-                        // was numbered. The project is read from before the
-                        // request, not after — a switch during the round-trip
-                        // must not file this draft under the project it landed in.
+                        // was numbered. The project is the caller's argument
+                        // rather than anything read after the round-trip, so a
+                        // pane closed mid-request cannot misfile the draft.
                         openIssues = now.openIssues + OpenIssueWindow(
                             issueId = draft.id,
                             projectId = projectId,
@@ -1567,22 +1618,17 @@ class MainScreenBackingViewModel(
      *
      * @param changed whether anything was written. Reloading only when something
      *   changed keeps a looked-at-and-dismissed dialog from costing a round-trip.
-     * @param selectProjectId a project to switch to first, or null to stay where
-     *   we are. Only the project dialog passes one, and only after OK: making a
-     *   project and being left looking at the previous one — or, from the empty
-     *   state, at "Pick a project to see its issues" — reads as if the thing was
-     *   never created. The picker is not a second opinion here; the id is set
-     *   *before* [reload] so the load resolves the new project rather than
-     *   re-resolving the old selection and then being corrected.
+     * @param openProjectId a project whose board should be opened, or null. Only
+     *   the project dialog passes one, and only after OK: making a project and
+     *   being left looking at the tab you were on reads as if the thing was never
+     *   created. Reported to the bootstrap through [projectToOpen] rather than
+     *   acted on here — where a board *goes* is the workspace's decision, and this
+     *   view model has deliberately stopped having an opinion about which project
+     *   is in front of anybody.
      */
-    fun onDialogClosed(changed: Boolean, selectProjectId: Long? = null) {
+    fun onDialogClosed(changed: Boolean, openProjectId: Long? = null) {
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None)
-        if (selectProjectId != null) {
-            selectedProjectId = selectProjectId
-            // Same reason as onProjectSelected: an explicit choice has been made,
-            // so the embed's ?project= must not win the reload below.
-            preferredName = null
-        }
+        if (openProjectId != null) projectToOpen(openProjectId)
         if (changed) reload()
     }
 
@@ -1597,10 +1643,10 @@ class MainScreenBackingViewModel(
      * [State.sprintScope]: picking "New sprint…" must not also silently rescope
      * the board to a sprint that does not exist yet.
      */
-    fun onSprintActionSelected(action: Long) {
+    fun onSprintActionSelected(projectId: Long, action: Long) {
         val current = _stateFlow.value
-        val board = current.board ?: return
-        val scoped = board.sprints.firstOrNull { it.id == current.sprintScope }
+        val board = current.boards[projectId] ?: return
+        val scoped = board.sprints.firstOrNull { it.id == current.screen(projectId).sprintScope }
         when (action) {
             ACTION_NEW_SPRINT -> _stateFlow.value =
                 current.copy(dialog = ActiveDialog.NewSprint(board.project.id))
@@ -1623,7 +1669,7 @@ class MainScreenBackingViewModel(
 
             ACTION_ACTIVATE_SPRINT -> {
                 val sprint = scoped ?: return
-                activate(sprint.id)
+                activate(projectId, sprint.id)
             }
 
             ACTION_COMPLETE_SPRINT -> {
@@ -1660,7 +1706,7 @@ class MainScreenBackingViewModel(
             runCatching { storage.addVocabulary(projectId, VocabularyKind.SPRINT, clean) }
                 .onSuccess {
                     _stateFlow.value = _stateFlow.value.copy(isBusy = false)
-                    refreshBoard()
+                    refreshBoard(projectId)
                 }
                 .onFailure { t ->
                     _stateFlow.value = _stateFlow.value.copy(
@@ -1684,8 +1730,8 @@ class MainScreenBackingViewModel(
      * sprint that is over" is one. The backlog is offered unless that is where it
      * already is, for the same reason.
      */
-    fun sprintDestinationsFor(issue: IssueSummary): List<ScopeItem> {
-        val board = board() ?: return emptyList()
+    fun sprintDestinationsFor(projectId: Long, issue: IssueSummary): List<ScopeItem> {
+        val board = _stateFlow.value.boards[projectId] ?: return emptyList()
         if (!issue.canEdit || board.sprints.isEmpty()) return emptyList()
         val sprints = board.sprints
             .filter { it.isOpen && it.id != issue.sprintId }
@@ -1706,14 +1752,14 @@ class MainScreenBackingViewModel(
      * entirely when a sprint scope is on, and a card that disappears and comes
      * back on failure is worse than one that takes a moment to go.
      */
-    fun onIssueSprintChosen(issueId: Long, destination: Long) {
+    fun onIssueSprintChosen(projectId: Long, issueId: Long, destination: Long) {
         val sprintId = destination.takeIf { it != SCOPE_BACKLOG }
         _stateFlow.value = _stateFlow.value.copy(isBusy = true)
         scope.launch {
             runCatching { storage.setIssueSprint(issueId, sprintId) }
                 .onSuccess {
                     _stateFlow.value = _stateFlow.value.copy(isBusy = false, errorMessage = null)
-                    refreshBoard()
+                    refreshBoard(projectId)
                 }
                 .onFailure { t ->
                     _stateFlow.value = _stateFlow.value.copy(
@@ -1727,7 +1773,7 @@ class MainScreenBackingViewModel(
     /** The planning dialog was saved. Sends the whole set; see SprintMembership. */
     fun onSprintPlanned(projectId: Long, sprintId: Long, issueIds: Set<Long>) {
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None, isBusy = true)
-        replaceBoard("Could not save that plan.") {
+        replaceBoard(projectId, "Could not save that plan.") {
             storage.setSprintIssues(projectId, sprintId, issueIds.toList())
         }
     }
@@ -1756,18 +1802,17 @@ class MainScreenBackingViewModel(
     /** The completion dialog was answered. */
     fun onSprintCompleted(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?) {
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None, isBusy = true)
-        replaceBoard("Could not complete that sprint.") {
+        replaceBoard(projectId, "Could not complete that sprint.") {
             storage.completeSprint(projectId, sprintId, moveUnfinishedTo)
         }
     }
 
-    private fun activate(sprintId: Long) {
-        val projectId = selectedProjectId ?: return
+    private fun activate(projectId: Long, sprintId: Long) {
         _stateFlow.value = _stateFlow.value.copy(isBusy = true)
         // Scoped to the sprint just activated rather than to whatever was on
         // screen: activating IS the act of saying "this is what we are working
         // on", so landing anywhere else would be answering a different question.
-        replaceBoard("Could not activate that sprint.", preferredScope = sprintId) {
+        replaceBoard(projectId, "Could not activate that sprint.", preferredScope = sprintId) {
             storage.activateSprint(projectId, sprintId)
         }
     }
@@ -1785,6 +1830,7 @@ class MainScreenBackingViewModel(
      * for why, and for the one case that falls back.
      */
     private fun replaceBoard(
+        projectId: Long,
         failureMessage: String,
         preferredScope: Long? = null,
         write: suspend () -> BoardState,
@@ -1793,11 +1839,15 @@ class MainScreenBackingViewModel(
             runCatching { write() }
                 .onSuccess { board ->
                     val current = _stateFlow.value
+                    val scope = current.scopeAfter(
+                        board,
+                        preferredScope ?: current.screen(projectId).sprintScope,
+                    )
                     _stateFlow.value = current.copy(
-                        board = board,
+                        boards = current.boards + (projectId to board),
                         isBusy = false,
                         errorMessage = null,
-                        sprintScope = current.scopeAfter(board, preferredScope ?: current.sprintScope),
+                        sprintScopes = current.sprintScopes + (projectId to scope),
                     )
                 }
                 .onFailure { t ->
@@ -1824,9 +1874,9 @@ class MainScreenBackingViewModel(
      * the affordance that stops the card from being draggable in the first
      * place.
      */
-    fun onIssueDragged(issueId: Long, statusId: Long) {
+    fun onIssueDragged(projectId: Long, issueId: Long, statusId: Long) {
         val current = _stateFlow.value
-        val board = current.board ?: return
+        val board = current.boards[projectId] ?: return
         val issue = board.issues.firstOrNull { it.id == issueId } ?: return
         if (issue.statusId == statusId) return
         if (!issue.canEdit) {
@@ -1844,6 +1894,7 @@ class MainScreenBackingViewModel(
         if (target?.requiresResolution == true) {
             _stateFlow.value = current.copy(
                 dialog = ActiveDialog.ChooseResolution(
+                    projectId = projectId,
                     issueId = issueId,
                     statusId = statusId,
                     ticket = "${board.project.namePrefix}-${issue.number}",
@@ -1856,7 +1907,7 @@ class MainScreenBackingViewModel(
             return
         }
 
-        move(issueId, statusId, resolutionId = null)
+        move(projectId, issueId, statusId, resolutionId = null)
     }
 
     /**
@@ -1889,8 +1940,7 @@ class MainScreenBackingViewModel(
     fun onResolutionVersionAdded(name: String) {
         val clean = name.trim()
         if (clean.isBlank()) return
-        if (_stateFlow.value.dialog !is ActiveDialog.ChooseResolution) return
-        val projectId = _stateFlow.value.board?.project?.id ?: return
+        val projectId = (_stateFlow.value.dialog as? ActiveDialog.ChooseResolution)?.projectId ?: return
         scope.launch {
             runCatching { storage.addVocabulary(projectId, VocabularyKind.VERSION, clean) }.fold(
                 onSuccess = { settings ->
@@ -1901,8 +1951,9 @@ class MainScreenBackingViewModel(
                     }
                     // The board's own version list learns about it too, so the next
                     // drag-to-close and the editor both offer it without a refetch.
-                    _stateFlow.value.board?.let { b ->
-                        _stateFlow.value = _stateFlow.value.copy(board = b.copy(versions = items))
+                    _stateFlow.value.boards[projectId]?.let { b ->
+                        val now = _stateFlow.value
+                        _stateFlow.value = now.copy(boards = now.boards + (projectId to b.copy(versions = items)))
                     }
                 },
                 onFailure = { t ->
@@ -1914,7 +1965,7 @@ class MainScreenBackingViewModel(
 
     /** Delete a version from the resolution dialog's picker, after its confirmation. */
     fun onResolutionVersionDeleted(versionId: Long) {
-        val projectId = _stateFlow.value.board?.project?.id ?: return
+        val projectId = (_stateFlow.value.dialog as? ActiveDialog.ChooseResolution)?.projectId ?: return
         scope.launch {
             runCatching { storage.deleteVocabulary(projectId, VocabularyKind.VERSION, versionId) }.fold(
                 onSuccess = { settings ->
@@ -1925,8 +1976,9 @@ class MainScreenBackingViewModel(
                             selectedFixedVersionId = it.selectedFixedVersionId?.takeIf { id -> id != versionId },
                         )
                     }
-                    _stateFlow.value.board?.let { b ->
-                        _stateFlow.value = _stateFlow.value.copy(board = b.copy(versions = items))
+                    _stateFlow.value.boards[projectId]?.let { b ->
+                        val now = _stateFlow.value
+                        _stateFlow.value = now.copy(boards = now.boards + (projectId to b.copy(versions = items)))
                     }
                 },
                 onFailure = { t ->
@@ -1946,7 +1998,7 @@ class MainScreenBackingViewModel(
         val dialog = _stateFlow.value.dialog as? ActiveDialog.ChooseResolution ?: return
         val resolutionId = dialog.selectedResolutionId ?: return
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None)
-        move(dialog.issueId, dialog.statusId, resolutionId, dialog.selectedFixedVersionId)
+        move(dialog.projectId, dialog.issueId, dialog.statusId, resolutionId, dialog.selectedFixedVersionId)
     }
 
     /** Re-emit the open resolution dialog through [transform]; a no-op if it is not the one showing. */
@@ -1977,9 +2029,15 @@ class MainScreenBackingViewModel(
      * card identically. Two copies of an optimistic update and its rollback is two
      * chances to get the rollback wrong.
      */
-    private fun move(issueId: Long, statusId: Long, resolutionId: Long?, fixedVersionId: Long? = null) {
+    private fun move(
+        projectId: Long,
+        issueId: Long,
+        statusId: Long,
+        resolutionId: Long?,
+        fixedVersionId: Long? = null,
+    ) {
         val current = _stateFlow.value
-        val board = current.board ?: return
+        val board = current.boards[projectId] ?: return
         val issue = board.issues.firstOrNull { it.id == issueId } ?: return
 
         val previousStatusId = issue.statusId
@@ -1989,11 +2047,13 @@ class MainScreenBackingViewModel(
         // version rides along too when a close carried one, so the server and the
         // optimistic state agree without a refetch.
         _stateFlow.value = current.copy(
-            board = board.copy(
-                issues = board.issues.map {
-                    if (it.id == issueId) it.copy(statusId = statusId, resolutionId = resolutionId) else it
-                },
-            ),
+            boards = current.boards + (
+                projectId to board.copy(
+                    issues = board.issues.map {
+                        if (it.id == issueId) it.copy(statusId = statusId, resolutionId = resolutionId) else it
+                    },
+                )
+                ),
             errorMessage = null,
         )
 
@@ -2006,19 +2066,26 @@ class MainScreenBackingViewModel(
                     // that happened while this request was in flight is not
                     // silently undone as well.
                     val now = _stateFlow.value
+                    val live = now.boards[projectId]
                     _stateFlow.value = now.copy(
-                        board = now.board?.copy(
-                            issues = now.board!!.issues.map {
-                                if (it.id == issueId) {
-                                    it.copy(
-                                        statusId = previousStatusId,
-                                        resolutionId = previousResolutionId,
-                                    )
-                                } else {
-                                    it
-                                }
-                            },
-                        ),
+                        boards = if (live == null) {
+                            now.boards
+                        } else {
+                            now.boards + (
+                                projectId to live.copy(
+                                    issues = live.issues.map {
+                                        if (it.id == issueId) {
+                                            it.copy(
+                                                statusId = previousStatusId,
+                                                resolutionId = previousResolutionId,
+                                            )
+                                        } else {
+                                            it
+                                        }
+                                    },
+                                )
+                                )
+                        },
                         errorMessage = t.userMessage("Could not move that issue."),
                     )
                 }
@@ -2048,10 +2115,10 @@ class MainScreenBackingViewModel(
      * A drop onto a card in another COLUMN is a status change and never reaches
      * here — see [onIssueDragged].
      */
-    fun onIssueReordered(issueId: Long, targetId: Long, placeBefore: Boolean) {
+    fun onIssueReordered(projectId: Long, issueId: Long, targetId: Long, placeBefore: Boolean) {
         if (issueId == targetId) return
         val current = _stateFlow.value
-        val board = current.board ?: return
+        val board = current.boards[projectId] ?: return
         val moved = board.issues.firstOrNull { it.id == issueId } ?: return
         val target = board.issues.firstOrNull { it.id == targetId } ?: return
         if (!moved.canEdit) {
@@ -2068,7 +2135,7 @@ class MainScreenBackingViewModel(
         } else {
             moved.copy(priorityId = target.priorityId)
         }
-        applyDrop(current, board, landed, errorMessage = "Could not reorder that issue.") { rest ->
+        applyDrop(current, projectId, board, landed, errorMessage = "Could not reorder that issue.") { rest ->
             val at = rest.indexOfFirst { it.id == targetId }
             if (at < 0) null else if (placeBefore) at else at + 1
         }
@@ -2090,19 +2157,19 @@ class MainScreenBackingViewModel(
      * priority change this gesture has not asked for. The end of where it
      * already lives is the reading that promises nothing it cannot keep.
      */
-    fun onIssueDroppedInColumn(issueId: Long, statusId: Long) {
+    fun onIssueDroppedInColumn(projectId: Long, issueId: Long, statusId: Long) {
         val current = _stateFlow.value
-        val board = current.board ?: return
+        val board = current.boards[projectId] ?: return
         val moved = board.issues.firstOrNull { it.id == issueId } ?: return
         if (moved.statusId != statusId) {
-            onIssueDragged(issueId, statusId)
+            onIssueDragged(projectId, issueId, statusId)
             return
         }
         if (!moved.canEdit) {
             println("MainScreen: reorder ignored; this issue is not editable by this user")
             return
         }
-        applyDrop(current, board, moved, errorMessage = "Could not reorder that issue.") { rest ->
+        applyDrop(current, projectId, board, moved, errorMessage = "Could not reorder that issue.") { rest ->
             rest.size
         }
     }
@@ -2128,6 +2195,7 @@ class MainScreenBackingViewModel(
      */
     private fun applyDrop(
         current: State,
+        projectId: Long,
         board: BoardState,
         landed: IssueSummary,
         errorMessage: String,
@@ -2163,7 +2231,10 @@ class MainScreenBackingViewModel(
             else -> next.size
         }
         next.add(slot.coerceIn(0, next.size), landed)
-        _stateFlow.value = current.copy(board = board.copy(issues = next), errorMessage = null)
+        _stateFlow.value = current.copy(
+            boards = current.boards + (projectId to board.copy(issues = next)),
+            errorMessage = null,
+        )
 
         scope.launch {
             runCatching { storage.setIssueOrder(landed.id, ids, priorityId = landed.priorityId) }
@@ -2177,7 +2248,7 @@ class MainScreenBackingViewModel(
                     _stateFlow.value = _stateFlow.value.copy(
                         errorMessage = t.userMessage(errorMessage),
                     )
-                    refreshBoard()
+                    refreshBoard(projectId)
                 }
         }
     }

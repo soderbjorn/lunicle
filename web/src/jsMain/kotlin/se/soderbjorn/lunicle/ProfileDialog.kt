@@ -53,12 +53,24 @@ class ProfileDialog(
     private val sessionViewModel: SessionBackingViewModel,
     private val scope: CoroutineScope,
     private val onDismiss: () -> Unit,
+    /**
+     * Throw the tabs and panes away and go back to the default layout (LNL-160).
+     *
+     * Here rather than in the shell's own chrome because it is a fact about the
+     * account, alongside the display name and the e-mail: a workspace follows the
+     * user, so the place you go to see what the app remembers about you is the
+     * place to say "forget that part". The window model has splits, hidden panes
+     * and any number of tabs, and putting it back by hand means finding every one
+     * of them.
+     */
+    private val onRestoreDefaultLayout: () -> Unit,
 ) {
     private val modal = Modal("Profile", onDismiss = { onDismiss() })
 
     // ── User tab ──
     private lateinit var nameElement: HTMLElement
     private lateinit var displayNameSection: HTMLElement
+    private lateinit var layoutSection: HTMLElement
     private lateinit var displayNameField: HTMLInputElement
     private lateinit var emailField: HTMLInputElement
     private lateinit var emailHint: HTMLElement
@@ -189,6 +201,20 @@ class ProfileDialog(
         userErrorElement = element("p", "modal-error")
         userErrorElement.setAttribute("role", "status")
 
+        // Signed-in only, and hidden rather than disabled for the reason every
+        // other gated control here is: a visitor has no stored layout, so the
+        // button would name something that does not exist. Shown by [render].
+        layoutSection = element("div", "profile-layout-section").children(
+            element("label", "field-label", "Window layout"),
+            element(
+                "p",
+                "field-hint",
+                "Your tabs and panes follow your account. Restoring gives you one tab per " +
+                    "project, each showing that project's board.",
+            ),
+            button("Restore default layout", "btn btn-quiet btn-small") { onRestoreDefaultLayout() },
+        )
+
         // The override, its label and its hint kept together in one section so the
         // deployment switch that hides it (LNL-137) hides all three at once and
         // never leaves an orphaned label over the e-mail field. Whether it shows is
@@ -211,6 +237,7 @@ class ProfileDialog(
             emailField,
             emailHint,
             pendingSection,
+            layoutSection,
             userErrorElement,
         )
         return userTab
@@ -372,6 +399,11 @@ class ProfileDialog(
         // e-mail field. Each user's name is then the provider's, still shown in the
         // line above. The gate is the server's fact, read straight off the session.
         displayNameSection.visible(!state.isDisplayNameHidden)
+
+        // The stored workspace exists only for a signed-in user, so the control
+        // that clears it does too (LNL-160). This dialog is only reachable while
+        // signed in, but the state says so explicitly rather than relying on that.
+        layoutSection.visible(state.user != null)
 
         if (!state.isDisplayNameHidden && document.activeElement != displayNameField) {
             // Value only when it is the user's own override; otherwise the field is

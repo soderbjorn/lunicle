@@ -51,6 +51,14 @@ import se.soderbjorn.lunicle.clientserver.IssueSummary
  *   (LNL-144), the same resolver every other reading surface uses; see main.kt.
  */
 class BoardWindow(
+    /**
+     * The project this pane is the board of.
+     *
+     * Every intent this view raises names it. Since LNL-160 a tab can hold two
+     * boards from two projects, so "the board" is not something the view model
+     * could work out from a click — the pane is the only thing that knows.
+     */
+    private val projectId: Long,
     private val viewModel: MainScreenBackingViewModel,
     private val titleFor: TicketTitleLookup = NO_TICKET_TITLES,
 ) {
@@ -65,9 +73,9 @@ class BoardWindow(
      * construction and it is what the rest of this class does with the gear
      * button, which is also always built and sometimes hidden.
      */
-    private val scopePicker = Dropdown("picker") { viewModel.onSprintScopeSelected(it) }
+    private val scopePicker = Dropdown("picker") { viewModel.onSprintScopeSelected(projectId, it) }
     private val filterField: org.w3c.dom.HTMLInputElement =
-        textField("Filter issues…") { viewModel.onFilterChanged(it) }
+        textField("Filter issues…") { viewModel.onFilterChanged(projectId, it) }
     private val boardElement: HTMLElement
     private val emptyElement: HTMLElement
 
@@ -132,7 +140,7 @@ class BoardWindow(
      * lanes the board draws without replacing the board object, so a rebuild
      * guarded on the others alone would leave a just-hidden column still on screen.
      * Null until the first render, which no real set equals, so the board always
-     * builds once. See [MainScreenBackingViewModel.State.hiddenColumnIds].
+     * builds once. See [MainScreenBackingViewModel.BoardScreen.hiddenColumnIds].
      */
     private var renderedHidden: Set<Long>? = null
 
@@ -142,7 +150,7 @@ class BoardWindow(
      * changes what every card reads without replacing the board object, a filter, or
      * the hidden set, so a rebuild guarded on the others alone would leave the just-
      * hidden numbers on screen. Null until the first render, which no real value
-     * equals. See [MainScreenBackingViewModel.State.hideIssueNumbers].
+     * equals. See [MainScreenBackingViewModel.BoardScreen.hideIssueNumbers].
      */
     private var renderedHideNumbers: Boolean? = null
 
@@ -189,7 +197,7 @@ class BoardWindow(
     }
 
     /** Apply a state snapshot. Called for every emission of the state flow. */
-    fun render(state: MainScreenBackingViewModel.State) {
+    fun render(state: MainScreenBackingViewModel.BoardScreen) {
         // Two fixed rows and then the sprints. Rendered before the visibility
         // check rather than inside it, so the control is correct the instant it
         // appears — a project that just had its first sprint made shows the new
@@ -217,7 +225,7 @@ class BoardWindow(
         renderBoard(state)
     }
 
-    private fun renderBoard(state: MainScreenBackingViewModel.State) {
+    private fun renderBoard(state: MainScreenBackingViewModel.BoardScreen) {
         val hidden = state.hiddenColumnIds
         if (
             state.board === renderedBoard &&
@@ -269,10 +277,22 @@ class BoardWindow(
      * lane invites reading numbers off something deliberately set aside — the count
      * is a click away, on the restored column's own head.
      */
+    /**
+     * One card tag: a coloured dot and the name beside it.
+     *
+     * @param kindClass the hue class — which axis this word is on. The colour is
+     *   the only thing carried over from the filled chips this replaced.
+     */
+    private fun cardTag(kindClass: String, name: String): HTMLElement {
+        val tag = element("span", "card-tag $kindClass")
+        tag.children(element("span", "card-tag-dot"), element("span", "card-tag-name", name))
+        return tag
+    }
+
     private fun renderHiddenRail(hiddenColumns: List<BoardColumn>): HTMLElement {
         val rail = element("div", "board-hidden-rail")
         hiddenColumns.forEach { column ->
-            val box = button("", "hidden-column") { viewModel.onShowColumn(column.status.id) }
+            val box = button("", "hidden-column") { viewModel.onShowColumn(projectId, column.status.id) }
             box.title = "Show ${column.status.name}"
             box.appendChild(element("span", "hidden-column-name", column.status.name))
             rail.appendChild(box)
@@ -301,7 +321,7 @@ class BoardWindow(
         }
     }
 
-    private fun renderColumn(state: MainScreenBackingViewModel.State, column: BoardColumn): HTMLElement {
+    private fun renderColumn(state: MainScreenBackingViewModel.BoardScreen, column: BoardColumn): HTMLElement {
         val el = element("section", "column")
         val head = element("div", "column-head")
         // Name on the left with the count riding right beside it in a ring, so the
@@ -312,11 +332,15 @@ class BoardWindow(
         // shout on a board nobody is customising. See styles.css `.column-count` and
         // `.column-menu`.
         val leading = element("div", "column-head-leading")
-        leading.children(
-            element("span", "column-name", column.status.name),
-            element("span", "column-count", column.issues.size.toString()),
-        )
+        leading.appendChild(element("span", "column-name", column.status.name))
+        // The count sits at the head's TRAILING edge, and the ⋮ takes its place
+        // there while the column is hovered — one slot, two things, never both.
+        // Two slots would mean the count shifting sideways as the menu appeared,
+        // which on a six-column board is six numbers twitching whenever the
+        // pointer crosses a lane. Stacked in a fixed-width box so the swap is a
+        // fade rather than a reflow; see `.column-head-trailing` in styles.css.
         val trailing = element("div", "column-head-trailing")
+        trailing.appendChild(element("span", "column-count", column.issues.size.toString()))
         if (state.isSignedIn) {
             trailing.appendChild(columnMenuButton(column))
         }
@@ -359,7 +383,7 @@ class BoardWindow(
             // own column a status change is a no-op — which is why dropping at
             // the bottom of a column used to do nothing at all. The view model
             // sorts the two apart; see onIssueDroppedInColumn.
-            id?.let { viewModel.onIssueDroppedInColumn(it, column.status.id) }
+            id?.let { viewModel.onIssueDroppedInColumn(projectId, it, column.status.id) }
             Unit
         }
 
@@ -390,8 +414,8 @@ class BoardWindow(
                 x = rect.left,
                 y = rect.bottom + 2.0,
                 actions = listOf(
-                    "Create issue…" to { viewModel.onNewIssueTapped(column.status.id) },
-                    "Hide column" to { viewModel.onHideColumn(column.status.id) },
+                    "Create issue…" to { viewModel.onNewIssueTapped(projectId, column.status.id) },
+                    "Hide column" to { viewModel.onHideColumn(projectId, column.status.id) },
                 ),
             )
             Unit
@@ -414,7 +438,7 @@ class BoardWindow(
     }
 
     private fun renderCard(
-        state: MainScreenBackingViewModel.State,
+        state: MainScreenBackingViewModel.BoardScreen,
         issue: IssueSummary,
         emphasis: String,
     ): HTMLElement {
@@ -431,8 +455,8 @@ class BoardWindow(
         // the card you are looking at, nor expanded to "LMX-12: Title: Title" —
         // while every other reference on the card still links and expands (LNL-151,
         // superseding the title-only exclusion of LNL-144).
-        val self = state.currentProject?.namePrefix?.let { Ticket(it, issue.number) }
-        cardTitle.innerHTML = renderInlineLinks(label, state.projects.map { it.namePrefix }, self = self, titleFor = titleFor)
+        val self = state.project?.namePrefix?.let { Ticket(it, issue.number) }
+        cardTitle.innerHTML = renderInlineLinks(label, state.prefixes, self = self, titleFor = titleFor)
         // Tooltip stays the plain text — an attribute, never markup.
         cardTitle.title = label
         // A link is its own destination: clicking it must open the URL, not the
@@ -472,7 +496,7 @@ class BoardWindow(
             link.title = "Part of $parentKey"
             link.onclick = { event ->
                 event.stopPropagation()
-                viewModel.onIssueOpened(parentId)
+                viewModel.onIssueOpened(projectId, parentId)
                 Unit
             }
             meta.appendChild(link)
@@ -482,9 +506,15 @@ class BoardWindow(
         val labelNames = state.board?.labels.orEmpty().filter { it.id in issue.labelIds }.map { it.name }
         val componentNames = state.board?.components.orEmpty().filter { it.id in issue.componentIds }.map { it.name }
         if (labelNames.isNotEmpty() || componentNames.isNotEmpty()) {
+            // A dot and a word, not a filled chip (LNL-160). A card is one
+            // `surfaceAlt` plane now, and a pill filled with the same tone would
+            // be invisible on it — while a pill filled with anything else would be
+            // a value no theme declares. What survives is the hue, as a 7px dot,
+            // because it is describing the issue rather than the interface: which
+            // axis this word is on (a label, or a component).
             val tags = element("div", "card-tags")
-            labelNames.forEach { tags.appendChild(element("span", "tag tag-label", it)) }
-            componentNames.forEach { tags.appendChild(element("span", "tag tag-component", it)) }
+            labelNames.forEach { tags.appendChild(cardTag("card-tag-label", it)) }
+            componentNames.forEach { tags.appendChild(cardTag("card-tag-component", it)) }
             card.appendChild(tags)
         }
 
@@ -510,7 +540,7 @@ class BoardWindow(
             card.appendChild(footer)
         }
 
-        card.onclick = { viewModel.onIssueOpened(issue.id) }
+        card.onclick = { viewModel.onIssueOpened(projectId, issue.id) }
 
         // Right-click schedules. The board's two drag axes are already spent —
         // dropping on a column is status, position within it is order — and
@@ -523,7 +553,7 @@ class BoardWindow(
         // menu to show none of our own is the one outcome worse than not handling
         // the gesture at all.
         card.oncontextmenu = handler@{ event ->
-            val destinations = viewModel.sprintDestinationsFor(issue)
+            val destinations = viewModel.sprintDestinationsFor(projectId, issue)
             if (destinations.isEmpty()) return@handler true
             event.preventDefault()
             val mouse = event as MouseEvent
@@ -531,7 +561,7 @@ class BoardWindow(
                 x = mouse.clientX.toDouble(),
                 y = mouse.clientY.toDouble(),
                 items = destinations.map { DropdownItem(it.id, it.label) },
-            ) { viewModel.onIssueSprintChosen(issue.id, it) }
+            ) { viewModel.onIssueSprintChosen(projectId, issue.id, it) }
             false
         }
 
@@ -597,13 +627,13 @@ class BoardWindow(
             val draggedId = drag.dataTransfer?.getData("text/plain")?.toLongOrNull()
                 ?: return@addEventListener
             if (lands()) {
-                viewModel.onIssueReordered(draggedId, issue.id, placeBefore(drag))
+                viewModel.onIssueReordered(projectId, draggedId, issue.id, placeBefore(drag))
             } else {
                 // Handled here rather than by letting it bubble, so the column's
                 // handler stays the one true path for one kind of drop only.
                 // Harmless when the two are in the same column and the drop
                 // simply cannot land: the view model refuses it either way.
-                viewModel.onIssueDroppedInColumn(draggedId, issue.statusId)
+                viewModel.onIssueDroppedInColumn(projectId, draggedId, issue.statusId)
             }
         })
     }

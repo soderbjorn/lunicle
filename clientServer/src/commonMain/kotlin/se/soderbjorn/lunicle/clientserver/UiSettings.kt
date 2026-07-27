@@ -76,8 +76,51 @@ object UiSettingKeys {
      */
     const val PROJECT_PREFS: String = "lunicle.userProjectPrefs.v1"
 
+    /**
+     * `lunicle.workspace.v1` — the caller's tabs and what is in them.
+     *
+     * Lunicle's own key, like [PROJECT_PREFS] and unlike the two theme ones: the
+     * toolkit's [LAYOUT_STATE] below carries where the panes *sit*, but nothing
+     * upstream knows what a Lunicle pane *is*. What round-trips here is exactly
+     * that — the ordered tabs, and per pane its kind plus its argument, a board's
+     * project or an issue's id. Small, and deliberately so: a tab is a working
+     * set, and a working set is a list of names.
+     *
+     * One key for the whole workspace rather than one per tab, for
+     * [PROJECT_PREFS]' reason: it arrives and departs in one read and one write,
+     * and a tab reorder is then a single fact rather than a fan of them that
+     * could half-apply.
+     *
+     * Signed out, nothing is stored and the default layout is seeded on every
+     * load — see the client's workspace view model, which owns the format.
+     */
+    const val WORKSPACE: String = "lunicle.workspace.v1"
+
+    /**
+     * `darkness.layoutState` — where the panes sit inside each tab.
+     *
+     * A toolkit key, so it is a copy in the sense the two theme keys are and
+     * `ThemeKeysMatchToolkitTest` checks it the same way. The blob is the
+     * toolkit's and opaque here: per-tab layout preset, pane order, and each
+     * pane's rectangle, z-order and maximised state.
+     *
+     * Stored because a working set that forgets its splits is not one. Lunicle
+     * used to deliberately drop this — the board opened full-area on every load
+     * and a persisted layout would have quietly undone that decision from another
+     * file — but the board is no longer the one thing a tab can hold, and an
+     * arrangement the user built by dragging is now the point rather than
+     * something in the way of it.
+     */
+    const val LAYOUT_STATE: String = "darkness.layoutState"
+
     /** Every key the server will store. Anything else is refused. */
-    val persisted: Set<String> = setOf(THEME_SELECTION, THEME_CUSTOM, PROJECT_PREFS)
+    val persisted: Set<String> = setOf(
+        THEME_SELECTION,
+        THEME_CUSTOM,
+        PROJECT_PREFS,
+        WORKSPACE,
+        LAYOUT_STATE,
+    )
 }
 
 /**

@@ -60,6 +60,12 @@ class SignInView(
      * of the app uses, so there is still exactly one HTTP client.
      */
     private val storage: StorageRepository,
+    /**
+     * Passed through to the profile modal's "Restore default layout" (LNL-160).
+     * This view builds that dialog, so the bootstrap's workspace view model has to
+     * reach it from here; nothing in the sign-in flow itself uses it.
+     */
+    private val onRestoreDefaultLayout: () -> Unit = {},
 ) {
     private lateinit var root: HTMLElement
     private lateinit var signInButton: HTMLButtonElement
@@ -432,6 +438,7 @@ class SignInView(
                 sessionViewModel = viewModel,
                 scope = dialogScope,
                 onDismiss = { viewModel.onProfileDialogDismissed() },
+                onRestoreDefaultLayout = onRestoreDefaultLayout,
             ).also { it.mount(dialogHost) }
         } else if (!state.isProfileDialogOpen && profileDialog != null) {
             profileDialog?.dismiss()

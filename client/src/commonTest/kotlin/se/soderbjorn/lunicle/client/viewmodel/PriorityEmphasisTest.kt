@@ -37,6 +37,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
+private const val PROJECT_ID = 1L
 private const val OPEN_STATUS = 1L
 private const val CLOSED_STATUS = 2L
 
@@ -49,7 +50,7 @@ private const val CLOSED_STATUS = 2L
  * scale's order is `position`, and passing them backwards is what would catch an
  * implementation that trusted the order the list arrived in.
  */
-private fun boardWith(priorityCount: Int): MainScreenBackingViewModel.State {
+private fun boardWith(priorityCount: Int): MainScreenBackingViewModel.BoardScreen {
     val priorities = (0 until priorityCount).map { StatusItem(10L + it, "P$it", it) }
     val issues = priorities.map {
         IssueSummary(id = it.id, number = it.id, title = "at ${it.name}", statusId = OPEN_STATUS, priorityId = it.id)
@@ -58,21 +59,23 @@ private fun boardWith(priorityCount: Int): MainScreenBackingViewModel.State {
         priorityId = priorities.first().id, resolutionId = 7,
     )
     return MainScreenBackingViewModel.State(
-        board = BoardState(
-            project = ProjectSummary(1, "Test", "TST", isPublic = true),
-            statuses = listOf(
-                StatusItem(OPEN_STATUS, "Open", 0),
-                StatusItem(CLOSED_STATUS, "Closed", 1, requiresResolution = true),
+        boards = mapOf(
+            PROJECT_ID to BoardState(
+                project = ProjectSummary(PROJECT_ID, "Test", "TST", isPublic = true),
+                statuses = listOf(
+                    StatusItem(OPEN_STATUS, "Open", 0),
+                    StatusItem(CLOSED_STATUS, "Closed", 1, requiresResolution = true),
+                ),
+                priorities = priorities.reversed(),
+                resolutions = listOf(StatusItem(7, "Fixed", 0)),
+                issues = issues,
             ),
-            priorities = priorities.reversed(),
-            resolutions = listOf(StatusItem(7, "Fixed", 0)),
-            issues = issues,
         ),
-    )
+    ).screen(PROJECT_ID)
 }
 
 /** The emphasis on the group holding the issue whose priority id is [priorityId]. */
-private fun MainScreenBackingViewModel.State.emphasisAt(priorityId: Long): PriorityEmphasis? =
+private fun MainScreenBackingViewModel.BoardScreen.emphasisAt(priorityId: Long): PriorityEmphasis? =
     columns.first { it.status.id == OPEN_STATUS }
         .groups.first { group -> group.issues.any { it.priorityId == priorityId } }
         .emphasis
@@ -132,12 +135,14 @@ class PriorityEmphasisTest {
         // The em-dash group groupsFor falls back to — the board and its vocabulary
         // disagreeing. indexOfFirst answers -1, which must not read as "the top".
         val orphan = MainScreenBackingViewModel.State(
-            board = board.board!!.copy(
-                issues = listOf(
-                    IssueSummary(id = 1, number = 1, title = "orphan", statusId = OPEN_STATUS, priorityId = 404),
+            boards = mapOf(
+                PROJECT_ID to board.board!!.copy(
+                    issues = listOf(
+                        IssueSummary(id = 1, number = 1, title = "orphan", statusId = OPEN_STATUS, priorityId = 404),
+                    ),
                 ),
             ),
-        )
+        ).screen(PROJECT_ID)
         val group = orphan.columns.first { it.status.id == OPEN_STATUS }.groups.single()
         assertEquals("—", group.label)
         assertNull(group.emphasis)

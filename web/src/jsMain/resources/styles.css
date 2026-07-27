@@ -371,47 +371,62 @@ code, pre, kbd, samp { font-family: var(--mono); }
   font-family: var(--dt-font-sidebar, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif);
 }
 
-/* The project navigator on the topbar's leading edge — the picker plus the
-   project gear and statistics buttons, moved up out of the board toolbar by
-   LNL-84 (see ProjectBar). No padding of its own: the topbar's leading cluster
-   already places it against the same edge the account corner lines up against,
-   and padding here would push it off. The 10px gap and centre alignment match
-   what these same controls had in .board-toolbar. */
-.topbar-project {
+/* The "Restore default layout" block in the profile dialog (LNL-160). A clear
+   step down from the e-mail field's hint above it, so the three things this tab
+   holds — name, address, layout — read as three and not as one run-on column. */
+.profile-layout-section { margin-top: 22px; }
+
+/* The brand/identity line, at the top of the SIDEBAR (LNL-160).
+
+   It has moved four times and each move was the same argument losing ground: it
+   began on a sticky footer, went to the topbar's leading edge, was pushed to the
+   bottom bar when the project navigator took that edge (LNL-84), then to the
+   topbar's centre slot when the bottom bar went. Every one of those put the
+   app's name on a strip that is about *what is open*. The sidebar header is the
+   one surface in this chrome that is about the app itself — it is where Lunamux
+   keeps its own — so that is where it is now, above the tabs-and-panes tree it
+   introduces.
+
+   The toolkit's `.dt-sidebar-header` supplies the padding; this is the row
+   inside it. */
+.sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
+  /* A hairline under it, so the identity reads as a header over the tree rather
+     than as the tree's first row. */
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--chrome-border);
 }
 
-/* The brand/identity line. It began life on a sticky footer, moved to the
-   topbar's leading edge, then to the bottom bar (LNL-84) when the project
-   navigator took that edge over, and now sits centered in the topbar's middle
-   slot (AppShellSpec.topbarCenter) between the project navigator and the "+"
-   cluster. No padding of its own: the toolkit's centered middle slot
-   (.dt-topbar-tabstrip--center) positions it. */
-.topbar-brand {
+.sidebar-brand-name {
+  color: var(--chrome-text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  /* The toolkit's sidebar header upper-cases its contents, which is right for the
+     section labels beneath it and wrong for a product name: "LUNICLE" reads as
+     one more heading over the tree rather than as the thing the tree belongs to. */
+  text-transform: none;
+}
+
+/* The deployment attribution, on its own line beneath the product name: two
+   facts, and stacking them keeps a wide brand wordmark from squeezing the name
+   it is meant to sit under. */
+.sidebar-brand-host {
+  flex: 1 0 100%;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-/* When a deployment brand is present, the Lunicle wordmark joins the project
-   picker in the leading slot (main.kt topbarLeading). This row holds the two,
-   left-aligned, with a bit more air between picker and wordmark than the brand
-   cluster's own 8px. */
-.topbar-leading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.topbar-brand-name {
+.sidebar-brand-hosted-by {
   color: var(--chrome-text-dim);
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: .08em;
   text-transform: uppercase;
-  /* One line: the bar is a slim fixed-height strip and the identity must not
-     wrap it taller on a narrow window. */
   white-space: nowrap;
 }
 
@@ -551,12 +566,6 @@ code, pre, kbd, samp { font-family: var(--mono); }
    Without this the gear and the chart stayed on the content accent — amber
    under Framna — beside a picker and a logo that had already moved to the
    chrome accent, so the bar disagreed with itself. */
-.topbar-project .icon-btn {
-  color: var(--chrome-accent-text);
-  background: var(--chrome-track);
-  border-color: var(--chrome-border);
-}
-.topbar-project .icon-btn:hover { border-color: var(--chrome-accent); }
 
 /* ============================================================
    Icons — the hand-drawn SVGs. See Icons.kt.
@@ -621,10 +630,10 @@ code, pre, kbd, samp { font-family: var(--mono); }
    24px still clears the 30px topbar row. */
 .icon-brand-logo { width: auto; height: 24px; max-width: 220px; color: var(--chrome-accent); }
 .icon-brand-logo > svg { width: auto; height: 100%; }
-/* Extra room between the "Hosted by" label and the brand mark it introduces —
-   on top of .topbar-brand's own 8px gap — so the attribution reads as label +
-   logo rather than one tight cluster. */
-.topbar-hosted-by { margin-right: 8px; }
+/* The brand mark beside "Hosted by" in the sidebar header. Smaller than the
+   topbar's old 24px: the sidebar is a narrow column, and a wordmark sized for a
+   full-width bar would be the loudest thing in it. */
+.sidebar-brand .icon-brand-logo { height: 18px; max-width: 150px; }
 /* On the sign-in surface the brand mark is the hero, not a chrome accent, so it
    gets more room than the topbar's 18px. (This selector was an unused hook until
    the brand logo stopped being a fixed square — see SignInPickerDialog.) */
@@ -747,7 +756,9 @@ code, pre, kbd, samp { font-family: var(--mono); }
 
 .board {
   display: flex;
-  gap: 12px;
+  /* No gap: the columns are told apart by a hairline down their trailing edge
+     (see .column), and a gutter as well would be saying it twice. LNL-160. */
+  gap: 0;
   /* `stretch`, not `flex-start`: the columns fill the board's height so each can
      own its own vertical scroll (see .column-list). Left at flex-start every
      column shrank to its cards and the board itself had to scroll. */
@@ -777,20 +788,24 @@ code, pre, kbd, samp { font-family: var(--mono); }
    which is the behaviour that was here before — it is now the fallback rather
    than the norm. */
 .column {
-  /* A sunken well, not an outlined box. `--panel-2` is the toolkit's
-     surface-alt — the tone reserved for recessed areas (code blocks, gutters,
-     tracks) — and a column IS one: a trough the cards rest in.
+  /* A hairline, not a well (LNL-160).
 
-     Saying that with a tone lets the border go, and the border was doing real
-     damage. A five-column board drew five rectangles around groups of
-     rectangles, so the cards — the only things anyone came to read — competed
-     for edges with their own containers. With the well carrying the shape, the
-     white cards are the only outlined objects left, which is what makes them
-     read as objects. */
-  background: var(--panel-2);
-  border: 1px solid transparent;
-  border-radius: 14px;
-  padding: 13px 11px;
+     The board used to stack five hard-coded materials — a tinted column, a card
+     surface, a drop shadow, a priority bar and filled label chips — on a theme
+     that declares two zones. None of the five was a theme token, which is why
+     the board looked identical under every brand: nothing about it was reading
+     the theme.
+
+     What is left is the rule the whole surface now follows: app-specific
+     surfaces paint in `bg`, `surfaceAlt` and `border` hairlines only. A column
+     is a region of the pane, so it has no fill of its own; it is separated from
+     the next one by one `border` line down its trailing edge. `inset` rather
+     than `border-right` so the line costs no width and cannot shift the
+     columns as the last one drops it. */
+  background: transparent;
+  box-shadow: inset -1px 0 0 var(--border);
+  border-radius: 0;
+  padding: 2px 10px 13px;
   min-width: 220px;
   flex: 1 1 220px;
   transition: border-color .12s, background .12s;
@@ -817,9 +832,19 @@ code, pre, kbd, samp { font-family: var(--mono); }
 
 .column-head {
   display: flex;
-  align-items: center;
+  /* Bottom-aligned inside a fixed-height box, so the rule under every head sits
+     at the SAME y across the board however long the names are. Left to size
+     itself, a column called "Ready for development" wraps to two lines and
+     carries its own separator — and its whole stack of cards — a line lower than
+     its neighbours', which reads as the board being misaligned rather than as one
+     name being long. Two lines' worth is the height; a third wraps and is clipped
+     rather than pushing the row out of step again. */
+  align-items: flex-end;
   justify-content: space-between;
   gap: 8px;
+  box-sizing: content-box;
+  height: 26px;
+  overflow: hidden;
   padding: 2px 4px 10px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 10px;
@@ -840,48 +865,43 @@ code, pre, kbd, samp { font-family: var(--mono); }
   text-transform: uppercase;
 }
 
-/* Title and its count, together at the head's leading edge (LNL-123). */
+/* The column's name, alone at the head's leading edge. */
 .column-head-leading {
   display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end;
   min-width: 0;
 }
 
-/* The count rides right beside the title in a ring the same colour as the number,
-   so it reads as a small badge belonging to the column (LNL-123). Sized off a
-   min-width equal to its height: a one- or two-digit count is a circle, a longer
-   one relaxes into a pill rather than being clipped. */
-/* A filled slug on the well, not a ring. Against the sunken column the ring
-   read as a third outline weight competing with the card borders below it;
-   filling it with the card surface makes the count read as a small chip of the
-   same material the cards are made of. Still sized off a min-width equal to
-   its height, so one or two digits make a circle and a longer count relaxes
-   into a pill rather than clipping. */
+/* A plain number at the far edge, not a filled slug (LNL-160).
+
+   It wore a ring, then a fill, both of which were materials the theme never
+   declared — the same five-materials problem the cards had. On a board whose
+   only painted surface is the card, a count that is just the number in the
+   secondary tone is the honest version of it, and the head's own rule already
+   says where the column ends. */
 .column-count {
   color: var(--green-dim);
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  min-width: 20px;
-  height: 19px;
-  padding: 0 6px;
-  background: var(--panel);
-  border: 1px solid transparent;
-  border-radius: 999px;
+  transition: opacity .12s;
 }
 
-/* The ⋮ menu, alone at the head's trailing edge. */
+/* One slot at the head's trailing edge holding BOTH the count and the ⋮, one
+   visible at a time: the count normally, the menu while the column is hovered.
+
+   Stacked rather than laid side by side. Side by side, revealing the ⋮ on hover
+   would push the count left — six numbers twitching every time the pointer
+   crossed a lane. A grid with both children in the same cell gives the slot the
+   width of the wider of the two once and for all, so the swap is a crossfade
+   and nothing moves. */
 .column-head-trailing {
-  display: inline-flex;
+  display: grid;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 6px;
+  justify-items: end;
 }
+.column-head-trailing > * { grid-area: 1 / 1; }
 
 /* The ⋮ overflow trigger. A quieter, smaller `.icon-btn`: it lives inside a title
    row, not a toolbar, so the 36px chrome and the panel fill would both shout. No
@@ -896,14 +916,21 @@ code, pre, kbd, samp { font-family: var(--mono); }
   background: transparent;
   opacity: 0;
   /* Kept in flow (not display:none) so showing it on hover does not reflow the
-     head and nudge the count sideways. */
+     head. It shares its grid cell with the count — see .column-head-trailing —
+     so `pointer-events` is what keeps the invisible one from swallowing clicks
+     meant for the other. */
+  pointer-events: none;
   transition: opacity .12s, border-color .12s, box-shadow .12s;
 }
 
 .column:hover .column-menu,
 .column-menu:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
+
+/* ...and the count steps aside while it does, since they share the slot. */
+.column:hover .column-head-trailing > .column-count { opacity: 0; }
 
 .column-menu:hover { border-color: var(--border-hi); box-shadow: 0 0 12px var(--glow); }
 
@@ -1132,28 +1159,20 @@ code, pre, kbd, samp { font-family: var(--mono); }
 }
 
 .card {
-  /* The surface tone — same as a terminal pane's interior (and this board
-     window's own background). On the --bg-toned column the card reads as a
-     bright slip of the content surface, which is the most readable pairing
-     the palette offers: under Lemonade a near-white card on the soft-yellow
-     column, instead of the deeper-yellow-on-yellow that --panel-2 gave. */
-  background: var(--panel);
-  border: 1px solid var(--border);
-  /* The colour of the priority rail, painted below. A custom property rather
-     than the rule itself, because two other rules have to draw the rail as well
-     — see .card-drop-before — and this is what lets them do it without knowing
-     which priority the card has. */
-  --rail: transparent;
-  box-shadow: inset 4px 0 0 0 var(--rail);
-  /* Rounder, and padded off the rail. The card is the one object on the board
-     now that the column is a well, so it is allowed to look like one — and at
-     4px the corner read as a clipped rectangle rather than a considered
-     radius. The extra left padding clears the widened rail so the title does
-     not start on top of it. */
-  border-radius: 11px;
-  padding: 11px 12px 11px 14px;
+  /* One `surfaceAlt` plane on `bg`, and nothing else (LNL-160).
+
+     The column beneath it has no fill now, so the card is the only painted
+     object on the board and needs no outline to be one — a tone against the
+     pane's own surface is the whole of the figure/ground it requires. No
+     border, no drop shadow and no priority rail: the shadow was a material the
+     theme never declared, and the rail said in colour what the group header
+     directly above the card already says in words. */
+  background: var(--panel-2);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 11px 12px;
   cursor: pointer;
-  transition: border-color .12s;
+  transition: border-color .12s, background .12s;
 }
 
 /* Hover goes to the headline tone rather than the accent-soft border. The
@@ -1161,7 +1180,10 @@ code, pre, kbd, samp { font-family: var(--mono); }
    to read" (the priority tag); reusing a weaker version of it for hover made
    pointing at a card look like a claim about the card. A neutral darkening is
    unambiguous — it says "you are here" and nothing else. */
-.card:hover { border-color: var(--head); }
+/* Hover is the one border the card ever draws, and only while pointed at. A
+   permanent outline would put an edge on every card again; a momentary one says
+   "you are here" and nothing else. */
+.card:hover { border-color: var(--border-hi); }
 .card-dragging { opacity: .4; }
 
 /* LNL-49: how urgent this card is, repeating what the group header above it
@@ -1182,8 +1204,11 @@ code, pre, kbd, samp { font-family: var(--mono); }
    radius, which a square-ended pseudo-element would not, and it no longer
    collides with `.card:hover` — the rail and the border are now different
    properties, so neither can overwrite the other. */
-.card.priority-urgent { --rail: var(--red); }
-.card.priority-high { --rail: var(--yellow); }
+/* Nothing: the rail is gone (LNL-160) — see .card. The classes are still put on
+   the card, because .group-head above it colours the priority's NAME from the
+   same emphasis and the two are one decision (see MainScreenBackingViewModel's
+   emphasisFor). Naming urgency in words, once per group, beats repeating it as a
+   coloured edge on every card in that group. */
 
 /* Where the card will land. A line above or below the card under the pointer,
    decided by which half of it the pointer is in — see makeReorderTarget.
@@ -1203,8 +1228,8 @@ code, pre, kbd, samp { font-family: var(--mono); }
    one-class `.card-drop-before` and leave the drop line invisible on exactly the
    cards that draw the most attention. Re-stating the rail here — via `--rail`,
    whose value the card already holds — keeps both marks on screen at once. */
-.card.card-drop-before { box-shadow: inset 0 2px 0 0 var(--green-hi), inset 4px 0 0 0 var(--rail); }
-.card.card-drop-after { box-shadow: inset 0 -2px 0 0 var(--green-hi), inset 4px 0 0 0 var(--rail); }
+.card.card-drop-before { box-shadow: inset 0 2px 0 0 var(--green-hi); }
+.card.card-drop-after { box-shadow: inset 0 -2px 0 0 var(--green-hi); }
 
 /* Still clickable — a reader may open it — but it does not offer to move. */
 .card-readonly { cursor: pointer; }
@@ -1286,7 +1311,24 @@ code, pre, kbd, samp { font-family: var(--mono); }
 }
 .card-parent-link:hover { color: var(--green-hi); text-decoration: underline; }
 
-.card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+/* Label and component names on the card: a 7px dot and the word (LNL-160).
+
+   Data colour, not theme colour, and that is the exemption this row is allowed
+   under: the hue is describing the issue — which axis this word is on — rather
+   than the interface. A chip FILL would be a value no theme declares, so the
+   hue is spent on the smallest mark that can still carry it. */
+.card-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 9px; }
+.card-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+.card-tag-name { color: var(--body); }
+.card-tag-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.card-tag-label { color: var(--green-hi-text); }
+.card-tag-component { color: #5fa8ff; }
 
 /* The author footer (LNL-157): a quiet muted line at the bottom of the card, clear
    of the tags above it. The name is dim; when an agent filed it the .agent-badge
@@ -2363,7 +2405,7 @@ code, pre, kbd, samp { font-family: var(--mono); }
      top-bar slot, alongside .dt-topbar-icon-button, whose chrome row is 30px.
      The slot sizes to its tallest child, so a 36px reservation here made the
      whole trailing cluster 36 and pushed the toolkit's own icons 3px below the
-     brand opposite. Whatever this number is, .topbar-brand must match it. */
+     brand opposite. Whatever this number is, the sidebar brand must match it. */
   min-height: 30px;
 }
 

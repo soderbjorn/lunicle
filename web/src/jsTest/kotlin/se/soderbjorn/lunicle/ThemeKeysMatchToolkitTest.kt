@@ -31,9 +31,14 @@ class ThemeKeysMatchToolkitTest {
         assertEquals(PersistKeys.THEME_V2_CUSTOM, UiSettingKeys.THEME_CUSTOM)
     }
 
+    @Test
+    fun `the layout-state key is still the toolkit's`() {
+        assertEquals(PersistKeys.LAYOUT_STATE, UiSettingKeys.LAYOUT_STATE)
+    }
+
     /**
-     * The allowlist is the two toolkit theme keys plus Lunicle's own
-     * project-preferences key, and nothing else.
+     * The allowlist is the three toolkit keys plus Lunicle's own two, and
+     * nothing else.
      *
      * The set is what the server's allowlist is written against, so a key added
      * to a constant and forgotten in the set would be a setting the client writes
@@ -41,18 +46,21 @@ class ThemeKeysMatchToolkitTest {
      * feature would be storage nothing accounts for. Both halves of that are
      * pinned here.
      *
-     * [UiSettingKeys.PROJECT_PREFS] is deliberately NOT checked against a
-     * `PersistKeys` constant the way the theme keys are: it is Lunicle's own key,
-     * parsed by Lunicle and never handed to the toolkit persister, so there is no
-     * upstream original for it to drift from.
+     * [UiSettingKeys.PROJECT_PREFS] and [UiSettingKeys.WORKSPACE] are
+     * deliberately NOT checked against a `PersistKeys` constant the way the
+     * toolkit keys are: they are Lunicle's own keys, parsed by Lunicle and never
+     * handed to the toolkit persister, so there is no upstream original for them
+     * to drift from.
      */
     @Test
-    fun `the allowlist is the two theme keys plus the project-prefs key`() {
+    fun `the allowlist is the toolkit keys plus Lunicle's own`() {
         assertEquals(
             setOf(
                 PersistKeys.THEME_V2_SELECTION,
                 PersistKeys.THEME_V2_CUSTOM,
+                PersistKeys.LAYOUT_STATE,
                 UiSettingKeys.PROJECT_PREFS,
+                UiSettingKeys.WORKSPACE,
             ),
             UiSettingKeys.persisted,
         )

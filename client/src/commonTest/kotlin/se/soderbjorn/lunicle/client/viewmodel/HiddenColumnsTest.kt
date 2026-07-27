@@ -6,8 +6,8 @@
  * and persisting it) rides the storage repository and a coroutine scope; what is
  * worth pinning without either is the pure reading of the state that results:
  * given a set of hidden ids, what does the board show, what does it collapse, and
- * in what order. That is [State.hiddenColumnIds], [State.shownColumns] and
- * [State.hiddenColumns], and it has three ways to go wrong that a default board
+ * in what order. That is [BoardScreen.hiddenColumnIds], [BoardScreen.shownColumns] and
+ * [BoardScreen.hiddenColumns], and it has three ways to go wrong that a default board
  * would never reveal.
  *
  * The first is ORDER. Hidden columns must render in board order, not in the order
@@ -20,11 +20,11 @@
  * the stored preference, and it must simply fall away rather than conjure a phantom
  * lane or need cleaning up to stop mattering.
  *
- * The third is SCOPE: the hidden set is per project, keyed by id, so a board with
- * no project on it hides nothing, and a preference filed under another project's id
- * touches neither list.
+ * The third is SCOPE: the hidden set is per project, keyed by id, so a pane whose
+ * board has not arrived hides nothing, and a preference filed under another
+ * project's id touches neither list.
  *
- * @see MainScreenBackingViewModel.State.shownColumns
+ * @see MainScreenBackingViewModel.BoardScreen.shownColumns
  */
 package se.soderbjorn.lunicle.client.viewmodel
 
@@ -44,23 +44,25 @@ private const val DONE = 12L
  * user has hidden. Statuses are handed in out of position order, so a test that
  * passes proves the ordering came from `position` and not from arrival order.
  */
-private fun board(hidden: List<Long> = emptyList()): MainScreenBackingViewModel.State =
+private fun board(hidden: List<Long> = emptyList()): MainScreenBackingViewModel.BoardScreen =
     MainScreenBackingViewModel.State(
-        board = BoardState(
-            project = ProjectSummary(PROJECT_ID, "Test", "TST", isPublic = true),
-            statuses = listOf(
-                StatusItem(DONE, "Done", 2),
-                StatusItem(NEW, "New", 0),
-                StatusItem(DOING, "Doing", 1),
+        boards = mapOf(
+            PROJECT_ID to BoardState(
+                project = ProjectSummary(PROJECT_ID, "Test", "TST", isPublic = true),
+                statuses = listOf(
+                    StatusItem(DONE, "Done", 2),
+                    StatusItem(NEW, "New", 0),
+                    StatusItem(DOING, "Doing", 1),
+                ),
+                issues = emptyList(),
             ),
-            issues = emptyList(),
         ),
         projectPrefs = if (hidden.isEmpty()) {
             emptyMap()
         } else {
             mapOf(PROJECT_ID to UserProjectPrefs(hiddenColumnIds = hidden))
         },
-    )
+    ).screen(PROJECT_ID)
 
 private fun List<BoardColumn>.ids(): List<Long> = map { it.status.id }
 
@@ -99,11 +101,15 @@ class HiddenColumnsTest {
     }
 
     @Test
-    fun `a board with no project hides nothing`() {
+    fun `a pane whose board has not arrived draws no columns at all`() {
         val state = MainScreenBackingViewModel.State(
             projectPrefs = mapOf(PROJECT_ID to UserProjectPrefs(hiddenColumnIds = listOf(NEW))),
-        )
-        assertEquals(emptySet(), state.hiddenColumnIds)
+        ).screen(PROJECT_ID)
+        // The preference is still known — it is the user's, not the board's, and
+        // survives the pane being opened before its cards land. What it cannot do
+        // is conjure a lane or a rail box out of a board that is not here yet:
+        // both lists derive from `columns`, which is empty without a board.
+        assertEquals(setOf(NEW), state.hiddenColumnIds)
         assertEquals(emptyList(), state.shownColumns.ids())
         assertEquals(emptyList(), state.hiddenColumns.ids())
     }
@@ -111,9 +117,9 @@ class HiddenColumnsTest {
     @Test
     fun `a preference filed under another project does not touch this board`() {
         val state = MainScreenBackingViewModel.State(
-            board = board().board,
+            boards = mapOf(PROJECT_ID to board().board!!),
             projectPrefs = mapOf(2L to UserProjectPrefs(hiddenColumnIds = listOf(NEW))),
-        )
+        ).screen(PROJECT_ID)
         assertEquals(emptySet(), state.hiddenColumnIds)
         assertEquals(listOf(NEW, DOING, DONE), state.shownColumns.ids())
     }
