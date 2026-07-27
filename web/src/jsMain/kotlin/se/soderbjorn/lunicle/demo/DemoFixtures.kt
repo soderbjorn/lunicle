@@ -1,6 +1,13 @@
 /**
- * The seeded world the demo opens on (LNL-146): a team building a Star Trek game
- * for the Commodore Amiga.
+ * The seeded world the demo opens on (LNL-146). Its first and largest project is a
+ * team building a Star Trek game for the Commodore Amiga; [seedDemoWorld] then adds
+ * two more, each deliberately a *different shape of board*.
+ *
+ * The three together are the argument that a Lunicle project's vocabulary is its
+ * own: this one is planned in sprints and versions, [seedKlinikProject] is a repair
+ * shop working a queue with neither, and [seedMeridianProject] is an open-source
+ * library whose rhythm is releases. Same product, three boards that share not one
+ * status name between them.
  *
  * Everything here is invented but plausible — AGA sprites, copper-list starfields,
  * a 512K memory budget, a ProTracker score, phaser combat — so the board reads like
@@ -25,7 +32,18 @@ import se.soderbjorn.lunicle.clientserver.NotificationKind
 private const val DAY_MS = 86_400_000L
 private const val HOUR_MS = 3_600_000L
 
-/** Build a fresh, fully seeded demo world. Called once on page load. */
+/**
+ * Build a fresh, fully seeded demo world. Called once on page load.
+ *
+ * Seeds the Amiga project inline, then hands the world to the other two projects'
+ * seeders in turn. They run afterwards rather than first because both make the demo
+ * user their owner, and the demo user is established here.
+ *
+ * @return a world holding three projects, their people, and a notification list
+ *   drawn from all three.
+ * @see seedKlinikProject
+ * @see seedMeridianProject
+ */
 internal fun seedDemoWorld(): DemoWorld {
     val w = DemoWorld()
     fun daysAgo(n: Int): Long = w.startedAt - n * DAY_MS
@@ -1012,6 +1030,14 @@ internal fun seedDemoWorld(): DemoWorld {
     notify(NotificationKind.ISSUE_UPDATED, "Geordi La Forge moved ${key(issWarpStars)} to Ready for test", issWarpStars, 6)
     notify(NotificationKind.ISSUE_CREATED, "Chakotay filed ${key(issCrashOnA1200)}", issCrashOnA1200, 4)
     notify(NotificationKind.ISSUE_MENTIONED, "William Riker mentioned you on ${key(issWarpStars)}", issWarpStars, 3)
+
+    // ── The other two projects ───────────────────────────────────────────────
+    //
+    // Each brings its own people and its own notifications, so the bell speaks for
+    // the whole instance rather than for this board alone.
+
+    seedKlinikProject(w)
+    seedMeridianProject(w)
 
     return w
 }

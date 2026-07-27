@@ -65,7 +65,12 @@ internal class DemoLunicleApi(
     private fun requireIssue(id: Long): Pair<DemoProject, DemoIssue> =
         world.locateIssue(id) ?: notFound("That issue")
 
-    /** The single Amiga project by convention — what the no-context stubs answer about. */
+    /**
+     * The project a stub with no project in hand answers about: the Amiga board,
+     * being the first seeded. The world holds three, so this is a convention rather
+     * than the only one there is — anything that knows its project id must use
+     * [requireProject] instead.
+     */
     private val primaryProject: DemoProject get() = world.projects.first()
 
     // ── Session ──────────────────────────────────────────────────────────────
