@@ -1121,14 +1121,22 @@ private fun start() {
         // Its ORIGIN is left to that cascade, so two issues opened in a row are
         // offset rather than stacked exactly.
         //
-        // Settings and analytics panes keep the toolkit's own seed: they are
-        // consulted rather than read through.
+        // Project settings opens at 55 % × 75 % — a fifth wider and a third
+        // taller than the toolkit's seed. It is consulted rather than read
+        // through, so it does not want an issue's full height, but the toolkit's
+        // rectangle cut its tab strip's sections down to a few rows at a time;
+        // this is the size at which a section is readable without a resize on
+        // every open. On the 5 % snap grid, like the rest.
+        //
+        // Analytics keeps the toolkit's own seed.
         paneInitialGeometry = { _, paneId ->
             when {
                 boardProjectIdOfPane(paneId) != null ->
                     InitialPaneGeometry(widthPct = 1.0, heightPct = 1.0, xPct = 0.0, yPct = 0.0)
                 issueIdOfPane(paneId) != null ->
                     InitialPaneGeometry(widthPct = 0.55, heightPct = 0.85)
+                settingsProjectIdOfPane(paneId) != null ->
+                    InitialPaneGeometry(widthPct = 0.55, heightPct = 0.75)
                 else -> null
             }
         },
@@ -1414,7 +1422,17 @@ private fun start() {
             // three things: seeding the default layout, naming a tab after its
             // board, and pruning a pane whose project has gone. Its own collector so
             // it fires on the first load rather than waiting for a workspace tick.
-            mainViewModel.stateFlow.collect { workspaceViewModel.onProjectsChanged(it.projects) }
+            //
+            // Only while the board view model is not busy — that is, only when the
+            // list is an ANSWER rather than a request in flight. An identity change
+            // clears the list and re-fetches it, so a busy tick carries an empty one
+            // that means "asking", and the workspace treats the first list after a
+            // sign-out as the statement of what a visitor may see. Forwarding the
+            // asking-tick would have it seed a layout of no boards at all and then
+            // consider the question settled.
+            mainViewModel.stateFlow.collect {
+                if (!it.isBusy) workspaceViewModel.onProjectsChanged(it.projects)
+            }
         }
         launch {
             // The deep links, resolved once the project list has arrived — they name

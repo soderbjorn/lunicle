@@ -1146,6 +1146,27 @@ class MainScreenBackingViewModel(
         // concerned, so the selection has to be re-checked rather than kept: a
         // sign-out while looking at a private project must not leave its name in
         // the top bar.
+        //
+        // Dropped *here* rather than left to [reload]'s answer, and only on an
+        // identity change. reload() is a round trip, and until it lands this state
+        // still holds the list the previous account could see — so every reader of
+        // it in that gap is reading somebody else's projects, and the "+" menu's
+        // board flyout would offer a signed-out visitor a private project by name.
+        // reload() itself must not do this — it also runs after the project dialog,
+        // where blanking the list would flash the whole app empty for a round trip
+        // over a change that altered one project.
+        //
+        // `isBusy` in the SAME copy, not left to reload()'s own line: an empty list
+        // said while busy is "asking", and an empty list said while idle is "you
+        // may see nothing". They mean opposite things to the workspace, which seeds
+        // a layout from the second and waits on the first (see main.kt's project
+        // collector), and two separate emissions would briefly publish the first as
+        // if it were the second.
+        _stateFlow.value = _stateFlow.value.copy(
+            projects = emptyList(),
+            canCreateProject = false,
+            isBusy = true,
+        )
         reload()
     }
 

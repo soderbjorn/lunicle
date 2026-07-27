@@ -66,7 +66,9 @@ class WorkspaceBackingViewModel(
      * @property isRestored whether the stored layout (or the seeded default) has
      *   been applied. The bootstrap waits for this before reconciling anything:
      *   acting on an empty workspace would look exactly like a user who had just
-     *   closed every tab, and would persist that as their layout.
+     *   closed every tab, and would persist that as their layout. Goes back to
+     *   false while the account changes under it — see [onSessionChanged] — since
+     *   what is on screen at that moment belongs to whoever just left.
      */
     data class State(
         val workspace: Workspace = Workspace(),
@@ -93,6 +95,16 @@ class WorkspaceBackingViewModel(
      */
     private var loadedFor: Long? = null
     private var hasLoaded: Boolean = false
+
+    /**
+     * Whether the project list on file is still the previous account's.
+     *
+     * Set the moment the identity changes and cleared by the first
+     * [onProjectsChanged] after it, which is the first list that can be said to
+     * belong to whoever is asking now. While it is true nothing may be seeded —
+     * see [restore], which does not seed at all and leaves that to the list.
+     */
+    private var awaitingProjects: Boolean = false
 
     /** The next tab id to hand out. Seeded past anything restored; see [restore]. */
     private var nextTabId: Int = 1
@@ -123,6 +135,29 @@ class WorkspaceBackingViewModel(
         if (hasLoaded && identity == loadedFor) return
         loadedFor = identity
         hasLoaded = true
+        // Forget the previous account before restoring — all three of these are the
+        // same statement, made about the three things that outlive a sign-out.
+        //
+        // [projects], because the bootstrap hands the new identity over here before
+        // the new list has arrived: what is held right now describes what the person
+        // who just left could see. A [defaultWorkspace] built from it seeds a
+        // signed-out visitor a tab per PRIVATE project, which is how a project's
+        // name survived a sign-out in the tab strip that was supposed to forget it.
+        //
+        // [awaitingProjects], because emptying the list is not the same as knowing
+        // it — "nobody may see anything" is a layout too, and seeding one from a
+        // list nobody has answered for yet would be the same guess with a different
+        // wrong answer. Nothing is seeded until [onProjectsChanged] says what this
+        // identity can actually reach.
+        //
+        // [State.isRestored], because a restore is a fetch and the list is another
+        // one, and either can land first. False here means "mid-switch": the
+        // bootstrap stops reconciling against a layout that is about to be replaced
+        // wholesale, and what is on screen is nobody's workspace until one of the
+        // two answers arrives.
+        projects = emptyList()
+        awaitingProjects = true
+        _stateFlow.value = _stateFlow.value.copy(isRestored = false)
         restore(identity)
     }
 
@@ -130,36 +165,83 @@ class WorkspaceBackingViewModel(
      * The accessible project list arrived or changed.
      *
      * Prunes panes naming a project that is no longer there — a project deleted,
-     * or access to it withdrawn — and re-seeds when that leaves nothing. Cheap to
-     * call on every tick: an unchanged list that prunes nothing emits nothing.
+     * access to it withdrawn, or a sign-out that took the whole private half of
+     * the list with it — drops the tabs that leaves hollow, and re-seeds when
+     * that leaves nothing. Cheap to call on every tick: an unchanged list that
+     * prunes nothing emits nothing.
      */
     fun onProjectsChanged(projects: List<ProjectSummary>) {
-        if (this.projects == projects) return
+        // The `awaitingProjects` disjunct is what makes an *unchanged* list still
+        // count as an answer. A visitor who can see nothing and an account that
+        // could see nothing produce the same empty list, and without this the
+        // identity change between them would be waiting on an emission that never
+        // comes — leaving an app with no tabs at all.
+        if (this.projects == projects && !awaitingProjects) return
         this.projects = projects
-        if (!_stateFlow.value.isRestored) return
+        if (awaitingProjects) {
+            awaitingProjects = false
+            // The first list for this identity, and the one [restore] declined to
+            // guess at. If the stored workspace has not landed (or there is none,
+            // or nobody is signed in), this is where the default finally gets
+            // built — from a list that is actually theirs. If it HAS landed,
+            // isRestored is already true and the stored layout stands; pruning it
+            // is then the only thing this list has to say.
+            if (!_stateFlow.value.isRestored) {
+                commit(defaultWorkspace(), markRestored = true, save = false)
+                return
+            }
+        }
+        pruneToAccessible()
+    }
+
+    /**
+     * Drop everything in the workspace that names a project [projects] does not
+     * have, and re-seed if that leaves nothing behind.
+     *
+     * Its own method because two paths need it and neither is "the list changed":
+     * [onProjectsChanged], where the list is the news, and [restore], where the
+     * stored layout is the news and the list may already be sitting here. A
+     * restore that skipped this would put back a pane for a project the account
+     * lost access to since it was stored — and, because the list that would have
+     * caught it has already been delivered, nothing would come along to prune it.
+     *
+     * A no-op before the workspace is restored, and a no-op while
+     * [awaitingProjects] — pruning against a list that is not this identity's
+     * would clear the workspace against the wrong answer.
+     */
+    private fun pruneToAccessible() {
+        if (awaitingProjects || !_stateFlow.value.isRestored) return
         val allowed = projects.mapTo(mutableSetOf()) { it.id }
-        val pruned = _stateFlow.value.workspace.let { ws ->
-            ws.copy(
-                tabs = ws.tabs.map { tab ->
+        val previous = _stateFlow.value.workspace
+        val pruned = ensureNotEmpty(
+            previous.copy(
+                tabs = previous.tabs.mapNotNull { tab ->
                     val kept = tab.panes.filter { it.projectId in allowed }
-                    if (kept.size == tab.panes.size) {
-                        tab
-                    } else {
-                        tab.copy(
+                    when {
+                        kept.size == tab.panes.size -> tab
+                        // Every pane in it named something that has gone, so the tab
+                        // is not a working set any more — it is a label for work
+                        // the reader cannot reach, and a tab strip still carrying
+                        // "Acme rollout" after sign-out tells a visitor the name of a
+                        // project they have no business knowing. Note the branch
+                        // above: a tab the user emptied *themselves* had no panes to
+                        // lose, so it lands there and is kept.
+                        kept.isEmpty() -> null
+                        else -> tab.copy(
                             panes = kept,
                             activePaneId = tab.activePaneId?.takeIf { id -> kept.any { it.paneId == id } }
                                 ?: kept.firstOrNull()?.paneId,
                         )
                     }
                 },
-            )
-        }
+            ),
+        )
         // A workspace whose every pane named a project that has gone is not a
         // workspace the user built any more; seeding is closer to what they meant
         // than a row of empty tabs would be.
         if (pruned.tabs.all { it.panes.isEmpty() } && projects.isNotEmpty()) {
             commit(defaultWorkspace())
-        } else if (pruned != _stateFlow.value.workspace) {
+        } else if (pruned != previous) {
             commit(pruned)
         }
     }
@@ -446,17 +528,20 @@ class WorkspaceBackingViewModel(
     // ── Restore, seed, persist ──────────────────────────────────────────────
 
     /**
-     * Load the stored workspace for [identity], or seed the default.
+     * Load the stored workspace for [identity], if there is one.
      *
-     * Signed out there is nothing stored and nothing to store, so the default is
-     * seeded straight away — which still works, because the accessible project
-     * list a visitor gets is simply shorter.
+     * Deliberately only half the job: nothing here seeds a default. Signed out
+     * there is nothing stored to ask for, and a signed-in account may have
+     * nothing stored either, and in both cases the layout to fall back on is one
+     * tab per accessible project — which cannot be built until the accessible
+     * projects are known. So both of those cases return having committed nothing
+     * and leave the seeding to [onProjectsChanged], which is where the answer
+     * arrives. Seeding here instead is what dressed a signed-out visitor in the
+     * previous account's tabs: this runs on the identity change itself, a beat
+     * before the list that change invalidates.
      */
     private fun restore(identity: Long?) {
-        if (identity == null) {
-            commit(defaultWorkspace(), markRestored = true, save = false)
-            return
-        }
+        if (identity == null) return
         scope.launch {
             val stored = runCatching { storage.uiSettings().settings[UiSettingKeys.WORKSPACE] }
                 .getOrNull()
@@ -465,18 +550,26 @@ class WorkspaceBackingViewModel(
             // ids inside it, which is why the fresh-id counter is seeded past
             // whatever it holds: reusing one would make a new tab collide with a
             // restored one, and the toolkit's geometry is keyed by tab id.
-            if (stored != null) {
-                nextTabId = stored.tabs
-                    .mapNotNull { it.id.removePrefix(TAB_ID_PREFIX).toIntOrNull() }
-                    .maxOrNull()
-                    ?.plus(1)
-                    ?: 1
-                // Restored, but not yet checked against what this account can
-                // still see — onProjectsChanged does that when the list arrives.
-                commit(ensureNotEmpty(stored), markRestored = true, save = false)
-            } else {
-                commit(defaultWorkspace(), markRestored = true, save = false)
-            }
+            // Nothing stored is not a failure and not an empty workspace — it is an
+            // account that has never arranged anything, and what it gets is the
+            // default. Left to the project list, for the reason in the header: this
+            // is the one branch that has no layout of its own to apply, so it is
+            // the one branch that has to wait for something to build one from.
+            if (stored == null) return@launch
+            nextTabId = stored.tabs
+                .mapNotNull { it.id.removePrefix(TAB_ID_PREFIX).toIntOrNull() }
+                .maxOrNull()
+                ?.plus(1)
+                ?: 1
+            // Wins over a default the list may already have seeded in the meantime:
+            // a stored layout is what the user arranged, and the default is only
+            // ever the stand-in for not having one.
+            commit(ensureNotEmpty(stored), markRestored = true, save = false)
+            // ...and then checked against what this account can still see. If the
+            // list has not arrived this does nothing and the list will do it; if it
+            // arrived while this fetch was in flight, this is the only chance, since
+            // an unchanged list emits nothing later.
+            pruneToAccessible()
         }
     }
 
