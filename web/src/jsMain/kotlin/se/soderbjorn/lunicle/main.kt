@@ -48,11 +48,13 @@ import org.w3c.dom.HTMLElement
 import org.w3c.dom.url.URLSearchParams
 import se.soderbjorn.lunula.core.Appearance
 import se.soderbjorn.lunula.core.AppearanceShape
+import se.soderbjorn.lunula.web.layout.LayoutPreset
 import se.soderbjorn.lunula.web.layout.PaneAction
 import se.soderbjorn.lunula.web.themeeditor.FontKind
 import se.soderbjorn.lunula.web.themeeditor.FontPreset
 import se.soderbjorn.lunula.web.themeeditor.registerFontPresets
 import se.soderbjorn.lunula.web.shell.AppShellSpec
+import se.soderbjorn.lunula.web.shell.InitialPaneGeometry
 import se.soderbjorn.lunula.web.shell.PaneAddMenuItem
 import se.soderbjorn.lunula.web.shell.paneAddSeparator
 import se.soderbjorn.lunula.web.shell.PaneSnapshotEntry
@@ -1052,10 +1054,46 @@ private fun start() {
         // Close is intercepted by the host for issue panes (the unsaved-changes
         // question), so the toolkit's own close-confirm dialog must not also ask.
         confirmPaneClose = false,
-        // Auto-tiled, not free-floating: a tab is an arrangement now, and the whole
-        // point of two boards and an issue in one tab is seeing all three at once.
-        // Splits the user drags are persisted by the toolkit under LAYOUT_STATE,
-        // which rides the same account storage as the workspace.
+        // Free-floating, not auto-tiled. Adopting the toolkit's window model
+        // (LNL-160) brought its default along with it, and its default is Auto:
+        // every pane a tab gains re-tiles every pane it already had. That is right
+        // for a terminal, where the panes are peers; here it means opening one
+        // issue halves the board behind it, which is not what anybody asked for.
+        // In Custom a pane keeps the geometry it was seeded at until the user
+        // drags it, so opening something never moves anything else — and the
+        // layout dropdown still offers Auto and the rest to anyone who does want
+        // a tiled arrangement. Splits and positions the user makes are persisted
+        // by the toolkit under LAYOUT_STATE, which rides the same account storage
+        // as the workspace, so only tabs the stored state has never heard of land
+        // on this default.
+        defaultLayoutPreset = LayoutPreset.Custom,
+        // A board opens filling the pane area — as an ordinary window, NOT
+        // maximised. The distinction is the point: maximised is a mode that
+        // suppresses its siblings, so an issue opened over a maximised board would
+        // have nowhere to appear. At full size it is simply the bottom of the
+        // stack, and everything else lands on top of it.
+        //
+        // An issue opens at 55 % × 85 %, half again as tall as the toolkit's
+        // 45 % × 55 % cascade window and a quarter wider. That default is sized
+        // for a pane you glance at; an issue is the thing people read and write
+        // in — a description, a comment thread and a history, in a column of
+        // prose — and the extra height is what keeps the thread visible without
+        // a resize on every open. Both numbers are on the toolkit's 5 % snap
+        // grid, so the seed is the same rectangle wherever the cascade puts it.
+        // Its ORIGIN is left to that cascade, so two issues opened in a row are
+        // offset rather than stacked exactly.
+        //
+        // Settings and analytics panes keep the toolkit's own seed: they are
+        // consulted rather than read through.
+        paneInitialGeometry = { _, paneId ->
+            when {
+                boardProjectIdOfPane(paneId) != null ->
+                    InitialPaneGeometry(widthPct = 1.0, heightPct = 1.0, xPct = 0.0, yPct = 0.0)
+                issueIdOfPane(paneId) != null ->
+                    InitialPaneGeometry(widthPct = 0.55, heightPct = 0.85)
+                else -> null
+            }
+        },
         // Everything is closable — including a board, which is just a pane.
         // The alarm bell (LNL-109) and then the sign-in/profile corner, after the
         // toolkit's standard cluster. The bell is Lunicle's own custom element — it

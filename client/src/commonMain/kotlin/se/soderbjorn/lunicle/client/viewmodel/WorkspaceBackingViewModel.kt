@@ -489,7 +489,15 @@ class WorkspaceBackingViewModel(
      * tab, not something they must build before the app is usable.
      */
     private fun defaultWorkspace(): Workspace {
-        nextTabId = 1
+        // Fresh ids, never reused ones. The toolkit's geometry, layout preset and
+        // pane order are all keyed by tab id, and none of it is Lunicle's to
+        // delete — so a "default" workspace that handed back tab-1 would inherit
+        // whatever splits and preset the old tab-1 had, and "restore" would put
+        // the panes back but not their arrangement. Counting on past the ids in
+        // play makes every restored tab one the toolkit has never seen, which is
+        // what makes it land on [AppShellSpec.defaultLayoutPreset] and the seed
+        // geometry. On a first seed the counter is at 1 anyway, so nothing about
+        // a fresh account's tab ids changes.
         val tabs = projects.map { project ->
             WorkspaceTab(
                 id = freshTabId(),
