@@ -184,12 +184,13 @@ class IssueWindow(
 
         // The reusable version dropdown (LNL-134): the same control the resolution
         // dialog uses, once for the planned version and once for the fixed one.
-        // Add lands in the field that asked; delete is shared, so both go through
-        // the one onVersionDeleted.
+        // Add lands in the field that asked; rename and delete are shared, so both
+        // pickers go through the one onVersionRenamed / onVersionDeleted.
         plannedVersionSelect = VersionDropdown(
             isField = true,
             onSelect = { viewModel.onPlannedVersionChanged(it) },
             onAdd = { viewModel.onPlannedVersionAdded(it) },
+            onRename = { id, name -> viewModel.onVersionRenamed(id, name) },
             onDelete = { viewModel.onVersionDeleted(it) },
         )
         plannedVersionRead = element("span", "tag tag-version")
@@ -197,6 +198,7 @@ class IssueWindow(
             isField = true,
             onSelect = { viewModel.onFixedVersionChanged(it) },
             onAdd = { viewModel.onFixedVersionAdded(it) },
+            onRename = { id, name -> viewModel.onVersionRenamed(id, name) },
             onDelete = { viewModel.onVersionDeleted(it) },
         )
         fixedVersionRead = element("span", "tag tag-version")

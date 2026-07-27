@@ -654,6 +654,27 @@ code, pre, kbd, samp { font-family: var(--mono); }
   font-family: var(--prose);
 }
 
+/* Above .modal-backdrop (10000), for the reason .mention-menu and the assignee
+   menu are: these menus mount on <body> and the toolkit's own .dt-hover-menu
+   layer is 1000 — the maximised-pane band — so a dropdown opened from inside a
+   dialog painted BEHIND its backdrop. It still drew, because the backdrop is
+   translucent, but every click landed on the backdrop, which read as a menu that
+   dismisses itself the moment you aim at it. The resolution dialog's
+   fixed-version picker was unusable that way: no selecting, no adding, no
+   deleting. Found while wiring rename into it (LNL-162).
+
+   10015 rather than 10020: the same band as the assignee menu, and below
+   .mention-menu, which belongs to the caret and must win when both are up.
+
+   BOTH classes, and that is load-bearing. The toolkit injects `.dt-hover-menu`
+   as an inline <style> at runtime, which lands AFTER this file in document
+   order — so a lone `.lunicle-dropdown-menu` ties on specificity and loses on
+   order, silently keeping 1000. The box carries both classes, so naming both
+   wins outright. Same trap as LNL-54's `right: 0`; see Dom.kt's MENU_CLASS. */
+.lunicle-dropdown-menu.dt-hover-menu {
+  z-index: 10015;
+}
+
 /* The filter row a long list grows (see FILTER_THRESHOLD in Dom.kt). Sits above
    the rows as part of the panel rather than as a field dropped into it: no
    border of its own, one hairline underneath, and the panel's own padding for
@@ -1289,6 +1310,13 @@ code, pre, kbd, samp { font-family: var(--mono); }
    icon slot takes away for vectors. */
 .version-add-row > .dt-hover-menu-icon { line-height: 1; font-size: 14px; }
 .version-add-field { width: 100%; }
+
+/* Renaming a version in place (LNL-162): the row keeps its own footprint and the
+   field fills it, so the list does not reflow around the one row being edited.
+   No check column here — the row is not offering itself to be picked while you
+   are typing in it, and a tick beside a field reads as a control you can press. */
+.version-rename-row { padding-top: 2px; padding-bottom: 2px; }
+.version-rename-field { width: 100%; }
 
 /* Sprint planning: a scrollable list of tickable issues.
 

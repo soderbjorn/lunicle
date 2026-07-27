@@ -1214,6 +1214,44 @@ class IssueBackingViewModel(
     }
 
     /**
+     * Rename a version from the dropdown's per-item menu (LNL-162).
+     *
+     * Admin-gated and written immediately, like [addVersion] — a project's versions
+     * are shared, so this is not part of the issue's staged edit and does not wait
+     * for Save. Nothing about the issue changes: it points at the version by id, so
+     * the staged planned/fixed choices survive untouched and only the label the
+     * pickers draw is different.
+     */
+    fun onVersionRenamed(id: Long, name: String) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+        scope.launch {
+            runCatching {
+                storage.editVocabulary(
+                    board.project.id,
+                    VocabularyKind.VERSION,
+                    id,
+                    clean,
+                    requiresResolution = false,
+                    isDone = false,
+                )
+            }.fold(
+                onSuccess = { settings ->
+                    _stateFlow.value = _stateFlow.value.copy(
+                        versions = settings.versions.map { VocabularyItem(it.id, it.name) },
+                    )
+                    onWritten()
+                },
+                onFailure = { t ->
+                    _stateFlow.value = _stateFlow.value.copy(
+                        errorMessage = t.userMessage("Could not rename that version."),
+                    )
+                },
+            )
+        }
+    }
+
+    /**
      * Delete a version from the dropdown's per-item menu (LNL-134), after the
      * view's confirmation. Admin-gated like [addVersion]. The deleted version is
      * released from this issue's staged planned/fixed choice too, so the dropdown

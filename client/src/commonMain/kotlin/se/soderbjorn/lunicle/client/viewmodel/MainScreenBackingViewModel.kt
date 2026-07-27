@@ -1903,6 +1903,44 @@ class MainScreenBackingViewModel(
         }
     }
 
+    /**
+     * Rename a version from the resolution dialog's picker (LNL-162).
+     *
+     * Keeps whatever was already chosen: the selection is an id, and renaming does
+     * not move it. So unlike [onResolutionVersionAdded] there is nothing to select
+     * afterwards, and unlike [onResolutionVersionDeleted] nothing to release.
+     */
+    fun onResolutionVersionRenamed(versionId: Long, name: String) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+        val projectId = (_stateFlow.value.dialog as? ActiveDialog.ChooseResolution)?.projectId ?: return
+        scope.launch {
+            runCatching {
+                storage.editVocabulary(
+                    projectId,
+                    VocabularyKind.VERSION,
+                    versionId,
+                    clean,
+                    requiresResolution = false,
+                    isDone = false,
+                )
+            }.fold(
+                onSuccess = { settings ->
+                    val items = settings.versions.map { VocabularyItem(it.id, it.name) }
+                    updateResolutionDialog { it.copy(versions = items) }
+                    _stateFlow.value.boards[projectId]?.let { b ->
+                        val now = _stateFlow.value
+                        _stateFlow.value = now.copy(boards = now.boards + (projectId to b.copy(versions = items)))
+                    }
+                },
+                onFailure = { t ->
+                    _stateFlow.value =
+                        _stateFlow.value.copy(errorMessage = t.userMessage("Could not rename that version."))
+                },
+            )
+        }
+    }
+
     /** Delete a version from the resolution dialog's picker, after its confirmation. */
     fun onResolutionVersionDeleted(versionId: Long) {
         val projectId = (_stateFlow.value.dialog as? ActiveDialog.ChooseResolution)?.projectId ?: return

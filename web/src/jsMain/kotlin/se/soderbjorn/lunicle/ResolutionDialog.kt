@@ -42,6 +42,7 @@ class ResolutionDialog(
     private val onResolutionPicked: (Long) -> Unit,
     private val onFixedVersionPicked: (Long?) -> Unit,
     private val onVersionAdded: (String) -> Unit,
+    private val onVersionRenamed: (Long, String) -> Unit,
     private val onVersionDeleted: (Long) -> Unit,
     private val onConfirm: () -> Unit,
     private val onCancel: () -> Unit,
@@ -56,6 +57,7 @@ class ResolutionDialog(
         allowNone = false,
         onSelect = { onFixedVersionPicked(it) },
         onAdd = { onVersionAdded(it) },
+        onRename = { id, name -> onVersionRenamed(id, name) },
         onDelete = { onVersionDeleted(it) },
     )
 

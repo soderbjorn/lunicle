@@ -13,9 +13,14 @@
  *    reasoning as the board's inline "New sprint…". Offered only to a caller who may
  *    manage the vocabulary — the route behind it is admin-gated, so a non-admin sees
  *    only what exists.
- *  - **Delete per row.** Each row carries an ellipsis that opens a one-item menu —
- *    "Delete" — behind a confirmation, because deleting a version releases the issues
- *    that named it and there is no undo. Admin-only for the same reason as add.
+ *  - **Rename and delete per row.** Each row carries an ellipsis offering "Rename",
+ *    which turns that row into a field in place, and "Delete", behind a confirmation
+ *    because deleting a version releases the issues that named it and there is no
+ *    undo. Both admin-only for the same reason as add. Rename lives here as well as
+ *    in project settings (LNL-162) because a version's name is wrong at the moment
+ *    you read it in the picker, and settings is three navigations away from there.
+ *    Nothing else has to move: an issue points at a version by id, so the new name
+ *    is simply what every picker and chip reads on its next render.
  *
  * The menu exists only while open, [Dropdown]'s trick: built at open time and thrown
  * away on close, so [render] is free to run on every emission without rebuilding a
@@ -28,10 +33,11 @@
  *   admin-gated vocabulary routes; a non-admin picks from what is there.
  * @param onSelect the chosen version, or null for "None".
  * @param onAdd a new version's name, typed into the inline field.
+ * @param onRename a version and the new name typed into its row.
  * @param onDelete a version to delete, already confirmed.
  *
  * @see Dropdown
- * @see openContextMenu
+ * @see openActionMenu
  */
 package se.soderbjorn.lunicle
 
@@ -54,6 +60,7 @@ class VersionDropdown(
     canManage: Boolean = false,
     private val onSelect: (Long?) -> Unit,
     private val onAdd: (String) -> Unit = {},
+    private val onRename: (Long, String) -> Unit = { _, _ -> },
     private val onDelete: (Long) -> Unit = {},
 ) {
     /** The closed control — the toolkit's trigger, exactly as [Dropdown]'s is. */
@@ -74,6 +81,18 @@ class VersionDropdown(
     private var menu: HTMLElement? = null
     private var dismiss: (() -> Unit)? = null
 
+    /**
+     * The version whose row is currently a field rather than a label, if any.
+     *
+     * State on the object rather than on the DOM because the menu is rebuilt from
+     * scratch every time it opens, and beginning a rename has to survive exactly
+     * one such rebuild — see [beginRename].
+     */
+    private var editingId: Long? = null
+
+    /** The field [versionRow] built for [editingId], so [open] can focus it once placed. */
+    private var renameField: HTMLInputElement? = null
+
     init {
         element.onclick = { if (menu != null) close() else open(); Unit }
     }
@@ -92,10 +111,17 @@ class VersionDropdown(
         setMenuTriggerLabel(element, text = chosen ?: placeholder, isUnset = chosen == null)
     }
 
-    /** Tears the menu down, listeners included. A no-op when already closed. */
+    /**
+     * Tears the menu down, listeners included. A no-op when already closed.
+     *
+     * Abandons an in-progress rename, which is what every route here means: Escape,
+     * an outside click and a committed rename all want the field gone. [beginRename]
+     * is the one caller that wants it back, and it says so after closing.
+     */
     fun close() {
         menu?.remove()
         menu = null
+        editingId = null
         setMenuTriggerOpen(element, false)
         dismiss?.invoke()
         dismiss = null
@@ -105,6 +131,7 @@ class VersionDropdown(
         val box = element("div", "$MENU_CLASS dt-hover-menu")
         box.setAttribute("role", "menu")
 
+        renameField = null
         if (allowNone) box.appendChild(choiceRow(null, "None"))
         versions.forEach { box.appendChild(versionRow(it)) }
         if (canManage) box.appendChild(addRow(box))
@@ -114,6 +141,10 @@ class VersionDropdown(
         menu = box
         setMenuTriggerOpen(element, true)
         installDismissal(box)
+        // Last, so the field is focused where it will finally sit: anchorUnder can
+        // flip the whole box above the control, and focusing before that scrolls
+        // the page to a position the field is about to leave.
+        renameField?.let { field -> field.focus(); field.select() }
     }
 
     /** A plain choice row — "None", or a version whose management affordances are off. */
@@ -128,8 +159,12 @@ class VersionDropdown(
         return row
     }
 
-    /** A version row: the choice, plus — when managed — an ellipsis that offers Delete. */
+    /**
+     * A version row: the choice, plus — when managed — an ellipsis offering Rename
+     * and Delete. The row being renamed is a field instead (LNL-162).
+     */
     private fun versionRow(version: VocabularyItem): HTMLElement {
+        if (version.id == editingId) return renameRow(version)
         val row = choiceRow(version.id, version.name)
         if (!canManage) return row
         val menuButton = button("⋯", "version-row-menu") {}
@@ -140,21 +175,87 @@ class VersionDropdown(
             // version underneath it.
             event.stopPropagation()
             val rect = menuButton.getBoundingClientRect()
-            // Leave the version list up: the Delete menu opens as a small popover
+            // Leave the version list up: the item menu opens as a small popover
             // over it, not in place of it. Closing the whole dropdown the moment
             // the ellipsis is pressed reads as the list vanishing before you have
             // chosen anything (LNL-134 follow-up). This click stopped propagating
             // and openContextMenu defers its own dismissal by a tick, so neither
             // popover closes the other on the very click that opened the menu.
-            openContextMenu(rect.left, rect.bottom, listOf(DropdownItem(version.id, "Delete"))) {
-                // Choosing Delete dismisses the version list too — its outside-click
-                // dismissal fires on the same click, since the click lands on the
-                // context menu rather than inside the list — and the confirm mounts
-                // on the body like every other confirmation.
-                confirmDelete(version)
-            }
+            //
+            // openActionMenu rather than openContextMenu: two different verbs on
+            // one version, which an id-keyed menu cannot tell apart. See Dom.kt.
+            openActionMenu(
+                rect.left,
+                rect.bottom,
+                listOf(
+                    // Both of these run after the version list has already been
+                    // dismissed — choosing from the popover lands a click outside
+                    // the list, which its own outside-click handler answers. Delete
+                    // does not mind, since the confirm mounts on the body; rename
+                    // does, and beginRename puts the list back.
+                    "Rename" to { beginRename(version) },
+                    "Delete" to { confirmDelete(version) },
+                ),
+            )
         }
         row.appendChild(menuButton)
+        return row
+    }
+
+    /**
+     * Reopen the list with [version]'s row as a field.
+     *
+     * The list is already closing under this click, so there is nothing to edit in
+     * place — the honest move is to close it ourselves and build it again on the
+     * next tick, which the rebuild-at-open design makes free. Deferring by a tick
+     * matters: opening synchronously would install the new outside-click dismissal
+     * during the very click that opened it, and the list would shut again at once.
+     */
+    private fun beginRename(version: VocabularyItem) {
+        close()
+        editingId = version.id
+        window.setTimeout({ open() }, 0)
+    }
+
+    /**
+     * The renaming row: the version's name in a committing field, in the place the
+     * row it replaced occupied.
+     *
+     * Enter commits and closes, Escape backs out — the same two keys, meaning the
+     * same two things, as the inline add field. Blur deliberately does NOT commit
+     * here, unlike the settings dialog's rows: this field is inside a popover that
+     * an outside click dismisses, so commit-on-blur would turn "click away to
+     * cancel" into "click away to save", and the two gestures are identical.
+     */
+    private fun renameRow(version: VocabularyItem): HTMLElement {
+        val row = element("div", "dt-hover-menu-item dt-world-row version-rename-row")
+        val field = document.createElement("input") as HTMLInputElement
+        field.type = "text"
+        field.className = "field version-rename-field"
+        field.value = version.name
+        field.setAttribute("aria-label", "Version name")
+        field.onkeydown = { event ->
+            when (event.key) {
+                "Enter" -> {
+                    val name = field.value.trim()
+                    close()
+                    // A rename to the name it already has is dropped rather than
+                    // sent: the route would take it and rewrite the name to itself.
+                    // Compared exactly, not case-insensitively, because correcting
+                    // "android-1.0" to "Android-1.0" is a rename somebody meant.
+                    // Blank is dropped too — the server refuses it either way.
+                    if (name.isNotEmpty() && name != version.name) onRename(version.id, name)
+                }
+                "Escape" -> close()
+                else -> Unit
+            }
+        }
+        // The field IS the row, so a click inside it must not read as picking the
+        // version underneath — there is no version underneath any more, but the
+        // row's ancestors still carry the menu's own handlers.
+        row.onclick = { event -> event.stopPropagation() }
+        row.appendChild(field)
+        renameField = field
         return row
     }
 

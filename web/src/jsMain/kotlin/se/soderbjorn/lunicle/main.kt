@@ -1915,6 +1915,7 @@ private class Dialogs(
             onResolutionPicked = { mainViewModel.onResolutionPicked(it) },
             onFixedVersionPicked = { mainViewModel.onResolutionFixedVersionPicked(it) },
             onVersionAdded = { mainViewModel.onResolutionVersionAdded(it) },
+            onVersionRenamed = { id, name -> mainViewModel.onResolutionVersionRenamed(id, name) },
             onVersionDeleted = { mainViewModel.onResolutionVersionDeleted(it) },
             onConfirm = { mainViewModel.onResolutionConfirmed() },
             onCancel = { mainViewModel.onResolutionCancelled() },
