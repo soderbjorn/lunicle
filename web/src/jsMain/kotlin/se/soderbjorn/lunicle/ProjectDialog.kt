@@ -76,6 +76,16 @@ import se.soderbjorn.lunicle.clientserver.VocabularyKind
 class ProjectDialog(
     private val viewModel: EditProjectBackingViewModel,
     private val scope: CoroutineScope,
+    /**
+     * The frame, or null to build the modal one below.
+     *
+     * A [PaneShell] when this is a project's settings PANE — which is how an
+     * existing project's settings open since LNL-160, beside the board rather
+     * than over it. "New project…" keeps the modal: there is no project to hang
+     * a pane off until it exists, and a four-field form that opens, is answered
+     * and goes away is what a modal is for. See [DialogShell].
+     */
+    shell: DialogShell? = null,
 ) {
     /**
      * The tabs, in the order the strip draws them.
@@ -96,7 +106,7 @@ class ProjectDialog(
      * fields, which that panel would render as a mostly-empty screen. See Modal's
      * isLarge.
      */
-    private val modal = Modal(
+    private val modal: DialogShell = shell ?: Modal(
         title = "Project",
         onDismiss = { viewModel.onCancelTapped() },
         // Large only when the admin sections will actually fill it — a non-admin
@@ -909,6 +919,17 @@ class ProjectDialog(
         alert?.dismiss()
         modal.dismiss()
     }
+
+    /**
+     * The frame is being closed from outside — a pane's × (LNL-160).
+     *
+     * Routed through the view model's Cancel rather than straight to [dismiss],
+     * so closing a settings pane takes the same path as pressing Cancel in the
+     * modal: whatever that decides about unsaved edits and about a draft project
+     * decides here too. The pane goes when the view model says it is finished,
+     * not when the button was pressed.
+     */
+    fun requestClose() = viewModel.onCancelTapped()
 
     /**
      * One vocabulary section: a heading, a hint, the rows, and the add field.

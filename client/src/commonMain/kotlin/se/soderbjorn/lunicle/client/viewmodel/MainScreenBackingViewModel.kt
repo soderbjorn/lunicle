@@ -63,7 +63,7 @@ sealed interface ActiveDialog {
     /**
      * The instance settings dialog: the account directory.
      *
-     * Carries nothing, unlike [EditProject]. It is not about a project, and the
+     * Carries nothing. It is not about a project, and the
      * one thing it would otherwise carry — "is this caller an admin" — is not an
      * argument to it: the route it opens onto refuses a non-admin outright, so a
      * dialog opened by one would render its own 403. See
@@ -72,42 +72,12 @@ sealed interface ActiveDialog {
      */
     data object AdminSettings : ActiveDialog
 
-    /**
-     * The project dialog, editing an existing project.
-     *
-     * @property canConfigure whether this caller is an admin here — decides
-     *   whether the dialog shows the full settings form or, for a non-admin, only
-     *   the notification toggle the cog now opens for everyone. An affordance,
-     *   carried from the board's `canMutateProject`; the server re-derives it and
-     *   the settings response it sends back confirms it. See
-     *   EditProjectBackingViewModel.
-     */
-    /**
-     * @property canConfigure whether the caller administers this project — the
-     *   vocabularies, the sprints and the privileges.
-     * @property canConfigureIdentity whether they may also rename it, change its
-     *   prefix or visibility, or delete it. Narrower: a PROJECT administrator
-     *   gets the first and not the second, so the two cannot be one flag. See
-     *   ProjectPermissionsView.canMutateProjectIdentity.
-     */
-    data class EditProject(
-        val project: ProjectSummary,
-        val canConfigure: Boolean,
-        val canConfigureIdentity: Boolean,
-    ) : ActiveDialog
-
-    /**
-     * The statistics dialog: how much has been happening in this project.
-     *
-     * Carries the project rather than just its id, so the dialog can title itself
-     * without a second lookup — the same reason [EditProject] does.
-     *
-     * Unlike [EditProject] it carries no permission flag, because there is no
-     * narrowed half to decide between: the counts are the same for everybody who
-     * can see the project at all. What an admin has extra is the *configuration*
-     * behind them, and that lives in the settings dialog rather than here.
-     */
-    data class Statistics(val project: ProjectSummary) : ActiveDialog
+    // EditProject and Statistics used to be cases here. Both are PANES now
+    // (LNL-160): a project surface opens beside the board rather than over it, so
+    // "which dialog is up" is no longer the question being asked about either.
+    // See PaneRef.Settings / PaneRef.Analytics, and the board toolbar that opens
+    // them. NewProject stays a dialog — there is no project to hang a pane off
+    // until it exists.
 
     /**
      * "Why are you closing this?" — the board's half of the resolution rule.
@@ -1460,36 +1430,6 @@ class MainScreenBackingViewModel(
 
     fun onNewProjectTapped() {
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.NewProject)
-    }
-
-    fun onProjectSettingsTapped(projectId: Long) {
-        val state = _stateFlow.value
-        val screen = state.screen(projectId)
-        val project = screen.project ?: return
-        // Opens for any signed-in user now; canConfigure is the admin affordance
-        // that decides whether they get the settings form or only the toggle.
-        _stateFlow.value = state.copy(
-            dialog = ActiveDialog.EditProject(
-                project,
-                canConfigure = screen.canEditProject,
-                canConfigureIdentity = screen.canRenameProject,
-            ),
-        )
-    }
-
-    /**
-     * The statistics button was tapped.
-     *
-     * Guarded on the same affordance the button is shown by, for
-     * [onAdminSettingsTapped]'s reason: a click that lands after the board has
-     * gone opens nothing rather than a dialog with no project to count.
-     */
-    fun onStatisticsTapped(projectId: Long) {
-        val state = _stateFlow.value
-        val screen = state.screen(projectId)
-        val project = screen.project ?: return
-        if (!screen.canOpenStatistics) return
-        _stateFlow.value = state.copy(dialog = ActiveDialog.Statistics(project))
     }
 
     /**

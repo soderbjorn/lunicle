@@ -234,6 +234,31 @@ private const val BELL_SVG = """
  * visual weight in both themes. Ascending left to right, which is the shape the
  * eye reads as "measurements" rather than "menu".
  */
+private const val SEARCH_SVG = """
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="11" cy="11" r="6.5"/>
+  <path d="M16 16l4.5 4.5"/>
+</svg>
+"""
+
+/**
+ * A pane splitting off an existing one — the same mark the toolkit's own layout
+ * control uses, so "this opens a window" reads the same in the board toolbar as
+ * it does in the top bar.
+ */
+private const val NEW_PANE_SVG = """
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="3" width="18" height="18" rx="1.5"/>
+  <line x1="12" y1="3" x2="12" y2="21"/>
+  <line x1="15" y1="12" x2="21" y2="12"/>
+  <line x1="18" y1="9" x2="18" y2="15"/>
+</svg>
+"""
+
 private const val CHART_SVG = """
 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
      fill="none" stroke="currentColor" stroke-width="1.5"
@@ -302,6 +327,21 @@ fun eyeIcon(): HTMLElement = icon(EYE_SVG, "icon-eye")
 
 /** The bar chart, for the statistics button. */
 fun chartIcon(): HTMLElement = icon(CHART_SVG, "icon-chart")
+
+/** The magnifier inside the board toolbar's filter field. */
+fun searchIcon(): HTMLElement = icon(SEARCH_SVG, "icon-search")
+
+/**
+ * The toolkit's new-window mark, at the trailing edge of a control that OPENS a
+ * pane rather than changing the one you are in (LNL-160).
+ *
+ * Drawn quiet on purpose — see `.board-tool-open` — because it is a hint about
+ * what a click does, not a second icon competing with the first. It is also the
+ * only thing distinguishing the board toolbar's two project entries from the two
+ * board-scope controls beside them, which is why they both carry it and the
+ * others do not.
+ */
+fun newPaneIcon(): HTMLElement = icon(NEW_PANE_SVG, "icon-new-pane")
 
 /** The notifications bell. See [BELL_SVG]. */
 fun bellIcon(): HTMLElement = icon(BELL_SVG, "icon-bell")

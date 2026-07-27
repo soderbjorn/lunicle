@@ -61,6 +61,15 @@ class BoardWindow(
     private val projectId: Long,
     private val viewModel: MainScreenBackingViewModel,
     private val titleFor: TicketTitleLookup = NO_TICKET_TITLES,
+    /**
+     * Open this project's analytics, as a pane.
+     *
+     * A lambda rather than a view-model call, because *where a pane goes* is the
+     * workspace's decision and this view has never heard of it. See main.kt.
+     */
+    private val onOpenAnalytics: () -> Unit = {},
+    /** ...and its settings. Same reason. */
+    private val onOpenSettings: () -> Unit = {},
 ) {
     /** The pane content element the shell mounts. Built eagerly, filled by [render]. */
     val root: HTMLElement = element("div", "board-pane")
@@ -179,21 +188,62 @@ class BoardWindow(
      */
     private val columnLists = mutableMapOf<Long, HTMLElement>()
 
+    /**
+     * The two project entries at the toolbar's trailing edge.
+     *
+     * Not buttons that toggle something: each OPENS a pane in the current tab,
+     * which is how every other surface in this app appears. They say so with the
+     * toolkit's new-window mark at the trailing edge of the label — the only
+     * thing distinguishing "opens a pane" from "changes this view", which is why
+     * both carry it and the filter and scope beside them do not.
+     */
+    private val analyticsButton = toolButton("Analytics", chartIcon(), onOpenAnalytics)
+    private val settingsButton = toolButton("Project settings", gearIcon(), onOpenSettings)
+
     init {
         filterField.classList.add("board-filter")
+
+        // The filter is a field with the magnifier INSIDE it rather than beside
+        // it: the icon is what the field is for, and a separate glyph would be a
+        // second object in a row that already has four.
+        val filterBox = element("div", "board-filter-box")
+        filterBox.children(searchIcon(), filterField)
+
+        // Two scopes, one row, told apart by the gap alone — no box, no divider.
+        // Board scope leads (the filter and, where a project has sprints, the
+        // sprint picker: they change what THIS pane shows); the project entries
+        // sit at the trailing edge (they open something new).
         val toolbar = element("div", "board-toolbar")
-        // The filter sits at the leading (far-left) edge — LNL-94. The sprint
-        // scope, shown only on boards that have sprints, sits beside it: both
-        // answer "which issues am I looking at", where the filter searches and the
-        // scope narrows the board to a sprint. The project picker and the
-        // gear/statistics buttons that used to sit here moved up to the shell top
-        // bar — LNL-84, see ProjectBar.
-        toolbar.children(filterField, scopePicker.element)
+        val projectEntries = element("div", "board-toolbar-project")
+        projectEntries.children(analyticsButton, settingsButton)
+        toolbar.children(filterBox, scopePicker.element, projectEntries)
 
         boardElement = element("div", "board")
         emptyElement = element("p", "board-empty")
 
         root.children(toolbar, emptyElement, boardElement)
+    }
+
+    /**
+     * One trailing toolbar entry: icon, label, and the mark that says it opens a
+     * pane.
+     *
+     * The label is not decoration. Two bare glyphs never said which SCOPE you
+     * were acting on — a chart and a cog beside a filter read as three controls
+     * over the same thing, when two of them are about the project and one is
+     * about this view of it. Words are what separate them; the CSS drops the
+     * words only when the pane is too narrow to keep them (see
+     * `.board-toolbar`), and they are the last thing to go.
+     */
+    private fun toolButton(label: String, glyph: HTMLElement, onClick: () -> Unit): HTMLElement {
+        val el = button("", "board-tool-btn", onClick)
+        el.title = label
+        el.children(
+            glyph,
+            element("span", "board-tool-label", label),
+            newPaneIcon().also { it.classList.add("board-tool-open") },
+        )
+        return el
     }
 
     /** Apply a state snapshot. Called for every emission of the state flow. */
@@ -213,11 +263,20 @@ class BoardWindow(
         // which is the thing this whole design is avoiding. See Sprints.sq.
         scopePicker.element.visible(state.showsSprintScope, displayValue = "inline-flex")
 
-        // The box is only useful with a board behind it, and clearing on a
-        // project switch (the view model empties filterQuery) has to reach the
-        // DOM value too, hence setValueIfChanged rather than a one-way bind.
+        // The box is only useful with a board behind it. setValueIfChanged
+        // rather than a one-way bind, so a value the view model sets — the
+        // restore, a clear — reaches the DOM without fighting the caret.
         filterField.setValueIfChanged(state.filterQuery)
-        filterField.visible(state.board != null, displayValue = "inline-block")
+        // The whole box, magnifier included — hiding the input alone would leave
+        // a lone glyph in a pill on a pane with no board behind it.
+        (filterField.parentElement as? HTMLElement)?.visible(state.board != null, displayValue = "inline-flex")
+
+        // The two project entries, gated exactly as they were when they lived in
+        // the top bar: analytics needs a board, settings needs a board and a
+        // signed-in reader. Hidden rather than disabled — a control that cannot
+        // do anything reads as broken rather than as forbidden.
+        analyticsButton.visible(state.canOpenStatistics, displayValue = "inline-flex")
+        settingsButton.visible(state.canOpenProjectSettings, displayValue = "inline-flex")
 
         emptyElement.setTextIfChanged(state.emptyMessage ?: "")
         emptyElement.visible(state.emptyMessage != null)

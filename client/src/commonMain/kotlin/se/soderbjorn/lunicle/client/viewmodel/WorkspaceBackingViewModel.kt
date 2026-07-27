@@ -278,6 +278,20 @@ class WorkspaceBackingViewModel(
     }
 
     /**
+     * Drop a pane from every tab it is in, by id.
+     *
+     * For a surface that closes itself rather than being closed: a settings form
+     * whose Cancel was pressed, a project deleted out from under its own pane.
+     * "Everywhere" because a pane id names one thing however many tabs it was
+     * opened into, so closing it closes all of them.
+     */
+    fun onPaneClosedEverywhere(paneId: String) {
+        val ws = _stateFlow.value.workspace
+        if (ws.tabs.none { it.pane(paneId) != null }) return
+        commit(ws.copy(tabs = ws.tabs.map { it.withoutPane(paneId) }))
+    }
+
+    /**
      * Drop an issue's pane from every tab it is in.
      *
      * The window is one thing however many places it was opened from, so closing
@@ -353,6 +367,42 @@ class WorkspaceBackingViewModel(
                     activeTabId = fresh.id,
                 ),
             )
+            return
+        }
+        commit(ws.mapTab(target.id) { it.withPane(pane) })
+    }
+
+    /**
+     * Open a project surface — its settings, its analytics — as a pane.
+     *
+     * The rule the design states, which is the issue rule minus the board
+     * affinity: already open in this tab, focus it; open in another tab,
+     * activate that tab; otherwise add it to the tab you are on. A second click
+     * never opens a second copy, which the derived pane id (see [PaneRef]) makes
+     * structural rather than something this has to remember.
+     *
+     * Deliberately NOT [onBoardAdded]'s always-here rule: a settings pane is one
+     * surface per project, not something you would want two of in two tabs, so
+     * finding the open one beats making another.
+     */
+    fun onProjectPaneOpened(pane: PaneRef) {
+        val ws = _stateFlow.value.workspace
+        val already = ws.tabs.firstOrNull { it.pane(pane.paneId) != null }
+        if (already != null) {
+            commit(
+                ws.mapTab(already.id) { it.copy(activePaneId = pane.paneId) }
+                    .copy(activeTabId = already.id),
+            )
+            return
+        }
+        val target = ws.activeTab ?: run {
+            val fresh = WorkspaceTab(
+                id = freshTabId(),
+                name = projectName(pane.projectId),
+                panes = listOf(pane),
+                activePaneId = pane.paneId,
+            )
+            commit(ws.copy(tabs = ws.tabs + fresh, activeTabId = fresh.id))
             return
         }
         commit(ws.mapTab(target.id) { it.withPane(pane) })

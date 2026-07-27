@@ -1,5 +1,5 @@
 /**
- * The statistics modal, opened by the bar-chart button in the board toolbar.
+ * The analytics view: one project's numbers, in a pane or in a modal.
  *
  * One table: a row per measurement, a column per window. Read-only — there is
  * nothing here to change, which makes this the simplest dialog in the app and the
@@ -14,7 +14,9 @@
  * old numbers were true fifteen minutes ago and the age label says so.
  *
  * A dumb renderer, like every view here: every string and every number's grouping
- * comes from [StatisticsBackingViewModel].
+ * comes from [StatisticsBackingViewModel]. It does not know which frame it is in
+ * either — see [DialogShell]. Since LNL-160 the frame is a pane, opened from the
+ * board's toolbar and sitting beside it.
  *
  * @see StatisticsBackingViewModel
  */
@@ -45,8 +47,12 @@ class StatisticsDialog(
     private val projectId: Long,
     private val scope: CoroutineScope,
     private val onDismiss: () -> Unit,
+    /**
+     * The frame. A [PaneShell] when this is a pane — which is every caller
+     * today — and a [Modal] would be the other way round; see [DialogShell].
+     */
+    private val modal: DialogShell = Modal(STATISTICS_TITLE, onDismiss = { onDismiss() }),
 ) {
-    private val modal = Modal(STATISTICS_TITLE, onDismiss = { onDismiss() })
 
     private lateinit var statusElement: HTMLElement
     private lateinit var tableElement: HTMLElement

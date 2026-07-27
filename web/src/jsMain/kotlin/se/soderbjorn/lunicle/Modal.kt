@@ -1,11 +1,15 @@
 /**
- * The modal shell, and the confirmation dialog.
+ * The shells a settings-shaped view can be put in, and the confirmation dialog.
  *
- * Both are Lunamux-flavoured: a dimmed backdrop, a bordered panel, a title bar,
- * and a footer whose buttons sit right. Nothing here knows what it is wrapping.
+ * [Modal] is Lunamux-flavoured: a dimmed backdrop, a bordered panel, a title bar,
+ * and a footer whose buttons sit right. [PaneShell] is the same body and footer
+ * with none of that, for a view mounted into a pane — where the pane's own
+ * chrome already supplies the title, the border and the way out.
  *
+ * Nothing here knows what it is wrapping, which is what lets one view be either.
+ *
+ * @see DialogShell
  * @see ProjectDialog
- * @see IssueDialog
  */
 package se.soderbjorn.lunicle
 
@@ -30,6 +34,61 @@ import org.w3c.dom.events.KeyboardEvent
  *   scrolls inside itself, rather than the default panel that grows to fit and
  *   takes the backdrop's scrollbar with it. See .modal-large.
  */
+/**
+ * What a settings-shaped view needs from whatever is framing it.
+ *
+ * Two implementations, and the point of the interface is that the view between
+ * them cannot tell which it has. [ProjectDialog] and [StatisticsDialog] are
+ * *panes* now (LNL-160) — a project surface opens beside the board rather than
+ * over it — but "New project…" is still a modal, because there is no project to
+ * hang a pane off until it exists. One view, two frames.
+ *
+ * @property body where the view puts its content.
+ * @property footer where the view puts its buttons.
+ */
+interface DialogShell {
+    val body: HTMLElement
+    val footer: HTMLElement
+
+    /** Build and attach into [host]. */
+    fun mount(host: HTMLElement)
+
+    /** Take it down. A no-op for a frame that has no way of its own to close. */
+    fun dismiss()
+
+    /** Rename it. Ignored by a frame whose title is somebody else's (a pane's). */
+    fun setTitle(value: String)
+}
+
+/**
+ * A [DialogShell] with no chrome of its own: a body and a footer, appended to
+ * whatever it is mounted in.
+ *
+ * For a view living in a pane. The pane header already says what this is, draws
+ * the border, and carries the × — so a title bar here would be a second one, and
+ * a backdrop would dim the board this is meant to sit beside.
+ *
+ * [dismiss] and [setTitle] are deliberately no-ops rather than errors: a pane is
+ * closed by its own chrome (which routes through the workspace, not through
+ * here), and its title comes from the pane label. A view that calls either is not
+ * wrong, it is just talking to a frame that has nothing to do about it.
+ */
+class PaneShell : DialogShell {
+    override val body: HTMLElement = element("div", "modal-body pane-shell-body")
+    override val footer: HTMLElement = element("div", "dt-modal-buttons modal-footer pane-shell-footer")
+
+    private val root = element("div", "pane-shell")
+
+    override fun mount(host: HTMLElement) {
+        root.children(body, footer)
+        host.appendChild(root)
+    }
+
+    override fun dismiss() = Unit
+
+    override fun setTitle(value: String) = Unit
+}
+
 class Modal(
     title: String,
     private val onDismiss: () -> Unit,
@@ -42,7 +101,7 @@ class Modal(
      * what the whole web expects a sign-in box to look like.
      */
     panelClass: String = "",
-) {
+) : DialogShell {
     // Each element carries the toolkit's `dt-modal*` class FIRST and a
     // lunicle class second. The dt class is what makes these dialogs
     // pixel-match the lunula/lunamux ones — surface, border, shadow, title
@@ -61,15 +120,15 @@ class Modal(
     private val titleElement = element("h2", "dt-modal-title modal-title", title)
 
     /** Where the caller puts the dialog's content. */
-    val body: HTMLElement = element("div", "modal-body")
+    override val body: HTMLElement = element("div", "modal-body")
 
     /** Where the caller puts the buttons. */
-    val footer: HTMLElement = element("div", "dt-modal-buttons modal-footer")
+    override val footer: HTMLElement = element("div", "dt-modal-buttons modal-footer")
 
     private var keyListener: ((org.w3c.dom.events.Event) -> Unit)? = null
 
     /** Build and attach. */
-    fun mount(host: HTMLElement) {
+    override fun mount(host: HTMLElement) {
         panel.children(titleElement, body, footer)
         backdrop.appendChild(panel)
 
@@ -113,13 +172,13 @@ class Modal(
      * and after a few open/close cycles Escape would fire several dead handlers,
      * each trying to dismiss a dialog that is no longer there.
      */
-    fun dismiss() {
+    override fun dismiss() {
         keyListener?.let { document.removeEventListener("keydown", it) }
         keyListener = null
         backdrop.remove()
     }
 
-    fun setTitle(value: String) = titleElement.setTextIfChanged(value)
+    override fun setTitle(value: String) = titleElement.setTextIfChanged(value)
 
     /**
      * Is this the modal on top?

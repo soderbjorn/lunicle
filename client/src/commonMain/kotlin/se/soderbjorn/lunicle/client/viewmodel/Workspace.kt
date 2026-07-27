@@ -32,10 +32,15 @@ import kotlinx.serialization.json.Json
 /**
  * What one pane holds.
  *
- * Two cases, which is the whole of the pane vocabulary. Adding a third (a
- * forum, a conversation, a report) is a case here plus a branch in the shell's
- * content factory, and nothing else — no new tab type, no new route, no new
- * navigation.
+ * Four cases, which is the whole of the pane vocabulary. Adding a fifth (a
+ * forum, a conversation) is a case here plus a branch in the shell's content
+ * factory, and nothing else — no new tab type, no new route, no new navigation.
+ *
+ * [Settings] and [Analytics] are the reason that claim is worth making. Both
+ * were modal dialogs: a surface you could only be in one of, that covered the
+ * board you opened it from, and that no arrangement could keep. As panes they
+ * sit beside the board, appear in the sidebar, and come back with the layout —
+ * for the cost of one case each.
  */
 @Serializable
 sealed interface PaneRef {
@@ -82,9 +87,33 @@ sealed interface PaneRef {
         override val paneId: String get() = "$ISSUE_PANE_PREFIX$issueId"
     }
 
+    /**
+     * A project's settings.
+     *
+     * The dialog this replaced covered the board it was opened from, which is
+     * the wrong shape for a surface people move back and forth to — renaming a
+     * column and then looking at what it did to the board meant closing the
+     * thing, looking, and opening it again. As a pane it sits beside the board
+     * and both are on screen at once.
+     */
+    @Serializable
+    @SerialName("settings")
+    data class Settings(override val projectId: Long) : PaneRef {
+        override val paneId: String get() = "$SETTINGS_PANE_PREFIX$projectId"
+    }
+
+    /** A project's analytics — [Settings]' argument, for the same surface. */
+    @Serializable
+    @SerialName("analytics")
+    data class Analytics(override val projectId: Long) : PaneRef {
+        override val paneId: String get() = "$ANALYTICS_PANE_PREFIX$projectId"
+    }
+
     companion object {
         const val BOARD_PANE_PREFIX: String = "board-"
         const val ISSUE_PANE_PREFIX: String = "issue-"
+        const val SETTINGS_PANE_PREFIX: String = "settings-"
+        const val ANALYTICS_PANE_PREFIX: String = "analytics-"
     }
 }
 
@@ -106,6 +135,18 @@ fun issueIdOfPane(paneId: String): Long? =
 /** The project whose board a pane shows, or null when it is not a board pane. */
 fun boardProjectIdOfPane(paneId: String): Long? =
     paneId.removePrefix(PaneRef.BOARD_PANE_PREFIX)
+        .takeIf { it != paneId }
+        ?.toLongOrNull()
+
+/** The project whose settings a pane shows, or null when it is not a settings pane. */
+fun settingsProjectIdOfPane(paneId: String): Long? =
+    paneId.removePrefix(PaneRef.SETTINGS_PANE_PREFIX)
+        .takeIf { it != paneId }
+        ?.toLongOrNull()
+
+/** The project whose analytics a pane shows, or null when it is not an analytics pane. */
+fun analyticsProjectIdOfPane(paneId: String): Long? =
+    paneId.removePrefix(PaneRef.ANALYTICS_PANE_PREFIX)
         .takeIf { it != paneId }
         ?.toLongOrNull()
 

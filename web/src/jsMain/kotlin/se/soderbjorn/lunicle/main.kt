@@ -82,7 +82,9 @@ import se.soderbjorn.lunicle.client.viewmodel.StatisticsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.Workspace
 import se.soderbjorn.lunicle.client.viewmodel.WorkspaceBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.analyticsProjectIdOfPane
 import se.soderbjorn.lunicle.client.viewmodel.boardProjectIdOfPane
+import se.soderbjorn.lunicle.client.viewmodel.settingsProjectIdOfPane
 import se.soderbjorn.lunicle.client.viewmodel.issueIdOfPane
 import se.soderbjorn.lunicle.client.viewmodel.issuePaneId
 import se.soderbjorn.lunicle.clientserver.NotificationKind
@@ -261,14 +263,14 @@ private const val ICON_ISSUE_PANE: String =
         "<rect x=\"4.5\" y=\"3.5\" width=\"15\" height=\"17\" rx=\"2\"/>" +
         "<path d=\"M8 8.5h8M8 12h8M8 15.5h5\"/></svg>"
 
-/** The board pane header's statistics button — the analytics the top bar used to carry. */
-private const val ICON_STATISTICS: String =
+/** ...an analytics pane: a bar chart, matching the toolbar entry that opens it. */
+private const val ICON_ANALYTICS_PANE: String =
     "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" " +
         "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\">" +
         "<path d=\"M5 19V11M12 19V5M19 19v-6\"/></svg>"
 
-/** ...and its project-settings cog, beside it. */
-private const val ICON_PROJECT_SETTINGS: String =
+/** ...and a settings pane: the cog, matching its own toolbar entry. */
+private const val ICON_SETTINGS_PANE: String =
     "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" " +
         "stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
         "<circle cx=\"12\" cy=\"12\" r=\"3\"/>" +
@@ -279,6 +281,17 @@ private const val ICON_PROJECT_SETTINGS: String =
         "1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 " +
         "1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 " +
         "1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z\"/></svg>"
+
+/**
+ * Whether this tab is on screen, for the poll in [start] to skip when it is not.
+ *
+ * `visibilityState` is not on the stdlib's `Document`, so it is read dynamically —
+ * the same way the ticket-link handler reaches for `closest`. The test is against
+ * `"hidden"` rather than for `"visible"` on purpose: the property has a third value
+ * ("prerender"), and a browser too old to have it at all yields `undefined`. Both
+ * fall on the polling side, which is the harmless direction to be wrong in.
+ */
+private fun tabIsVisible(): Boolean = document.asDynamic().visibilityState != "hidden"
 
 private fun start() {
     val appHost = document.getElementById("app") as? HTMLElement
@@ -421,6 +434,7 @@ private fun start() {
     val boardWindows = BoardWindows(
         mainViewModel = mainViewModel,
         titleFor = ticketSource.titleFor,
+        onOpenProjectPane = { workspaceViewModel.onProjectPaneOpened(it) },
         onPaneMousedown = { paneId ->
             lastUserFocusedPane = paneId
             workspaceViewModel.onPaneFocused(paneId)
@@ -428,6 +442,30 @@ private fun start() {
             // an issue, so nothing about an issue should be in the URL while it has
             // focus.
             mainViewModel.onIssueWindowFocused(null)
+        },
+    )
+
+    // The two project surfaces, each a pane rather than a modal since LNL-160.
+    // Their own registries for BoardWindows' reason: a pane per project, built on
+    // demand and disposed with the pane, each with a view model and a scope whose
+    // `collect` must not outlive the window it renders into.
+    val settingsPanes = SettingsPanes(
+        storage = storage,
+        mainViewModel = mainViewModel,
+        onPaneMousedown = { paneId ->
+            lastUserFocusedPane = paneId
+            workspaceViewModel.onPaneFocused(paneId)
+        },
+        onFinished = { projectId -> workspaceViewModel.onPaneClosedEverywhere(PaneRef.Settings(projectId).paneId) },
+    )
+    val analyticsPanes = AnalyticsPanes(
+        storage = storage,
+        onPaneMousedown = { paneId ->
+            lastUserFocusedPane = paneId
+            workspaceViewModel.onPaneFocused(paneId)
+        },
+        onFinished = { projectId ->
+            workspaceViewModel.onPaneClosedEverywhere(PaneRef.Analytics(projectId).paneId)
         },
     )
 
@@ -795,6 +833,8 @@ private fun start() {
         // re-render re-parents what is already there rather than rebuilding it.
         paneContent = { paneId ->
             boardProjectIdOfPane(paneId)?.let { boardWindows.contentFor(it) }
+                ?: settingsProjectIdOfPane(paneId)?.let { settingsPanes.contentFor(it) }
+                ?: analyticsProjectIdOfPane(paneId)?.let { analyticsPanes.contentFor(it) }
                 ?: issueIdOfPane(paneId)?.let { issueWindows.contentFor(paneId) }
                 // A pane the registries do not know cannot happen while the
                 // snapshot and the registries are built from the same state, but
@@ -822,7 +862,11 @@ private fun start() {
             },
             onPaneSelect = { tabId, paneId -> workspaceViewModel.onPaneSelected(tabId, paneId) },
             onPaneClose = { tabId, paneId ->
-                if (issueIdOfPane(paneId) != null) {
+                // A settings pane may be mid-edit; ask it first, exactly as an
+                // issue window is asked. Everything else just goes.
+                if (settingsProjectIdOfPane(paneId) != null) {
+                    settingsPanes.onCloseClicked(paneId)
+                } else if (issueIdOfPane(paneId) != null) {
                     // Routed to the issue's own view model, which decides whether
                     // this closes silently or stops to ask Save / Discard / Keep
                     // editing. The pane disappears when — and only when — the state
@@ -942,41 +986,25 @@ private fun start() {
         // numbers are hidden) for an issue. The pane title is the only place a
         // project name is needed now: an issue pane's key prefix already carries it.
         paneLabel = { _, paneId ->
-            boardProjectIdOfPane(paneId)?.let { projectId ->
+            // "Board · Lunamux", "Settings · Lunamux", "Analytics · Lunamux". The
+            // pane title is the only place a project name is needed: an issue
+            // pane's key prefix already carries it.
+            fun named(kind: String, projectId: Long): String {
                 val name = mainViewModel.stateFlow.value.screen(projectId).project?.name
-                if (name == null) "Board" else "Board · $name"
+                return if (name == null) kind else "$kind · $name"
             }
+            boardProjectIdOfPane(paneId)?.let { named("Board", it) }
+                ?: settingsProjectIdOfPane(paneId)?.let { named("Settings", it) }
+                ?: analyticsProjectIdOfPane(paneId)?.let { named("Analytics", it) }
                 ?: issueIdOfPane(paneId)?.let { mainViewModel.stateFlow.value.issueWindowTitle(it) }
                 ?: "Lunicle"
         },
         paneIcon = { _, paneId ->
-            if (boardProjectIdOfPane(paneId) != null) ICON_BOARD_PANE else ICON_ISSUE_PANE
-        },
-        // The analytics and project-settings buttons the top bar used to carry
-        // (LNL-84) live in the board pane's own header now — they are about the
-        // project that pane shows, and with several boards on screen there is no
-        // app-level "the project" for them to hang off any more.
-        paneActions = { _, paneId ->
-            val screen = screenOfPane(paneId) ?: return@AppShellSpec emptyList<PaneAction>()
-            buildList {
-                if (screen.canOpenStatistics) {
-                    add(
-                        PaneAction(
-                            iconHtml = ICON_STATISTICS,
-                            tooltip = "Statistics",
-                            handler = { mainViewModel.onStatisticsTapped(screen.projectId) },
-                        ),
-                    )
-                }
-                if (screen.canOpenProjectSettings) {
-                    add(
-                        PaneAction(
-                            iconHtml = ICON_PROJECT_SETTINGS,
-                            tooltip = "Project settings",
-                            handler = { mainViewModel.onProjectSettingsTapped(screen.projectId) },
-                        ),
-                    )
-                }
+            when {
+                boardProjectIdOfPane(paneId) != null -> ICON_BOARD_PANE
+                settingsProjectIdOfPane(paneId) != null -> ICON_SETTINGS_PANE
+                analyticsProjectIdOfPane(paneId) != null -> ICON_ANALYTICS_PANE
+                else -> ICON_ISSUE_PANE
             }
         },
         // The sidebar is the navigation now: sections are tabs, rows are panes,
@@ -1138,14 +1166,28 @@ private fun start() {
         // somebody else's doing, which this browser learns of only by asking. One
         // cheap count per tick — never the list. The immediate refresh on sign-in is
         // the session collector's job (onSessionChanged, below).
+        //
+        // A hidden tab asks nothing. Nobody is reading a bell they cannot see, and on
+        // a scale-to-zero host the tick is not free the way it looks: each one lands
+        // inside the window that keeps a server instance alive, so a tab left open
+        // overnight holds one up until morning for a count no one will look at. The
+        // listener below closes the gap that skipping opens — coming back refreshes
+        // immediately, so a returning tab shows a current count rather than one as
+        // old as the moment it was backgrounded.
         launch {
             while (true) {
                 delay(5 * 60 * 1000L)
-                if (sessionViewModel.stateFlow.value.user != null) {
+                if (tabIsVisible() && sessionViewModel.stateFlow.value.user != null) {
                     notificationsViewModel.refreshCount()
                 }
             }
         }
+
+        document.addEventListener("visibilitychange", {
+            if (tabIsVisible() && sessionViewModel.stateFlow.value.user != null) {
+                notificationsViewModel.refreshCount()
+            }
+        })
 
         // Separate collectors, not a combine(): a combine would couple every
         // board tick to a workspace re-render for no benefit.
@@ -1171,6 +1213,8 @@ private fun start() {
                 // content the moment a pane appears in the snapshot, and the
                 // registry must already hold it.
                 boardWindows.sync(state, workspaceState.workspace)
+                settingsPanes.sync(state, workspaceState.workspace)
+                analyticsPanes.sync(workspaceState.workspace)
                 issueWindows.sync(state)
                 dialogs.render(state)
                 boardState = state
@@ -1194,11 +1238,16 @@ private fun start() {
             // entirely unrelated reasons: pressing a tab must repaint the strip
             // whether or not a board tick happens to follow, and a board tick must
             // not wait on one.
+            // The pane the focus ring was last moved to by the APP rather than by
+            // a press. See below.
+            var raisedPane: String? = null
             workspaceViewModel.stateFlow.collect { ws ->
                 workspaceState = ws
                 // The board registry follows the panes: a board pane that has just
                 // appeared needs its view before the toolkit asks for its content.
                 boardWindows.sync(boardState, ws.workspace)
+                settingsPanes.sync(boardState, ws.workspace)
+                analyticsPanes.sync(ws.workspace)
                 reconcile()
                 latest = snapshotOf(ws.workspace)
                 deliver()
@@ -1206,6 +1255,24 @@ private fun start() {
                 // so the shell has to be rebuilt — `deliver` only re-renders the
                 // pane area.
                 handle.refresh()
+                // Move the focus RING to whatever the app just made active, when
+                // that is not the pane the user physically pressed.
+                //
+                // The toolkit holds focus optimistically on the pane a press
+                // landed in, and that hold beats the pushed snapshot for a moment
+                // — right nearly always, and wrong for exactly this: the press
+                // that opens a project surface lands in the BOARD's toolbar, so
+                // the board would keep the ring and the pane that just appeared
+                // would open unfocused. `bringPaneToFront` seeds the hold on our
+                // pane instead, which is what it is for.
+                //
+                // Only on a genuine change, so a plain workspace tick cannot steal
+                // focus back from wherever the user has since clicked.
+                val active = ws.workspace.activeTab?.activePaneId
+                if (active != null && active != raisedPane && active != lastUserFocusedPane) {
+                    handle.bringPaneToFront(active)
+                }
+                raisedPane = active
                 syncUrl(mainViewModel.stateFlow.value.openIssueTicket, focusedBoardProjectId(ws.workspace))
             }
         }
@@ -1321,13 +1388,17 @@ private var deepLinksSpent: Boolean = false
 private fun focusedBoardProjectId(workspace: Workspace): Long? {
     val tab = workspace.activeTab ?: return null
     val active = tab.activePaneId?.let { tab.pane(it) }
+    fun boardFor(projectId: Long): Long? =
+        tab.panes.filterIsInstance<PaneRef.Board>().firstOrNull { it.projectId == projectId }?.projectId
     return when (active) {
         is PaneRef.Board -> active.projectId
-        // An issue has focus: the board it belongs to, if this tab holds one. A
-        // "New issue" fired while reading an issue then files it in the same
-        // project, which is the only reading that is not a surprise.
-        is PaneRef.Issue ->
-            tab.panes.filterIsInstance<PaneRef.Board>().firstOrNull { it.projectId == active.projectId }?.projectId
+        // Something else about a project has focus — an issue, that project's
+        // settings, its analytics: the board it belongs to, if this tab holds
+        // one. A "New issue" fired while reading an issue then files it in the
+        // same project, which is the only reading that is not a surprise.
+        is PaneRef.Issue -> boardFor(active.projectId)
+        is PaneRef.Settings -> boardFor(active.projectId)
+        is PaneRef.Analytics -> boardFor(active.projectId)
         null -> tab.panes.filterIsInstance<PaneRef.Board>().firstOrNull()?.projectId
     }
 }
@@ -1353,6 +1424,8 @@ private class BoardWindows(
     private val titleFor: se.soderbjorn.lunicle.client.TicketTitleLookup,
     /** Reports the raw press before the view-model intent — see [main]'s `lastUserFocusedPane`. */
     private val onPaneMousedown: (paneId: String) -> Unit,
+    /** Opens a project surface beside the board — see the toolbar's trailing entries. */
+    private val onOpenProjectPane: (PaneRef) -> Unit,
 ) {
     private val views = mutableMapOf<Long, BoardWindow>()
 
@@ -1369,20 +1442,33 @@ private class BoardWindows(
     }
 
     /** The pane content for [projectId]'s board, building it if this is the first ask. */
-    fun contentFor(projectId: Long): HTMLElement {
+    fun contentFor(projectId: Long): HTMLElement = viewFor(projectId).root
+
+    /**
+     * The view for [projectId], built on the first ask.
+     *
+     * Painted as it is handed out: the toolkit asks for a pane's content and its
+     * header controls as the pane appears, which can be before the collector's
+     * next tick, and an empty board for a frame reads as a board with nothing on
+     * it.
+     */
+    private fun viewFor(projectId: Long): BoardWindow {
         val view = views.getOrPut(projectId) { create(projectId) }
-        // Painted immediately: the toolkit asks for content as the pane appears,
-        // which can be before the collector's next tick, and an empty board for a
-        // frame reads as a board with nothing on it.
         view.render(mainViewModel.stateFlow.value.screen(projectId))
-        return view.root
+        return view
     }
 
     /** Put every open board's columns back where the reader left them — see [BoardWindow.restoreScroll]. */
     fun restoreScroll() = views.values.forEach { it.restoreScroll() }
 
     private fun create(projectId: Long): BoardWindow {
-        val view = BoardWindow(projectId, mainViewModel, titleFor)
+        val view = BoardWindow(
+            projectId = projectId,
+            viewModel = mainViewModel,
+            titleFor = titleFor,
+            onOpenAnalytics = { onOpenProjectPane(PaneRef.Analytics(projectId)) },
+            onOpenSettings = { onOpenProjectPane(PaneRef.Settings(projectId)) },
+        )
         // A mousedown anywhere in this pane is a focus report; the sidebar's active
         // row and the address bar both follow. Capture phase, so cards and controls
         // inside still work.
@@ -1621,17 +1707,9 @@ private class Dialogs(
         current = state.dialog
         when (val dialog = state.dialog) {
             ActiveDialog.None -> Unit
-            ActiveDialog.NewProject -> openProject(existing = null, projects = state.projects)
-            is ActiveDialog.EditProject ->
-                openProject(
-                    existing = dialog.project,
-                    projects = state.projects,
-                    canConfigure = dialog.canConfigure,
-                    canConfigureIdentity = dialog.canConfigureIdentity,
-                )
+            ActiveDialog.NewProject -> openProject(projects = state.projects)
             is ActiveDialog.ChooseResolution -> openResolution(dialog)
             ActiveDialog.AdminSettings -> openAdminSettings()
-            is ActiveDialog.Statistics -> openStatistics(dialog)
             is ActiveDialog.NewSprint -> openNewSprint(dialog)
             is ActiveDialog.PlanSprint -> openPlanSprint(dialog)
             is ActiveDialog.CompleteSprint -> openCompleteSprint(dialog)
@@ -1793,55 +1871,29 @@ private class Dialogs(
     }
 
     /**
-     * The statistics dialog. Its own scope and view model, like the others — it
-     * fetches, so its `collect` must die with it.
+     * "New project…" — the one project form that is still a modal.
      *
-     * `changed = false` on close: this dialog writes nothing a board renders. It
-     * does cause a write server-side — a recompiled snapshot — but that is a cache
-     * behind this dialog and no card depends on it, so reloading the board would
-     * be a round-trip repainting identical pixels.
+     * An existing project's settings open as a pane beside its board (LNL-160,
+     * see SettingsPanes). This one cannot: there is no project to hang a pane
+     * off until it exists, and four fields answered once and dismissed is the
+     * shape a modal is for.
      */
-    private fun openStatistics(dialog: ActiveDialog.Statistics) {
-        val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-        val viewModel = StatisticsBackingViewModel(storage = storage, scope = dialogScope)
-        val view = StatisticsDialog(
-            viewModel = viewModel,
-            projectId = dialog.project.id,
-            scope = dialogScope,
-            onDismiss = { mainViewModel.onDialogClosed(changed = false) },
-        )
-        view.mount(host)
-        scope = dialogScope
-        dismiss = { view.dismiss() }
-    }
-
-    private fun openProject(
-        existing: ProjectSummary?,
-        projects: List<ProjectSummary>,
-        canConfigure: Boolean = true,
-        canConfigureIdentity: Boolean = canConfigure,
-    ) {
+    private fun openProject(projects: List<ProjectSummary>) {
         val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         val viewModel = EditProjectBackingViewModel(
-            existing = existing,
+            existing = null,
             otherProjects = projects,
-            canConfigure = canConfigure,
-            canConfigureIdentity = canConfigureIdentity,
+            canConfigure = true,
+            canConfigureIdentity = true,
             storage = storage,
             scope = dialogScope,
-            // `saved?.id` only when creating: a project that has just been made
-            // should be on screen, so its board is opened in the tab you are on.
+            // A project that has just been made should be on screen, so its
+            // board is opened in the tab you are on.
             onFinished = { changed, saved ->
                 mainViewModel.onDialogClosed(changed, openProjectId = saved?.id)
             },
-            // The per-user hide-issue-numbers choice (LNL-105) is owned by the board
-            // view model: seed the switch from it, and write a change straight back
-            // through it so the board and any open issue window update at once. Only
-            // an existing project has a board preference to carry.
-            hideIssueNumbers = existing?.let { mainViewModel.isHidingIssueNumbers(it.id) } ?: false,
-            persistHideIssueNumbers = { value ->
-                existing?.let { mainViewModel.setIssueNumbersHidden(it.id, value) }
-            },
+            // A project that does not exist yet has no per-user view preference
+            // to carry; the switch belongs to the settings pane, not here.
         )
         val view = ProjectDialog(viewModel, dialogScope)
         view.mount(host)
@@ -1935,4 +1987,181 @@ private fun registerBrandFonts(fonts: List<BrandFont>) {
             )
         },
     )
+}
+
+/**
+ * Owns the project-settings panes: one [ProjectDialog] per project with a
+ * settings pane open.
+ *
+ * [BoardWindows]' sibling, and the same shape for the same reasons. What is
+ * different is what it is wrapping: [ProjectDialog] was written as a modal, and
+ * is a modal still when it is creating a project ("New project…", which has no
+ * project to hang a pane off). Here it is handed a [PaneShell] instead — a body
+ * and a footer with no backdrop, no title bar and no Escape, because the pane
+ * chrome around it already supplies all three.
+ */
+private class SettingsPanes(
+    private val storage: StorageRepository,
+    private val mainViewModel: MainScreenBackingViewModel,
+    /** Reports the raw press before the view-model intent — see [main]'s `lastUserFocusedPane`. */
+    private val onPaneMousedown: (paneId: String) -> Unit,
+    /**
+     * The view model said it is done — Cancel, or a project deleted. Closes the
+     * pane, which is what "done" means when there is no modal to dismiss.
+     */
+    private val onFinished: (projectId: Long) -> Unit,
+) {
+    private class Entry(val view: ProjectDialog, val scope: CoroutineScope)
+
+    private val entries = mutableMapOf<Long, Entry>()
+
+    /** The host for each pane, stable for its life — see [IssueWindows.hosts] for why. */
+    private val hosts = mutableMapOf<Long, HTMLElement>()
+
+    /** Create and dispose views to match the panes. */
+    fun sync(state: MainScreenBackingViewModel.State, workspace: Workspace) {
+        val wanted = workspace.tabs
+            .flatMap { tab -> tab.panes.filterIsInstance<PaneRef.Settings>() }
+            .mapTo(mutableSetOf()) { it.projectId }
+        entries.keys.filterNot { it in wanted }.toList().forEach { dispose(it) }
+        wanted.forEach { projectId ->
+            if (projectId !in entries) create(projectId, state)
+        }
+    }
+
+    fun contentFor(projectId: Long): HTMLElement {
+        val host = hostFor(projectId)
+        if (projectId !in entries) create(projectId, mainViewModel.stateFlow.value)
+        return host
+    }
+
+    /** The pane's × was pressed: let the form decide, exactly as an issue window does. */
+    fun onCloseClicked(paneId: String) {
+        settingsProjectIdOfPane(paneId)?.let { entries[it]?.view?.requestClose() }
+    }
+
+    private fun hostFor(projectId: Long): HTMLElement = hosts.getOrPut(projectId) {
+        val host = element("div", "settings-pane-host")
+        host.addEventListener(
+            "mousedown",
+            { onPaneMousedown(PaneRef.Settings(projectId).paneId) },
+            true,
+        )
+        host
+    }
+
+    /**
+     * Build the form, once this project's board has arrived.
+     *
+     * The board is what says whether this reader may configure anything — the
+     * same two permissions the modal was opened with. Absent while it is still
+     * loading, so `sync` runs again on the tick it lands and the pane fills in
+     * then; the host is already on screen, which is what keeps the pane from
+     * caching an empty div (see [IssueWindows.hosts]).
+     */
+    private fun create(projectId: Long, state: MainScreenBackingViewModel.State) {
+        val screen = state.screen(projectId)
+        val project = screen.board?.project ?: return
+        val paneScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        val viewModel = EditProjectBackingViewModel(
+            existing = project,
+            otherProjects = state.projects,
+            canConfigure = screen.canEditProject,
+            canConfigureIdentity = screen.canRenameProject,
+            storage = storage,
+            scope = paneScope,
+            // `changed` refreshes the boards; `saved` is only ever this project.
+            // Closing the pane is the "finished" half — there is no modal to
+            // dismiss, so the pane is what goes away.
+            onFinished = { changed, _ ->
+                if (changed) mainViewModel.reload()
+                onFinished(projectId)
+            },
+            // The per-user hide-issue-numbers choice (LNL-105) is owned by the
+            // board view model: seed the switch from it, and write a change
+            // straight back through it so the board beside this pane updates at
+            // once — which is the whole argument for this being a pane.
+            hideIssueNumbers = mainViewModel.isHidingIssueNumbers(projectId),
+            persistHideIssueNumbers = { mainViewModel.setIssueNumbersHidden(projectId, it) },
+        )
+        val view = ProjectDialog(viewModel, paneScope, shell = PaneShell())
+        view.mount(hostFor(projectId))
+        entries[projectId] = Entry(view, paneScope)
+    }
+
+    private fun dispose(projectId: Long) {
+        val entry = entries.remove(projectId) ?: return
+        entry.view.dismiss()
+        entry.scope.cancel()
+        hosts.remove(projectId)
+    }
+}
+
+/**
+ * Owns the analytics panes — [SettingsPanes] with nothing to save.
+ *
+ * Simpler in the one way that matters: there is nothing to edit here, so a pane
+ * closing asks nobody anything and the view needs no board behind it. It takes a
+ * project id and counts.
+ */
+private class AnalyticsPanes(
+    private val storage: StorageRepository,
+    private val onPaneMousedown: (paneId: String) -> Unit,
+    /**
+     * The view's own Close was pressed — closes the pane.
+     *
+     * It used to dismiss a modal. Left unwired it was a button that did nothing:
+     * the view still draws it (it is the same view either way — see
+     * [DialogShell]), and in a pane the thing to take away is the pane.
+     */
+    private val onFinished: (projectId: Long) -> Unit,
+) {
+    private class Entry(val view: StatisticsDialog, val scope: CoroutineScope)
+
+    private val entries = mutableMapOf<Long, Entry>()
+    private val hosts = mutableMapOf<Long, HTMLElement>()
+
+    fun sync(workspace: Workspace) {
+        val wanted = workspace.tabs
+            .flatMap { tab -> tab.panes.filterIsInstance<PaneRef.Analytics>() }
+            .mapTo(mutableSetOf()) { it.projectId }
+        entries.keys.filterNot { it in wanted }.toList().forEach { dispose(it) }
+        wanted.forEach { projectId -> if (projectId !in entries) create(projectId) }
+    }
+
+    fun contentFor(projectId: Long): HTMLElement {
+        val host = hostFor(projectId)
+        if (projectId !in entries) create(projectId)
+        return host
+    }
+
+    private fun hostFor(projectId: Long): HTMLElement = hosts.getOrPut(projectId) {
+        val host = element("div", "analytics-pane-host")
+        host.addEventListener(
+            "mousedown",
+            { onPaneMousedown(PaneRef.Analytics(projectId).paneId) },
+            true,
+        )
+        host
+    }
+
+    private fun create(projectId: Long) {
+        val paneScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        val view = StatisticsDialog(
+            viewModel = StatisticsBackingViewModel(storage = storage, scope = paneScope),
+            projectId = projectId,
+            scope = paneScope,
+            onDismiss = { onFinished(projectId) },
+            modal = PaneShell(),
+        )
+        view.mount(hostFor(projectId))
+        entries[projectId] = Entry(view, paneScope)
+    }
+
+    private fun dispose(projectId: Long) {
+        val entry = entries.remove(projectId) ?: return
+        entry.view.dismiss()
+        entry.scope.cancel()
+        hosts.remove(projectId)
+    }
 }
