@@ -82,7 +82,7 @@ class BoardWindow(
      * construction and it is what the rest of this class does with the gear
      * button, which is also always built and sometimes hidden.
      */
-    private val scopePicker = Dropdown("picker") { viewModel.onSprintScopeSelected(projectId, it) }
+    private val scopePicker = Dropdown(className = "picker") { viewModel.onSprintScopeSelected(projectId, it) }
     private val filterField: org.w3c.dom.HTMLInputElement =
         textField("Filter issues…") { viewModel.onFilterChanged(projectId, it) }
     private val boardElement: HTMLElement
@@ -258,6 +258,12 @@ class BoardWindow(
             // sprint somebody else deleted is still in state.sprintScope.
             selectedId = state.effectiveSprintScope,
         )
+        // The accent dot: anything but "All issues" means the board in front of
+        // you is a subset, and the one question a scoped board has to answer
+        // without being asked is "am I seeing everything?". Same mark the filter
+        // box wears while a query is live — one language for "this view is
+        // narrowed", whichever control did the narrowing.
+        scopePicker.setChanged(state.effectiveSprintScope != MainScreenBackingViewModel.SCOPE_ALL)
         // Absent, not disabled, on a board with no sprints. A greyed-out control
         // would tell a kanban project there is a feature here it is not using,
         // which is the thing this whole design is avoiding. See Sprints.sq.

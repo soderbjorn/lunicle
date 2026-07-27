@@ -52,7 +52,7 @@ class ResolutionDialog(
     private lateinit var confirmButton: HTMLButtonElement
     private val radioInputs = mutableMapOf<Long, HTMLInputElement>()
     private val versionPicker = VersionDropdown(
-        className = "field",
+        isField = true,
         allowNone = false,
         onSelect = { onFixedVersionPicked(it) },
         onAdd = { onVersionAdded(it) },

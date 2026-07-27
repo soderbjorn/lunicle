@@ -43,8 +43,12 @@ import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
 import se.soderbjorn.lunicle.clientserver.VocabularyItem
+import se.soderbjorn.lunula.web.shell.buildMenuTrigger
+import se.soderbjorn.lunula.web.shell.setMenuTriggerLabel
+import se.soderbjorn.lunula.web.shell.setMenuTriggerOpen
 
 class VersionDropdown(
+    isField: Boolean = false,
     className: String = "",
     private val allowNone: Boolean = true,
     canManage: Boolean = false,
@@ -52,8 +56,9 @@ class VersionDropdown(
     private val onAdd: (String) -> Unit = {},
     private val onDelete: (Long) -> Unit = {},
 ) {
-    /** The closed control. Append this; the menu mounts on the body. */
-    val element: HTMLButtonElement = button("", ("dropdown $className").trim()) {}
+    /** The closed control — the toolkit's trigger, exactly as [Dropdown]'s is. */
+    val element: HTMLButtonElement =
+        buildMenuTrigger(isField = isField, extraClass = "dropdown $className".trim())
 
     /**
      * Whether Add and Delete are offered. A settable var rather than a constructor
@@ -70,7 +75,6 @@ class VersionDropdown(
     private var dismiss: (() -> Unit)? = null
 
     init {
-        element.setAttribute("aria-haspopup", "menu")
         element.onclick = { if (menu != null) close() else open(); Unit }
     }
 
@@ -79,14 +83,20 @@ class VersionDropdown(
         this.versions = versions
         this.selectedId = selectedId
         this.placeholder = placeholder
-        val label = versions.firstOrNull { it.id == selectedId }?.name ?: placeholder
-        element.setTextIfChanged(label)
+        val chosen = versions.firstOrNull { it.id == selectedId }?.name
+        // "None" is written out rather than left blank — a field that merely
+        // looked empty would be indistinguishable from one that failed to load —
+        // and it is a row you can pick, taking the check like any other. But it
+        // reads DIM here, because in a row of six fields the useful glance is
+        // which ones are still unanswered.
+        setMenuTriggerLabel(element, text = chosen ?: placeholder, isUnset = chosen == null)
     }
 
     /** Tears the menu down, listeners included. A no-op when already closed. */
     fun close() {
         menu?.remove()
         menu = null
+        setMenuTriggerOpen(element, false)
         dismiss?.invoke()
         dismiss = null
     }
@@ -102,13 +112,14 @@ class VersionDropdown(
         document.body?.appendChild(box)
         anchorUnder(box)
         menu = box
+        setMenuTriggerOpen(element, true)
         installDismissal(box)
     }
 
     /** A plain choice row — "None", or a version whose management affordances are off. */
     private fun choiceRow(id: Long?, label: String): HTMLElement {
         val active = id == selectedId
-        val row = element("div", "dt-hover-menu-item dt-world-row" + if (active) " dt-active" else "")
+        val row = element("div", "dt-hover-menu-item dt-world-row" + if (active) " dt-menu-selected" else "")
         row.setAttribute("role", "menuitem")
         val check = element("span", "dt-hover-menu-icon dt-world-check")
         if (active) check.innerHTML = CHECK_SVG
@@ -211,10 +222,14 @@ class VersionDropdown(
     private fun anchorUnder(box: HTMLElement) {
         val anchor = element.getBoundingClientRect()
         box.style.minWidth = "${anchor.width}px"
-        val width = box.getBoundingClientRect().width
-        val left = anchor.left.coerceAtMost(window.innerWidth - width - 4.0).coerceAtLeast(4.0)
+        val laid = box.getBoundingClientRect()
+        val left = anchor.left.coerceAtMost(window.innerWidth - laid.width - 4.0).coerceAtLeast(4.0)
         box.style.left = "${left}px"
-        box.style.top = "${anchor.bottom + 4}px"
+        // Flips above the control when below would clip it, exactly as a
+        // [Dropdown] does — the two are the same object to a reader, and a
+        // version list that opened upwards where a status list opened downwards
+        // would be the one difference between them anybody noticed.
+        box.style.top = "${anchorTop(anchor, laid.height)}px"
     }
 
     /** Closes on Escape or an outside click — [Dropdown.installDismissal], verbatim in intent. */

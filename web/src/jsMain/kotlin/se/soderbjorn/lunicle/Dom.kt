@@ -19,6 +19,9 @@ import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.HTMLTextAreaElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
+import se.soderbjorn.lunula.web.shell.buildMenuTrigger
+import se.soderbjorn.lunula.web.shell.setMenuTriggerLabel
+import se.soderbjorn.lunula.web.shell.setMenuTriggerOpen
 
 /**
  * Whether the app is running inside a frame (embedded on another site) rather
@@ -217,6 +220,54 @@ fun textArea(placeholder: String = "", onInput: (String) -> Unit): HTMLTextAreaE
 data class DropdownItem(val id: Long, val label: String)
 
 /**
+ * How many options a menu may hold before it grows a filter row.
+ *
+ * Assignee and Sprint are the two that reach it in practice: a project with
+ * thirty people in it turns "choose the assignee" into a scan of a list that no
+ * longer fits on screen, and typing two letters is what a `<select>`'s
+ * type-ahead used to do for free. Below the threshold a filter is furniture —
+ * six rows are read, not searched.
+ */
+private const val FILTER_THRESHOLD = 8
+
+/**
+ * The menu's height ceiling, in rows.
+ *
+ * Ten 30px rows plus the gaps and the panel's own padding. The toolkit caps at
+ * the viewport, which is right for a shell menu of fixed length and wrong for a
+ * value list that can be any length at all: a sprint picker running the full
+ * height of the window reads as a page, not as a choice.
+ */
+private const val MENU_MAX_ROWS = 10
+
+/** The height [MENU_MAX_ROWS] rows come to: the rows themselves and the 2px gaps. */
+private const val MENU_MAX_HEIGHT_PX = MENU_MAX_ROWS * 30 + (MENU_MAX_ROWS - 1) * 2
+
+/**
+ * Where a menu of [height] should sit: 4px below [anchor], or 4px above it when
+ * below would run off the bottom of the window.
+ *
+ * Shared by [Dropdown] and [VersionDropdown] because a menu that opens somewhere
+ * else in one of them is the kind of difference nobody can name but everybody
+ * feels. Below is always preferred — a list that drops out of the control the
+ * way the reader expects is worth more than one that never crosses an edge — so
+ * the flip only happens when staying put would genuinely clip rows.
+ *
+ * Ten rows is a tall menu (see [MENU_MAX_ROWS]) and a field near the foot of a
+ * short window is common, which is what makes this worth having: without it the
+ * assignee list simply ran off the bottom, and the only way back to the rows you
+ * could not see was to close the menu and scroll.
+ */
+internal fun anchorTop(anchor: org.w3c.dom.DOMRect, height: Double): Double {
+    val below = anchor.bottom + 4
+    if (below + height <= window.innerHeight - 4) return below
+    // Above, unless there is even less room up there — in which case stay below
+    // and let the menu's own scrolling deal with it.
+    val above = anchor.top - height - 4
+    return if (above >= 4.0) above else below
+}
+
+/**
  * Lunicle's marker class on an open menu box — [Dropdown]'s and
  * [openContextMenu]'s alike.
  *
@@ -269,26 +320,44 @@ private const val MENU_CLASS = "lunicle-dropdown-menu"
  * cannot be rebuilt underneath anybody, so [render] is free to run on every
  * emission and the guards are gone.
  *
- * @param className extra classes for the closed control — `picker` in the board
- *   toolbar, `field` in a dialog. Both are only about the surface it sits on.
+ * ── The closed control ──────────────────────────────────────────────────────
+ *
+ * Also the toolkit's, now: `buildMenuTrigger` (MenuTrigger.kt) draws the pill,
+ * the label and the chevron, and `lunula.css` decides what rest, hover and open
+ * look like. What this file used to do instead was paint the chevron as a
+ * `background-image` data URI — which means a colour literal, because an image
+ * cannot take `currentColor` and cannot be rotated. So the arrow was a bright
+ * cyan belonging to no token in any theme, and it could not flip when the menu
+ * opened. An element does both for free.
+ *
+ * @param isField `true` for the issue editor's fields — 34px, filled, ringed on
+ *   open — and `false` for the toolbar pill. The two differ because the surfaces
+ *   they sit on differ: a toolbar pill can swap a hairline for a fill because it
+ *   had no fill, and a form field is already filled.
+ * @param className extra classes for the closed control, for surface rules the
+ *   toolkit has no opinion about (`picker` carries the board toolbar's width cap).
  * @param onSelect fires with the chosen row's id. A click on the live row still
  *   reports: it is the user saying so, and the view models already treat a
  *   no-change as a no-op.
  */
 class Dropdown(
+    isField: Boolean = false,
     className: String = "",
     private val onSelect: (Long) -> Unit,
 ) {
     /** The closed control. Append this; the menu mounts on the body. */
-    val element: HTMLButtonElement = button("", ("dropdown $className").trim()) {}
+    val element: HTMLButtonElement =
+        buildMenuTrigger(isField = isField, extraClass = "dropdown $className".trim())
 
     private var items: List<DropdownItem> = emptyList()
     private var selectedId: Long? = null
+    private var placeholder: String = ""
+    private var unsetId: Long? = null
+    private var changed: Boolean = false
     private var menu: HTMLElement? = null
     private var dismiss: (() -> Unit)? = null
 
     init {
-        element.setAttribute("aria-haspopup", "menu")
         element.onclick = { if (menu != null) close() else open(); Unit }
     }
 
@@ -299,18 +368,56 @@ class Dropdown(
      * @param selectedId the live row, or null for none — a resolution starts
      *   unset and the user must choose.
      * @param placeholder what the control reads while [selectedId] is null.
+     * @param unsetId the row that means "no value" — the assignee list's
+     *   "Nobody". Selected, it reads dim, so a row of six fields still shows at a
+     *   glance which of them nobody has answered. It is still a row like any
+     *   other IN the menu, with a check when it is live: "Nobody" is a choice a
+     *   user can make, and only the field's own text is saying it is an absence.
+     *   Null when every row is a real answer — a sprint's "Backlog" is where the
+     *   unscheduled work lives, not a blank.
      */
-    fun render(items: List<DropdownItem>, selectedId: Long?, placeholder: String = "") {
+    fun render(
+        items: List<DropdownItem>,
+        selectedId: Long?,
+        placeholder: String = "",
+        unsetId: Long? = null,
+    ) {
         this.items = items
         this.selectedId = selectedId
-        val label = items.firstOrNull { it.id == selectedId }?.label ?: placeholder
-        element.setTextIfChanged(label)
+        this.placeholder = placeholder
+        this.unsetId = unsetId
+        renderLabel()
+    }
+
+    private fun renderLabel() {
+        val chosen = items.firstOrNull { it.id == selectedId }?.label
+        setMenuTriggerLabel(
+            element,
+            text = chosen ?: placeholder,
+            // Nothing chosen at all, or the row that means nothing is chosen.
+            isUnset = chosen == null || selectedId == unsetId,
+            isChanged = changed,
+        )
+    }
+
+    /**
+     * Show or hide the accent dot: this control has moved off its default, so
+     * what you are looking at is narrowed.
+     *
+     * Separate from [render] because "changed" is not a fact about the item list
+     * — only the caller knows what its own default is, and for most dropdowns
+     * (a status, a priority) there is no such thing.
+     */
+    fun setChanged(changed: Boolean) {
+        this.changed = changed
+        renderLabel()
     }
 
     /** Tears the menu down, listeners included. A no-op when already closed. */
     fun close() {
         menu?.remove()
         menu = null
+        setMenuTriggerOpen(element, false)
         dismiss?.invoke()
         dismiss = null
     }
@@ -320,7 +427,21 @@ class Dropdown(
 
         val box = element("div", "$MENU_CLASS dt-hover-menu")
         box.setAttribute("role", "menu")
-        items.forEach { item -> box.appendChild(row(item)) }
+
+        // A long list gets somewhere to type. Built before the rows so the field
+        // can rebuild them: `paint` is the whole list under the current query,
+        // and the rows are the only thing it touches.
+        val rows = element("div", "lunicle-dropdown-rows")
+        // Ten rows and then it scrolls; see MENU_MAX_HEIGHT_PX. The ceiling is on
+        // the ROWS rather than on the panel so the filter above them is never part
+        // of what scrolls — and so the ten is ten rows whether or not there is a
+        // filter, rather than ten minus whatever the filter costs. The toolkit's
+        // own ceiling is the viewport, which a list of sprints will happily fill.
+        rows.style.maxHeight = "${MENU_MAX_HEIGHT_PX}px"
+        val filter = if (items.size > FILTER_THRESHOLD) filterField(rows) else null
+        if (filter != null) box.appendChild(filter)
+        box.appendChild(rows)
+        paint(rows, query = "")
 
         // Under the control's left edge, clamped to the viewport — the toolkit's
         // own popover math (WorldSwitcher.anchorPopover), so this lands where the
@@ -332,18 +453,62 @@ class Dropdown(
         // floor is tuned for a topbar icon's menu, and a menu narrower than its
         // own button reads as a different control's.
         box.style.minWidth = "${anchor.width}px"
-        val width = box.getBoundingClientRect().width
-        val left = anchor.left.coerceAtMost(window.innerWidth - width - 4.0).coerceAtLeast(4.0)
+        val laid = box.getBoundingClientRect()
+        val left = anchor.left.coerceAtMost(window.innerWidth - laid.width - 4.0).coerceAtLeast(4.0)
         box.style.left = "${left}px"
-        box.style.top = "${anchor.bottom + 4}px"
+        box.style.top = "${anchorTop(anchor, laid.height)}px"
 
         menu = box
+        setMenuTriggerOpen(element, true)
         installDismissal(box)
+        filter?.focus()
+    }
+
+    /**
+     * The filter row, for a list too long to read (see [FILTER_THRESHOLD]).
+     *
+     * Focused on open, so the list can simply be typed at — which is what the
+     * `<select>` these replaced did, and the one thing lost when it went. The
+     * rows below it rebuild on every keystroke; nothing else about the menu
+     * changes, so a filtered list is the same list.
+     */
+    private fun filterField(rows: HTMLElement): HTMLInputElement {
+        val field = document.createElement("input") as HTMLInputElement
+        field.type = "text"
+        field.className = "lunicle-dropdown-filter"
+        field.placeholder = "Filter…"
+        field.oninput = { paint(rows, field.value.trim()); Unit }
+        // Enter commits the only remaining row, which is what the typing was for.
+        // Escape falls through to the menu's own dismissal.
+        field.onkeydown = { event ->
+            if (event.key == "Enter") {
+                val only = visible(field.value.trim()).singleOrNull()
+                if (only != null) {
+                    close()
+                    onSelect(only.id)
+                }
+            }
+            Unit
+        }
+        return field
+    }
+
+    private fun visible(query: String): List<DropdownItem> =
+        if (query.isEmpty()) items else items.filter { it.label.contains(query, ignoreCase = true) }
+
+    private fun paint(rows: HTMLElement, query: String) {
+        rows.clear()
+        visible(query).forEach { rows.appendChild(row(it)) }
     }
 
     private fun row(item: DropdownItem): HTMLElement {
         val active = item.id == selectedId
-        val row = element("div", "dt-hover-menu-item dt-world-row" + if (active) " dt-active" else "")
+        // `dt-menu-selected` is the toolkit's "this row holds the current value":
+        // an accent field with the foreground the theme declared for it. The check
+        // says the same thing a second time, in the gutter every row reserves —
+        // deliberately, because the fill is what survives a glance and the check is
+        // what survives a theme whose accent sits close to the panel.
+        val row = element("div", "dt-hover-menu-item dt-world-row" + if (active) " dt-menu-selected" else "")
         row.setAttribute("role", "menuitem")
 
         val check = element("span", "dt-hover-menu-icon dt-world-check")

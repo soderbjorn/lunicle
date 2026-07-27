@@ -103,6 +103,7 @@ class IssueWindow(
     // faces; plus, in edit mode, the picker to set/change it and a button to
     // detach. The whole section hides when there is no parent and no picker to show.
     private lateinit var parentSection: HTMLElement
+    private lateinit var parentHeader: HTMLElement
     private lateinit var parentReadChip: HTMLElement
     private lateinit var parentPicker: IssuePicker
     private lateinit var removeParentButton: HTMLButtonElement
@@ -164,18 +165,18 @@ class IssueWindow(
         agentBadge.children(agentIcon(), agentBadgeLabel)
         titleField = textField("Short description") { viewModel.onTitleChanged(it) }
 
-        statusSelect = Dropdown("field") { viewModel.onStatusChanged(it) }
+        statusSelect = Dropdown(isField = true) { viewModel.onStatusChanged(it) }
         statusRead = element("span", "tag tag-status")
 
-        prioritySelect = Dropdown("field") { viewModel.onPriorityChanged(it) }
+        prioritySelect = Dropdown(isField = true) { viewModel.onPriorityChanged(it) }
         priorityRead = element("span", "tag tag-priority")
 
-        resolutionSelect = Dropdown("field") { viewModel.onResolutionChanged(it) }
+        resolutionSelect = Dropdown(isField = true) { viewModel.onResolutionChanged(it) }
         resolutionRead = element("span", "tag tag-resolution")
 
-        assigneeSelect = Dropdown("field") { viewModel.onAssigneeChanged(it) }
+        assigneeSelect = Dropdown(isField = true) { viewModel.onAssigneeChanged(it) }
 
-        sprintSelect = Dropdown("field") { viewModel.onSprintChanged(it) }
+        sprintSelect = Dropdown(isField = true) { viewModel.onSprintChanged(it) }
         // A chip like status and priority rather than a sentence like the
         // assignee: a sprint is one of the project's own named things, which is
         // what the tag styling means here.
@@ -186,14 +187,14 @@ class IssueWindow(
         // Add lands in the field that asked; delete is shared, so both go through
         // the one onVersionDeleted.
         plannedVersionSelect = VersionDropdown(
-            className = "field",
+            isField = true,
             onSelect = { viewModel.onPlannedVersionChanged(it) },
             onAdd = { viewModel.onPlannedVersionAdded(it) },
             onDelete = { viewModel.onVersionDeleted(it) },
         )
         plannedVersionRead = element("span", "tag tag-version")
         fixedVersionSelect = VersionDropdown(
-            className = "field",
+            isField = true,
             onSelect = { viewModel.onFixedVersionChanged(it) },
             onAdd = { viewModel.onFixedVersionAdded(it) },
             onDelete = { viewModel.onVersionDeleted(it) },
@@ -234,13 +235,24 @@ class IssueWindow(
         removeParentButton = button("Remove from parent", "btn btn-quiet btn-small") {
             viewModel.onRemoveParentRequested()
         }
-        parentSection = element("div", "issue-parent")
-        parentSection.children(
+        // Detaching belongs in the LABEL row, right-aligned, not under the
+        // picker. A button parked beneath a field reads as that field's primary
+        // action — "Remove from parent" sat directly below "Set a parent
+        // issue…", where the two make a sentence nobody meant. Above and to the
+        // right it reads as what it is: something you may do to this section,
+        // like the section's own menu.
+        parentHeader = element("div", "issue-parent-header")
+        parentHeader.children(
             element("span", "field-label field-label-edit", "Parent"),
             element("span", "tag-caption", "Parent"),
-            parentReadChip,
-            parentPicker.element,
             removeParentButton,
+        )
+        parentSection = element("div", "issue-parent")
+        parentSection.children(
+            parentHeader,
+            element("div", "issue-parent-row").also {
+                it.children(parentReadChip, parentPicker.element)
+            },
         )
 
         childrenHeading = element("h4", "comments-heading", "Child issues")
@@ -554,10 +566,10 @@ class IssueWindow(
         renderParent(state)
         renderChildren(state)
 
-        renderChips(labelLabel, labelBox, state.labels, state.labelIds, state.isEditing) {
+        renderChips(labelLabel, labelBox, state.labels, state.labelIds, state.isEditing, withDot = true) {
             viewModel.onLabelToggled(it)
         }
-        renderChips(componentLabel, componentBox, state.components, state.componentIds, state.isEditing) {
+        renderChips(componentLabel, componentBox, state.components, state.componentIds, state.isEditing, withDot = false) {
             viewModel.onComponentToggled(it)
         }
         renderReadTags(state)
@@ -737,7 +749,7 @@ class IssueWindow(
             items = state.statuses.map { DropdownItem(it.id, it.name) },
             selectedId = state.statusId,
         )
-        statusSelect.element.visible(state.isEditing, displayValue = "block")
+        statusSelect.element.visible(state.isEditing, displayValue = "flex")
     }
 
     private fun renderPriorities(state: IssueBackingViewModel.State) {
@@ -745,7 +757,7 @@ class IssueWindow(
             items = state.priorities.map { DropdownItem(it.id, it.name) },
             selectedId = state.priorityId,
         )
-        prioritySelect.element.visible(state.isEditing, displayValue = "block")
+        prioritySelect.element.visible(state.isEditing, displayValue = "flex")
     }
 
     private fun renderResolutions(state: IssueBackingViewModel.State) {
@@ -758,7 +770,7 @@ class IssueWindow(
             selectedId = state.resolutionId,
             placeholder = "Choose…",
         )
-        resolutionSelect.element.visible(state.isEditing, displayValue = "block")
+        resolutionSelect.element.visible(state.isEditing, displayValue = "flex")
     }
 
     /**
@@ -779,10 +791,14 @@ class IssueWindow(
         assigneeSelect.render(
             items = state.assigneeOptions.map { DropdownItem(it.id, it.name) },
             selectedId = state.assigneeSelectedId,
+            // "Nobody" is a row you can pick, and it is also this field's way of
+            // saying nobody has answered it — so it reads dim in the closed
+            // control while staying an ordinary, checkable row in the menu.
+            unsetId = IssueBackingViewModel.UNASSIGNED_ID,
         )
         val canChoose = state.assignableUsers.isNotEmpty()
         assigneeCell.visible(state.isEditing && canChoose)
-        assigneeSelect.element.visible(state.isEditing && canChoose, displayValue = "block")
+        assigneeSelect.element.visible(state.isEditing && canChoose, displayValue = "flex")
 
         val buttonLabel = state.assignButtonLabel
         buttonLabel?.let { assignButton.setTextIfChanged(it) }
@@ -813,7 +829,7 @@ class IssueWindow(
             items = state.sprintOptions.map { DropdownItem(it.id, it.name) },
             selectedId = state.sprintSelectedId,
         )
-        sprintSelect.element.visible(state.isEditing, displayValue = "block")
+        sprintSelect.element.visible(state.isEditing, displayValue = "flex")
         sprintRead.setTextIfChanged(state.sprintName)
         // The two faces are never both up. The tag needs the same explicit toggle
         // status and priority get above — `.tag-caption` is hidden by CSS while
@@ -853,8 +869,8 @@ class IssueWindow(
             val editable = state.showsVersions || state.canMutateProject
             plannedVersionCell.visible(editable)
             fixedVersionCell.visible(editable)
-            plannedVersionSelect.element.visible(editable, displayValue = "block")
-            fixedVersionSelect.element.visible(editable, displayValue = "block")
+            plannedVersionSelect.element.visible(editable, displayValue = "flex")
+            fixedVersionSelect.element.visible(editable, displayValue = "flex")
             plannedVersionRead.visible(false)
             fixedVersionRead.visible(false)
         } else {
@@ -877,6 +893,7 @@ class IssueWindow(
         items: List<VocabularyItem>,
         selected: Set<Long>,
         isEditing: Boolean,
+        withDot: Boolean,
         onToggle: (Long) -> Unit,
     ) {
         // A project need not define labels or components at all, and when it has
@@ -891,7 +908,13 @@ class IssueWindow(
         if (!show) return
         box.clear()
         items.forEach { item ->
-            val chip = button(item.name, if (item.id in selected) "chip chip-on" else "chip") { onToggle(item.id) }
+            val chip = button("", if (item.id in selected) "chip chip-on" else "chip") { onToggle(item.id) }
+            // Labels lead with the dot the board's cards give them, so the same
+            // word reads as the same thing in both places. Components have no
+            // colour of their own — see `.chip-dot` — so they get no dot, and
+            // the difference is itself the information.
+            if (withDot) chip.appendChild(element("span", "chip-dot"))
+            chip.appendChild(element("span", "chip-name", item.name))
             box.appendChild(chip)
         }
     }

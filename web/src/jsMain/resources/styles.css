@@ -285,22 +285,13 @@ code, pre, kbd, samp { font-family: var(--mono); }
 
 /* The sprint scope, outlined rather than filled — it is the one control here
    that is a CHOICE with a current value, and the hairline says "there is a list
-   behind this" where the filter's fill says "type into me". Absent entirely on a
-   board with no sprints; see BoardWindow.render. */
+   behind this" where the filter's fill says "type into me". That reading is the
+   toolkit's `.dt-menu-trigger` now, at the same 30px and 8px radius the filter
+   box beside it uses, so all this has left to say is how wide it may get.
+   Absent entirely on a board with no sprints; see BoardWindow.render. */
 .board-toolbar .picker {
-  flex: 0 0 auto;
-  height: 30px;
-  min-width: 0;
   max-width: 200px;
-  padding: 0 30px 0 11px;
-  font-size: 12.5px;
-  border-radius: 8px;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--head);
 }
-.board-toolbar .picker:hover { border-color: var(--border-hi); }
-.board-toolbar .picker:focus { outline: none; border-color: var(--chrome-accent); box-shadow: none; }
 
 /* The two project entries, at the trailing edge. The gap between this group and
    the controls to its left is the only thing dividing the two scopes. */
@@ -521,8 +512,13 @@ code, pre, kbd, samp { font-family: var(--mono); }
    tooltips) stayed proportional. Naming the family here on the menu box, not
    the item, is enough: `font: inherit` then picks it up. Same fallback stack
    the toolkit's own sidebar rule carries, so a theme that sets
-   --dt-font-sidebar still wins and the menu matches the sidebar either way. */
-.dt-hover-menu {
+   --dt-font-sidebar still wins and the menu matches the sidebar either way.
+
+   Scoped to the CHROME zone, which is the toolkit's marker for a menu raised
+   from the top bar. Unscoped it also caught this app's own value dropdowns —
+   the board's statuses and sprints, which are content — and rendered a
+   project's vocabulary in the sidebar's face. See `.lunicle-dropdown-menu`. */
+.dt-hover-menu.dt-menu-chrome {
   font-family: var(--dt-font-sidebar, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif);
 }
 
@@ -619,68 +615,27 @@ code, pre, kbd, samp { font-family: var(--mono); }
   min-width: 0;
 }
 
-/* The closed face of a Dropdown (see Dom.kt) — a <button> the user reads as a
-   value with a chevron. It is not a <select>: `appearance: none` takes the
-   platform's chrome off the *closed* control, but the OS draws the *open* list
-   itself — an Aqua popup with a system-blue selection, in nobody's palette but
-   the OS's — and that surface a stylesheet cannot reach. So the open list is our
-   own themed menu (.dt-hover-menu, mounted on the body), and the closed control
-   is this button, dressed to read exactly as the old <select> did.
+/* ── Dropdowns ───────────────────────────────────────────────────────────────
 
-   This base carries only what both variants share: the native-chrome reset, the
-   chevron, and left-aligned text (a button centres its label; a value belongs at
-   the leading edge, where the menu's rows start beneath it). Surface — border,
-   radius, padding, background — is the variant's own, because the two live on
-   different surfaces on purpose: .picker sits in the top bar on --panel-2,
-   .dropdown.field sits in a dialog beside text inputs on --bg.
+   Both halves now come from the toolkit. The closed control is a
+   `.dt-menu-trigger` (lunula's MenuTrigger.kt) in one of its two variants — the
+   30px toolbar pill, or the 34px form field — and the open list is a
+   `.dt-hover-menu`, which is the same panel the shell's "+" and pane kebabs
+   drop. That is the whole point of the redesign: one menu object, wherever it
+   was opened from, so a board toolbar and a window titlebar cannot disagree
+   about what a menu looks like.
 
-   Deliberately no background-COLOR here, only the arrow image: a colour here
-   would paint over whichever surface the variant sets below. */
-.dropdown {
-  appearance: none;
-  -webkit-appearance: none;
-  font-family: inherit;
-  color: var(--head);
-  text-align: left;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2366d9ff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 14px center;
-  background-size: 12px 8px;
-  cursor: pointer;
-}
+   What used to live here was a private copy of that control, and the copy is
+   what dated it. The chevron was a `background-image` data URI, so its colour
+   was a literal — a bright cyan matching no token in any theme — and an image
+   can neither take `currentColor` nor rotate, so it could not follow the
+   palette and could not flip when the list came down. The toolkit draws it as
+   an element and both problems stop existing.
 
-/* The chrome variant: this is the only .dropdown that lives on the top bar
-   rather than inside a pane, so it takes the chrome surface while
-   `.dropdown.field` (issue editor, inside a window) keeps the content one.
-   `color` is set here because the `.dropdown` base sets the content --head. */
-.picker {
-  font-size: 14px;
-  color: var(--chrome-head);
-  background-color: var(--chrome-track);
-  border: 1px solid var(--chrome-border);
-  border-radius: 4px;
-  padding: 8px 38px 8px 12px;
-  min-width: 200px;
-}
+   `.dropdown` survives as a marker only. Nothing styles it; it names the
+   control in the inspector and gives a future rule something to hang off.
 
-/* The three dropdowns in the issue editor. `.field` brings the text-input
-   surface (border, radius, padding, --bg) so they sit level with the title
-   input beside them; this only reserves room for the chevron on the right.
-   The arrow's inset and the padding are one measurement made twice and must
-   agree — a padding smaller than inset + arrow width lets a long name run
-   under the arrow. Keep padding-right >= 14 + 12 + a few px of air. */
-.dropdown.field {
-  padding-right: 38px;
-}
-
-/* Focus: the picker rings in the CHROME accent (it is chrome), every other
-   dropdown in the content one. */
-.picker:focus { outline: none; border-color: var(--chrome-accent); box-shadow: 0 0 10px var(--glow); }
-.dropdown:focus { outline: none; border-color: var(--green-hi); box-shadow: 0 0 10px var(--glow); }
-
-/* The open list needs no chrome rules here: it is a .dt-hover-menu, so the
-   toolkit paints it as it paints the shell's "+" menu, under every theme,
-   without us. Its width is set inline as a FLOOR — min-width, to the control it
+   The open list's width is set inline as a FLOOR — min-width, to the control it
    drops out of (see Dropdown.open) — and is otherwise left to shrink-wrap the
    longest row. The toolkit's own 180px floor is tuned for a topbar icon's menu,
    and a menu narrower than its own button reads as a different control's.
@@ -688,8 +643,48 @@ code, pre, kbd, samp { font-family: var(--mono); }
    The marker class the box carries is `lunicle-dropdown-menu`, and the prefix is
    load-bearing: the toolkit has a `.dropdown-menu` of its own whose `right: 0`
    silently stretched every one of these menus across the viewport. See
-   Dom.kt's MENU_CLASS and LNL-54 — the reason there is still nothing to style
-   here is that the collision was removed rather than overridden. */
+   Dom.kt's MENU_CLASS and LNL-54. */
+
+/* A value list is CONTENT — these are the project's own statuses, sprints and
+   people — so it reads in the content prose face, not the chrome one the "+"
+   menu takes above. The two were one rule until the toolkit grew a zone marker
+   to tell them apart, and every dropdown in the app was rendering the board's
+   vocabulary in the sidebar's font. */
+.lunicle-dropdown-menu {
+  font-family: var(--prose);
+}
+
+/* The filter row a long list grows (see FILTER_THRESHOLD in Dom.kt). Sits above
+   the rows as part of the panel rather than as a field dropped into it: no
+   border of its own, one hairline underneath, and the panel's own padding for
+   its sides. */
+.lunicle-dropdown-filter {
+  flex: 0 0 auto;
+  height: 30px;
+  margin-bottom: 4px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--head);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+.lunicle-dropdown-filter:focus { outline: none; border-bottom-color: var(--green-hi); }
+.lunicle-dropdown-filter::placeholder { color: var(--green-dim); opacity: 1; }
+
+/* The rows the filter paints. A plain flex column carrying the panel's own 2px
+   rhythm, so a filtered list has exactly the spacing an unfiltered one does. */
+.lunicle-dropdown-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  /* The rows scroll, not the panel — otherwise the filter field scrolls away
+     from the list it filters the moment you reach past the tenth option. */
+  overflow-y: auto;
+}
 
 .icon-btn {
   font-family: inherit;
@@ -1259,12 +1254,18 @@ code, pre, kbd, samp { font-family: var(--mono); }
 /* The version dropdown's per-row ellipsis (LNL-134): a quiet control that only
    asserts itself on hover, so a row of versions reads as a list of choices rather
    than a list of menus. */
+/* `--green-dim`, not `--text-dim`: the latter is not a token this stylesheet
+   declares, so the `var()` fell through to nothing and the ellipsis inherited
+   the row colour — which is why it never looked as quiet as it reads here. */
 .version-row-menu {
+  flex: 0 0 auto;
   margin-left: auto;
-  padding: 0 6px;
+  padding: 0 0 0 8px;
   background: none;
   border: none;
-  color: var(--text-dim);
+  color: currentColor;
+  font: inherit;
+  line-height: 1;
   cursor: pointer;
   opacity: .5;
 }
@@ -1272,7 +1273,10 @@ code, pre, kbd, samp { font-family: var(--mono); }
 
 /* The inline "Add new version…" row and the field it becomes. The field fills the
    menu it replaced, so naming a version happens without leaving the open dropdown. */
-.version-add-row { color: var(--text-dim); }
+.version-add-row { color: var(--green-dim); }
+/* The row's "+" is a character rather than an SVG, so it needs the line box the
+   icon slot takes away for vectors. */
+.version-add-row > .dt-hover-menu-icon { line-height: 1; font-size: 14px; }
 .version-add-field { width: 100%; }
 
 /* Sprint planning: a scrollable list of tickable issues.
@@ -1808,6 +1812,11 @@ code, pre, kbd, samp { font-family: var(--mono); }
    its first child, so `.field-label:first-child` zeroes the margin every other
    label in the dialog uses to stand off the field above it. Without this, STATUS
    sits on top of the title input. */
+/* `align-items: start` still, and it is now harmless: every field in the row is
+   a fixed 34px with a single ellipsised line, so no cell can grow taller than
+   its neighbours and drag the labels above them out of line. That was the
+   editor's oldest layout complaint and it was never the grid's fault — the
+   selects wrapped their values, and a wrapped value is two lines tall. */
 .modal-body.editing .field-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1920,6 +1929,20 @@ code, pre, kbd, samp { font-family: var(--mono); }
 
 .field-label:first-child { margin-top: 0; }
 
+/* The ISSUE EDITOR's labels, which are a denser case than a dialog's: a row of
+   six of them stands over six controls, so each one is a caption on a field
+   rather than a heading over a section. Mono caps at 9px with wide tracking is
+   what the rest of this design uses for exactly that job, and dropping from
+   12px buys back a line of vertical height per row — in the one pane that
+   competes with a description for it. Scoped to the editor: a dialog's labels
+   stand alone over a single field and are read, not scanned. */
+.issue-fields .field-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .16em;
+  margin-bottom: 6px;
+}
+
 /* Everything that only belongs in edit mode rides on one class on the body,
    rather than being toggled element by element — there are six of them, and
    forgetting one leaves a stray "Components" heading over a read-only issue. */
@@ -1933,12 +1956,11 @@ code, pre, kbd, samp { font-family: var(--mono); }
      fields stay 15px while the prose around them grows reads as two documents. */
   font-size: var(--dt-font-prop-size, 15px);
   color: var(--head);
-  /* `background-color`, not the `background` shorthand: a .field is also worn by
-     the issue editor's dropdowns (.dropdown.field), and .dropdown draws its
-     chevron with `background-image`. The shorthand resets background-image to
-     none, and since this rule follows .dropdown at equal specificity it would
-     win and strip the arrow off every editor picker — which is exactly what it
-     did. The color longhand leaves the image alone. */
+  /* `background-color` rather than the `background` shorthand. The hazard it
+     was guarding against is gone — the editor's dropdowns are no longer `.field`
+     at all, and their chevron is an element rather than a background image, so
+     there is nothing left for the shorthand to reset out from under them. Kept
+     as a longhand anyway: it says only what it means. */
   background-color: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -2105,26 +2127,60 @@ code, pre, kbd, samp { font-family: var(--mono); }
 
 /* Label/component pickers. Buttons rather than a multi-select, which is
    unusable on touch and invisible about what is selected. */
-.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 7px; }
 
+/* A chip says the same two things a menu row does — this one is chosen, that
+   one is not — so it says them the same way: a hairline that goes accent under
+   the pointer, and an accent FILL once it is picked.
+
+   What it replaced said "chosen" three times over: a 14% tint, plus a solid
+   accent ring, plus the text going bright — three signals for one bit, and not
+   one of them the fill the rest of the app spends on "chosen". Three quiet
+   marks read as a fourth state, not as emphasis. */
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
   font-family: inherit;
-  font-size: 12px;
-  color: var(--green-dim);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 4px 10px;
+  font-size: 12.5px;
+  line-height: 1;
+  color: var(--head);
+  background: transparent;
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--border);
+  border-radius: 14px;
   cursor: pointer;
-  transition: border-color .12s, color .12s;
+  transition: background-color .12s, box-shadow .12s, color .12s;
 }
 
 /* Scoped off the on-state: an unscoped .chip:hover would out-specify .chip-on
-   and dim a selected chip's solid accent border back to the translucent one
-   the moment the mouse reached it. */
-.chip:not(.chip-on):hover { border-color: var(--border-hi); color: var(--green); }
+   and paint over a selected chip's accent field the moment the mouse reached it. */
+.chip:not(.chip-on):hover { box-shadow: inset 0 0 0 1px var(--green-hi); }
 
-.chip-on { color: var(--head); border-color: var(--green-hi); background: color-mix(in srgb, var(--green-hi) 14%, transparent); }
+.chip-on {
+  color: var(--accent-on);
+  background: var(--green-hi);
+  box-shadow: none;
+  font-weight: 500;
+}
+
+/* The chip's data dot, in the same hue the board's card tags give that axis, so
+   one label reads as the same thing in both places. Only labels carry it:
+   components have no colour of their own, and a dot in the "component" hue on
+   every one of them would be decoration pretending to be data. */
+.chip-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green-hi-text);
+}
+/* On a filled chip the dot sits ON the accent, where a colour picked against
+   the pane background need not read at all. The declared foreground does, by
+   construction — the same trade the menu rows make. */
+.chip-on .chip-dot { background: var(--accent-on); opacity: .55; }
 
 /* ============================================================
    Editor
@@ -3366,11 +3422,28 @@ code, pre, kbd, samp { font-family: var(--mono); }
    (edit-only, hidden in read mode by the shared .field-label-edit rule), the
    clickable chip, the picker, and the detach button. */
 .issue-parent {
+  margin: 2px 0 6px;
+}
+
+/* The label row, and the one control that acts on the whole section. Detaching
+   used to sit UNDER the picker, where "Set a parent issue…" and "Remove from
+   parent" stacked into a sentence nobody wrote — a button parked below a field
+   reads as that field's own action. Up here, right-aligned against the caption,
+   it reads as something you may do to this band. */
+.issue-parent-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 16px;
+}
+.issue-parent-header > .field-label { margin-top: 0; }
+.issue-parent-header > .btn { margin-left: auto; align-self: center; }
+
+.issue-parent-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 2px 0 6px;
 }
 .issue-parent-chip { font-variant-numeric: tabular-nums; }
 

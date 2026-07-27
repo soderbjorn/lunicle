@@ -94,7 +94,7 @@ class ForumPane(
     // bug `deliver()` in main.kt guards the pane list against.
     // `picker` is the board's project-picker styling — same control, same job,
     // one place to restyle both.
-    private val picker = Dropdown("picker forum-picker") { viewModel.onForumSelected(it) }
+    private val picker = Dropdown(className = "picker forum-picker") { viewModel.onForumSelected(it) }
     private val description = element("p", "forum-description")
     private val manageButton = button("Manage forums", "btn forum-manage") { openManager() }
     private val postsHost = element("div", "forum-posts")
