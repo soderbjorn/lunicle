@@ -259,16 +259,33 @@ class VersionDropdown(
         return row
     }
 
+    /**
+     * The delete confirmation, and the one thing every other confirmation in the app
+     * gets for free: somebody to take it down again (LNL-155).
+     *
+     * Everywhere else a ConfirmDialog is raised from a view model's pending-delete
+     * state, so the next render dismisses it. This one is raised straight from a
+     * click, mounted on the body — outside anything this control re-renders — so
+     * nothing else will ever remove it. Held in a local and dismissed by hand on
+     * both routes out: Cancel (and Escape, which the modal routes to onCancel) used
+     * to leave the dialog sitting there, which read as the button doing nothing,
+     * and Delete left it up over a version that was already gone.
+     */
     private fun confirmDelete(version: VocabularyItem) {
         val host = document.body ?: return
-        ConfirmDialog(
+        var confirm: ConfirmDialog? = null
+        confirm = ConfirmDialog(
             title = "Delete version",
             message = "Delete \"${version.name}\"? Any issue planned for it or fixed in it loses that " +
                 "version. This cannot be undone.",
             destructiveLabel = "Delete",
-            onConfirm = { onDelete(version.id) },
-            onCancel = {},
-        ).mount(host)
+            onConfirm = {
+                confirm?.dismiss()
+                onDelete(version.id)
+            },
+            onCancel = { confirm?.dismiss() },
+        )
+        confirm.mount(host)
     }
 
     /** The bottom "Add new version…" row, which turns into a field in place. */
