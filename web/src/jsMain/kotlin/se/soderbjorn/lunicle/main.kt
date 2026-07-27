@@ -958,6 +958,14 @@ private fun start() {
                                 id = "new-issue",
                                 label = "New issue",
                                 iconHtml = ICON_NEW_ISSUE,
+                                // The row the "+" itself does (see onPaneAdd
+                                // above, which files an issue on the focused
+                                // board). Marked so the menu says so: the
+                                // button's own behaviour is otherwise invisible,
+                                // and a reader who wanted the common thing has
+                                // no way to learn they could have skipped the
+                                // menu entirely.
+                                isDefault = true,
                                 onSelect = { mainViewModel.onNewIssueTapped(screen.projectId) },
                             ),
                         )
