@@ -644,6 +644,16 @@ private fun start() {
     var restoreAdopted = false
 
     /**
+     * The issue whose window the app last raised, so a *change* of focus can be
+     * told from focus merely sitting where it already was. See step 5 of
+     * [reconcile].
+     *
+     * Seeded from the state rather than from null: a workspace restored with an
+     * issue pane already focused must not be read as a fresh command to raise it.
+     */
+    var focusRaisedFor: Long? = mainViewModel.stateFlow.value.focusedIssueId
+
+    /**
      * Make the boards and the workspace agree, in one pass.
      *
      * Called from both collectors, because either side can move first: opening a
@@ -712,6 +722,29 @@ private fun start() {
             if (issueId !in live && issueId !in pendingRestoredIssues) {
                 workspaceViewModel.onIssueClosed(issueId)
             }
+        }
+
+        // 5. Raise the window of the issue that has just taken focus.
+        //
+        //    Clicking the card of an issue that is ALREADY open creates nothing:
+        //    onIssueOpened finds the window in openIssues and only moves
+        //    focusedIssueId. Step 4 above is a set difference, so it has nothing
+        //    to say about that click either — and the result was a card that did
+        //    visibly nothing whenever its window was behind the board or in
+        //    another tab. Handing the id to the workspace activates that pane, and
+        //    its tab; the workspace collector's bringPaneToFront does the raising.
+        //
+        //    On the EDGE of focusedIssueId, never on its value. Level-triggered,
+        //    an ordinary tick arriving while the reader was on another tab would
+        //    haul them back to whichever issue held focus last — and the same
+        //    reasoning covers the user's own press on an issue pane, which moves
+        //    focus and the active pane together, so the command this fires is one
+        //    the workspace has already carried out.
+        val focused = now.focusedIssueId
+        if (focused != focusRaisedFor) {
+            focusRaisedFor = focused
+            now.openIssues.firstOrNull { it.issueId == focused }
+                ?.let { workspaceViewModel.onIssueOpened(it.issueId, it.projectId) }
         }
     }
 
