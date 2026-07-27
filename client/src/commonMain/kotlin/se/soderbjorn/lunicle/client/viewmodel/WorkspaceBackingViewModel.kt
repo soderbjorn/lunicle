@@ -69,10 +69,21 @@ class WorkspaceBackingViewModel(
      *   closed every tab, and would persist that as their layout. Goes back to
      *   false while the account changes under it — see [onSessionChanged] — since
      *   what is on screen at that moment belongs to whoever just left.
+     * @property isSettled whether the layout on screen is this identity's last
+     *   word — that is, whether a stored workspace is still in flight behind it.
+     *   Deliberately NOT [isRestored], which goes true as soon as *something* is
+     *   showable and is usually satisfied by the seeded default: the stored
+     *   layout lands after it and replaces the whole workspace, active tab
+     *   included. Anything that opens a board or an issue in answer to something
+     *   OUTSIDE the workspace — the boot deep links, `?projectId=` / `?issue=`
+     *   (LNL-165) — has to wait for this one, or it is applied to a layout that
+     *   is about to be thrown away. Signed out there is nothing stored and so
+     *   nothing to wait for.
      */
     data class State(
         val workspace: Workspace = Workspace(),
         val isRestored: Boolean = false,
+        val isSettled: Boolean = false,
     )
 
     /**
@@ -155,9 +166,15 @@ class WorkspaceBackingViewModel(
         // bootstrap stops reconciling against a layout that is about to be replaced
         // wholesale, and what is on screen is nobody's workspace until one of the
         // two answers arrives.
+        //
+        // [State.isSettled] for a narrower reason than its neighbour: it says
+        // whether a fetch for a STORED layout is still outstanding, and signed out
+        // there is none to make — the default the list seeds is already the last
+        // word. Signed in it stays false until [restore] answers, however the
+        // default gets seeded in the meantime.
         projects = emptyList()
         awaitingProjects = true
-        _stateFlow.value = _stateFlow.value.copy(isRestored = false)
+        _stateFlow.value = _stateFlow.value.copy(isRestored = false, isSettled = identity == null)
         restore(identity)
     }
 
@@ -546,16 +563,30 @@ class WorkspaceBackingViewModel(
             val stored = runCatching { storage.uiSettings().settings[UiSettingKeys.WORKSPACE] }
                 .getOrNull()
                 ?.let(WorkspaceCodec::decode)
-            // A stored workspace is trusted about its own shape but not about the
-            // ids inside it, which is why the fresh-id counter is seeded past
-            // whatever it holds: reusing one would make a new tab collide with a
-            // restored one, and the toolkit's geometry is keyed by tab id.
+            // The identity may have changed while this was in flight — a sign-out
+            // a beat after a sign-in — and this answer is the previous account's
+            // layout. Applying it would dress whoever is here now in it, and
+            // marking it settled would say the wrong fetch had answered.
+            if (loadedFor != identity) return@launch
             // Nothing stored is not a failure and not an empty workspace — it is an
             // account that has never arranged anything, and what it gets is the
             // default. Left to the project list, for the reason in the header: this
             // is the one branch that has no layout of its own to apply, so it is
             // the one branch that has to wait for something to build one from.
-            if (stored == null) return@launch
+            //
+            // It still SETTLES, and a failed fetch (which lands here too) settles
+            // with it: "there is nothing to restore" and "the server would not say"
+            // are both the end of waiting for a stored layout, and anything gated on
+            // [State.isSettled] must not hang for ever on an answer that has already
+            // arrived.
+            if (stored == null) {
+                markSettled()
+                return@launch
+            }
+            // A stored workspace is trusted about its own shape but not about the
+            // ids inside it, which is why the fresh-id counter is seeded past
+            // whatever it holds: reusing one would make a new tab collide with a
+            // restored one, and the toolkit's geometry is keyed by tab id.
             nextTabId = stored.tabs
                 .mapNotNull { it.id.removePrefix(TAB_ID_PREFIX).toIntOrNull() }
                 .maxOrNull()
@@ -564,7 +595,7 @@ class WorkspaceBackingViewModel(
             // Wins over a default the list may already have seeded in the meantime:
             // a stored layout is what the user arranged, and the default is only
             // ever the stand-in for not having one.
-            commit(ensureNotEmpty(stored), markRestored = true, save = false)
+            commit(ensureNotEmpty(stored), markRestored = true, markSettled = true, save = false)
             // ...and then checked against what this account can still see. If the
             // list has not arrived this does nothing and the list will do it; if it
             // arrived while this fetch was in flight, this is the only chance, since
@@ -633,16 +664,31 @@ class WorkspaceBackingViewModel(
     private fun commit(
         workspace: Workspace,
         markRestored: Boolean = false,
+        markSettled: Boolean = false,
         save: Boolean = true,
         saveNow: Boolean = false,
     ) {
         val next = _stateFlow.value.copy(
             workspace = workspace,
             isRestored = _stateFlow.value.isRestored || markRestored,
+            isSettled = _stateFlow.value.isSettled || markSettled,
         )
         if (next == _stateFlow.value) return
         _stateFlow.value = next
         if (save) persist(immediate = saveNow)
+    }
+
+    /**
+     * Say that the stored layout has answered, without changing the layout.
+     *
+     * For the branch that has no workspace to commit — an account with nothing
+     * stored, or a fetch that failed — where the only news is that the waiting is
+     * over. Guarded so it emits at most once: a state that is already settled must
+     * not tick the collectors again for saying so twice.
+     */
+    private fun markSettled() {
+        if (_stateFlow.value.isSettled) return
+        _stateFlow.value = _stateFlow.value.copy(isSettled = true)
     }
 
     private fun persist(immediate: Boolean) {

@@ -302,6 +302,16 @@ private fun start() {
         return
     }
 
+    // The deep links, read ONCE, before anything can rewrite the address bar
+    // (LNL-165). `syncUrl` replaces the query string with whatever pane is focused
+    // as soon as the first board state arrives, and these are applied later than
+    // that — so reading `window.location` at the point of use would read the app's
+    // own answer back and ask for the board it is already on. What the page was
+    // OPENED with is a fact about this page load, and it is captured here as one.
+    val bootProjectId = preferredProjectId()
+    val bootProjectName = preferredProjectName()
+    val bootTicket = preferredTicket()
+
     // One repository, shared. The view models each get the same instance rather
     // than building their own, so there is exactly one HTTP client and one place
     // that talks to the server — or, in demo mode (LNL-146), one in-memory world
@@ -654,6 +664,24 @@ private fun start() {
     var focusRaisedFor: Long? = mainViewModel.stateFlow.value.focusedIssueId
 
     /**
+     * Whether a boot deep link has said what this page is looking at, and what it
+     * said — an issue id, or null for "a board, so nothing issue-shaped" (LNL-165).
+     *
+     * The restore has a focus of its own: adopting a stored issue pane opens its
+     * window, and opening a window focuses it (see [reconcile]'s step 2). That is
+     * right for a plain reload — it is how `?issue=` comes back in the address bar
+     * and how the stored window is raised — and wrong the moment somebody arrived
+     * with a link, because the boards it waits on load AFTER the workspace, so it
+     * lands last and wins by accident. A link is an explicit request and the stored
+     * layout is not, so the link keeps focus and the adoption gives it back.
+     *
+     * Consulted only where an adoption actually happened, which is a boot-only
+     * event: after that pass these two are inert for the life of the page.
+     */
+    var deepLinkOwnsFocus = false
+    var deepLinkFocus: Long? = null
+
+    /**
      * Make the boards and the workspace agree, in one pass.
      *
      * Called from both collectors, because either side can move first: opening a
@@ -675,17 +703,32 @@ private fun start() {
             ws.openIssuePanes.forEach { pendingRestoredIssues[it.issueId] = it.projectId }
         }
         val state = boardState
-        pendingRestoredIssues.entries.toList().forEach { (issueId, projectId) ->
+        var adopted = false
+        // `toList()` — pairs, not `entries.toList()`. That copies the LIST but not
+        // the entries in it, and a Kotlin/JS map entry is a live view onto the map:
+        // removing below invalidates every entry still to come, and reading the
+        // next one throws "the backing map has been modified after this entry was
+        // obtained" — mid-`reconcile`, so the boards are never asked for and the
+        // panes stay empty for ever. It needed two restored issue panes to show,
+        // which is why it hid for as long as it did.
+        pendingRestoredIssues.toList().forEach { (issueId, projectId) ->
             val board = state.boards[projectId] ?: return@forEach
             pendingRestoredIssues.remove(issueId)
             if (board.issues.any { it.id == issueId }) {
                 mainViewModel.onIssueOpened(projectId, issueId)
+                adopted = true
             } else {
                 // Deleted, or no longer visible to this reader, since the layout
                 // was stored. The pane goes rather than sitting there empty.
                 workspaceViewModel.onIssueClosed(issueId)
             }
         }
+        // Opening a window focuses it, and a restored pane is the layout coming
+        // back rather than a request to look at it. A deep link IS such a request
+        // and it was made first, so it keeps focus — otherwise the stored layout's
+        // issue takes the address bar back and step 5 below hauls the reader over
+        // to its tab, which is the second half of LNL-165.
+        if (adopted && deepLinkOwnsFocus) mainViewModel.onIssueWindowFocused(deepLinkFocus)
 
         // 3. A ticket reference or a `?issue=` deep link, waiting on its board.
         //    Resolved by NUMBER, which is all a reference carries.
@@ -699,7 +742,13 @@ private fun start() {
             if (board == null) return@forEach
             pendingTickets.remove(ticket)
             board.issues.firstOrNull { it.number == ticket.number }
-                ?.let { mainViewModel.onIssueOpened(projectId, it.id) }
+                ?.let {
+                    mainViewModel.onIssueOpened(projectId, it.id)
+                    // A `?issue=` link carries only a number, so which issue it
+                    // meant is not knowable until here. This is where the focus the
+                    // link claimed acquires an id — see [deepLinkFocus].
+                    if (deepLinkOwnsFocus) deepLinkFocus = it.id
+                }
         }
 
         // 4. Mirror: every window that exists has a pane, and every pane names a
@@ -745,6 +794,57 @@ private fun start() {
             focusRaisedFor = focused
             now.openIssues.firstOrNull { it.issueId == focused }
                 ?.let { workspaceViewModel.onIssueOpened(it.issueId, it.projectId) }
+        }
+    }
+
+    /**
+     * Open what the page was opened *for*: `?projectId=`, the embed's `?project=`
+     * and `?issue=` (LNL-165).
+     *
+     * Once per page, and only when BOTH answers it depends on have arrived —
+     * exactly the pair, and exactly the reason, that guards [reconcile]:
+     *
+     *  - the project list, because a link naming a project by id or by name means
+     *    nothing before there is a list to resolve it against;
+     *  - the workspace, because [WorkspaceBackingViewModel.State.isSettled] is when
+     *    the layout stops being replaced wholesale. Gating on the list alone is the
+     *    bug this fixes: signed in, the list wins the race, the link opened its
+     *    board, and the stored workspace then landed on top of it — active tab and
+     *    all — leaving the reader on whatever board they had last, with the address
+     *    bar honestly reporting it. `?issue=` failed harder still, since the board
+     *    its ticket was waiting on was the one being clobbered.
+     *
+     * Signed out neither wait is long and nothing was ever broken, which is why the
+     * lunamux.dev embed — always a visitor — kept working throughout.
+     *
+     * Called from both collectors, so it fires on whichever of the two completes
+     * the pair last, and the [deepLinksSpent] latch makes the second call a no-op.
+     */
+    fun applyDeepLinks() {
+        if (deepLinksSpent) return
+        val state = mainViewModel.stateFlow.value
+        if (!state.isLoaded) return
+        if (!workspaceState.isRestored || !workspaceState.isSettled) return
+        deepLinksSpent = true
+        // `?projectId=` and the embed's `?project=` both name a board to open; the
+        // id wins, being the one that survives a rename.
+        val projectId = bootProjectId?.takeIf { id -> state.projects.any { it.id == id } }
+            ?: mainViewModel.projectIdNamed(bootProjectName)
+        projectId?.let {
+            workspaceViewModel.onBoardOpened(it)
+            deepLinkOwnsFocus = true
+            // "The board" is spelt null for the address bar, exactly as a press on
+            // a board pane spells it (see BoardWindows.onPaneMousedown): the reader
+            // asked for a board, so no issue restored behind it belongs in the URL.
+            deepLinkFocus = null
+            mainViewModel.onIssueWindowFocused(null)
+        }
+        // ...and `?issue=LMX-12`, which opens its project's board and then waits for
+        // it — see navigateToTicket and reconcile's step 3. Its focus is claimed
+        // here and named there, once the board says which issue that number is.
+        bootTicket?.let {
+            deepLinkOwnsFocus = true
+            navigateToTicket(it)
         }
     }
 
@@ -1302,6 +1402,9 @@ private fun start() {
                 issueWindows.sync(state)
                 dialogs.render(state)
                 boardState = state
+                // Before reconciling, so a board the link opens is one this pass
+                // can already see. Both collectors call it; see applyDeepLinks.
+                applyDeepLinks()
                 reconcile()
                 latest = snapshotOf(workspaceState.workspace)
                 deliver()
@@ -1332,6 +1435,10 @@ private fun start() {
                 boardWindows.sync(boardState, ws.workspace)
                 settingsPanes.sync(boardState, ws.workspace)
                 analyticsPanes.sync(ws.workspace)
+                // The half of the pair the board collector cannot see: signed in,
+                // the stored layout lands here, and this is the tick the deep link
+                // has been waiting for.
+                applyDeepLinks()
                 reconcile()
                 latest = snapshotOf(ws.workspace)
                 deliver()
@@ -1434,24 +1541,6 @@ private fun start() {
                 if (!it.isBusy) workspaceViewModel.onProjectsChanged(it.projects)
             }
         }
-        launch {
-            // The deep links, resolved once the project list has arrived — they name
-            // projects by name or id, and neither means anything before then. One
-            // pass: `isLoaded` goes true exactly once per page.
-            mainViewModel.stateFlow.collect { state ->
-                if (!state.isLoaded) return@collect
-                if (deepLinksSpent) return@collect
-                deepLinksSpent = true
-                // `?projectId=` and the embed's `?project=` both name a board to
-                // open; the id wins, being the one that survives a rename.
-                val projectId = preferredProjectId()?.takeIf { id -> state.projects.any { it.id == id } }
-                    ?: mainViewModel.projectIdNamed(preferredProjectName())
-                projectId?.let { workspaceViewModel.onBoardOpened(it) }
-                // ...and `?issue=LMX-12`, which opens its project's board and then
-                // waits for it — see navigateToTicket and reconcile's step 3.
-                preferredTicket()?.let(::navigateToTicket)
-            }
-        }
 
         // Only the session starts a request. Nothing else has anything to ask for
         // until it says who is asking.
@@ -1463,10 +1552,11 @@ private fun start() {
  * Whether the `?issue=` / `?projectId=` / `?project=` deep links have been acted
  * on.
  *
- * A page-lifetime one-shot, at file scope because [start] runs once per page and
- * a local would be captured by the collector that needs to survive between
- * emissions. Left unset, a link would re-open its board on every later state tick
- * — dismiss the pane, and it would spring back.
+ * A page-lifetime one-shot: [start] runs once per page, and the two collectors
+ * that can spend it both call `applyDeepLinks`, so whichever completes the pair
+ * of conditions last does the work and the other finds it done. Left unset, a
+ * link would re-open its board on every later state tick — dismiss the pane, and
+ * it would spring back.
  */
 private var deepLinksSpent: Boolean = false
 
