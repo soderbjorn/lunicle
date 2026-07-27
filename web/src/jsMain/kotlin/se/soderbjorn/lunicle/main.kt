@@ -1422,7 +1422,17 @@ private fun start() {
             // three things: seeding the default layout, naming a tab after its
             // board, and pruning a pane whose project has gone. Its own collector so
             // it fires on the first load rather than waiting for a workspace tick.
-            mainViewModel.stateFlow.collect { workspaceViewModel.onProjectsChanged(it.projects) }
+            //
+            // Only while the board view model is not busy — that is, only when the
+            // list is an ANSWER rather than a request in flight. An identity change
+            // clears the list and re-fetches it, so a busy tick carries an empty one
+            // that means "asking", and the workspace treats the first list after a
+            // sign-out as the statement of what a visitor may see. Forwarding the
+            // asking-tick would have it seed a layout of no boards at all and then
+            // consider the question settled.
+            mainViewModel.stateFlow.collect {
+                if (!it.isBusy) workspaceViewModel.onProjectsChanged(it.projects)
+            }
         }
         launch {
             // The deep links, resolved once the project list has arrived — they name
