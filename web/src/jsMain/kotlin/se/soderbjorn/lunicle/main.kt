@@ -933,16 +933,15 @@ private fun start() {
                 //
                 // The whole menu is ours, "New tab" included — the toolkit would
                 // otherwise render that row first, from TabSource.onAdd, and the
-                // order here is deliberate. It reads as three groups, most-used
+                // order here is deliberate. It reads as two groups, most-used
                 // first:
                 //
                 //   New issue          ← the "+"'s own click, and the common act
+                //   Open board ▸       ← not creating anything: a view onto work
+                //                        that already exists
                 //   New tab
                 //   ──────────
                 //   New project…       ← rare, and a dialog rather than a pane
-                //   ──────────
-                //   New board ▸        ← not creating anything: a view onto work
-                //                        that already exists
                 //
                 // A separator is only drawn between two groups that both have
                 // something in them, so a reader with no create rights gets a menu
@@ -970,6 +969,32 @@ private fun start() {
                             ),
                         )
                     }
+                    if (state.projects.isNotEmpty()) {
+                        // "Open board ▸" — the project list, as a flyout. Flat rows
+                        // would put one entry per project in the top-level menu and
+                        // crowd out everything else as a deployment grows.
+                        add(
+                            PaneAddMenuItem(
+                                id = "new-board",
+                                label = "Open board",
+                                iconHtml = ICON_BOARD_PANE,
+                                children = state.projects.map { project ->
+                                    PaneAddMenuItem(
+                                        id = "new-board-${project.id}",
+                                        label = project.name,
+                                        iconHtml = ICON_BOARD_PANE,
+                                        // Added to the tab you are ON, never
+                                        // jumped to wherever that board already
+                                        // is: this menu is how a tab becomes a
+                                        // working set. See onBoardAdded, and
+                                        // onBoardOpened for the link's rule.
+                                        onSelect = { workspaceViewModel.onBoardAdded(project.id) },
+                                    )
+                                },
+                                onSelect = {},
+                            ),
+                        )
+                    }
                     add(
                         PaneAddMenuItem(
                             id = "new-tab",
@@ -991,35 +1016,7 @@ private fun start() {
                         )
                     }
                 }
-                val boards = buildList {
-                    if (state.projects.isNotEmpty()) {
-                        // "New board ▸" — the project list, as a flyout. Flat rows
-                        // would put one entry per project in the top-level menu and
-                        // crowd out everything else as a deployment grows.
-                        add(
-                            PaneAddMenuItem(
-                                id = "new-board",
-                                label = "New board",
-                                iconHtml = ICON_BOARD_PANE,
-                                children = state.projects.map { project ->
-                                    PaneAddMenuItem(
-                                        id = "new-board-${project.id}",
-                                        label = project.name,
-                                        iconHtml = ICON_BOARD_PANE,
-                                        // Added to the tab you are ON, never
-                                        // jumped to wherever that board already
-                                        // is: this menu is how a tab becomes a
-                                        // working set. See onBoardAdded, and
-                                        // onBoardOpened for the link's rule.
-                                        onSelect = { workspaceViewModel.onBoardAdded(project.id) },
-                                    )
-                                },
-                                onSelect = {},
-                            ),
-                        )
-                    }
-                }
-                listOf(create, projects, boards)
+                listOf(create, projects)
                     .filter { it.isNotEmpty() }
                     .reduceOrNull { acc, group -> acc + paneAddSeparator("sep-${acc.size}") + group }
                     .orEmpty()

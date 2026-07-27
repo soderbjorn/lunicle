@@ -310,10 +310,10 @@ class WorkspaceBackingViewModel(
 
     /**
      * Put [projectId]'s board in the tab the user is on — the "+" menu's
-     * **New board**.
+     * **Open board**.
      *
      * Deliberately NOT [onBoardOpened], and the difference is the whole point of a
-     * working set. "New board" is a statement about *this tab*: it is how a
+     * working set. "Open board" is a statement about *this tab*: it is how a
      * release tab comes to hold the two projects the release spans. Jumping to
      * some other tab that already happens to show that board — which is right for
      * a link, where the user asked to *see* something — would make the menu unable
