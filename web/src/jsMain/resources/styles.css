@@ -922,19 +922,30 @@ code, pre, kbd, samp { font-family: var(--mono); }
   min-height: 0;
 }
 
-/* `flex: 1 1 220px` — grow to share the width, but never shrink below 220px.
+/* `flex: 1 1 220px` with a 180px floor — grow to share the width, shrink to fit
+   the board on screen, and only scroll once even that is not enough.
 
    The three parts each do a job, and the middle one is the one worth naming:
      - grow 1: the columns divide whatever width is left between them, so a wide
        monitor gets wide columns rather than a 1100px board and a lake of empty
        space to its right.
-     - shrink 1 with min-width: they may not squeeze past 220px. Without the
+     - shrink 1 with min-width: they squeeze, but not past 180px. Without the
        min-width, `flex-shrink` would happily compress eight columns into a
        phone's width and every card would be one word per line.
      - basis 220px: the width they start from, and therefore the width they all
        agree on before any growing happens.
 
-   Below that floor .board's `overflow-x: auto` takes over and the board scrolls,
+   The floor is 180 and not the 220 it started as, because 220 made a six-column
+   board scroll on a window that six columns would have fitted in perfectly well:
+   the last lane was cut in half by the pane's edge, and a column you can only
+   half see is a column you have to go looking for. Squeezed to 180 the cards are
+   tighter — a title runs to three lines where it ran to two — but the whole board
+   is on screen, which is the thing the board is for. A status name that no longer
+   fits on one line wraps to two and stays bottom-aligned in its head (see
+   .column-head), so the rule under every head, and the cards under that, still
+   line up across the board however the names break.
+
+   Below the floor .board's `overflow-x: auto` takes over and the board scrolls,
    which is the behaviour that was here before — it is now the fallback rather
    than the norm. */
 .column {
@@ -956,7 +967,7 @@ code, pre, kbd, samp { font-family: var(--mono); }
   box-shadow: inset -1px 0 0 var(--border);
   border-radius: 0;
   padding: 2px 10px 13px;
-  min-width: 220px;
+  min-width: 180px;
   flex: 1 1 220px;
   transition: border-color .12s, background .12s;
   /* A column of its own: the head pins, the list (below) takes the slack and
