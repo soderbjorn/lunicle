@@ -92,6 +92,17 @@ private fun resolveAllowedFrameAncestors(): String? =
 private const val CONTENT_SECURITY_POLICY = "Content-Security-Policy"
 
 /**
+ * How old a draft issue must be before the startup sweep takes it — seven days.
+ *
+ * Generous on purpose, because the database cannot tell an abandoned draft from
+ * an editor somebody left open: both are a row with `is_draft = 1` and an old
+ * `created_at`. Seven days is far longer than any tab survives a laptop's sleep,
+ * a browser update or a deploy of this server, and losing a week-old unsaved
+ * "New issue" costs a title nobody typed. See IssueStore.sweepAbandonedDrafts.
+ */
+private const val ABANDONED_DRAFT_AGE_MILLIS = 7L * 24 * 60 * 60 * 1000
+
+/**
  * Build the `Content-Security-Policy` value that permits framing from
  * [resolveAllowedFrameAncestors] and nothing else.
  *
@@ -429,6 +440,19 @@ fun Application.module() {
         if (expiredEmailCodes > 0) log.info("Removed $expiredEmailCodes expired e-mail code(s)")
         val liveEmailCodes = emailCodes.size()
         if (liveEmailCodes > 0) log.info("E-mail codes outstanding: $liveEmailCodes")
+
+        // The draft issues nobody is writing any more (LNL-183). "New issue"
+        // creates its row before the editor is filled in — an inline image needs an
+        // owner — and Cancel deletes it, but a closed tab, a crash or a request
+        // that died in flight leaves it behind invisible and forever. They cost
+        // little on their own; what they cost is a lie in the settings dialog, and
+        // they hold attachments.
+        //
+        // Immediately BEFORE the attachment sweep, so a draft freed here has its
+        // inline image collected on the same boot rather than sitting on the volume
+        // until the next one.
+        val abandonedDrafts = issues.sweepAbandonedDrafts(System.currentTimeMillis() - ABANDONED_DRAFT_AGE_MILLIS)
+        if (abandonedDrafts > 0) log.info("Removed $abandonedDrafts abandoned draft issue(s)")
 
         // Collects the files behind cancelled drafts, half-failed writes, and
         // cascades that took an attachment's row but could not reach its bytes.

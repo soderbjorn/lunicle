@@ -57,6 +57,15 @@ class FirestoreVocabularyStoreContractTest : VocabularyStoreContract() {
         return id
     }
 
+    /** As [fileIssue], stopping before the publish — which is all a draft is. */
+    override suspend fun createDraft(projectId: Long): Long {
+        val statusId = store.rows(projectId, VocabularyKind.STATUS).first().id
+        val priorityId = store.rows(projectId, VocabularyKind.PRIORITY).firstOrNull()?.id ?: nextId()
+        return issues.insertDraft(projectId, "", statusId, priorityId, Author.Nobody).first
+    }
+
+    override suspend fun issueExists(id: Long): Boolean = issues.findById(id) != null
+
     @BeforeTest
     fun requireEmulator() = assumeTrue("Firestore emulator not configured", FirestoreEmulator.isAvailable)
 

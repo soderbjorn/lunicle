@@ -152,8 +152,13 @@ interface IssueStore {
 
     /**
      * How many issues hold each status in one project, as status id → count.
-     * Drafts are included — a draft holds a `status_id` like any other row, and it
-     * is a draft that makes a delete fail, so a count that hid it would lie.
+     *
+     * Drafts are excluded, like everywhere else. They were counted once, because
+     * a draft holds a `status_id` like any other row and it is a draft that makes
+     * the delete fail — and that made the leftmost column of a long-lived project
+     * undeletable, refused over rows its admin could not see (LNL-183). The
+     * counts answer for the visible board; [deleteDraftsWithStatus] and
+     * [sweepAbandonedDrafts] deal with the invisible rows.
      */
     suspend fun usageByStatus(projectId: Long): Map<Long, Long>
 
@@ -168,4 +173,35 @@ interface IssueStore {
 
     /** As [usageByLabel], for components. */
     suspend fun usageByComponent(projectId: Long): Map<Long, Long>
+
+    /**
+     * Delete this project's drafts sitting in one status, and say how many went.
+     *
+     * The other half of leaving drafts out of [usageByStatus]: a draft is an
+     * unpublished row nobody but its author has seen, so it cannot be what an
+     * admin is told to "move somewhere else first" — deleting the column takes it
+     * with the column. Called by `VocabularyRepository.delete` immediately before
+     * the status row goes, which keeps SQLite's RESTRICT as the guarantee behind
+     * it rather than replacing it.
+     *
+     * Project-scoped as well as status-scoped: a status id belonging to another
+     * project deletes nothing.
+     */
+    suspend fun deleteDraftsWithStatus(projectId: Long, statusId: Long): Long
+
+    /** As [deleteDraftsWithStatus], for a priority — `priority_id` is NOT NULL too. */
+    suspend fun deleteDraftsWithPriority(projectId: Long, priorityId: Long): Long
+
+    /**
+     * Startup housekeeping: delete drafts created before [cutoff], and say how
+     * many went.
+     *
+     * "New issue" writes its row before the editor is filled in, so an inline
+     * image has an owner from the first keystroke. Cancel deletes that row; a
+     * closed tab, a crash or a request that died in flight leaves it behind, and
+     * nothing else ever collects it. The caller passes the cutoff — see
+     * `Application.module`, which sweeps here just before the attachment sweep so
+     * a freed draft's file is collected on the same boot.
+     */
+    suspend fun sweepAbandonedDrafts(cutoff: Long): Long
 }

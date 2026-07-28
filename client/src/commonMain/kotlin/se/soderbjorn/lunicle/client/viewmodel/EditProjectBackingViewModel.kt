@@ -104,9 +104,15 @@ data class ProjectDeletePrompt(
  *
  * @property isDeletable whether to offer the delete button at all. An affordance;
  *   the server refuses regardless. See the server's VocabularyRepository.
- * @property deleteBlockedReason why it is not offered, for the view to hang off
- *   the disabled button. A disabled control with no explanation is the most
+ * @property deleteBlockedReason why it is not offered, in full: the sentence that
+ *   says what to do about it. A disabled control with no explanation is the most
  *   annoying thing a dialog can do — the same reasoning as [State.validationMessage].
+ * @property deleteBlockedSummary the same fact in two or three words, for the view
+ *   to render *beside* the dead button rather than inside a tooltip. LNL-183 was
+ *   filed against a Delete that had the sentence and showed nobody: the reason has
+ *   to be readable without hovering a control that cannot be hovered, and a full
+ *   sentence on every blocked row in an eight-column board is a wall of text. So
+ *   the glanceable half is visible and the instruction stays on the title.
  * @property canMoveUp whether this row can go earlier. False for the first row,
  *   and while a write is in flight. Every kind is arrangeable — see LNL-28.
  * @property showsClosingFlag whether to render the "needs a resolution"
@@ -125,6 +131,7 @@ data class VocabularyRowState(
     val isDone: Boolean,
     val isDeletable: Boolean,
     val deleteBlockedReason: String?,
+    val deleteBlockedSummary: String?,
     val canMoveUp: Boolean,
     val canMoveDown: Boolean,
     val showsClosingFlag: Boolean,
@@ -830,6 +837,10 @@ class EditProjectBackingViewModel(
          *    refuses to orphan the issues pointing at it.
          *  - A label or a component in use can go, and takes its links with it.
          *    That is the confirm's sentence, not a reason to disable anything.
+         *
+         * "In use" means *published* issues. A draft is on nobody's board, so it
+         * is not something an admin can be told to move — the server does not
+         * count one and deletes it with the row instead (LNL-183).
          */
         private fun VocabularyEntry.toRow(
             kind: VocabularyKind,
@@ -844,6 +855,14 @@ class EditProjectBackingViewModel(
                 requiresResolution = requiresResolution,
                 isDone = isDone,
                 isDeletable = !isLastOfAKindThatMatters && !isBlockedByUse && !isBusy,
+                // Two or three words, on the row. The long sentence below says what
+                // to do; this says what is true, and it is the half somebody
+                // reading a greyed-out Delete actually gets to see.
+                deleteBlockedSummary = when {
+                    isLastOfAKindThatMatters -> "the only ${kind.noun}"
+                    isBlockedByUse -> if (usageCount == 1) "1 issue" else "$usageCount issues"
+                    else -> null
+                },
                 deleteBlockedReason = when {
                     isLastOfAKindThatMatters ->
                         "A project needs at least one ${kind.noun}. Add another first."

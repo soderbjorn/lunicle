@@ -32,6 +32,12 @@ abstract class VocabularyStoreContract {
     /** File one issue, which lands in the leftmost status, marking it in use. */
     protected abstract suspend fun fileIssue(projectId: Long): Long
 
+    /** Start an issue and leave it unsaved — a draft, which also lands in the leftmost status. */
+    protected abstract suspend fun createDraft(projectId: Long): Long
+
+    /** Whether an issue row is still there, for asserting what a delete took with it. */
+    protected abstract suspend fun issueExists(id: Long): Boolean
+
     @Test
     fun `add appends at the end of the order`(): Unit = runBlocking {
         val project = newProject()
@@ -104,5 +110,29 @@ abstract class VocabularyStoreContract {
         val leftmost = store.rows(project, VocabularyKind.STATUS).first()
         assertTrue(leftmost.usageCount > 0, "the filed issue counts against its status")
         assertFailsWith<VocabularyRefusal> { store.delete(project, VocabularyKind.STATUS, leftmost) }
+    }
+
+    /**
+     * A draft does not veto a column, and goes with it (LNL-183).
+     *
+     * The rule this pins is the whole of that ticket: a draft is an unpublished row
+     * nobody but its author has ever seen, so it cannot be what an admin is told to
+     * "move somewhere else first" — and since a draft always lands in the LEFTMOST
+     * column, counting it made the first column of a long-lived project permanently
+     * undeletable. Both halves are asserted here, the count and the delete, because
+     * a backend that excluded drafts from the count without clearing them would
+     * trade a wrong refusal for a raw constraint violation.
+     */
+    @Test
+    fun `a draft does not block deleting its status, and goes with it`(): Unit = runBlocking {
+        val project = newProject()
+        val draft = createDraft(project) // lands in the leftmost status, invisibly
+        val leftmost = store.rows(project, VocabularyKind.STATUS).first()
+        assertEquals(0L, leftmost.usageCount, "a draft is on nobody's board and counts against nothing")
+
+        store.delete(project, VocabularyKind.STATUS, leftmost)
+
+        assertTrue(store.rows(project, VocabularyKind.STATUS).none { it.id == leftmost.id }, "the column went")
+        assertTrue(!issueExists(draft), "and took its draft with it, rather than being refused over it")
     }
 }

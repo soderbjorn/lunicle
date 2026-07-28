@@ -484,14 +484,20 @@ internal class DemoWorld {
 
     // ── Project settings ──────────────────────────────────────────────────────
 
-    private fun usageOfStatus(p: DemoProject, id: Long) = p.issues.count { it.statusId == id }
-    private fun usageOfPriority(p: DemoProject, id: Long) = p.issues.count { it.priorityId == id }
-    private fun usageOfResolution(p: DemoProject, id: Long) = p.issues.count { it.resolutionId == id }
-    private fun usageOfLabel(p: DemoProject, id: Long) = p.issues.count { id in it.labelIds }
-    private fun usageOfComponent(p: DemoProject, id: Long) = p.issues.count { id in it.componentIds }
-    private fun usageOfSprint(p: DemoProject, id: Long) = p.issues.count { it.sprintId == id }
+    // Drafts left out, as the server leaves them out (LNL-183): these numbers are
+    // what the settings dialog shows beside a Delete it will not offer, and a
+    // count that included the half-written issue in the demo's first column would
+    // explain a greyed-out button with an issue that is on nobody's board.
+    private fun usageOfStatus(p: DemoProject, id: Long) = p.published.count { it.statusId == id }
+    private fun usageOfPriority(p: DemoProject, id: Long) = p.published.count { it.priorityId == id }
+    private fun usageOfResolution(p: DemoProject, id: Long) = p.published.count { it.resolutionId == id }
+    private fun usageOfLabel(p: DemoProject, id: Long) = p.published.count { id in it.labelIds }
+    private fun usageOfComponent(p: DemoProject, id: Long) = p.published.count { id in it.componentIds }
+    private fun usageOfSprint(p: DemoProject, id: Long) = p.published.count { it.sprintId == id }
     private fun usageOfVersion(p: DemoProject, id: Long) =
-        p.issues.count { it.plannedVersionId == id || it.fixedVersionId == id }
+        p.published.count { it.plannedVersionId == id || it.fixedVersionId == id }
+
+    private val DemoProject.published: List<DemoIssue> get() = issues.filter { !it.isDraft }
 
     private fun statusEntry(p: DemoProject, s: DemoStatus, usage: Int) =
         VocabularyEntry(s.id, s.name, s.position, s.requiresResolution, s.isDone, usage)

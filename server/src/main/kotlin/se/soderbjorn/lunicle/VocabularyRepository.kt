@@ -48,9 +48,9 @@ import se.soderbjorn.lunicle.db.LunicleDatabase
  *   of the five tables carries one now — labels and components gained theirs in
  *   8.sqm, back-filled to the alphabetical order they used to be read in. See
  *   [VocabularyKind.isOrdered], which no longer distinguishes them.
- * @property usageCount how many issues hold this row, drafts included. A refusal
- *   for a status or a priority, a consequence for a label. See
- *   [IssueStore.usageByStatus].
+ * @property usageCount how many *published* issues hold this row — drafts are not
+ *   counted, and are cleared out of the way instead (LNL-183). A refusal for a
+ *   status or a priority, a consequence for a label. See [IssueStore.usageByStatus].
  */
 data class VocabularyRow(
     val id: Long,
@@ -244,8 +244,13 @@ class VocabularyRepository(
      *     leaves them otherwise untouched, which is why [usageCount] is a sentence
      *     for those two rather than a gate. See IssueLabels.sq.
      *
+     * And one thing that is deliberately *not* a refusal: the drafts sitting in
+     * the row. [usageCount] counts published issues only, and [clearDrafts] takes
+     * the unpublished ones with the row — see its comment for why an invisible
+     * half-written issue must not be able to veto a column (LNL-183).
+     *
      * The count is read, and then the delete is *also* wrapped: the two are
-     * separate queries, so a draft filed in between would slip past the count and
+     * separate queries, so an issue filed in between would slip past the count and
      * hit the constraint instead. That window is narrow and real, and the whole
      * point of this method is that an admin never sees a raw violation.
      *
@@ -263,16 +268,9 @@ class VocabularyRepository(
         if (kind.restrictsOnUse && row.usageCount > 0) {
             throw VocabularyRefusal(inUseMessage(kind, row))
         }
+        clearDrafts(projectId, kind, row.id)
         try {
-            when (kind) {
-                VocabularyKind.LABEL -> labels.delete(row.id)
-                VocabularyKind.COMPONENT -> components.delete(row.id)
-                VocabularyKind.STATUS -> statuses.delete(row.id)
-                VocabularyKind.PRIORITY -> priorities.delete(row.id)
-                VocabularyKind.RESOLUTION -> resolutions.delete(row.id)
-                VocabularyKind.SPRINT -> sprints.delete(row.id)
-                VocabularyKind.VERSION -> versions.delete(row.id)
-            }
+            deleteRow(kind, row.id)
         } catch (violation: Exception) {
             // The count said zero and the database disagreed, so something was
             // filed while this request was in flight. Re-read rather than repeat
@@ -280,11 +278,59 @@ class VocabularyRepository(
             // trusts it.
             val now = find(projectId, kind, row.id)
             if (now != null && now.usageCount > 0) throw VocabularyRefusal(inUseMessage(kind, now))
+            // Still nothing published pointing at it, so what the constraint is
+            // refusing over is a draft — one opened between the clear above and
+            // this delete, which is a race that really happens: a new draft lands
+            // in the leftmost column, and the leftmost column is exactly the one
+            // an admin tidying a board deletes. Clear and try once more rather
+            // than report a violation over a row nobody can be asked to move.
+            if (clearDrafts(projectId, kind, row.id) > 0) {
+                deleteRow(kind, row.id)
+                return
+            }
             // Not a usage problem, then, and not one this class knows how to
             // phrase. Rethrow rather than invent an explanation — a 500 with a
             // stack trace beats a confident 400 that is wrong about why.
             throw violation
         }
+    }
+
+    private suspend fun deleteRow(kind: VocabularyKind, id: Long) {
+        when (kind) {
+            VocabularyKind.LABEL -> labels.delete(id)
+            VocabularyKind.COMPONENT -> components.delete(id)
+            VocabularyKind.STATUS -> statuses.delete(id)
+            VocabularyKind.PRIORITY -> priorities.delete(id)
+            VocabularyKind.RESOLUTION -> resolutions.delete(id)
+            VocabularyKind.SPRINT -> sprints.delete(id)
+            VocabularyKind.VERSION -> versions.delete(id)
+        }
+    }
+
+    /**
+     * Take the drafts pointing at a row with the row, and say how many went.
+     *
+     * A draft is an issue whose editor has not been saved: it is on nobody's
+     * board, it has no number anyone has seen, and its author may well have closed
+     * the tab on it a month ago. Counting one as "in use" is what made the first
+     * column of a long-lived project permanently undeletable — refused over rows
+     * its admin could not see, could not move, and had no way to learn about
+     * (LNL-183). Deleting them here is the answer, and it is a narrow one: only
+     * the two kinds an issue points at with a NOT NULL column, only this project,
+     * and only rows that were never published.
+     *
+     * This does not weaken RESTRICT. The constraint still stands behind the
+     * delete, still refuses to orphan a published issue, and is still what the
+     * `catch` above translates into a sentence.
+     */
+    private suspend fun clearDrafts(projectId: Long, kind: VocabularyKind, id: Long): Long = when (kind) {
+        VocabularyKind.STATUS -> issues.deleteDraftsWithStatus(projectId, id)
+        VocabularyKind.PRIORITY -> issues.deleteDraftsWithPriority(projectId, id)
+        // A draft is created with no resolution, no sprint and no version, and
+        // nothing writes any of them before publish — so there is nothing to
+        // clear, and a statement that would delete somebody's draft for holding a
+        // label is not one worth having.
+        else -> 0
     }
 
     /**

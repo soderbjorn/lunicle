@@ -480,9 +480,11 @@ class IssueStore(
      * and for a label it is a sentence (the row goes, the issues are unlabelled).
      * [VocabularyRepository] knows which is which; this only counts.
      *
-     * Drafts are included. See Issues.sq's usageByStatus — a draft holds a
-     * status_id like any other row, so it is a draft that makes the delete fail,
-     * and a count that hid it would promise a delete that then explodes.
+     * Drafts are excluded. See Issues.sq's usageByStatus for the bug that settled
+     * it (LNL-183): counting them meant a project's leftmost column could be
+     * refused forever over abandoned rows nobody can see, let alone move.
+     * [deleteDraftsWithStatus] and [sweepAbandonedDrafts] are what let this count
+     * be about the visible board without promising a delete that then explodes.
      *
      * Absent means zero, which is why these are plain maps rather than maps with
      * a zero row per unused id: a `GROUP BY` has nothing to group for a status
@@ -525,6 +527,29 @@ class IssueStore(
     override suspend fun usageByComponent(projectId: Long): Map<Long, Long> = withContext(DatabaseDispatcher) {
         database.issueComponentsQueries.usageByComponent(projectId).executeAsList()
             .associate { it.component_id to it.uses }
+    }
+
+    /**
+     * Clear one status's drafts out of the way of its delete, and say how many.
+     *
+     * `.value` is the row count SQLDelight hands back from a DELETE — the same
+     * shape the OAuth sweeps use, and the reason none of these need a `changes()`
+     * query of their own.
+     */
+    override suspend fun deleteDraftsWithStatus(projectId: Long, statusId: Long): Long =
+        withContext(DatabaseDispatcher) {
+            database.issuesQueries.deleteDraftsWithStatus(projectId, statusId).value
+        }
+
+    /** As [deleteDraftsWithStatus], for a priority. */
+    override suspend fun deleteDraftsWithPriority(projectId: Long, priorityId: Long): Long =
+        withContext(DatabaseDispatcher) {
+            database.issuesQueries.deleteDraftsWithPriority(projectId, priorityId).value
+        }
+
+    /** Startup housekeeping. See [se.soderbjorn.lunicle.store.IssueStore.sweepAbandonedDrafts]. */
+    override suspend fun sweepAbandonedDrafts(cutoff: Long): Long = withContext(DatabaseDispatcher) {
+        database.issuesQueries.deleteDraftsOlderThan(cutoff).value
     }
 }
 

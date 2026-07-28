@@ -155,8 +155,12 @@ enum class VocabularyKind(val key: String, val noun: String, val plural: String)
  *   phrases both sentences, and the server refuses regardless of what the client
  *   believed.
  *
- *   Drafts are counted. A draft issue holds a status like any other, so it is a
- *   draft that can make a delete fail — see Issues.sq's usageByStatus.
+ *   Published issues only. A draft holds a status like any other row, and counting
+ *   one used to be the point — it is a draft that makes a delete fail — but a
+ *   draft lands in the leftmost column and is never collected, so that made the
+ *   first column of a long-lived project permanently undeletable over issues its
+ *   admin could not see (LNL-183). The server clears the drafts out of a deleted
+ *   row's way instead; see Issues.sq's usageByStatus.
  */
 @Serializable
 data class VocabularyEntry(
