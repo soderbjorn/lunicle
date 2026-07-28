@@ -94,21 +94,31 @@
      (LNL-118). lunula paints `--dt-font-mono` / `--dt-font-prop` on
      documentElement when a user picks a Monospaced / Proportional (main-content)
      font in the Appearance panel, or when a deployment brand defaults one; those
-     tokens are otherwise UNSET, so each `var()` here falls through to the exact
-     stack Lunicle always shipped. That fallthrough is what keeps an unbranded,
-     un-overridden instance byte-identical — prose and code both resolve to the
-     same monospace stack, the terminal look Lunicle was born with — while a
-     brand or a user pick lifts prose to a proportional face and leaves code
-     monospaced.
+     tokens are otherwise UNSET, so each `var()` here falls through to a stack
+     named in full below.
 
        --mono  → code / fixed-width surfaces (`code`, `pre`, ticket numbers,
                  copyable server URLs) — anything alignment-sensitive.
        --prose → running content (issue titles, card text, dialog copy, fields,
                  the rendered description). This is the `body` default below, so
                  every content element inherits it unless it opts back into
-                 `--mono`. */
+                 `--mono`.
+
+     `--prose`'s fallback is PROPORTIONAL, and it is not a taste of ours: it is
+     the toolkit's own `.dt-pane-content` stack spelled out. Since LNL-160 every
+     Lunicle surface is a pane, and `.dt-pane-content` paints
+     `var(--dt-font-prop, <that sans stack>)` over whatever `body` carries — so
+     on an unbranded instance the app's content face has BEEN that sans stack
+     ever since, and the monospace this used to fall through to (the terminal
+     look Lunicle was born with) survived only where a pane's cascade could not
+     reach: the surfaces mounted on `<body>`. Those are the value pickers
+     (`.lunicle-dropdown-menu`) and the @-mention / ticket menus, and they came
+     out fixed-width beside the proportional field that opened them — LNL-176.
+     Naming the toolkit's stack here is what makes a menu and the pane behind it
+     agree. A brand or an Appearance pick still wins outright, through the
+     `--dt-font-prop` both this and `.dt-pane-content` read first. */
   --mono:  var(--dt-font-mono, ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace);
-  --prose: var(--dt-font-prop, ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace);
+  --prose: var(--dt-font-prop, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif);
 }
 
 * { box-sizing: border-box; }
@@ -122,8 +132,9 @@ body {
   color: var(--green);
   /* Prose is the content default; code/fixed-width surfaces opt back into
      `--mono` (see the `code, pre` rule below and .sprint-plan-key/.copy-value).
-     Unbranded, `--prose` resolves to the same monospace stack as `--mono`, so
-     this is byte-identical to the old `var(--mono)` here. */
+     What this actually decides is the surfaces mounted on `<body>` — the value
+     pickers, the mention menus — because everything else is inside a pane, and
+     `.dt-pane-content` paints the same face over them from the same token. */
   font-family: var(--prose);
   /* Reads the toolkit's prose-size var so an Appearance pick — or a
      deployment brand's `defaultProseFontSizePx` — actually reaches the
@@ -143,10 +154,10 @@ html { background: var(--bg); }
    inline code and code fences in a rendered description, the delete-confirm phrase
    echo (a bare <code>, see Modal.kt), keyboard/sample runs — are alignment- or
    glyph-sensitive and must track the Monospaced (main-content) font instead, so a
-   brand that lifts prose to a proportional face leaves them monospaced. Unbranded,
-   `--mono` is the same stack `body` used to carry, so this changes nothing on a
-   default instance. Class-based mono surfaces (.sprint-plan-key, .copy-value) name
-   `--mono` directly and are unaffected. */
+   brand that lifts prose to a proportional face leaves them monospaced — as does
+   the unbranded default, now that `--prose` falls through to the toolkit's
+   proportional stack. Class-based mono surfaces (.sprint-plan-key, .copy-value)
+   name `--mono` directly and are unaffected. */
 code, pre, kbd, samp { font-family: var(--mono); }
 
 /* ============================================================
@@ -657,8 +668,16 @@ body > .dt-pane-menu {
    people — so it reads in the content prose face, not the chrome one the "+"
    menu takes above. The two were one rule until the toolkit grew a zone marker
    to tell them apart, and every dropdown in the app was rendering the board's
-   vocabulary in the sidebar's font. */
-.lunicle-dropdown-menu {
+   vocabulary in the sidebar's font.
+
+   BOTH classes, for the third time in this file: the toolkit's shared menu
+   panel carries `font-family: inherit` and is injected as an inline <style> at
+   runtime, so it lands AFTER this file and a lone `.lunicle-dropdown-menu` ties
+   on specificity and loses on order. This rule was dead for exactly that reason
+   — the pickers were inheriting `body` rather than reading `--prose`, which is
+   invisible only for as long as the two agree. See the z-index rule below and
+   Dom.kt's MENU_CLASS. */
+.lunicle-dropdown-menu.dt-hover-menu {
   font-family: var(--prose);
 }
 

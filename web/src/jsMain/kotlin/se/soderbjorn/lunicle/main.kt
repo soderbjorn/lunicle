@@ -937,8 +937,9 @@ private fun start() {
         // reads; code/mono content (`--dt-font-mono`) is deliberately left alone.
         // A brand opts in with `surfaces: ["prose"]` (or "content"). Like the
         // chrome hook this yields to any font the user picks in Appearance, and is
-        // null on an unbranded instance ⇒ prose falls back to the same monospace
-        // stack Lunicle always shipped, byte-identical. Independent of chrome, so
+        // null on an unbranded instance ⇒ prose falls back to the toolkit's own
+        // proportional content stack, the face `.dt-pane-content` already paints
+        // over every pane (see `--prose` in styles.css). Independent of chrome, so
         // a deployment can brand prose, chrome, or both.
         defaultProseFontFamily = { brandConfig?.proseFont?.presetKey },
         // The deployment's brand font on the DISPLAY (heading) surface — issue
