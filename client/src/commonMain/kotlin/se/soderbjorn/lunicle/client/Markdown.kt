@@ -22,7 +22,7 @@
  *
  * Written by hand rather than pulled in: a markdown library is a large
  * dependency whose HTML-handling default is the one thing that must not be
- * wrong, and the subset here is seven constructs.
+ * wrong, and the subset here is nine constructs.
  *
  * @see se.soderbjorn.lunicle.client.viewmodel.IssueBackingViewModel
  */
@@ -269,9 +269,11 @@ fun isSafeMarkdownUrl(url: String): Boolean {
 /**
  * Render markdown to HTML that is safe to assign to `innerHTML`.
  *
- * Supports exactly what the editor's toolbar can produce: headings, bold,
- * italic, strikethrough, inline code, links, images, and `<u>`. Everything else
- * is text.
+ * Supports what the editor's toolbar can produce — headings, bold, italic,
+ * strikethrough, inline code, links, images and `<u>` — plus the two block-level
+ * constructs the toolbar has no button for and an agent writing through the MCP
+ * server produces constantly: a ``` fence, and a run of lines that is evidently a
+ * diagram (LNL-181). Everything else is text.
  *
  * @param markdown the stored document.
  * @param prefixes the project prefixes whose issues, written as `PREFIX-NUMBER`,
@@ -303,6 +305,18 @@ fun renderMarkdown(
     gitHubRepository: String? = null,
     titleFor: TicketTitleLookup = NO_TICKET_TITLES,
 ): String {
+    val refs = References(prefixes, titleFor, self, gitHubRepository)
+    // Fences come off the top, before the escape machinery below can read a
+    // single character of them. See splitFences for why that ordering is the
+    // whole point of a fence rather than an implementation detail.
+    return splitFences(markdown)
+        .map { segment -> if (segment.fenced) fencedBlock(segment) else renderProse(segment.text, refs) }
+        .filter { it.isNotEmpty() }
+        .joinToString("\n")
+}
+
+/** Everything outside a fence: the pipeline this file has always been. */
+private fun renderProse(markdown: String, refs: References): String {
     // Backslash escapes come out first, into placeholders. This has to precede
     // escapeHtml: "\<" must be recognised while it is still a "<", and one line
     // further down it is the string "&lt;".
@@ -315,13 +329,10 @@ fun renderMarkdown(
     // the five characters this escapes.
     val escaped = source.escapeHtml()
 
-    val refs = References(prefixes, titleFor, self, gitHubRepository)
-    val blocks = escaped.split("\n\n")
-    val rendered = blocks.mapNotNull { block ->
-        val trimmed = block.trim()
-        if (trimmed.isEmpty()) return@mapNotNull null
-        renderBlock(trimmed, refs)
-    }.joinToString("\n")
+    val rendered = escaped.split("\n\n")
+        .mapNotNull { block -> if (block.isBlank()) null else renderBlock(block, refs) }
+        .filter { it.isNotEmpty() }
+        .joinToString("\n")
 
     // Placeholders resolve LAST, after restoreAllowedTags has run inside every
     // block. The order matters and is not obvious: an escaped "<" that resolved
@@ -330,6 +341,103 @@ fun renderMarkdown(
     // would turn the text someone escaped precisely to keep inert back into a
     // real <u> tag.
     return restoreEscapes(rendered)
+}
+
+/**
+ * One run of the document: either prose, or the inside of a ``` fence.
+ *
+ * @property language the fence's info string — `kotlin` in ```` ```kotlin ```` —
+ *   or empty. Kept rather than dropped so the serialiser can write the same fence
+ *   back; nothing here highlights anything. Constrained to [FENCE]'s character
+ *   class, which is what makes it safe to write into a class attribute.
+ */
+private class Segment(val text: String, val fenced: Boolean, val language: String = "")
+
+/**
+ * A fence line: three or more backticks alone, with an optional info string.
+ *
+ * Up to three leading spaces, as CommonMark allows, and no more — a fence
+ * indented four spaces is somebody's diagram, not a fence.
+ */
+private val FENCE = Regex(" {0,3}```+ *([A-Za-z0-9+#._-]{0,20}) *")
+
+/**
+ * Cut the document into prose and fenced code, before anything else runs.
+ *
+ * ── Why this happens first, and not as a block rule ─────────────────────────
+ *
+ * Because "verbatim" is the entire meaning of a fence, and every other stage of
+ * this file exists to *interpret* text. A fence that were split out later would
+ * already have been through [extractEscapes], so a `\[` in a pasted code sample
+ * would have lost its backslash to a rule the author was explicitly opting out
+ * of; and it would have been split on `\n\n`, so a code sample with a blank line
+ * in it would have become two blocks. Neither is recoverable afterwards. Lifting
+ * the fences off the top is the only ordering where the text inside one is the
+ * text that was written.
+ *
+ * [escapeHtml] still runs over it — see [fencedBlock]. Being verbatim is about
+ * what the *markdown* rules may do to it; it is never about letting a `<script>`
+ * through, and a code block is the single most likely place for someone to paste
+ * one.
+ *
+ * An unclosed fence runs to the end of the document, which is what GitHub does
+ * and the only answer that lets someone type an opening fence and then its
+ * contents. A fence closes on a *bare* fence line only, so a ```` ```kotlin ````
+ * inside a block is that block's content.
+ */
+private fun splitFences(markdown: String): List<Segment> {
+    // The overwhelmingly common document has no fence in it at all.
+    if (!markdown.contains("```")) return listOf(Segment(markdown, fenced = false))
+
+    val segments = mutableListOf<Segment>()
+    val buffer = StringBuilder()
+    // Non-null exactly while inside a fence, carrying that fence's info string.
+    var language: String? = null
+
+    fun flush() {
+        val text = buffer.toString()
+        buffer.clear()
+        val open = language
+        if (open != null) segments.add(Segment(text, fenced = true, language = open))
+        else if (text.isNotBlank()) segments.add(Segment(text, fenced = false))
+    }
+
+    markdown.lines().forEach { line ->
+        val fence = FENCE.matchEntire(line)
+        if (fence != null && (language == null || fence.groupValues[1].isEmpty())) {
+            flush()
+            language = if (language == null) fence.groupValues[1] else null
+            return@forEach
+        }
+        buffer.appendLine(line)
+    }
+    flush()
+    return segments
+}
+
+/**
+ * The inside of a fence → `<pre><code>`.
+ *
+ * Escaped and otherwise untouched: no rule in this file runs over it, so a `*`
+ * stays a `*` and a `#` at the start of a line stays a `#`.
+ *
+ * The indentation survives only because the CSS says so. Everything else this
+ * file emits collapses its whitespace — that is HTML's default — so a `<pre>`
+ * without `white-space: pre` renders a diagram as one squashed line of words.
+ * The rule is `.markdown pre` in styles.css, and it is load-bearing.
+ *
+ * An empty fence renders as nothing rather than as an empty `<pre>`, which in
+ * the editor's contenteditable is a block the caret can fall into and not get
+ * out of.
+ */
+private fun fencedBlock(segment: Segment): String {
+    val code = segment.text.trimEnd('\n')
+    if (code.isBlank()) return ""
+    // The language is [FENCE]'s character class and nothing else — no quote, no
+    // space, no angle bracket — so it cannot leave the attribute it is written
+    // into. That is checked by construction rather than here; see Segment.
+    val language = if (segment.language.isEmpty()) "" else " class=\"language-${segment.language}\""
+    return "<pre><code$language>${code.escapeHtml()}</code></pre>"
 }
 
 /**
@@ -391,6 +499,46 @@ fun renderInlineLinks(
 }
 
 /**
+ * One block, split into the runs of lines that are a diagram and the runs that
+ * are prose.
+ *
+ * The ticket asks for the *portion* to be monospaced and not the whole field
+ * (LNL-181), and a block is where that is decided: an agent writing "here is the
+ * layout:", a table, and "…and that is it" writes all three as one block with no
+ * blank lines between them, and only the middle one is a diagram.
+ *
+ * Blank lines are trimmed off the ends rather than the whole block being
+ * trimmed, which is the one thing that changed here for indentation's sake: a
+ * `String.trim()` takes the leading spaces off the first line, and for a diagram
+ * that opens with an indented line those spaces are the drawing.
+ */
+private fun renderBlock(block: String, refs: References): String {
+    val lines = block.lines().dropWhile { it.isBlank() }.dropLastWhile { it.isBlank() }
+    val kept = lines.filter { it.isNotBlank() }
+    if (kept.isEmpty()) return ""
+
+    // A list is a list. Its bullets align by construction, and the column rule
+    // in [sharesColumn] would read that alignment as a table and monospace the
+    // whole thing. Answered before the heuristic runs rather than inside it,
+    // because the giveaway is the shape of the block and not of a line.
+    if (kept.all { it.trimStart().startsWith("- ") }) return renderProseBlock(lines, refs)
+
+    val diagram = diagramLines(lines)
+    if (diagram.none { it }) return renderProseBlock(lines, refs)
+
+    val out = mutableListOf<String>()
+    var start = 0
+    while (start < lines.size) {
+        var end = start + 1
+        while (end < lines.size && diagram[end] == diagram[start]) end++
+        val run = lines.subList(start, end)
+        out.add(if (diagram[start]) preBlock(run) else renderProseBlock(run, refs))
+        start = end
+    }
+    return out.filter { it.isNotEmpty() }.joinToString("\n")
+}
+
+/**
  * One paragraph, heading, or list.
  *
  * A heading is a *line*, not a block, so "# Title" followed by a line of prose
@@ -399,24 +547,172 @@ fun renderInlineLinks(
  * option is JVM-only — `RegexOption.DOT_MATCHES_ALL` does not exist on
  * Kotlin/JS, and this file is common code compiled for both.
  */
-private fun renderBlock(block: String, refs: References): String {
-    val lines = block.lines().filter { it.isNotBlank() }
-    if (lines.isEmpty()) return ""
+private fun renderProseBlock(lines: List<String>, refs: References): String {
+    val kept = lines.filter { it.isNotBlank() }
+    if (kept.isEmpty()) return ""
 
-    if (lines.all { it.trimStart().startsWith("- ") }) {
-        val items = lines.joinToString("") { "<li>${renderInline(it.trimStart().removePrefix("- "), refs)}</li>" }
+    if (kept.all { it.trimStart().startsWith("- ") }) {
+        val items = kept.joinToString("") { "<li>${renderInline(it.trimStart().removePrefix("- "), refs)}</li>" }
         return "<ul>$items</ul>"
     }
 
-    val heading = HEADING.find(lines.first())
+    // Trimmed because the block is no longer: a heading indented by a space was
+    // a heading back when the whole block was trimmed, and still is.
+    val heading = HEADING.find(kept.first().trim())
     if (heading != null) {
         val level = heading.groupValues[1].length
         val rendered = "<h$level>${renderInline(heading.groupValues[2].trim(), refs)}</h$level>"
-        val rest = lines.drop(1)
+        val rest = kept.drop(1)
         return if (rest.isEmpty()) rendered else rendered + "\n" + paragraph(rest.joinToString("\n"), refs)
     }
 
-    return paragraph(block, refs)
+    return paragraph(lines.joinToString("\n").trim(), refs)
+}
+
+/**
+ * A run of lines that is evidently a drawing → `<pre>`.
+ *
+ * Inert, exactly as a fence is: no inline rule runs over it, so the `*` in a
+ * diagram is a `*` and a `PREFIX-1` in a table cell is not linked. That last one
+ * is a deliberate loss rather than an oversight — a ticket reference renders as
+ * the key *plus the issue's title* (LNL-144), and injecting a title into a table
+ * cell would push every column after it out of alignment. Monospacing a diagram
+ * and then breaking it is worse than not linking inside it.
+ */
+private fun preBlock(lines: List<String>): String {
+    val text = lines.joinToString("\n").trimEnd()
+    return if (text.isBlank()) "" else "<pre>$text</pre>"
+}
+
+/**
+ * Which of these lines belong to a drawing? (LNL-181)
+ *
+ * ── What the evidence is ────────────────────────────────────────────────────
+ *
+ * A heuristic over text nobody marked up has exactly one failure that matters:
+ * calling prose a diagram, which drops it into a `<pre>` where it will not wrap,
+ * will not linkify, and will be monospaced in the middle of a paragraph. So each
+ * signal here is one that prose does not produce by accident:
+ *
+ *  - **[isDrawnLine]** — the line contains a box-drawing character, or is made
+ *    only of rule characters (`─────`, `-------`, `+---+---+`), or is a pipe row
+ *    (`| a | b |`). All three are somebody drawing something.
+ *  - **[sharesColumn]** — two consecutive lines start a column at the *same*
+ *    position: a run of two or more spaces, ending at the same index on both,
+ *    with content before it on both. This is the only thing that finds the
+ *    space-aligned table an agent writes without any borders at all, and it is
+ *    diagnostic because prose does not line its double spaces up.
+ *
+ * Then two rules that shape the runs rather than find them: a blank line between
+ * two drawn lines is part of the drawing, and a *lone* line is never one. The
+ * second is what keeps a stray `---` or an "a | b" out of a `<pre>` — a drawing
+ * that is one line tall is not a drawing, it is a sentence with a dash in it.
+ *
+ * Runs on the escaped text, which is safe and slightly useful: [escapeHtml]
+ * touches none of the characters any signal looks for, and an author who escaped
+ * a `-` to stop it meaning anything has turned it into a placeholder, which
+ * reads as prose here too.
+ */
+private fun diagramLines(lines: List<String>): BooleanArray {
+    val diagram = BooleanArray(lines.size)
+    lines.forEachIndexed { index, line -> if (isDrawnLine(line)) diagram[index] = true }
+    for (index in 0 until lines.size - 1) {
+        if (sharesColumn(lines[index], lines[index + 1])) {
+            diagram[index] = true
+            diagram[index + 1] = true
+        }
+    }
+    fillBlankGaps(lines, diagram)
+    dropLoneLines(diagram)
+    return diagram
+}
+
+/**
+ * Box drawing and block elements: `─ │ ┌ ┼ ╔ █ ░`.
+ *
+ * The geometric shapes just above this range (`■ ● ▲`) are deliberately left
+ * out — they turn up in prose as bullets and decoration, and one of them in a
+ * sentence is not a diagram.
+ */
+private val BOX_DRAWING = '─'..'▟'
+
+/** A line made only of rule characters and spaces, with at least three in a row. */
+private val RULE_LINE = Regex("[-=+~_|\\s]*[-=+~_]{3}[-=+~_|\\s]*")
+
+/** A table row: opens and closes with a pipe. */
+private val PIPE_ROW = Regex("\\s*\\|.*\\|\\s*")
+
+private fun isDrawnLine(line: String): Boolean =
+    line.any { it in BOX_DRAWING } || RULE_LINE.matchEntire(line) != null || PIPE_ROW.matchEntire(line) != null
+
+/**
+ * Do these two lines start a column at the same place?
+ *
+ * Bullets are excluded outright: "- one    two" over "- three    four" shares a
+ * column and is still a list, and [renderBlock]'s whole-block guard does not
+ * catch a list that is only part of a mixed block.
+ */
+private fun sharesColumn(first: String, second: String): Boolean {
+    if (first.trimStart().startsWith("- ") || second.trimStart().startsWith("- ")) return false
+    val columns = columnStarts(first)
+    return columns.isNotEmpty() && columnStarts(second).any { it in columns }
+}
+
+/**
+ * The positions in a line where a new column begins.
+ *
+ * A column start is a non-space with two or more spaces before it and *something*
+ * before those, which is what separates an interior gap from the line's leading
+ * indent. Measured at the position the next column starts rather than where the
+ * gap opens, and that is the whole reason this works: a table's columns line up
+ * at their left edge, while the gaps in front of them are as wide as the previous
+ * cell's content is short. "foo         open" and "----        ------" share no
+ * gap position at all, and both start a column at 12.
+ */
+private fun columnStarts(line: String): Set<Int> {
+    val starts = mutableSetOf<Int>()
+    var gap = 0
+    line.forEachIndexed { index, c ->
+        if (c == ' ') {
+            gap++
+        } else {
+            if (gap >= 2 && index > gap) starts.add(index)
+            gap = 0
+        }
+    }
+    return starts
+}
+
+/** A blank line with drawing on both sides is the drawing's own whitespace. */
+private fun fillBlankGaps(lines: List<String>, diagram: BooleanArray) {
+    var index = 0
+    while (index < diagram.size) {
+        if (diagram[index] || !lines[index].isBlank()) {
+            index++
+            continue
+        }
+        var end = index
+        while (end < diagram.size && !diagram[end] && lines[end].isBlank()) end++
+        if (index > 0 && diagram[index - 1] && end < diagram.size && diagram[end]) {
+            for (blank in index until end) diagram[blank] = true
+        }
+        index = maxOf(end, index + 1)
+    }
+}
+
+/** A one-line "drawing" is a sentence that happened to contain a dash. */
+private fun dropLoneLines(diagram: BooleanArray) {
+    var start = 0
+    while (start < diagram.size) {
+        if (!diagram[start]) {
+            start++
+            continue
+        }
+        var end = start
+        while (end < diagram.size && diagram[end]) end++
+        if (end - start < 2) diagram[start] = false
+        start = end
+    }
 }
 
 /** Headings: # through ######, matching the toolbar's buttons. Seven is not a heading. */

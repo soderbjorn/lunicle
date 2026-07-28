@@ -925,6 +925,140 @@ class MarkdownTest {
         assertTrue("/pull/2\"" in out, "The pull request links: $out")
         assertEquals(2, "<a ".findAllCount(out), "Two anchors, side by side: $out")
     }
+
+    // ── Fences and diagrams (LNL-181) ────────────────────────────────────────
+
+    @Test
+    fun `a fenced block is preformatted and keeps its indentation`() {
+        val out = renderMarkdown("```\nfun main() {\n    println(1)\n}\n```")
+        assertTrue("<pre><code>" in out, "Expected a code block: $out")
+        assertTrue("    println(1)" in out, "The indentation is the code: $out")
+    }
+
+    @Test
+    fun `a fence keeps its language so the serialiser can write it back`() {
+        val out = renderMarkdown("```kotlin\nval x = 1\n```")
+        assertTrue("""<code class="language-kotlin">""" in out, out)
+    }
+
+    @Test
+    fun `markdown inside a fence is not markup`() {
+        // The whole point of a fence: a code sample full of markers renders as
+        // the sample and not as formatting.
+        val out = renderMarkdown("```\n**not bold** and *not italic*\n# not a heading\n```")
+        assertFalse("<strong>" in out, "A fence must not emit bold: $out")
+        assertFalse("<em>" in out, "A fence must not emit italic: $out")
+        assertFalse("<h1>" in out, "A fence must not emit a heading: $out")
+        assertTrue("**not bold**" in out, "The markers are the text: $out")
+    }
+
+    @Test
+    fun `a fence is still escaped`() {
+        // Declining markdown is not declining HTML. A code block is the single
+        // most likely place for somebody to paste a script tag.
+        val out = renderMarkdown("```\n<script>alert(document.cookie)</script>\n```")
+        assertFalse("<script" in out, "A script tag reached the output: $out")
+        assertTrue("&lt;script&gt;" in out, out)
+    }
+
+    @Test
+    fun `a blank line inside a fence does not split it`() {
+        val out = renderMarkdown("```\none\n\nthree\n```")
+        assertEquals(1, "<pre>".findAllCount(out), "One block, not two: $out")
+    }
+
+    @Test
+    fun `an unclosed fence runs to the end`() {
+        val out = renderMarkdown("```\nstill code")
+        assertTrue("<pre><code>still code</code></pre>" in out, out)
+    }
+
+    @Test
+    fun `a box-drawn table is preformatted`() {
+        val out = renderMarkdown("┌──────┬────────┐\n│ Key  │ Status │\n└──────┴────────┘")
+        assertTrue("<pre>" in out, "Expected a diagram: $out")
+        assertFalse("<p>" in out, "And not a paragraph: $out")
+    }
+
+    @Test
+    fun `a pipe table is preformatted`() {
+        val out = renderMarkdown("| Key | Status |\n|-----|--------|\n| A   | Open   |")
+        assertTrue("<pre>" in out, out)
+    }
+
+    @Test
+    fun `a space-aligned table is found by its columns`() {
+        // No borders at all — the evidence is that all three lines start a
+        // column at the same index, which prose does not do. Built by padding
+        // rather than written out, so the alignment the test is about cannot
+        // drift by a space nobody can see.
+        val table = listOf(
+            listOf("Name", "Status", "Owner"),
+            listOf("----", "------", "-----"),
+            listOf("foo", "open", "ada"),
+        ).joinToString("\n") { row ->
+            row.mapIndexed { column, cell -> if (column == row.size - 1) cell else cell.padEnd(12) }
+                .joinToString("")
+        }
+        val out = renderMarkdown(table)
+        assertTrue("<pre>$table</pre>" in out, "The whole table, spacing intact: $out")
+    }
+
+    @Test
+    fun `only the diagram is preformatted, not the prose around it`() {
+        // The ticket's actual request: the portion, not the whole field.
+        val out = renderMarkdown("Here is the layout:\n┌───┐\n└───┘\nand that is it.")
+        assertTrue("<p>Here is the layout:</p>" in out, out)
+        assertTrue("<pre>┌───┐\n└───┘</pre>" in out, out)
+        assertTrue("<p>and that is it.</p>" in out, out)
+    }
+
+    @Test
+    fun `a blank line inside a drawing stays part of it`() {
+        val out = renderMarkdown("┌───┐\n \n└───┘")
+        assertEquals(1, "<pre>".findAllCount(out), "One drawing, not two: $out")
+    }
+
+    @Test
+    fun `ordinary prose is never mistaken for a diagram`() {
+        // Each of these has a signal in it somewhere, and none is a drawing.
+        listOf(
+            "This is a well-formed sentence.\nAnd a second one, also fine.",
+            "We shipped it — see the notes.  Then we moved on.\nIt worked out.",
+            "a | b is a choice\nand so is c | d",
+            "Some prose.\n---\nMore prose.",
+        ).forEach { input ->
+            val out = renderMarkdown(input)
+            assertFalse("<pre>" in out, "Prose was monospaced: $input → $out")
+        }
+    }
+
+    @Test
+    fun `a list is a list even though its bullets align`() {
+        val out = renderMarkdown("- one    thing\n- two    things")
+        assertTrue("<ul>" in out, "Expected a list: $out")
+        assertFalse("<pre>" in out, "A list must not become a diagram: $out")
+    }
+
+    @Test
+    fun `a diagram is inert`() {
+        // No inline rule runs inside a <pre>: a reference in a table cell must
+        // not gain a title and push every column after it out of line.
+        val out = renderMarkdown(
+            "| LNL-1 | *x* |\n|-------|-----|",
+            listOf("LNL"),
+        ) { "A title nobody asked for" }
+        assertFalse("<a " in out, "A diagram must not linkify: $out")
+        assertFalse("<em>" in out, "A diagram must not italicise: $out")
+    }
+
+    @Test
+    fun `a diagram that opens indented keeps its indent`() {
+        // The block used to be String.trim()ed, which took the first line's
+        // leading spaces — and for a drawing those spaces are the drawing.
+        val out = renderMarkdown("    ┌───┐\n    └───┘")
+        assertTrue("<pre>    ┌───┐" in out, out)
+    }
 }
 
 /** Count of non-overlapping occurrences of [needle] in [haystack]. */
