@@ -203,7 +203,7 @@ class ForumRepository(
     suspend fun delete(forum: ForumRecord) {
         val doomed = attachmentStore.keysForForum(forum.id)
         forums.delete(forum.id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
     }
 
     /**

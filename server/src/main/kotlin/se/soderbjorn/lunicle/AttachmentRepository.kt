@@ -227,20 +227,42 @@ class AttachmentRepository(
     }
 
     /**
-     * The file behind a record, for the download route to stream — and for the
-     * cascade-delete callers that unlink a doomed file directly.
+     * The file behind a record, for the download route to stream.
      *
      * Disk-only, and deliberately so: it is the zero-copy `LocalFileContent`
      * download path (see [AttachmentBlobStore]'s preamble on why the bytes must
      * never land in heap). It delegates to the [DiskAttachmentBlobStore] and errors
-     * under any other byte store — the GCS backend serves and unlinks bytes through
-     * the [AttachmentBlobStore] seam, not through a `File`. The GCS download and
-     * cascade-delete wiring is integration work for when that backend is assembled;
-     * every caller of this today runs on the disk backend.
+     * under any other byte store — the GCS backend serves bytes through the
+     * [AttachmentBlobStore] seam, not through a `File`. The GCS *download* wiring is
+     * integration work for when that backend is assembled; every caller of this
+     * today runs on the disk backend.
+     *
+     * Unlinking is no longer among those callers: a cascade delete goes through
+     * [deleteBlob], which works on either byte store. See LNL-145.
      */
     fun fileFor(storageKey: String): File =
         (blobStore as? DiskAttachmentBlobStore)?.fileFor(storageKey)
-            ?: error("fileFor is disk-only; the GCS backend serves and deletes bytes through AttachmentBlobStore.")
+            ?: error("fileFor is disk-only; the GCS backend serves bytes through AttachmentBlobStore.")
+
+    /**
+     * Unlink one doomed file, named by its storage key alone — the cascade-delete
+     * callers' half of [delete].
+     *
+     * Deleting an issue, a comment, a forum, a post, a message or a whole project
+     * takes the attachment *rows* with it in one statement, so there is no
+     * [AttachmentRecord] left to hand to [delete]: those call sites collect the
+     * storage keys *before* the rows go and unlink them afterwards, which is what
+     * this is for. See [IssueRepository.delete].
+     *
+     * Goes through the [AttachmentBlobStore] seam rather than [fileFor], so the
+     * cascade works on the GCS backend as well as the volume. It used to unlink a
+     * `File` directly, which threw on any non-disk byte store — deleting an issue
+     * with a screenshot on it would have failed outright on Cloud Run (LNL-145).
+     *
+     * A key that is already gone is a no-op, not an error, exactly as the byte
+     * stores promise: the sweep at startup may well have collected it first.
+     */
+    suspend fun deleteBlob(storageKey: String) = blobStore.delete(storageKey)
 
     /**
      * Delete the row and then the file.

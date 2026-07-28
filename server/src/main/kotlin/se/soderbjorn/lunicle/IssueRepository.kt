@@ -341,9 +341,15 @@ class IssueRepository(
     /**
      * Delete an issue, its comments, and every file behind either.
      *
-     * The rows go by cascade; the files must be *found* first, because once the
-     * rows are gone nothing knows which files they were. So: collect the keys,
-     * delete the issue, then unlink.
+     * The files must be *found* first, because once the rows are gone nothing knows
+     * which files they were. So: collect the keys, delete the rows, then unlink.
+     *
+     * The attachment rows are deleted explicitly rather than left to the cascade,
+     * for the same reason the children are detached below: SQLite's
+     * `ON DELETE CASCADE` would take them for free, the Firestore backend has no
+     * cascade at all, and this is one function serving both. Without it, deleting
+     * an issue on Firestore left its attachment documents behind pointing at
+     * objects nothing could ever name again (LNL-145).
      *
      * A file that fails to unlink is left on the volume and collected by
      * [AttachmentRepository.sweepOrphans] at the next restart — which is why
@@ -357,8 +363,9 @@ class IssueRepository(
     suspend fun delete(issue: IssueRecord) {
         issues.childrenOf(issue.id).forEach { issues.setParent(it.id, null) }
         val doomed = attachmentStore.keysForIssue(issue.id)
+        attachmentStore.deleteForIssue(issue.id)
         issues.delete(issue.id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
     }
 
     /**
@@ -419,7 +426,7 @@ class IssueRepository(
     suspend fun deleteComment(comment: CommentRecord) {
         val doomed = attachmentStore.keysForComment(comment.id)
         comments.delete(comment.id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
     }
 
     /**

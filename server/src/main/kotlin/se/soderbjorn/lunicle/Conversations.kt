@@ -398,7 +398,7 @@ class ConversationRepository(
     suspend fun deleteMessage(message: MessageRecord) {
         val doomed = attachmentStore.keysForMessage(message.id)
         messages.delete(message.id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
     }
 
     /**
@@ -425,7 +425,7 @@ class ConversationRepository(
         if (messages.hasPublished(conversation.id)) return false
         val doomed = attachmentStore.keysForConversation(conversation.id)
         conversations.delete(conversation.id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
         return true
     }
 }

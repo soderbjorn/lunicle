@@ -54,6 +54,19 @@ interface AttachmentStore {
 
     suspend fun delete(id: Long)
 
+    /**
+     * Delete every row this issue owns, directly or through one of its comments —
+     * the set [keysForIssue] names.
+     *
+     * Redundant on SQLite, where `ON DELETE CASCADE` would take these rows anyway,
+     * and load-bearing on Firestore, which has no cascade at all: deleting the
+     * issue document leaves its attachment documents behind, pointing at files
+     * nothing can name. `IssueRepository.delete` is one backend-agnostic function,
+     * so it calls this on both — the same reasoning that has it detach an epic's
+     * children explicitly rather than leaning on `ON DELETE SET NULL`. See LNL-145.
+     */
+    suspend fun deleteForIssue(issueId: Long)
+
     /** Every storage key the database knows about — the reconcile side of orphan sweeping. */
     suspend fun allStorageKeys(): Set<String>
 

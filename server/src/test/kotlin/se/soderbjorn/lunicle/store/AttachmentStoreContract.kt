@@ -4,8 +4,9 @@
  * Exercised through the issue-owned path, which is representative of all five: a
  * row round-trips through insert → findById and findByPublicId, the storage key is
  * reachable both by owner (keysForIssue) and by the owner's project
- * (keysForProject), exactly one of the five owners is set, and delete removes the
- * row from both findById and the allStorageKeys reconcile set.
+ * (keysForProject), exactly one of the five owners is set, delete removes the row
+ * from both findById and the allStorageKeys reconcile set, and deleteForIssue
+ * removes one issue's rows without touching another issue's.
  *
  * A subclass per backend supplies the store and a seeded (project, issue) pair.
  */
@@ -69,6 +70,31 @@ abstract class AttachmentStoreContract {
         attach(issueId)
         assertEquals(listOf("key-0"), store.keysForIssue(issueId))
         assertTrue("key-0" in store.keysForProject(projectId))
+    }
+
+    /**
+     * The cascade every backend has to perform itself (LNL-145).
+     *
+     * SQLite would do this by `ON DELETE CASCADE` and Firestore not at all, so the
+     * one function that deletes an issue asks for it explicitly and both must
+     * answer. The second issue is the half that matters: a delete keyed on the
+     * wrong field, or on nothing, empties the whole collection and still passes the
+     * first three assertions.
+     */
+    @Test
+    fun `deleteForIssue takes that issue's rows and spares another issue's`() = runBlocking {
+        val (_, issueId) = newIssue()
+        val (_, otherIssueId) = newIssue()
+        val doomed = attach(issueId)
+        val spared = attach(otherIssueId)
+
+        store.deleteForIssue(issueId)
+
+        assertNull(store.findById(doomed))
+        assertEquals(emptyList(), store.keysForIssue(issueId))
+        assertTrue("key-0" !in store.allStorageKeys())
+        assertEquals(spared, store.findById(spared)?.id, "Deleting one issue's files took another's.")
+        assertEquals(listOf("key-1"), store.keysForIssue(otherIssueId))
     }
 
     @Test

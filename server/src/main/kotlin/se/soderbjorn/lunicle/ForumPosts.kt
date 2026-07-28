@@ -450,14 +450,14 @@ class ForumPostRepository(
     suspend fun deletePost(post: ForumPostRecord) {
         val doomed = attachmentStore.keysForForumPost(post.id)
         posts.delete(post.id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
     }
 
     /** As [deletePost], for one comment. */
     suspend fun deleteComment(comment: ForumCommentRecord) {
         val doomed = attachmentStore.keysForForumComment(comment.id)
         comments.delete(comment.id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
     }
 
     private fun validTitle(title: String): String {

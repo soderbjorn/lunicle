@@ -180,6 +180,15 @@ class AttachmentStore(
         database.attachmentsQueries.delete(id)
     }
 
+    /**
+     * The cascade the schema would have run anyway, a moment early. See the
+     * interface's comment on why it is called at all, and the query's on why it
+     * is harmless here.
+     */
+    override suspend fun deleteForIssue(issueId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.attachmentsQueries.deleteForIssue(issueId, issueId)
+    }
+
     /** Every key the volume is allowed to hold. Read by the startup sweep. */
     override suspend fun allStorageKeys(): Set<String> = withContext(DatabaseDispatcher) {
         database.attachmentsQueries.allStorageKeys().executeAsList().toSet()

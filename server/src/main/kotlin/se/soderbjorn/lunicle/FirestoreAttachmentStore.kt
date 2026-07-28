@@ -190,6 +190,27 @@ class FirestoreAttachmentStore(
         doc(id).delete().await()
     }
 
+    /**
+     * Delete every attachment under an issue — its own and its comments' — in one
+     * batch, keyed on the denormalised `scopeIssueId` that [keysForIssue] reads.
+     *
+     * The load-bearing half of the pair on this backend: there is no cascade here,
+     * so without this the attachment documents outlive the issue document and the
+     * files behind them can never be named again. The caller reads the keys first
+     * and unlinks the objects afterwards — see `IssueRepository.delete`.
+     *
+     * One batch, because an issue's attachments are a handful and Firestore's
+     * limit is 500 writes; an issue that somehow exceeded it would need chunking,
+     * and nothing in this product can produce one.
+     */
+    override suspend fun deleteForIssue(issueId: Long) {
+        val doomed = collection().whereEqualTo(SCOPE_ISSUE_ID, issueId).get().await().documents
+        if (doomed.isEmpty()) return
+        val batch = firestore.batch()
+        doomed.forEach { batch.delete(it.reference) }
+        batch.commit().await()
+    }
+
     override suspend fun allStorageKeys(): Set<String> =
         collection().get().await().documents.mapNotNull { it.getString(STORAGE_KEY) }.toSet()
 

@@ -130,7 +130,7 @@ class FirestoreProjectRepository(
     override suspend fun delete(id: Long) {
         val doomed = attachmentStore.keysForProject(id)
         projects.delete(id)
-        doomed.forEach { attachments.fileFor(it).delete() }
+        doomed.forEach { attachments.deleteBlob(it) }
     }
 
     override suspend fun reorder(ids: List<Long>) {

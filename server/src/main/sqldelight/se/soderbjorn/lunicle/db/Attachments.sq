@@ -179,6 +179,21 @@ SELECT * FROM attachments WHERE public_id = ?;
 delete:
 DELETE FROM attachments WHERE id = ?;
 
+-- Every row an issue owns, directly or through one of its comments — the same
+-- set `keysForIssue` names, deleted.
+--
+-- Redundant here and deliberately so: `ON DELETE CASCADE` already takes these
+-- rows when the issue goes, and this statement removes them a moment earlier.
+-- It exists because the Firestore backend has no cascade to lean on, and
+-- `IssueRepository.delete` is backend-agnostic: doing it explicitly is what makes
+-- the two backends agree that deleting an issue takes its files with it, the same
+-- reasoning that detaches an epic's children explicitly rather than relying on
+-- `ON DELETE SET NULL`. See LNL-145.
+deleteForIssue:
+DELETE FROM attachments
+WHERE issue_id = ?
+   OR comment_id IN (SELECT id FROM comments WHERE issue_id = ?);
+
 -- Every key the volume is allowed to hold. Read by the startup sweep, which
 -- deletes any file under $VOLUME/attachments/ that is not in this set — the
 -- files behind cancelled drafts and failed inserts.
