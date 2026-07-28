@@ -325,6 +325,13 @@ class IssueBackingViewModel(
          * are admin-gated, so a non-admin only picks from what exists.
          */
         val canMutateProject: Boolean = false,
+        /**
+         * The project's linked GitHub repository as `owner/name`, or null because
+         * none is (LNL-178). What lets the renderer turn a `#123` in the title, the
+         * description or a comment into a link to that pull request; null leaves
+         * every one of them as the text it was written as.
+         */
+        val gitHubRepository: String? = null,
     ) {
         /** The editable fields as they are on screen right now. */
         val fields: Fields get() = Fields(
@@ -778,6 +785,7 @@ class IssueBackingViewModel(
             requireComponent = board.project.requireComponent,
             requireFixedVersionOnResolve = board.project.requireFixedVersionOnResolve,
             canMutateProject = board.permissions.canMutateProject,
+            gitHubRepository = board.gitHubRepository,
         )
     }
 

@@ -504,7 +504,13 @@ class IssueWindow(
         // description below. renderInlineLinks escapes first and emits only its
         // own checked <a>s; guarded like the description so a re-render mid-render
         // does not rebuild the node under a selection.
-        val titleHtml = renderInlineLinks(state.title.ifBlank { "Untitled" }, ticketSource.prefixes(), self = state.self, titleFor = state.ticketTitles())
+        val titleHtml = renderInlineLinks(
+            state.title.ifBlank { "Untitled" },
+            ticketSource.prefixes(),
+            self = state.self,
+            titleFor = state.ticketTitles(),
+            gitHubRepository = state.gitHubRepository,
+        )
         if (readTitle.innerHTML != titleHtml) readTitle.innerHTML = titleHtml
         readTitle.visible(!state.isEditing)
         // The whole identity line — byline, assignee, watchers — is one dim line in
@@ -576,7 +582,15 @@ class IssueWindow(
         }
         renderReadTags(state)
 
-        val html = renderMarkdown(state.description, ticketSource.prefixes(), self = state.self, titleFor = state.ticketTitles())
+        // A `#123` here is a link to that pull request when the project is linked to
+        // a GitHub repository, and the text it was written as when it is not (LNL-178).
+        val html = renderMarkdown(
+            state.description,
+            ticketSource.prefixes(),
+            self = state.self,
+            titleFor = state.ticketTitles(),
+            gitHubRepository = state.gitHubRepository,
+        )
         if (descriptionRead.innerHTML != html) descriptionRead.innerHTML = html
         descriptionRead.visible(!state.isEditing)
 
@@ -971,8 +985,15 @@ class IssueWindow(
         }
         val commentBody = element("div", "markdown comment-body")
         // A comment naming another ticket links it too — same reading surface, same
-        // accessible-project set (LNL-139).
-        commentBody.innerHTML = renderMarkdown(comment.body, ticketSource.prefixes(), self = state.self, titleFor = state.ticketTitles())
+        // accessible-project set (LNL-139) — and the same for a pull request it
+        // names as `#123` (LNL-178).
+        commentBody.innerHTML = renderMarkdown(
+            comment.body,
+            ticketSource.prefixes(),
+            self = state.self,
+            titleFor = state.ticketTitles(),
+            gitHubRepository = state.gitHubRepository,
+        )
         el.children(head, commentBody)
         return el
     }

@@ -46,6 +46,63 @@ typealias TicketTitleLookup = (Ticket) -> String?
 val NO_TICKET_TITLES: TicketTitleLookup = { null }
 
 /**
+ * What the two reference passes need to know, carried as one value.
+ *
+ * These four travel together from [renderMarkdown] all the way down to
+ * [linkifyRefs] — through the block, paragraph and inline rules, none of which
+ * read any of them — and threading four parameters through four functions that
+ * only forward them is four chances for a call site to hand one on in the wrong
+ * position.
+ *
+ * @property gitHubRepository the project's linked repository as `owner/name`, or
+ *   null when none is configured or it is not the shape a repository has (LNL-178).
+ *   Checked here rather than trusted, so the one place a repository name becomes an
+ *   `href` cannot be reached with anything else — see [GITHUB_REPOSITORY].
+ */
+private class References(
+    val prefixes: Collection<String>,
+    val titleFor: TicketTitleLookup,
+    val self: Ticket?,
+    repository: String?,
+) {
+    val gitHubRepository: String? = repository?.takeIf { GITHUB_REPOSITORY.matches(it) }
+}
+
+/**
+ * `owner/name`, and nothing else.
+ *
+ * The repository reaches this file as a string that the server parsed out of
+ * whatever a project administrator pasted into the settings field, and it is the
+ * one value in a GitHub link's `href` that did not come from [escapeHtml]'s pass —
+ * the number after it is digits by construction. GitHub's own rules for both
+ * halves are narrower than this; what matters is that nothing here can carry a
+ * quote, a space, a `..` or a second scheme out of the `href` it is written into.
+ */
+private val GITHUB_REPOSITORY = Regex("[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
+
+/**
+ * `#123` → the pull request with that number (LNL-178).
+ *
+ * Group 1 is the character before the `#`, matched rather than looked behind for
+ * [MARKDOWN_TARGET]'s reason — Kotlin/JS compiles to a unicode-mode regex, where
+ * lookbehind is the browser's feature and not ours — and handed straight back.
+ * What it excludes is the whole of the rule:
+ *
+ *  - a **letter or digit**, so `abc#1` is not a reference and neither is the tail
+ *    of a `#c0ffee` colour. A `#` means "issue" when it opens a word, exactly as
+ *    it does on GitHub.
+ *  - an **`&`**, which is the one that would otherwise bite: by the time this runs
+ *    every `'` in the source is the five characters `&#39;`, so a rule that took
+ *    `#39` would turn every apostrophe in every description into a link to pull
+ *    request 39.
+ *
+ * The digits must likewise end the word, so `#1a` and a `#1e5`-style number are
+ * left alone. Not capped in length: a repository with six-figure pull requests
+ * exists, and a cap would silently stop linking at the point it was guessed.
+ */
+private val GITHUB_REF = Regex("(^|[^A-Za-z0-9&])#(\\d+)(?![A-Za-z0-9])")
+
+/**
  * The inline HTML the editor may produce, and the *only* tags restored after
  * escaping.
  *
@@ -222,21 +279,28 @@ fun isSafeMarkdownUrl(url: String): Boolean {
  *   reference across projects links too and a click switches to get there. Empty
  *   — the default — turns none into links, which is what a reading surface with no
  *   projects behind it (a forum message, say) wants, and what keeps the editor's
- *   live copy inert. See [renderTicketRefs].
+ *   live copy inert. See [renderRefs].
  * @param self the issue this surface is already showing, or null. A reference to
  *   it — a card leading with its own key, an issue naming itself in its own body —
  *   is left as plain text rather than a link back to the page you are on (LNL-151).
- *   See [linkifyTickets].
+ *   See [linkifyRefs].
  * @param titleFor the issue title to show after a reference, so `LNL-1` reads
  *   `LNL-1: Fix the thing` (LNL-144); returning null or blank leaves the reference
  *   bare, which is the default and what the editor's live copy and any surface
- *   with no title source want. See [linkifyTickets].
+ *   with no title source want. See [linkifyRefs].
+ * @param gitHubRepository the repository this project is linked to, `owner/name`,
+ *   which turns a `#123` in the text into a link to that pull request (LNL-178).
+ *   Null — the default — leaves every `#123` as the text it always was, which is
+ *   what a project with no repository configured, and every surface with no project
+ *   behind it at all, wants. See [GITHUB_REF].
  * @return HTML with no tag in it that this file did not emit.
  */
+// The lookup stays last so a caller can pass it as a trailing lambda.
 fun renderMarkdown(
     markdown: String,
     prefixes: Collection<String> = emptyList(),
     self: Ticket? = null,
+    gitHubRepository: String? = null,
     titleFor: TicketTitleLookup = NO_TICKET_TITLES,
 ): String {
     // Backslash escapes come out first, into placeholders. This has to precede
@@ -251,11 +315,12 @@ fun renderMarkdown(
     // the five characters this escapes.
     val escaped = source.escapeHtml()
 
+    val refs = References(prefixes, titleFor, self, gitHubRepository)
     val blocks = escaped.split("\n\n")
     val rendered = blocks.mapNotNull { block ->
         val trimmed = block.trim()
         if (trimmed.isEmpty()) return@mapNotNull null
-        renderBlock(trimmed, prefixes, titleFor, self)
+        renderBlock(trimmed, refs)
     }.joinToString("\n")
 
     // Placeholders resolve LAST, after restoreAllowedTags has run inside every
@@ -296,11 +361,15 @@ fun renderMarkdown(
  *   own key stays plain text rather than a link back to itself (LNL-151).
  * @param titleFor as in [renderMarkdown] — the referenced issue's title, appended
  *   after the reference (LNL-144), or null to leave it bare.
+ * @param gitHubRepository as in [renderMarkdown] — a `#123` in a title is a link to
+ *   that pull request when the project is linked to a repository (LNL-178).
  */
+// The lookup stays last, as in [renderMarkdown], so it can be a trailing lambda.
 fun renderInlineLinks(
     text: String,
     prefixes: Collection<String> = emptyList(),
     self: Ticket? = null,
+    gitHubRepository: String? = null,
     titleFor: TicketTitleLookup = NO_TICKET_TITLES,
 ): String {
     val escaped = stripPlaceholders(text).escapeHtml()
@@ -318,7 +387,7 @@ fun renderInlineLinks(
         // A markdown-link or image match: not markup in a title, left as written.
         match.value
     }
-    return renderTicketRefs(linked, prefixes, titleFor, self)
+    return renderRefs(linked, References(prefixes, titleFor, self, gitHubRepository))
 }
 
 /**
@@ -330,24 +399,24 @@ fun renderInlineLinks(
  * option is JVM-only — `RegexOption.DOT_MATCHES_ALL` does not exist on
  * Kotlin/JS, and this file is common code compiled for both.
  */
-private fun renderBlock(block: String, prefixes: Collection<String>, titleFor: TicketTitleLookup, self: Ticket?): String {
+private fun renderBlock(block: String, refs: References): String {
     val lines = block.lines().filter { it.isNotBlank() }
     if (lines.isEmpty()) return ""
 
     if (lines.all { it.trimStart().startsWith("- ") }) {
-        val items = lines.joinToString("") { "<li>${renderInline(it.trimStart().removePrefix("- "), prefixes, titleFor, self)}</li>" }
+        val items = lines.joinToString("") { "<li>${renderInline(it.trimStart().removePrefix("- "), refs)}</li>" }
         return "<ul>$items</ul>"
     }
 
     val heading = HEADING.find(lines.first())
     if (heading != null) {
         val level = heading.groupValues[1].length
-        val rendered = "<h$level>${renderInline(heading.groupValues[2].trim(), prefixes, titleFor, self)}</h$level>"
+        val rendered = "<h$level>${renderInline(heading.groupValues[2].trim(), refs)}</h$level>"
         val rest = lines.drop(1)
-        return if (rest.isEmpty()) rendered else rendered + "\n" + paragraph(rest.joinToString("\n"), prefixes, titleFor, self)
+        return if (rest.isEmpty()) rendered else rendered + "\n" + paragraph(rest.joinToString("\n"), refs)
     }
 
-    return paragraph(block, prefixes, titleFor, self)
+    return paragraph(block, refs)
 }
 
 /** Headings: # through ######, matching the toolbar's buttons. Seven is not a heading. */
@@ -361,11 +430,11 @@ private val HEADING = Regex("^(#{1,6})\\s+(.*)$")
  * discovers on purpose, and invisible in the field where it would have to be
  * typed.
  */
-private fun paragraph(text: String, prefixes: Collection<String>, titleFor: TicketTitleLookup, self: Ticket?): String =
-    "<p>${renderInline(text, prefixes, titleFor, self).replace("\n", "<br>")}</p>"
+private fun paragraph(text: String, refs: References): String =
+    "<p>${renderInline(text, refs).replace("\n", "<br>")}</p>"
 
 /** Inline rules, in an order that matters — see the comments. */
-private fun renderInline(text: String, prefixes: Collection<String>, titleFor: TicketTitleLookup, self: Ticket?): String {
+private fun renderInline(text: String, refs: References): String {
     var out = text
 
     // Images, links and bare URLs in ONE pass. See renderTargets for why they
@@ -390,9 +459,9 @@ private fun renderInline(text: String, prefixes: Collection<String>, titleFor: T
     out = renderMentions(out)
 
     // After everything else, and over the tags everything else has emitted:
-    // renderTicketRefs will not linkify inside a link, a code span or a mention,
-    // which are exactly the constructs already standing by now. See its comment.
-    out = renderTicketRefs(out, prefixes, titleFor, self)
+    // renderRefs will not linkify inside a link, a code span or a mention, which
+    // are exactly the constructs already standing by now. See its comment.
+    out = renderRefs(out, refs)
 
     return restoreAllowedTags(out)
 }
@@ -442,7 +511,7 @@ private fun renderMentions(text: String): String {
 }
 
 /**
- * The elements a ticket reference must never be drawn *inside*.
+ * The elements a reference must never be drawn *inside*.
  *
  * `a` because an `<a>` inside an `<a>` is not surprising markup, it is broken
  * markup — the browser un-nests it — and `[LNL-1](https://x)` would produce
@@ -451,18 +520,24 @@ private fun renderMentions(text: String): String {
  * `span` because the only span this file emits is a mention, and a mention that
  * happens to read `LNL-1` is a mention, not an issue link.
  */
-private val TICKET_SKIP_ELEMENTS = setOf("a", "code", "span")
+private val REF_SKIP_ELEMENTS = setOf("a", "code", "span")
 
 /**
- * Turn each `PREFIX-NUMBER` in [html] into a link to that issue — the render half
- * of LNL-139, the click half being the web client's `navigateToTicket`.
+ * Turn each reference in [html] into a link: `PREFIX-NUMBER` to that issue — the
+ * render half of LNL-139, the click half being the web client's
+ * `navigateToTicket` — and `#123` to that pull request on the project's linked
+ * repository (LNL-178).
+ *
+ * Both kinds are linked in one walk because they are one question — "is this
+ * position in the prose, and is it spoken for?" — and two walks would answer it
+ * twice, the second one over anchors the first had just written.
  *
  * ── Why this walks tags instead of running a regex ──────────────────────────
  *
  * It runs *last*, over HTML the rest of the pipeline has already built, and a
  * reference is only a reference in the prose — never inside the `href` of a link
  * that merely contains `…/LNL-1` in its path, and never inside the anchor, code
- * span or mention listed in [TICKET_SKIP_ELEMENTS]. A regex replace cannot tell
+ * span or mention listed in [REF_SKIP_ELEMENTS]. A regex replace cannot tell
  * "in the text" from "in a tag it emitted", which is the same trap
  * [MentionSpan.isInsideTag] exists to sidestep; here the constructs to avoid nest,
  * so a one-character look-back is not enough and a small scanner is.
@@ -474,19 +549,21 @@ private val TICKET_SKIP_ELEMENTS = setOf("a", "code", "span")
  * reference may live in. That prose is already HTML-escaped, and the anchor's
  * `href` and `data-ticket` carry only [Ticket.toString] — a prefix and digits,
  * none of the five characters [escapeHtml] touches. The one thing that is *not*
- * already inert is a title from [titleFor], which is arbitrary user text; that is
- * escaped where it is appended — see [linkifyTickets].
+ * already inert is a title from [References.titleFor], which is arbitrary user
+ * text; that is escaped where it is appended — see [linkifyRefs]. The repository
+ * in a GitHub link's `href` is the other, and is checked for shape instead — see
+ * [GITHUB_REPOSITORY].
  *
- * @param prefixes the projects whose references to link; empty links none, and is
- *   the whole of how a prefix-less reading surface opts out.
- * @param titleFor the referenced issue's title, appended after the link's key
- *   (LNL-144); null or blank leaves it bare.
- * @param self the issue this surface already shows; a reference to it is left as
- *   plain text rather than linked back to itself (LNL-151).
+ * @param refs which references to link at all. No prefixes and no repository is a
+ *   walk with nothing to do, and is the whole of how a reading surface with no
+ *   project behind it opts out.
  */
-private fun renderTicketRefs(html: String, prefixes: Collection<String>, titleFor: TicketTitleLookup, self: Ticket?): String {
-    if (prefixes.isEmpty()) return html
-    if (!html.contains('-')) return html
+private fun renderRefs(html: String, refs: References): String {
+    // Both halves can be off, and each has a character its references cannot be
+    // written without — so a document containing neither is handed straight back.
+    val tickets = refs.prefixes.isNotEmpty() && html.contains('-')
+    val gitHub = refs.gitHubRepository != null && html.contains('#')
+    if (!tickets && !gitHub) return html
 
     val out = StringBuilder(html.length)
     // The open skip-elements, outermost first. A reference is linked only when
@@ -498,7 +575,7 @@ private fun renderTicketRefs(html: String, prefixes: Collection<String>, titleFo
     fun flush(end: Int) {
         if (end <= textStart) return
         val segment = html.substring(textStart, end)
-        out.append(if (skipStack.isEmpty()) linkifyTickets(segment, prefixes, titleFor, self) else segment)
+        out.append(if (skipStack.isEmpty()) linkifyRefs(segment, refs) else segment)
     }
 
     while (i < html.length) {
@@ -512,7 +589,7 @@ private fun renderTicketRefs(html: String, prefixes: Collection<String>, titleFo
         val tag = html.substring(i, close + 1)
         out.append(tag)
         tagName(tag)?.let { name ->
-            if (name in TICKET_SKIP_ELEMENTS) {
+            if (name in REF_SKIP_ELEMENTS) {
                 if (tag.startsWith("</")) {
                     if (skipStack.lastOrNull() == name) skipStack.removeLast()
                 } else if (!tag.endsWith("/>")) {
@@ -537,7 +614,20 @@ private fun tagName(tag: String): String? {
 }
 
 /**
- * Wrap every ticket reference in one run of prose in an `<a>`.
+ * One reference and what it is to be replaced with, resolved but not yet written.
+ *
+ * The two kinds of reference are found by two different means — a scanner for
+ * tickets, a regex for `#123` — over the same run of prose, so they are turned
+ * into this common shape and merged by position. That is what lets one pass write
+ * both, and what makes an overlap a thing that can be *dropped* rather than a pair
+ * of nested anchors nobody noticed. See [linkifyRefs].
+ */
+private class RefSpan(val start: Int, val end: Int, val html: String)
+
+/**
+ * Wrap every reference in one run of prose in an `<a>`.
+ *
+ * ── A ticket ────────────────────────────────────────────────────────────────
  *
  * The key is the reference as it was written — `lnl-1` stays `lnl-1` — because
  * that is what the author typed and rewriting it to the canonical case would be a
@@ -545,42 +635,87 @@ private fun tagName(tag: String): String? {
  * `data-ticket` carries for the click handler and `?issue=` carries for a
  * middle-click or a copied link, both of which resolve case-insensitively anyway.
  *
- * When [titleFor] knows the referenced issue's title, it is appended inside the
- * same anchor as `key: Title` (LNL-144), so the whole thing is one link and a
- * click anywhere on it opens the issue. The title is arbitrary user text — the
- * one thing in this anchor not already HTML-escaped by [renderMarkdown]'s
+ * When [References.titleFor] knows the referenced issue's title, it is appended
+ * inside the same anchor as `key: Title` (LNL-144), so the whole thing is one link
+ * and a click anywhere on it opens the issue. The title is arbitrary user text —
+ * the one thing in this anchor not already HTML-escaped by [renderMarkdown]'s
  * up-front pass — so it is escaped here, and dimmed by its own class so the key
  * stays the emphatic part. An unknown or blank title leaves the reference bare,
  * exactly as before the title existed.
  *
- * A reference to [self] — the issue this very surface is showing — is left as its
- * plain key with no anchor at all (LNL-151): a board card leads with its own key,
- * and linking that back to the page you are already on is a click that goes
- * nowhere useful. The key is a substring of the already-escaped [text], so it is
- * safe to append verbatim.
+ * A reference to [References.self] — the issue this very surface is showing — is
+ * left as its plain key with no anchor at all (LNL-151): a board card leads with
+ * its own key, and linking that back to the page you are already on is a click
+ * that goes nowhere useful. The key is a substring of the already-escaped [text],
+ * so it is safe to append verbatim.
+ *
+ * ── A pull request ──────────────────────────────────────────────────────────
+ *
+ * `#123` goes to `github.com/owner/repo/pull/123` on the repository the project is
+ * linked to (LNL-178), and is an ordinary external link — a new tab and
+ * `rel="noopener noreferrer"`, like every other off-site link this file writes.
+ * `/pull/` rather than `/issues/`: GitHub redirects a pull URL to the issue when
+ * the number turns out to be one, and not the other way round, so the spelling
+ * that is right either way is this one.
+ *
+ * A number that is nobody's pull request still links, because this file has no way
+ * to ask and inventing one would mean a request per reference per render. A 404 on
+ * GitHub is a cheaper wrong answer than a reference that silently stopped being a
+ * link.
  */
-private fun linkifyTickets(text: String, prefixes: Collection<String>, titleFor: TicketTitleLookup, self: Ticket?): String {
-    val spans = ticketSpans(text, prefixes)
+private fun linkifyRefs(text: String, refs: References): String {
+    val spans = (ticketRefSpans(text, refs) + gitHubRefSpans(text, refs)).sortedBy { it.start }
     if (spans.isEmpty()) return text
     return buildString(text.length) {
         var cursor = 0
         spans.forEach { span ->
+            // Two references cannot overlap today — a ticket key holds no `#` and a
+            // `#123` no letters — but a dropped reference is a link that is missing
+            // and a written one is markup nested inside markup, so the impossible
+            // case resolves to the first of the two rather than to both.
+            if (span.start < cursor) return@forEach
             append(text, cursor, span.start)
-            val key = text.substring(span.start, span.end)
-            if (span.ticket == self) {
-                append(key)
-            } else {
-                append("<a href=\"?issue=").append(span.ticket).append("\" class=\"ticket-ref\" data-ticket=\"")
-                    .append(span.ticket).append("\">").append(key)
-                titleFor(span.ticket)?.takeIf { it.isNotBlank() }?.let { title ->
-                    append("<span class=\"ticket-ref-title\">: ").append(title.escapeHtml()).append("</span>")
-                }
-                append("</a>")
-            }
+            append(span.html)
             cursor = span.end
         }
         append(text, cursor, text.length)
     }
+}
+
+/** The `PREFIX-NUMBER`s in one run of prose, as the anchors they are to become. */
+private fun ticketRefSpans(text: String, refs: References): List<RefSpan> {
+    if (refs.prefixes.isEmpty()) return emptyList()
+    return ticketSpans(text, refs.prefixes).map { span ->
+        val key = text.substring(span.start, span.end)
+        val html = if (span.ticket == refs.self) key else buildString {
+            append("<a href=\"?issue=").append(span.ticket).append("\" class=\"ticket-ref\" data-ticket=\"")
+                .append(span.ticket).append("\">").append(key)
+            refs.titleFor(span.ticket)?.takeIf { it.isNotBlank() }?.let { title ->
+                append("<span class=\"ticket-ref-title\">: ").append(title.escapeHtml()).append("</span>")
+            }
+            append("</a>")
+        }
+        RefSpan(span.start, span.end, html)
+    }
+}
+
+/** The `#NUMBER`s in one run of prose, as the anchors they are to become. */
+private fun gitHubRefSpans(text: String, refs: References): List<RefSpan> {
+    val repository = refs.gitHubRepository ?: return emptyList()
+    return GITHUB_REF.findAll(text).map { match ->
+        // The reference is the whole match bar group 1, the boundary character the
+        // pattern had to consume in place of a lookbehind — that one is the prose's
+        // and stays text. Measured off the match rather than read off `groups[2]`:
+        // MatchGroup.range is a JVM-only member, and this file is common code.
+        val digits = match.groupValues[2]
+        val start = match.range.first + match.groupValues[1].length
+        val end = start + 1 + digits.length
+        RefSpan(
+            start = start,
+            end = end,
+            html = externalLink("https://github.com/$repository/pull/$digits", text.substring(start, end)),
+        )
+    }.toList()
 }
 
 /**

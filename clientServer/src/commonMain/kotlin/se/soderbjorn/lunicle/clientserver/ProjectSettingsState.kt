@@ -367,10 +367,12 @@ data class ProjectSettingsState(
      * reaches the client and is merely not rendered is not withheld — it is one
      * devtools panel away.
      *
-     * The repository name is not a credential, but it is a fact about a private
-     * repository (that it exists, and what it is called) which a project's
-     * readers have not been granted. The counts derived from it are shared with
-     * them deliberately; the address is not.
+     * What is admin-only is this *field* — the one the settings form edits — and
+     * not the address itself, which LNL-178 put on [BoardState.gitHubRepository]
+     * for every reader of the project: a `#123` in an issue is a link to that pull
+     * request, and a link is a URL the client has to be able to build. The
+     * distinction that survives is the one that was always doing the work: the
+     * token never travels, to anybody. See [BoardState.gitHubRepository].
      */
     val repositoryUrl: String = "",
     /**

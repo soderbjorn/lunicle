@@ -860,6 +860,11 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
         sprints = sprints.forProject(project.id)
             .map { SprintItem(it.id, it.name, it.position.toInt(), it.completedAt) },
         activeSprintId = projects.activeSprintId(project.id),
+        // The address only, and never the token beside it — the client builds a
+        // `#123` link out of it and has no use for anything else (LNL-178). Null
+        // for the projects that have no repository configured, which is most of
+        // them, and their `#123`s stay the text they always were.
+        gitHubRepository = projects.repositoryConfig(project.id)?.repository?.toString(),
         // Empty unless somebody has made one — presence is the flag, like sprints.
         // The resolution dialog's fixed-version picker and the reusable version
         // dropdown read it off the board. See Versions.sq.

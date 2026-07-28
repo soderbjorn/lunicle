@@ -840,6 +840,91 @@ class MarkdownTest {
             "LNL has no title so it stays bare: $out",
         )
     }
+
+    // ── GitHub references: #NUMBER → a link to the pull request (LNL-178) ────────
+
+    @Test
+    fun `a hash reference links to the pull request on the linked repository`() {
+        val out = renderMarkdown("Fixed by #123", gitHubRepository = "acme/rocket")
+        assertTrue(
+            """<a href="https://github.com/acme/rocket/pull/123" target="_blank" rel="noopener noreferrer">#123</a>""" in out,
+            "Expected a pull request link, got: $out",
+        )
+    }
+
+    @Test
+    fun `a hash reference is text when the project has no repository`() {
+        // The default, and what every project that has configured nothing renders.
+        val out = renderMarkdown("Fixed by #123")
+        assertFalse("<a " in out, "Nothing to link to, so nothing links: $out")
+        assertTrue("#123" in out, "The text survives as written: $out")
+    }
+
+    @Test
+    fun `a repository that is not owner slash name is refused`() {
+        // The one value in the href that did not come from the escaping pass, so a
+        // shape that is not a repository does not become one.
+        listOf("acme", "acme/rocket/extra", "acme/roc ket", """acme/x" onload="x""").forEach { repo ->
+            val out = renderMarkdown("See #7", gitHubRepository = repo)
+            assertFalse("<a " in out, "\"$repo\" must not build a link: $out")
+        }
+    }
+
+    @Test
+    fun `an escaped apostrophe is not a reference to pull request 39`() {
+        // By the time the rule runs, every ' is the five characters &#39; — the trap
+        // the boundary character exists to avoid.
+        val out = renderMarkdown("Ada's branch", gitHubRepository = "acme/rocket")
+        assertFalse("<a " in out, "An apostrophe must not link: $out")
+        assertTrue("&#39;" in out, "It is still an escaped apostrophe: $out")
+    }
+
+    @Test
+    fun `a hash is a reference only when it opens a word`() {
+        val out = renderMarkdown("Colour #c0ffee, issue1#2, and #5", gitHubRepository = "acme/rocket")
+        assertEquals(1, "<a ".findAllCount(out), "Only the standalone reference links: $out")
+        assertTrue("/pull/5\"" in out, "And it is the one that opened a word: $out")
+    }
+
+    @Test
+    fun `a hash reference in an inline-rendered title links too`() {
+        val out = renderInlineLinks("Revert #9", gitHubRepository = "acme/rocket")
+        assertTrue("""href="https://github.com/acme/rocket/pull/9"""" in out, "A title links it too: $out")
+    }
+
+    @Test
+    fun `a heading is still a heading, not a reference`() {
+        // "#" at the start of a line is markdown's, and the block rules have consumed
+        // it before any reference pass runs.
+        val out = renderMarkdown("# Title", gitHubRepository = "acme/rocket")
+        assertTrue(out.startsWith("<h1>"), "Still a heading: $out")
+        assertFalse("<a " in out, "And nothing in it links: $out")
+    }
+
+    @Test
+    fun `a hash reference inside code or a link is left alone`() {
+        val code = renderMarkdown("Run `git show #12`", gitHubRepository = "acme/rocket")
+        assertFalse("<a " in code, "Code is shown literally: $code")
+        val link = renderMarkdown("[#12](https://example.com/x)", gitHubRepository = "acme/rocket")
+        assertEquals(1, "<a ".findAllCount(link), "One anchor only — anchors must not nest: $link")
+        assertTrue("""href="https://example.com/x"""" in link, "The written link's own href wins: $link")
+    }
+
+    @Test
+    fun `an escaped hash stays text`() {
+        // What the editor emits for someone writing about "#1 in the list".
+        val out = renderMarkdown("""Ranked \#1 overall""", gitHubRepository = "acme/rocket")
+        assertFalse("<a " in out, "An escaped reference must not link: $out")
+        assertTrue("#1 overall" in out, "And it reads as written: $out")
+    }
+
+    @Test
+    fun `ticket and pull request references live in the same line`() {
+        val out = renderMarkdown("LNL-1 fixed by #2", listOf("LNL"), gitHubRepository = "acme/rocket")
+        assertTrue("""data-ticket="LNL-1"""" in out, "The ticket links: $out")
+        assertTrue("/pull/2\"" in out, "The pull request links: $out")
+        assertEquals(2, "<a ".findAllCount(out), "Two anchors, side by side: $out")
+    }
 }
 
 /** Count of non-overlapping occurrences of [needle] in [haystack]. */
