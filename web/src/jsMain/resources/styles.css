@@ -518,7 +518,15 @@ code, pre, kbd, samp { font-family: var(--mono); }
    from the top bar. Unscoped it also caught this app's own value dropdowns —
    the board's statuses and sprints, which are content — and rendered a
    project's vocabulary in the sidebar's face. See `.lunicle-dropdown-menu`. */
-.dt-hover-menu.dt-menu-chrome {
+.dt-hover-menu.dt-menu-chrome,
+/* Every `.dt-pane-menu` in this app is the toolkit's own — the theme manager's
+   category filter, the pane kebabs — and all of them are chrome, so they take
+   the chrome face for the reason above with no zone test to make. Named as a
+   CHILD OF BODY, which is where the toolkit mounts it, purely to outrank the
+   toolkit's own `font-family: inherit`: that rule is injected as an inline
+   <style> at runtime and lands after this file, so a lone `.dt-pane-menu`
+   would tie on specificity and lose on order. */
+body > .dt-pane-menu {
   font-family: var(--dt-font-sidebar, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif);
 }
 
@@ -2719,7 +2727,18 @@ code, pre, kbd, samp { font-family: var(--mono); }
    focus should be *shown*, which is keyboard navigation and not a click, so the
    two cases stop fighting: hover governs the mouse, focus-visible governs the
    keyboard, and neither strands the other. */
-.account-menu {
+/* Surface, rows, radius, hover and separators are the TOOLKIT's — the box
+   carries `.dt-hover-menu` too, and everything this rule still says is about
+   where the menu hangs rather than what it looks like.
+
+   Every selector below names BOTH classes, and that is load-bearing rather
+   than tidy: the toolkit injects `.dt-hover-menu` as an inline <style> at
+   runtime, which lands AFTER this file in document order, so a lone
+   `.account-menu` ties on specificity and loses on order — `position: fixed`
+   and `display: flex` would both survive and the menu would hang open in the
+   corner of the viewport. Same trap as LNL-54 and the version picker's
+   z-index; see `.lunicle-dropdown-menu.dt-hover-menu`. */
+.account-menu.dt-hover-menu {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
@@ -2728,13 +2747,13 @@ code, pre, kbd, samp { font-family: var(--mono); }
      Below the modal layer (10000) so dialogs still cover it. */
   z-index: 2000;
   display: none;
-  flex-direction: column;
   min-width: 160px;
-  padding: 4px;
-  background: var(--panel-2);
-  border: 1px solid var(--border-hi);
-  border-radius: 4px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+  /* The toolkit panel scrolls; this one must not. `overflow-y: auto` establishes
+     a clipping box, and the hover bridge below is a pseudo-element positioned
+     OUTSIDE this element's padding box — it would be clipped away and the six
+     pixels between button and menu would become dead space again. Three rows
+     never need to scroll, so the scroll is what gives. */
+  overflow: visible;
 }
 
 /* The bridge across the 6px gap above.
@@ -2743,7 +2762,7 @@ code, pre, kbd, samp { font-family: var(--mono); }
    pixels of nothing, :hover goes false, and the menu vanishes before it can be
    entered. Invisible and unclickable, purely a hover surface — the alternative,
    removing the gap, glues the menu to the button and reads as one shape. */
-.account-menu::before {
+.account-menu.dt-hover-menu::before {
   content: "";
   position: absolute;
   left: 0;
@@ -2752,26 +2771,13 @@ code, pre, kbd, samp { font-family: var(--mono); }
   height: 7px;
 }
 
-.account-signed-in:hover .account-menu,
-.account-signed-in:has(:focus-visible) .account-menu { display: flex; }
+.account-signed-in:hover .account-menu.dt-hover-menu,
+.account-signed-in:has(:focus-visible) .account-menu.dt-hover-menu { display: flex; }
 
-.account-menu-item {
-  font-family: inherit;
-  font-size: 12px;
-  text-align: left;
-  color: var(--green-dim);
-  background: none;
-  border: none;
-  border-radius: 3px;
-  padding: 8px 10px;
-  cursor: pointer;
-  /* The buttons are <button> and the submenu parent is a <div>; without this the
-     two sit at different widths and the hover highlight is visibly ragged. */
-  width: 100%;
-}
-
-.account-menu-item:hover:not(:disabled) { background: color-mix(in srgb, var(--green-hi) 12%, transparent); color: var(--green-hi); }
-.account-menu-item:disabled { opacity: .5; cursor: default; }
+/* The row is `.dt-hover-menu-item`: 30px, 7px radius, the chrome accent under
+   the pointer. All this adds is the one thing the toolkit leaves to the host —
+   a disabled row, which here is the admin's own name in the impersonation list. */
+.account-menu-item.dt-hover-menu-item:disabled { opacity: .5; cursor: default; }
 
 /* ── The impersonation submenu ──────────────────────────────────────────────
 
@@ -2781,13 +2787,20 @@ code, pre, kbd, samp { font-family: var(--mono); }
    pointer left the parent's box. */
 .account-menu-parent {
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
-.account-menu-label { flex: 1; }
-.account-menu-arrow { color: var(--green-dim); font-size: 10px; }
+/* The row's trailing "▸". A glyph rather than the toolkit's submenu caret,
+   which is sized for an SVG (`line-height: 0` would collapse a character), so
+   it borrows only the placement: pushed to the row's end and quiet until the
+   row is the one under the pointer. */
+.account-menu-arrow {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  opacity: .6;
+}
+.account-menu-item:hover > .account-menu-arrow { opacity: 1; }
 
 /* Leftward, not rightward. The account corner is already at the right edge of
    the viewport, so a submenu opening to the right would open off-screen —
@@ -2806,26 +2819,22 @@ code, pre, kbd, samp { font-family: var(--mono); }
 
    Touching sidesteps both. Nested menus that share an edge are what every desktop
    menu bar does, and the 1px borders read as a seam rather than a mistake. */
-.account-submenu {
+/* The same panel again — one menu object, however deep it is nested. Both
+   classes for the reason `.account-menu.dt-hover-menu` names both. */
+.account-submenu.dt-hover-menu {
   position: absolute;
-  top: -5px; /* aligns the first row with the parent, allowing for padding */
+  top: -7px; /* aligns the first row with the parent, allowing for padding */
   right: 100%;
   display: none;
-  flex-direction: column;
   min-width: 170px;
   max-height: 320px;
   /* A long user list must not run off the bottom of the viewport. It scrolls
      inside itself, like every other overflow in this app. */
   overflow-y: auto;
-  padding: 4px;
-  background: var(--panel-2);
-  border: 1px solid var(--border-hi);
-  border-radius: 4px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
 }
 
-.account-menu-parent:hover .account-submenu,
-.account-menu-parent:has(:focus-visible) .account-submenu { display: flex; }
+.account-menu-parent:hover .account-submenu.dt-hover-menu,
+.account-menu-parent:has(:focus-visible) .account-submenu.dt-hover-menu { display: flex; }
 
 .account-submenu-empty {
   color: var(--green-dim);

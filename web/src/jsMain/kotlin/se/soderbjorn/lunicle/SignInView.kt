@@ -159,27 +159,27 @@ class SignInView(
         accountButton.children(nameElement, profileIcon())
         accountButton.setAttribute("aria-haspopup", "menu")
 
-        signOutButton = button("Sign out", "account-menu-item") { viewModel.onSignOutTapped() } as HTMLButtonElement
+        signOutButton = button("Sign out", MENU_ITEM_CLASS) { viewModel.onSignOutTapped() } as HTMLButtonElement
 
         // "Impersonate ▸" and the submenu that folds out of it. The submenu is a
         // child of the item, not a sibling: it opens on hover, and CSS hover only
         // survives the pointer travelling from the item to the submenu if the
         // submenu is inside the thing being hovered.
-        impersonateSubmenu = element("div", "account-submenu")
+        impersonateSubmenu = element("div", "account-submenu $MENU_PANEL_CLASS")
         impersonateSubmenu.setAttribute("role", "menu")
-        impersonateItem = element("div", "account-menu-item account-menu-parent")
+        impersonateItem = element("div", "$MENU_ITEM_CLASS account-menu-parent")
         impersonateItem.setAttribute("role", "menuitem")
         impersonateItem.setAttribute("aria-haspopup", "menu")
         impersonateItem.children(
-            element("span", "account-menu-label", "Impersonate"),
+            element("span", "account-menu-label dt-hover-menu-label", "Impersonate"),
             element("span", "account-menu-arrow", "\u25B8"),
             impersonateSubmenu,
         )
 
         stopImpersonatingButton =
-            button("Stop impersonating", "account-menu-item") { viewModel.onStopImpersonatingTapped() } as HTMLButtonElement
+            button("Stop impersonating", MENU_ITEM_CLASS) { viewModel.onStopImpersonatingTapped() } as HTMLButtonElement
 
-        menuElement = element("div", "account-menu")
+        menuElement = element("div", "account-menu $MENU_PANEL_CLASS")
         menuElement.setAttribute("role", "menu")
         // Sign out first, then the impersonation control — which of the two
         // appears is decided in render(), never both.
@@ -403,12 +403,12 @@ class SignInView(
         // user (LNL-103). It stands even when there are no other accounts to pick,
         // so the submenu is never truly empty.
         impersonateSubmenu.appendChild(
-            button("Signed-out visitor", "account-menu-item") {
+            button("Signed-out visitor", MENU_ITEM_CLASS) {
                 viewModel.onImpersonateSignedOutTapped()
             } as HTMLButtonElement,
         )
         state.impersonatableUsers.forEach { option ->
-            val row = button(option.name, "account-menu-item") {
+            val row = button(option.name, MENU_ITEM_CLASS) {
                 viewModel.onImpersonateTapped(option.id)
             } as HTMLButtonElement
             if (option.isSelf) {
@@ -590,5 +590,21 @@ class SignInView(
         currentGoogleClientId = state.googleClientId
         lastState = state
         render(state)
+    }
+
+    private companion object {
+        /**
+         * The account corner's menu is the toolkit's menu — the same panel the
+         * shell's "+" and the board's dropdowns drop, marked as raised from the
+         * chrome because the corner is chrome (LNL-168).
+         *
+         * It kept a private copy of that panel longer than anything else in the
+         * app: a 4px box of 8px rows with a green-tinted hover, opening a few
+         * pixels from a "+" whose menu was a 9px box of 30px rows with an accent
+         * one. Both classes stay on every element — the toolkit's for the paint,
+         * this app's for the anchoring and the CSS-hover the corner opens on.
+         */
+        const val MENU_PANEL_CLASS = "dt-hover-menu dt-menu-chrome"
+        const val MENU_ITEM_CLASS = "account-menu-item dt-hover-menu-item"
     }
 }
