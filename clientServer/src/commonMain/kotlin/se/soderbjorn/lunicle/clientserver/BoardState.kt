@@ -380,6 +380,21 @@ data class BoardState(
     val versions: List<VocabularyItem> = emptyList(),
     val issues: List<IssueSummary> = emptyList(),
     val permissions: ProjectPermissionsView = ProjectPermissionsView(),
+    /**
+     * The GitHub repository this project is linked to, `owner/name`, or null when
+     * none is configured — what turns a `#123` in an issue or a comment into a link
+     * to that pull request (LNL-178).
+     *
+     * The address itself rather than a "has a repository" flag, because the client
+     * is what builds the link and cannot build it from a boolean. It goes to every
+     * reader of the project, not only to the administrators who can *set* it — a
+     * rendered reference is no use to a reader who is not allowed to know where it
+     * points, and the repository a project's work lands in is not a secret from the
+     * people reading that work. The token behind it stays where it was: never on the
+     * wire, in either direction, for anybody. See `ProjectSettingsState.repositoryUrl`
+     * for the settings form's copy, which is still owner-only because *editing* it is.
+     */
+    val gitHubRepository: String? = null,
 )
 
 /**
