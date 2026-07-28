@@ -261,6 +261,9 @@ internal val MCP_INSTRUCTIONS = """
 
     How a board is shaped:
       • Statuses are the columns, in order (e.g. New → In progress → Closed).
+        get_board takes an optional `status` to return just one of them; the
+        vocabulary still comes back in full, so this costs you nothing but the
+        issues you did not ask for.
       • Some statuses REQUIRE a resolution — get_board marks these with
         "requiresResolution": true. Moving an issue into one without saying why it
         is being closed will be refused; pass `resolution` (e.g. "Fixed",
@@ -562,10 +565,22 @@ class McpTools(private val deps: BoardDependencies) {
                 "priorities, resolutions, labels, components, its sprints if it has any, " +
                 "and every issue on it. This is " +
                 "the call that tells you what this project's vocabulary is called — you " +
-                "address all of it by name in the other tools.",
+                "address all of it by name in the other tools.\n\n" +
+                "Pass `status` to get one column instead of the whole board. The " +
+                "vocabulary comes back in full either way, so a filtered call still " +
+                "tells you every status, priority, label and component this project " +
+                "has — it is the `issues` array, and only that, which narrows. Use it " +
+                "on a big board when you only care about one column: the whole board " +
+                "can be large enough to be awkward to read in one piece.",
             inputSchema = schema(
                 "project_id" to integerProp("The project's id, from list_projects."),
                 "project_name" to stringProp("The project's name, if you do not have its id."),
+                "status" to stringProp(
+                    "A status name from this project — return only the issues in that " +
+                        "column. Omit it for the whole board. A name this project does " +
+                        "not have is refused with the list of the ones it does, rather " +
+                        "than quietly returning nothing.",
+                ),
             ),
         ),
         McpTool(
@@ -1385,7 +1400,20 @@ class McpTools(private val deps: BoardDependencies) {
         val sprints = deps.sprints.forProject(project.id)
         val versions = deps.versions.forProject(project.id)
         val activeSprintId = deps.projects.activeSprintId(project.id)
+        // Refused rather than ignored: a filter silently dropped is a caller who
+        // reads an empty column as "nothing to do" when the truth is that they
+        // misspelled it. Same rule, and the same message, as moving an issue into
+        // a column this project does not have.
+        val statusFilter = arguments.string("status")
+            ?.let { name ->
+                statuses.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                    ?: return refuseUnknown("status", name, statuses.map { it.name })
+            }
+        // Narrowed here rather than at the JSON, so the per-issue lookups below —
+        // authors, assignees, and one canEditIssue apiece — are paid for the column
+        // asked about instead of the whole board.
         val issues = deps.issues.forProject(project.id)
+            .filter { statusFilter == null || it.statusId == statusFilter.id }
         val labelsByIssue = deps.issues.labelsForProject(project.id)
         val componentsByIssue = deps.issues.componentsForProject(project.id)
 
