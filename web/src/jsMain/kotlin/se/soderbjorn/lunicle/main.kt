@@ -1221,12 +1221,15 @@ private fun start() {
         // Its ORIGIN is left to that cascade, so two issues opened in a row are
         // offset rather than stacked exactly.
         //
-        // Project settings opens at 55 % × 75 % — a fifth wider and a third
-        // taller than the toolkit's seed. It is consulted rather than read
-        // through, so it does not want an issue's full height, but the toolkit's
-        // rectangle cut its tab strip's sections down to a few rows at a time;
-        // this is the size at which a section is readable without a resize on
-        // every open. On the 5 % snap grid, like the rest.
+        // Project settings opens at 65 % × 95 % — the largest seed here bar the
+        // board, and deliberately so. It is not read through like an issue, but
+        // it is the one pane that carries a tab strip with a form under it, and
+        // a form is only usable when a whole section is on screen at once: at
+        // the toolkit's 45 % × 55 % it arrived a few rows at a time, and at
+        // 55 % × 75 % (the first pass at this, LNL-171) it still did. Two steps
+        // of the same size — ten points of width, twenty of height — put it
+        // here. On the 5 % snap grid, like the rest; the height leaves just
+        // enough room for the cascade origin to stay an origin.
         //
         // Analytics keeps the toolkit's own seed.
         paneInitialGeometry = { _, paneId ->
@@ -1236,7 +1239,7 @@ private fun start() {
                 issueIdOfPane(paneId) != null ->
                     InitialPaneGeometry(widthPct = 0.55, heightPct = 0.85)
                 settingsProjectIdOfPane(paneId) != null ->
-                    InitialPaneGeometry(widthPct = 0.55, heightPct = 0.75)
+                    InitialPaneGeometry(widthPct = 0.65, heightPct = 0.95)
                 else -> null
             }
         },
