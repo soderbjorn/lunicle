@@ -715,10 +715,23 @@ body > .dt-pane-menu {
   overflow-y: auto;
 }
 
+/* The two remaining icon buttons in the content zone: a board column's ⋮ and
+   the lightbox's close X. Both draw a stroked/filled GLYPH, which is why the
+   colour below is the accent's TYPE half.
+
+   `--green-hi` is the accent as a FILL — sized for a rail, a wash or a focus
+   ring, and free to be as pale as a theme likes because nothing has to read it.
+   An SVG at 16px is ink, and it needs the same contrast a caption does: under
+   Marmalade the fill is #f5a03c, which is 2.0:1 on the board's white surface,
+   so the column ⋮ that replaces the count on hover was there and simply could
+   not be seen — the count vanished and nothing legible took its place
+   (LNL-173). `--green-hi-text` is the pair's readable half (#96580b there,
+   4.9:1) and falls back to `--green-hi` for a theme that declares no split, so
+   nothing that was already legible changes. Same trade as `.card-tag-label`. */
 .icon-btn {
   font-family: inherit;
   line-height: 1;
-  color: var(--green-hi);
+  color: var(--green-hi-text);
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -733,18 +746,11 @@ body > .dt-pane-menu {
 
 .icon-btn:hover { border-color: var(--border-hi); box-shadow: 0 0 12px var(--glow); }
 
-/* The chrome variant. `.icon-btn` is worn by three different controls — the
-   project gear and statistics buttons on the top bar, the lightbox close, and
-   a board column's ⋮ — and only the first pair are chrome; the other two sit
-   inside a pane, where the content tokens above are already correct. So the
-   zone is selected by where the button actually lives rather than by a
-   modifier class: anything ProjectBar puts on the top bar is chrome by virtue
-   of being there, and there is no new class anyone can forget to apply. Same
-   reasoning as `.picker` vs `.dropdown.field`.
-
-   Without this the gear and the chart stayed on the content accent — amber
-   under Framna — beside a picker and a logo that had already moved to the
-   chrome accent, so the bar disagreed with itself. */
+/* (The chrome variant that used to live here — `.topbar-project .icon-btn`,
+   putting the project gear and the statistics button on the chrome accent —
+   went with the top bar itself when the project surfaces became panes. Both
+   remaining wearers of this class sit inside a pane, so the content tokens
+   above are the correct zone for all of them.) */
 
 /* ============================================================
    Icons — the hand-drawn SVGs. See Icons.kt.
