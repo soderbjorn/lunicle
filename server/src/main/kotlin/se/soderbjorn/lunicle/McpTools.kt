@@ -1886,6 +1886,35 @@ class McpTools(private val deps: BoardDependencies) {
         val agentName = resolveAgentNameEdit(user, arguments, issue.agentName)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
 
+        // ── What the HISTORY says about this edit, which is not what the issue says
+        //
+        // Two values above are defaulted to the issue's own — `attribution.author`
+        // to its author, `agentName` to its badge — and both defaults are right for
+        // the row: an edit that says nothing about attribution must leave the
+        // author column and the badge exactly as they were, which is what
+        // editAttribution below writes. Passing those same two on to the history
+        // was LNL-180: every edit was filed under whoever had OPENED the ticket,
+        // wearing whatever badge the ticket wore, so an agent moving somebody
+        // else's issue recorded — permanently, plausibly, and silently — that its
+        // author had done it. A history that names the wrong person is worse than
+        // no history, and it is the one record documented as answering "by whom".
+        //
+        // So the event gets what actually happened in THIS call: the caller, and
+        // the badge this call carried. Exactly what move_issue has always recorded.
+        // The one deliberate exception is an admin naming an `author` — that is the
+        // backfill the parameter exists for, where the imported edit really does
+        // belong to somebody else. A lone `created_at` re-authors nothing and so
+        // does not count.
+        val reattributed = arguments.isPresent(AUTHOR_ARGUMENT) || arguments.isPresent(AUTHOR_EXTERNAL_ARGUMENT)
+        val eventAuthor = if (reattributed) attribution.author else user.asAuthor()
+        // From this call alone, never the issue's standing badge — per-event is the
+        // whole point of IssueEvents.sq's `agent_name`, and inheriting the issue's
+        // would mark a human's later edit of an agent-filed issue as the agent's.
+        // Already length-checked by resolveAgentNameEdit above; re-read rather than
+        // re-derived because "" means "clear the badge" there and "no badge" here.
+        val eventAgentName = resolveAgentName(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
+
         val title = arguments.string("title") ?: issue.title
         if (title.length > MAX_MCP_TITLE_LENGTH) return refuse("That title is too long.")
 
@@ -1985,11 +2014,10 @@ class McpTools(private val deps: BoardDependencies) {
             componentIds = componentIds,
             updatedAt = updatedAt,
             actorId = user.id,
-            // As in createIssue: what the write is attributed to, which is the
-            // caller unless an admin is deliberately backfilling somebody else's
-            // edit.
-            actor = attribution.author,
-            agentName = agentName,
+            // The history's two fields, resolved above and deliberately NOT the
+            // issue's own author and badge — see LNL-180 there.
+            actor = eventAuthor,
+            agentName = eventAgentName,
         )
         // The columns publish() does not reach — author, creation date, agent label.
         // Written after the content save, gated above: admin-only for the author and

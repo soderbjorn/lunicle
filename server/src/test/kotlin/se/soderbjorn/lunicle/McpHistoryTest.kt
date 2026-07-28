@@ -288,6 +288,153 @@ class McpHistoryTest {
         }
     }
 
+    // ── Who an edit is filed under ───────────────────────────────────────────
+
+    /**
+     * An `update_issue` edit is recorded under the person who made it, not under
+     * the issue's author.
+     *
+     * LNL-180, and the reason the two accounts here are different people: every
+     * other test in this file edits an issue the same token created, so a build
+     * that filed edits under the *author* passed all of them. One did, and an
+     * agent moving somebody else's ticket recorded that the reporter had moved it
+     * — a factual claim about a colleague, permanent and plausible, on the one
+     * record documented as answering "by whom", and invisible unless somebody
+     * happened to read the history.
+     *
+     * The issue's own author is asserted in the same breath, because the fix is
+     * only correct if it does not overcorrect: an edit still leaves the row's
+     * author exactly as it was, which is the reason the wrong value was in reach
+     * at all.
+     */
+    @Test
+    fun `an edit is recorded under the caller, not the issue's author`(): Unit = runBlocking {
+        val fixture = seed()
+        val reporter = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-otto", "Otto", "otto@example.com"))
+        roles.grant(reporter.id, fixture.projectId, Role.CREATE_ISSUE)
+        val reporterToken = tokenFor(reporter.id)
+        val adminToken = tokenFor(fixture.adminId)
+        val target = statuses.forProject(fixture.projectId)[1]
+
+        withMcp { client ->
+            val filed = client.callTool(
+                reporterToken,
+                "create_issue",
+                """{"project_id":${fixture.projectId},"title":"Login is broken"}""",
+            )
+            assertTrue(!filed.isError, "The reporter could not file the issue: ${filed.text}")
+            val issueId = issues.forProject(fixture.projectId).single().id
+
+            val edited = client.callTool(
+                adminToken,
+                "update_issue",
+                """{"issue_id":$issueId,"status":"${target.name}","agent_name":"Acme Assistant"}""",
+            )
+            assertTrue(!edited.isError, "The edit was refused: ${edited.text}")
+
+            val event = historyOf(client, adminToken, issueId).last()
+            assertEquals("STATUS_CHANGED", event["kind"]?.jsonPrimitive?.contentOrNull)
+            assertEquals(
+                "Admin",
+                event["author"]?.jsonPrimitive?.contentOrNull,
+                "The edit was filed under the issue's author rather than whoever made it.",
+            )
+            assertEquals(
+                "Acme Assistant",
+                event["agentName"]?.jsonPrimitive?.contentOrNull,
+                "The agent that made the edit was not named on the event.",
+            )
+
+            val detail = Json.parseToJsonElement(
+                client.callTool(adminToken, "get_issue", """{"issue_id":$issueId}""").text,
+            ).jsonObject
+            assertEquals(
+                "Otto",
+                detail["author"]?.jsonPrimitive?.contentOrNull,
+                "Editing somebody else's issue re-authored the issue itself.",
+            )
+        }
+    }
+
+    /**
+     * The badge on an event is the one THIS call carried — never the badge the
+     * issue happens to wear.
+     *
+     * The other half of LNL-180, and the half that would survive a fix aimed only
+     * at the author: an issue filed by an agent keeps `agent_name` on the row
+     * forever, so an edit that defaulted to it would mark a human's later typo fix
+     * as the agent's doing. Per-event is the whole point of the column. The row's
+     * own badge is asserted too — leaving it alone is what made the default look
+     * reasonable in the first place.
+     */
+    @Test
+    fun `an edit with no agent_name is unmarked, even on an issue an agent filed`(): Unit = runBlocking {
+        val fixture = seed()
+        val token = tokenFor(fixture.adminId)
+
+        withMcp { client ->
+            client.callTool(
+                token,
+                "create_issue",
+                """{"project_id":${fixture.projectId},"title":"Filed by an agent","agent_name":"Acme Assistant"}""",
+            )
+            val issueId = issues.forProject(fixture.projectId).single().id
+
+            val edited = client.callTool(token, "update_issue", """{"issue_id":$issueId,"title":"Renamed by a person"}""")
+            assertTrue(!edited.isError, "The edit was refused: ${edited.text}")
+
+            val event = historyOf(client, token, issueId).last()
+            assertEquals("TITLE_CHANGED", event["kind"]?.jsonPrimitive?.contentOrNull)
+            assertTrue(
+                "agentName" !in event,
+                "A person's edit wore the issue's standing agent badge: $event",
+            )
+
+            val detail = Json.parseToJsonElement(
+                client.callTool(token, "get_issue", """{"issue_id":$issueId}""").text,
+            ).jsonObject
+            assertEquals(
+                "Acme Assistant",
+                detail["agentName"]?.jsonPrimitive?.contentOrNull,
+                "An edit that said nothing about the badge stripped the issue's.",
+            )
+        }
+    }
+
+    /**
+     * The one case where an edit is filed under somebody other than the caller: an
+     * admin naming an `author`, which is what the parameter is for.
+     *
+     * Backfill is the whole reason the caller is not simply hard-wired in, so the
+     * LNL-180 fix has to leave this path intact — an imported edit belongs to the
+     * person who originally made it, not to whoever ran the migration.
+     */
+    @Test
+    fun `an admin backfilling an edit files it under the author they name`(): Unit = runBlocking {
+        val fixture = seed()
+        val token = tokenFor(fixture.adminId)
+        users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-otto", "Otto", "otto@example.com"))
+        val target = statuses.forProject(fixture.projectId)[1]
+
+        withMcp { client ->
+            client.callTool(token, "create_issue", """{"project_id":${fixture.projectId},"title":"Imported"}""")
+            val issueId = issues.forProject(fixture.projectId).single().id
+
+            val backfilled = client.callTool(
+                token,
+                "update_issue",
+                """{"issue_id":$issueId,"status":"${target.name}","author":"otto@example.com"}""",
+            )
+            assertTrue(!backfilled.isError, "The backfill was refused: ${backfilled.text}")
+
+            assertEquals(
+                "Otto",
+                historyOf(client, token, issueId).last()["author"]?.jsonPrimitive?.contentOrNull,
+                "A backfilled edit was filed under the admin who ran it rather than the author they named.",
+            )
+        }
+    }
+
     // ── Correcting attribution, admin-only ───────────────────────────────────
 
     /**
