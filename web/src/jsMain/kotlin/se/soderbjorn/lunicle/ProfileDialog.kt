@@ -230,7 +230,11 @@ class ProfileDialog(
             ),
         )
 
-        userTab = element("div", "").children(
+        // The class is spacing, not identity: this tab is the one place a hint
+        // paragraph is followed by a button rather than being the last thing in
+        // its group, and .field-hint carries no bottom margin — see
+        // .profile-user-tab in styles.css (LNL-185).
+        userTab = element("div", "profile-user-tab").children(
             nameElement,
             displayNameSection,
             element("label", "field-label", "E-mail"),

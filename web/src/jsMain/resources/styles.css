@@ -546,6 +546,24 @@ body > .dt-pane-menu {
    holds — name, address, layout — read as three and not as one run-on column. */
 .profile-layout-section { margin-top: 22px; }
 
+/* A button standing directly under an explanatory hint, in the profile dialog's
+   User tab (LNL-185).
+
+   `.field-hint` is a caption on the control ABOVE it — `margin: 6px 0 0`, no
+   bottom margin — which is right everywhere it is the last thing in its group.
+   This tab is the exception: twice a hint is a whole sentence of prose and the
+   next thing is a button ("Restore default layout" under the layout blurb,
+   "Cancel this change" under the code hint). With no gap at all the button read
+   as glued to the paragraph explaining it. 12px is the same order as the 16px a
+   `.field-label` puts over a field, less the hint's own 6px lead-in, so the
+   button reads as the section's action rather than as the sentence's next line.
+
+   Scoped to this tab rather than written as a bare `.field-hint + .btn`: the
+   sign-in card has the same adjacency but lives in a flex column whose `gap`
+   already spaces it, and `.signin-code .field-hint` is zeroed there on purpose —
+   a global rule would stack a margin on top of that gap. */
+.profile-user-tab .field-hint + .btn { margin-top: 12px; }
+
 /* The brand/identity line, at the top of the SIDEBAR (LNL-160).
 
    It has moved four times and each move was the same argument losing ground: it
