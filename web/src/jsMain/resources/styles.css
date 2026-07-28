@@ -3105,10 +3105,27 @@ body > .dt-pane-menu {
 
 .vocab-delete { flex: none; }
 
+/* Why the Delete beside it is dead, in two or three words ("13 issues", "the only
+   status"). It sits IN the row rather than under it: a blocked row is the normal
+   state of a working board — most columns have issues in them — so a full
+   sentence per row would be a paragraph of scolding down the side of the dialog,
+   where a count reads as a fact about the column.
+
+   Muted and small, because it is an explanation and not a warning: nothing has
+   gone wrong, the admin has simply asked about a column that is in use. The
+   sentence saying what to do about it is on the button's title. See LNL-183. */
+.vocab-blocked {
+  flex: none;
+  font-size: 11px;
+  color: var(--green-dim);
+  white-space: nowrap;
+}
+
 /* A disabled control still has to look like it exists, and — for Delete — still
    has to be hoverable: its title says WHY it is dead ("3 issues are in this
    status"), and a control with pointer-events off never shows a tooltip. That
-   is the whole reason this sets opacity rather than pointer-events. */
+   is the whole reason this sets opacity rather than pointer-events. The tooltip
+   is no longer the only explanation though — see .vocab-blocked. */
 .vocab-row .btn:disabled,
 .vocab-add .btn:disabled {
   opacity: .4;

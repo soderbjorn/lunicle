@@ -969,7 +969,8 @@ class ProjectDialog(
 
             val next = section.rows.joinToString("|") { row ->
                 "${row.id}:${row.name}:${row.requiresResolution}:${row.isDone}:" +
-                    "${row.isDeletable}/${row.deleteBlockedReason}:${row.canMoveUp}/${row.canMoveDown}"
+                    "${row.isDeletable}/${row.deleteBlockedReason}/${row.deleteBlockedSummary}:" +
+                    "${row.canMoveUp}/${row.canMoveDown}"
             }
             if (next == signature) return
             signature = next
@@ -1032,13 +1033,20 @@ class ProjectDialog(
                 },
             )
 
+            // Why the button is dead, VISIBLY (LNL-183). This used to be the
+            // button's `title` and nothing else, on the reasoning that a disabled
+            // control which will not say why is the thing people file bugs about —
+            // which is exactly what got filed, because a tooltip on a greyed-out
+            // control is an explanation you have to already suspect is there to go
+            // looking for. So the short form sits beside the button where it cannot
+            // be missed, and the sentence that says what to do about it stays on
+            // the title for whoever does hover.
+            row.deleteBlockedSummary?.let { actions.appendChild(element("span", "vocab-blocked", it)) }
+
             val delete = button("Delete", "btn btn-danger-quiet vocab-delete") {
                 viewModel.onDeleteVocabularyTapped(section.kind, row.id)
             }
             delete.disabled = !row.isDeletable
-            // Why the button is dead, on the button. A disabled control that will
-            // not say why is the thing people file bugs about — and the view model
-            // already wrote the sentence.
             row.deleteBlockedReason?.let { delete.title = it }
             actions.appendChild(delete)
 

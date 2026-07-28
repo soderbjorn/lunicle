@@ -57,6 +57,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
 
@@ -110,10 +111,11 @@ class VocabularyTest {
     fun `deleting a status that issues are in is refused, and says how many`(): Unit = runBlocking {
         val fixture = seed()
         val status = statuses.forProject(fixture.projectId).first()
-        // Two issues, both in the seeded leftmost column — which is where
-        // createDraft puts them.
-        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
-        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
+        // Two issues, both in the seeded leftmost column — which is where a new
+        // issue lands. Published, because only published issues count: an unsaved
+        // one is nobody's to move. See the draft test below.
+        fileIssue(fixture)
+        fileIssue(fixture)
 
         val row = vocabularies.find(fixture.projectId, VocabularyKind.STATUS, status.id)
         assertNotNull(row)
@@ -132,23 +134,11 @@ class VocabularyTest {
         )
     }
 
-    /**
-     * Drafts count, and this is the test that says so.
-     *
-     * Every other query on `issues` excludes drafts, so filtering them here is the
-     * obvious-looking change — and it would produce the worst outcome available: a
-     * dialog that says nothing uses the status, followed by a constraint violation
-     * nobody can explain from the UI. `createDraft` alone leaves the issue a draft,
-     * so this is exactly that scenario.
-     *
-     * The singular sentence is pinned here rather than in the test above, since
-     * this is the only fixture with exactly one issue in a column — and a message
-     * that reads "1 issue are in that status" is how you tell nobody looked.
-     */
+    /** The singular sentence, which is the tell that somebody read it: "1 issue is", never "1 issue are". */
     @Test
-    fun `a draft issue is enough to block deleting its status`(): Unit = runBlocking {
+    fun `the refusal agrees with a count of one`(): Unit = runBlocking {
         val fixture = seed()
-        issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
+        fileIssue(fixture)
         val status = statuses.forProject(fixture.projectId).first()
         val row = vocabularies.find(fixture.projectId, VocabularyKind.STATUS, status.id)!!
 
@@ -161,13 +151,60 @@ class VocabularyTest {
         )
     }
 
+    /**
+     * Drafts do NOT count, and this is the test that says so (LNL-183).
+     *
+     * It used to assert the opposite, on reasoning that was sound and a result that
+     * was not: a draft holds a `status_id`, so RESTRICT refuses the delete, so the
+     * count had better include it or the dialog promises a delete that explodes.
+     * What that produced in the field was a first column no admin could ever
+     * delete — a draft lands in the leftmost one, an abandoned draft is never
+     * collected, and the refusal named issues that are on nobody's board.
+     *
+     * So the count is about the visible board and the draft is taken with the
+     * column. Both halves are asserted, because excluding drafts from the count
+     * alone would trade a wrong refusal for a raw constraint violation.
+     */
+    @Test
+    fun `a draft does not block deleting its status, and goes with it`(): Unit = runBlocking {
+        val fixture = seed()
+        val (draftId, _) = issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
+        val status = statuses.forProject(fixture.projectId).first()
+        val row = vocabularies.find(fixture.projectId, VocabularyKind.STATUS, status.id)!!
+        assertEquals(0L, row.usageCount, "an unpublished issue is on nobody's board and counts against nothing")
+
+        vocabularies.delete(fixture.projectId, VocabularyKind.STATUS, row)
+
+        assertTrue(
+            statuses.forProject(fixture.projectId).none { it.id == status.id },
+            "The column was refused over a draft nobody can see.",
+        )
+        assertNull(issues.findById(draftId), "The draft outlived the column it was sitting in.")
+    }
+
+    /** The sweep the drafts that are never deleted this way are collected by. */
+    @Test
+    fun `the startup sweep takes abandoned drafts and leaves fresh ones`(): Unit = runBlocking {
+        val fixture = seed()
+        val status = statuses.forProject(fixture.projectId).first()
+        val priority = priorities.forProject(fixture.projectId).first()
+        val (old, _) = issues.insertDraft(
+            fixture.projectId, "", status.id, priority.id, Author.Account(fixture.adminId), createdAt = 1_000,
+        )
+        val (fresh, _) = issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
+
+        assertEquals(1L, issues.sweepAbandonedDrafts(cutoff = 2_000))
+        assertNull(issues.findById(old))
+        assertNotNull(issues.findById(fresh), "A draft somebody may still be typing into was swept.")
+    }
+
     /** A resolution a closed issue holds is refused too — nullable is not SET NULL. */
     @Test
     fun `deleting a resolution that a closed issue holds is refused`(): Unit = runBlocking {
         val fixture = seed()
         val closing = statuses.forProject(fixture.projectId).first { it.requiresResolution }
         val resolution = resolutions.forProject(fixture.projectId).first()
-        val (issueId, _) = issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
+        val issueId = fileIssue(fixture)
         issues.setStatus(issueId, closing.id, resolution.id)
 
         val row = vocabularies.find(fixture.projectId, VocabularyKind.RESOLUTION, resolution.id)!!
@@ -645,6 +682,32 @@ class VocabularyTest {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", null))
         val project = projectRepository.create(name, prefix, isPublic = false)
         return Fixture(admin.id, project.id)
+    }
+
+    /**
+     * File a published issue, the way the editor does: create the draft, then save
+     * it. The save is what these tests are usually after — `createDraft` alone
+     * leaves a row nothing counts and a column delete takes with it (LNL-183) —
+     * and it lands in the leftmost status unless [statusId] says otherwise.
+     */
+    private suspend fun fileIssue(fixture: Fixture, statusId: Long? = null, resolutionId: Long? = null): Long {
+        val (id, _) = issueRepository.createDraft(fixture.projectId, Author.Account(fixture.adminId))
+        val issue = issues.findById(id)!!
+        issueRepository.save(
+            issue = issue,
+            title = "Issue $id",
+            description = "",
+            statusId = statusId ?: issue.statusId,
+            priorityId = issue.priorityId,
+            resolutionId = resolutionId,
+            assigneeId = null,
+            sprintId = null,
+            plannedVersionId = null,
+            fixedVersionId = null,
+            labelIds = emptyList(),
+            componentIds = emptyList(),
+        )
+        return id
     }
 
     /**

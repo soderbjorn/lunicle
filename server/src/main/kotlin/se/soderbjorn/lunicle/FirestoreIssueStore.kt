@@ -7,7 +7,8 @@
  * tables, and three of its behaviours are exactly where a document backend is most
  * likely to drift out of parity: a draft must be invisible on the board until it is
  * published, labels and components must round-trip through a wholesale replace, and
- * the usage counts the vocabulary editor reads must include drafts. Proving those
+ * the usage counts the vocabulary editor reads must leave drafts out — while the
+ * draft rows themselves are cleared out of a deleted column's way. Proving those
  * on the emulator against [se.soderbjorn.lunicle.store.IssueStoreContract] — the
  * same contract the SQLite gateway passes — is what this class exists to do.
  *
@@ -46,6 +47,7 @@ package se.soderbjorn.lunicle
 
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
+import com.google.cloud.firestore.Query
 import se.soderbjorn.lunicle.store.IssueStore
 
 class FirestoreIssueStore(
@@ -334,14 +336,18 @@ class FirestoreIssueStore(
 
     // ── Shared reads over a project's issues ─────────────────────────────────
     // Each is one query for the whole project — the document-model answer to the
-    // SQLite GROUP BY — and each includes drafts, because a draft holds a status,
-    // a priority and its labels like any other issue and it is a draft that makes a
-    // vocabulary delete fail; a count that hid it would promise a delete that then
-    // explodes. Absent means zero, so these stay plain maps with no zero rows.
+    // SQLite GROUP BY. Absent means zero, so these stay plain maps with no zero rows.
+    //
+    // [countBy] reads published issues only, matching Issues.sq's `is_draft = 0`:
+    // counting drafts made a project's leftmost column undeletable over rows its
+    // admin cannot see (LNL-183), and this backend has no foreign key to fall back
+    // on, so the count IS the whole protection here. [usageByArray] does not
+    // filter, because its SQLite twin counts join rows and does not either — and a
+    // draft carries no labels, since nothing writes them before publish.
 
-    /** Count the project's issues by a nullable scalar key, dropping the nulls (a backlog / open issue is not a group). */
+    /** Count the project's published issues by a nullable scalar key, dropping the nulls (a backlog / open issue is not a group). */
     private suspend fun countBy(projectId: Long, key: (DocumentSnapshot) -> Long?): Map<Long, Long> =
-        issuesOf(projectId).mapNotNull(key).groupingBy { it }.eachCount().mapValues { it.value.toLong() }
+        publishedIssuesOf(projectId).mapNotNull(key).groupingBy { it }.eachCount().mapValues { it.value.toLong() }
 
     /** Count the project's issues by membership in an id array (labels, components) — one issue may count many times. */
     private suspend fun usageByArray(projectId: Long, field: String): Map<Long, Long> =
@@ -353,6 +359,50 @@ class FirestoreIssueStore(
 
     private suspend fun issuesOf(projectId: Long): List<DocumentSnapshot> =
         collection().whereEqualTo(PROJECT_ID, projectId).get().await().documents
+
+    private suspend fun publishedIssuesOf(projectId: Long): List<DocumentSnapshot> =
+        collection()
+            .whereEqualTo(PROJECT_ID, projectId)
+            .whereEqualTo(IS_DRAFT, false)
+            .get().await().documents
+
+    /**
+     * Delete this project's drafts sitting in one status. See
+     * [se.soderbjorn.lunicle.store.IssueStore.deleteDraftsWithStatus].
+     *
+     * Three equalities and a batch delete — the document form of the SQLite
+     * `DELETE … WHERE project_id = ? AND status_id = ? AND is_draft = 1`. Nothing
+     * here cascades, which on this backend is the same story as [delete]: the rows
+     * a SQL cascade would take live under `FirestoreCascade`, and a draft has
+     * nothing but possibly an attachment, whose file the startup sweep collects.
+     */
+    override suspend fun deleteDraftsWithStatus(projectId: Long, statusId: Long): Long =
+        deleteDrafts(collection().whereEqualTo(PROJECT_ID, projectId).whereEqualTo(STATUS_ID, statusId))
+
+    /** As [deleteDraftsWithStatus], for a priority. */
+    override suspend fun deleteDraftsWithPriority(projectId: Long, priorityId: Long): Long =
+        deleteDrafts(collection().whereEqualTo(PROJECT_ID, projectId).whereEqualTo(PRIORITY_ID, priorityId))
+
+    /**
+     * Startup housekeeping. See
+     * [se.soderbjorn.lunicle.store.IssueStore.sweepAbandonedDrafts].
+     *
+     * An equality and an inequality on different fields, which is a composite
+     * index in production and index-free on the emulator — the class preamble's
+     * standing caveat, and LNL-122's job to declare. It runs once per boot.
+     */
+    override suspend fun sweepAbandonedDrafts(cutoff: Long): Long =
+        deleteDrafts(collection().whereLessThan(CREATED_AT, cutoff))
+
+    /** Add `isDraft == true` to [query], and batch-delete what comes back. */
+    private suspend fun deleteDrafts(query: Query): Long {
+        val drafts = query.whereEqualTo(IS_DRAFT, true).get().await().documents
+        if (drafts.isEmpty()) return 0
+        val batch = firestore.batch()
+        drafts.forEach { batch.delete(it.reference) }
+        batch.commit().await()
+        return drafts.size.toLong()
+    }
 
     /**
      * Every issue whose description contains [needle], as id-to-description pairs.

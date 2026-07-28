@@ -10,8 +10,10 @@
  * one query each and reflect what [IssueStore.setLabelsAndComponents] wrote;
  * [IssueStore.findById] round-trips a filed issue; [IssueStore.setStatus] and
  * [IssueStore.setSprint] are read back; the usage counts the vocabulary editor
- * reads include filed issues; and [IssueStore.setGroupOrder] ranks a whole group
- * 1..n.
+ * reads include filed issues and leave drafts out, while
+ * [IssueStore.deleteDraftsWithStatus] and [IssueStore.sweepAbandonedDrafts] are
+ * what clear those drafts away (LNL-183); and [IssueStore.setGroupOrder] ranks a
+ * whole group 1..n.
  *
  * A subclass per backend supplies the store and a project seeded — through the
  * real `ProjectRepository`/`IssueRepository` — with its default board columns, a
@@ -145,6 +147,74 @@ abstract class IssueStoreContract {
         assertEquals(1L, store.usageByStatus(p.projectId)[status], "the filed issue counts against its status")
         assertEquals(1L, store.usageByLabel(p.projectId)[p.labelIds.first()], "and against the label it carries")
         assertTrue(store.usageByPriority(p.projectId)[p.priorityId]!! >= 1L, "and against its priority")
+    }
+
+    /**
+     * The counts answer for the visible board — LNL-183's half of the fix.
+     *
+     * A draft used to count, which meant one abandoned "New issue" made the
+     * leftmost column of a project undeletable forever: the settings dialog
+     * refused over a row nobody could see, find or move. Backends that can only
+     * count what they are asked to count get this wrong in the quiet direction, so
+     * it is pinned with a published issue standing next to the draft — a count of
+     * zero here would pass a test that only had the draft.
+     */
+    @Test
+    fun `usage counts leave drafts out`() = runBlocking {
+        val p = newProject()
+        val status = p.statusIds.first()
+        fileIssue(p, status)
+        createDraft(p) // lands in the leftmost status, which is where a draft goes
+
+        assertEquals(1L, store.usageByStatus(p.projectId)[status], "only the published issue counts")
+        assertEquals(1L, store.usageByPriority(p.projectId)[p.priorityId], "and the same for its priority")
+    }
+
+    /**
+     * The other half: the drafts a column delete takes with it.
+     *
+     * Both scopes asserted, because a statement missing either one is a bug that
+     * looks like a working feature — one that ignores `is_draft` deletes somebody's
+     * filed issue, and one that ignores `project_id` reaches into another project
+     * on an id an admin of *this* one supplied.
+     */
+    @Test
+    fun `deleteDraftsWithStatus takes this project's drafts in that status and nothing else`(): Unit = runBlocking {
+        val p = newProject()
+        val status = p.statusIds.first()
+        val published = fileIssue(p, status)
+        val draft = createDraft(p)
+        val elsewhere = createDraft(newProject())
+
+        assertEquals(1L, store.deleteDraftsWithStatus(p.projectId, status), "the one draft in that column went")
+        assertEquals(null, store.findById(draft), "and it is gone")
+        assertNotNull(store.findById(published), "the published issue in the same column survived")
+        assertNotNull(store.findById(elsewhere), "another project's draft is not this delete's business")
+
+        assertEquals(0L, store.deleteDraftsWithStatus(p.projectId, status), "and a second pass finds nothing")
+    }
+
+    /**
+     * The startup sweep, which is what stops them accumulating in the first place.
+     *
+     * The cutoff is the caller's — `Application.module` passes seven days — so what
+     * the store owes is the comparison and nothing else: older goes, newer stays.
+     * The old draft is inserted with an explicit `createdAt` rather than by waiting.
+     */
+    @Test
+    fun `sweepAbandonedDrafts takes drafts older than the cutoff and leaves the rest`(): Unit = runBlocking {
+        val p = newProject()
+        val status = p.statusIds.first()
+        val old = store.insertDraft(
+            p.projectId, "Abandoned", status, p.priorityId, Author.Nobody, createdAt = 1_000,
+        ).first
+        val fresh = createDraft(p)
+        val published = fileIssue(p, status)
+
+        assertEquals(1L, store.sweepAbandonedDrafts(cutoff = 2_000), "only the draft older than the cutoff went")
+        assertEquals(null, store.findById(old))
+        assertNotNull(store.findById(fresh), "a draft somebody may still be typing into stays")
+        assertNotNull(store.findById(published), "and a published issue is never a sweep's business")
     }
 
     @Test

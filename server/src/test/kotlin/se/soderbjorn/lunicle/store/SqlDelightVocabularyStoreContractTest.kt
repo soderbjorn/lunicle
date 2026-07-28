@@ -75,6 +75,12 @@ class SqlDelightVocabularyStoreContractTest : VocabularyStoreContract() {
         return id
     }
 
+    /** [fileIssue] without the save — the real "New issue" path, stopped where a closed tab stops it. */
+    override suspend fun createDraft(projectId: Long): Long =
+        issueRepository.createDraft(projectId, Author.Nobody).first
+
+    override suspend fun issueExists(id: Long): Boolean = issues.findById(id) != null
+
     @AfterTest
     fun tearDown() {
         fixture.close()

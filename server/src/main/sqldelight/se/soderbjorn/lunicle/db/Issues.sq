@@ -463,32 +463,97 @@ FROM issues WHERE id = ?;
 -- dialog needs to say "3 issues still have that status" *before* the delete, and
 -- the count VocabularyRepository refuses on.
 --
--- ── Drafts are counted, and that is not an oversight ────────────────────────
+-- ── Drafts are NOT counted, and that took a bug to settle (LNL-183) ─────────
 --
--- Every other query on this table excludes `is_draft = 1`, because a half-written
--- issue is nobody's business but its author's. This one cannot: a draft row holds
--- a status_id like any other, so it is a draft that will make SQLite's RESTRICT
--- refuse the delete. Filtering them out here would produce the worst possible
--- answer — a dialog that says "nothing uses this, go ahead" followed by a
--- constraint violation nobody can explain from the UI.
+-- This query used to count them, on the reasoning that a draft row holds a
+-- status_id like any other and so it is a draft that makes SQLite's RESTRICT
+-- refuse the delete — better to say "3 issues are in this status" than to
+-- promise a delete that then explodes.
+--
+-- The reasoning was sound and the result was indefensible. A draft lands in the
+-- LEFTMOST column (see `insert`) and nothing sweeps the ones a closed tab or a
+-- crash leaves behind, so the first column of any project that has ever had an
+-- abandoned "New issue" became permanently undeletable — refused with a count of
+-- issues that are on nobody's board and that its admin therefore cannot move,
+-- find, or even know exist.
+--
+-- So the count answers what the admin can see, and the drafts are got out of the
+-- way instead: `VocabularyRepository.delete` runs deleteDraftsWithStatus /
+-- deleteDraftsWithPriority first, and `sweepAbandonedDrafts` collects the rest at
+-- startup. Both leave RESTRICT exactly where it was — the constraint is still the
+-- guarantee, this is still the sentence, and the race backstop in that method
+-- still re-reads the count if the two disagree.
 --
 -- One grouped query per kind rather than one count per row: a project has a
 -- handful of statuses today and this is not the place to teach it to cost a
 -- round-trip each.
 usageByStatus:
-SELECT status_id, COUNT(*) AS uses FROM issues WHERE project_id = ? GROUP BY status_id;
+SELECT status_id, COUNT(*) AS uses FROM issues
+WHERE project_id = ? AND is_draft = 0
+GROUP BY status_id;
 
--- See usageByStatus. Drafts count here too, for the same reason.
+-- See usageByStatus. Drafts are excluded here too, and for the same reason: a
+-- draft takes the project's default priority, so one abandoned draft would
+-- otherwise pin that priority the way it pinned the first column.
 usageByPriority:
-SELECT priority_id, COUNT(*) AS uses FROM issues WHERE project_id = ? GROUP BY priority_id;
+SELECT priority_id, COUNT(*) AS uses FROM issues
+WHERE project_id = ? AND is_draft = 0
+GROUP BY priority_id;
 
 -- `resolution_id IS NOT NULL` rather than a plain GROUP BY: the null group is
 -- every open issue in the project, which is not a resolution anybody could
 -- delete, and it would arrive as a count keyed on nothing.
+--
+-- `is_draft = 0` for usageByStatus's reason, though no draft can reach this count
+-- today: a draft is created with no resolution and nothing writes one before
+-- publish. The clause is here so the three read alike and stay true if that
+-- changes, not because it currently excludes a row.
 usageByResolution:
 SELECT resolution_id, COUNT(*) AS uses FROM issues
-WHERE project_id = ? AND resolution_id IS NOT NULL
+WHERE project_id = ? AND resolution_id IS NOT NULL AND is_draft = 0
 GROUP BY resolution_id;
+
+-- ── Getting drafts out of the way of a vocabulary delete (LNL-183) ──────────
+--
+-- The other half of excluding drafts from the counts above. A draft is an
+-- unpublished row nobody but its author has seen — it is not work anyone can be
+-- asked to move — so deleting the column it happens to be sitting in takes it
+-- with the column rather than being refused on its behalf.
+--
+-- Project-scoped as well as row-scoped, like every other write reachable from the
+-- settings dialog: an id from another project must delete nothing at all rather
+-- than reaching across projects because an admin is an admin everywhere.
+--
+-- Attachments cascade with the row; their FILES are collected by the attachment
+-- sweep at the next boot, the same path a cancelled draft's inline image already
+-- takes. See AttachmentRepository.sweepOrphans.
+deleteDraftsWithStatus:
+DELETE FROM issues WHERE project_id = ? AND status_id = ? AND is_draft = 1;
+
+-- See deleteDraftsWithStatus. Priority is NOT NULL too, so the same problem and
+-- the same answer.
+deleteDraftsWithPriority:
+DELETE FROM issues WHERE project_id = ? AND priority_id = ? AND is_draft = 1;
+
+-- Startup housekeeping: the drafts nobody is writing any more.
+--
+-- "New issue" inserts its row before the editor is filled in, so an inline image
+-- upload has an owner from the first keystroke (Attachments.sq's one-owner CHECK).
+-- Cancel deletes it; a closed tab, a crash or a request that died in flight does
+-- not, and the row then sits invisible forever holding a status, a priority and
+-- possibly an attachment. That was tolerable while nothing counted them and it is
+-- what LNL-183 turned out to be.
+--
+-- Age-gated rather than unconditional, because "is this draft abandoned?" has no
+-- answer in the database — an editor open in a background tab looks exactly like
+-- one whose tab was closed a week ago. The cutoff is the caller's; see
+-- IssueStore.sweepAbandonedDrafts for the number and why it is generous.
+--
+-- created_at, not updated_at: they are set to the same value on insert and
+-- nothing touches a draft's updated_at before publish, so the two are the same
+-- number here — and created_at is the one that means "when this editor opened".
+deleteDraftsOlderThan:
+DELETE FROM issues WHERE is_draft = 1 AND created_at < ?;
 
 -- How many issues each of this project's sprints holds. Unlike the three above
 -- this count never refuses a delete — sprint_id is SET NULL, so a sprint with

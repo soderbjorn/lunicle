@@ -140,6 +140,12 @@ class FirestoreVocabularyStore(
      * Delete a row, or refuse — the two checks in `VocabularyRepository.delete`'s
      * order: the last load-bearing row first (true even of an empty project), then
      * a row still in use.
+     *
+     * And, like the repository, the drafts sitting in the row go with it rather
+     * than blocking it (LNL-183). There is no foreign key on this backend to
+     * refuse the delete, so what a leftover draft would produce here is not a
+     * violation but an issue document pointing at a status that no longer exists —
+     * which is worse, and invisible until someone opens it.
      */
     override suspend fun delete(projectId: Long, kind: VocabularyKind, row: VocabularyRow) {
         val siblings = docsOfKind(projectId, kind)
@@ -151,6 +157,12 @@ class FirestoreVocabularyStore(
         }
         if (kind.restrictsOnUse && row.usageCount > 0) {
             throw VocabularyRefusal(inUseMessage(kind, row))
+        }
+        when (kind) {
+            VocabularyKind.STATUS -> issues.deleteDraftsWithStatus(projectId, row.id)
+            VocabularyKind.PRIORITY -> issues.deleteDraftsWithPriority(projectId, row.id)
+            // Nothing else can be holding a draft; see VocabularyRepository.clearDrafts.
+            else -> Unit
         }
         doc(row.id).delete().await()
     }
