@@ -51,8 +51,18 @@ class ProjectStatisticsStore(private val database: LunicleDatabase) {
                 // from one CommitCounts and read back into one. A row with two of
                 // three set is not reachable through `upsert`, so the null check on
                 // the first speaks for all three.
+                //
+                // Counts *and* a reason is a reachable row and not a contradiction
+                // (LNL-175): the counts are the last ones GitHub answered with and
+                // the reason says why they were not refreshed. See
+                // CommitCounts.Counted.notRefreshed.
                 commits = if (row.commits_week != null && row.commits_month != null && row.commits_all != null) {
-                    CommitCounts.Counted(row.commits_week, row.commits_month, row.commits_all)
+                    CommitCounts.Counted(
+                        row.commits_week,
+                        row.commits_month,
+                        row.commits_all,
+                        notRefreshed = row.commits_unavailable,
+                    )
                 } else {
                     CommitCounts.Unavailable(row.commits_unavailable ?: "Commit counts are unavailable.")
                 },
@@ -79,7 +89,13 @@ class ProjectStatisticsStore(private val database: LunicleDatabase) {
             commits_week = counted?.week,
             commits_month = counted?.month,
             commits_all = counted?.allTime,
-            commits_unavailable = (snapshot.commits as? CommitCounts.Unavailable)?.reason,
+            // Set in both directions: the reason a compile could not answer, or —
+            // when counts were carried forward from the last one that could — the
+            // reason they are older than the row around them (LNL-175).
+            commits_unavailable = when (val commits = snapshot.commits) {
+                is CommitCounts.Unavailable -> commits.reason
+                is CommitCounts.Counted -> commits.notRefreshed
+            },
             issues_created_week = snapshot.issuesCreated.week,
             issues_created_month = snapshot.issuesCreated.month,
             issues_created_all = snapshot.issuesCreated.allTime,

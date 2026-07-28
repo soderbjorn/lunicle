@@ -183,10 +183,58 @@ fun parseTokenEnvName(raw: String): String? {
  * [GitHubClient.commitCounts] for the rule about which sentence.
  */
 sealed interface CommitCounts {
-    data class Counted(val week: Long, val month: Long, val allTime: Long) : CommitCounts
+    /**
+     * Numbers, and possibly a note saying they are older than the rest.
+     *
+     * ── Why a counted result can carry a reason (LNL-175) ──────────────────
+     *
+     * A compile that reaches github.com and is refused used to write
+     * [Unavailable] over whatever the last compile had found, which *deleted the
+     * commit counts from the dialog* — the row disappears, and stays gone for at
+     * least the freshness window and for as long as the refusals continue. One
+     * transient 5xx or a dropped connection was enough, and the only thing on
+     * screen afterwards was a sentence about a token, beside no numbers.
+     *
+     * So the last good counts are carried forward instead, with the reason the
+     * newer ones could not be had riding along in [notRefreshed]. The row keeps
+     * its numbers and the note keeps its sentence; the two travel to the browser
+     * as separate fields already (see StatisticsRoutes.toWire), so nothing in the
+     * view had to learn a new state.
+     *
+     * @property notRefreshed why these are not this moment's numbers, in a
+     *   sentence fit to show a user, or null because they are. Not a silent
+     *   fallback: showing stale figures *as current* is the thing this feature's
+     *   age label exists to prevent, so a carried-forward count always says so.
+     */
+    data class Counted(
+        val week: Long,
+        val month: Long,
+        val allTime: Long,
+        val notRefreshed: String? = null,
+    ) : CommitCounts
 
     /** @property reason shown to the user, verbatim. Never a raw provider error. */
     data class Unavailable(val reason: String) : CommitCounts
+}
+
+/**
+ * This attempt's counts, or the last good ones with this attempt's reason on them.
+ *
+ * The one rule LNL-175 adds, shared by both backends' compile step so they cannot
+ * drift: **a refusal from github.com must not delete the numbers the last
+ * successful call found.** Applied only to what GitHub itself answered — the
+ * configuration absences (no repository linked, no token, a variable naming
+ * nothing) are states where the row is *meant* to go away, and carrying counts
+ * through an unlinked repository would leave a number on screen for a repository
+ * this project no longer tracks.
+ *
+ * @receiver what this compile got out of GitHub.
+ * @param previous the commit half of the snapshot being replaced, if there is one.
+ */
+internal fun CommitCounts.orLastKnown(previous: CommitCounts?): CommitCounts {
+    if (this !is CommitCounts.Unavailable) return this
+    val last = previous as? CommitCounts.Counted ?: return this
+    return CommitCounts.Counted(last.week, last.month, last.allTime, notRefreshed = reason)
 }
 
 /**

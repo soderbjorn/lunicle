@@ -68,9 +68,11 @@ class FirestoreStatisticsStore(
         return StatisticsSnapshot(
             computedAt = snapshot.getLong(COMPUTED_AT) ?: 0L,
             // The three counts travel together or not at all, so the null check on
-            // the first speaks for all three — as ProjectStatisticsStore does.
+            // the first speaks for all three — as ProjectStatisticsStore does. And,
+            // as there, counts *with* a reason mean counts carried forward from the
+            // last compile GitHub answered (LNL-175).
             commits = if (week != null && month != null && all != null) {
-                CommitCounts.Counted(week, month, all)
+                CommitCounts.Counted(week, month, all, notRefreshed = snapshot.getString(COMMITS_UNAVAILABLE))
             } else {
                 CommitCounts.Unavailable(snapshot.getString(COMMITS_UNAVAILABLE) ?: "Commit counts are unavailable.")
             },
@@ -98,12 +100,15 @@ class FirestoreStatisticsStore(
         return refreshLocks.getOrPut(projectId) { Mutex() }.withLock {
             // Re-read inside the lock: whoever was ahead has just written a fresh
             // snapshot, and the work we queued for is already done.
-            cached(projectId)?.takeIf { !isStale(it) }?.let { return@withLock it }
-            compile(projectId).also { store(projectId, it) }
+            val previous = cached(projectId)
+            previous?.takeIf { !isStale(it) }?.let { return@withLock it }
+            // Handed along so a refusal from GitHub does not delete the last counts
+            // it did answer with — the reference's rule. See CommitCounts.orLastKnown.
+            compile(projectId, previous).also { store(projectId, it) }
         }
     }
 
-    private suspend fun compile(projectId: Long): StatisticsSnapshot {
+    private suspend fun compile(projectId: Long, previous: StatisticsSnapshot?): StatisticsSnapshot {
         val at = now()
         val weekStart = at - WEEK.inWholeMilliseconds
         val monthStart = at - MONTH.inWholeMilliseconds
@@ -128,13 +133,18 @@ class FirestoreStatisticsStore(
         )
         return StatisticsSnapshot(
             computedAt = at,
-            commits = commitCounts(projectId, weekStart, monthStart),
+            commits = commitCounts(projectId, weekStart, monthStart, previous?.commits),
             issuesCreated = created,
             issuesClosed = closed,
         )
     }
 
-    private suspend fun commitCounts(projectId: Long, weekStart: Long, monthStart: Long): CommitCounts {
+    private suspend fun commitCounts(
+        projectId: Long,
+        weekStart: Long,
+        monthStart: Long,
+        previous: CommitCounts?,
+    ): CommitCounts {
         val config = repositoryConfigFor(projectId)
         val repository = config?.repository
             ?: return CommitCounts.Unavailable("No GitHub repository is linked to this project.")
@@ -147,7 +157,7 @@ class FirestoreStatisticsStore(
                     "The environment variable ${source.variableName} is not set on this server.",
                 )
         }
-        return gitHub.commitCounts(repository, token, weekStart, monthStart)
+        return gitHub.commitCounts(repository, token, weekStart, monthStart).orLastKnown(previous)
     }
 
     private suspend fun store(projectId: Long, snapshot: StatisticsSnapshot) {
@@ -158,7 +168,13 @@ class FirestoreStatisticsStore(
                 COMMITS_WEEK to counted?.week,
                 COMMITS_MONTH to counted?.month,
                 COMMITS_ALL to counted?.allTime,
-                COMMITS_UNAVAILABLE to (snapshot.commits as? CommitCounts.Unavailable)?.reason,
+                // Written in both directions, as ProjectStatisticsStore does: the
+                // reason nothing could be counted, or the reason the counts beside
+                // it are older than the rest of the row (LNL-175).
+                COMMITS_UNAVAILABLE to when (val commits = snapshot.commits) {
+                    is CommitCounts.Unavailable -> commits.reason
+                    is CommitCounts.Counted -> commits.notRefreshed
+                },
                 CREATED_WEEK to snapshot.issuesCreated.week,
                 CREATED_MONTH to snapshot.issuesCreated.month,
                 CREATED_ALL to snapshot.issuesCreated.allTime,

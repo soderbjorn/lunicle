@@ -48,12 +48,18 @@ data class StatisticWindow(
  *   because a quiet week and an unanswerable question are different facts and a
  *   zero would state the first while meaning the second.
  * @property commitsUnavailable why [commits] is null, in a sentence fit to show a
- *   user, or null because it is not. Always set when [commits] is, and never both.
+ *   user, or null because there is nothing to explain.
  *
  *   Carries the *reason* rather than a boolean because the four ways this happens
  *   — no repository linked, no token configured, the variable missing from the
  *   deployment, GitHub refusing — are fixed by different people doing different
  *   things. "Unavailable" alone tells none of them which errand is theirs.
+ *
+ *   **Not exclusive with [commits]** (LNL-175). Both set means "these are the last
+ *   counts GitHub answered with, and here is why they are not this moment's" —
+ *   which is what the server sends rather than deleting a working row over one
+ *   refused call. The view draws the row from [commits] and the note from this,
+ *   and neither has ever asked about the other.
  * @property issuesCreated issues filed in each window. Exact in all three:
  *   `created_at` is written once and never moves.
  * @property issuesClosed issues closed. [StatisticWindow.week] and

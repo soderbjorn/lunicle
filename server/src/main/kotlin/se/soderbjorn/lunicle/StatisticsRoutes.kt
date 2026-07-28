@@ -212,14 +212,22 @@ private suspend fun io.ktor.server.application.ApplicationCall.parseLiteralToken
  * The sealed [CommitCounts] flattens into a nullable window plus a nullable
  * reason, because kotlinx.serialization's polymorphism would put a discriminator
  * on the wire and the client's question is only ever "is there a number, and if
- * not what do I say instead". Exactly one of the two is non-null, which the
- * `when` guarantees at the one point of translation rather than at every read.
+ * not what do I say instead".
+ *
+ * The two are independent rather than exclusive since LNL-175: a window with a
+ * reason beside it means "these are the last counts GitHub answered with, and
+ * here is why they are not this moment's". The browser needed no change for that
+ * — the table row is drawn from the window and the note from the reason, and
+ * neither ever asked about the other. See CommitCounts.Counted.notRefreshed.
  */
 private fun StatisticsSnapshot.toWire(): ProjectStatistics = ProjectStatistics(
     computedAt = computedAt,
     commits = (commits as? CommitCounts.Counted)
         ?.let { StatisticWindow(it.week, it.month, it.allTime) },
-    commitsUnavailable = (commits as? CommitCounts.Unavailable)?.reason,
+    commitsUnavailable = when (val counts = commits) {
+        is CommitCounts.Unavailable -> counts.reason
+        is CommitCounts.Counted -> counts.notRefreshed
+    },
     issuesCreated = issuesCreated.toWire(),
     issuesClosed = issuesClosed.toWire(),
 )

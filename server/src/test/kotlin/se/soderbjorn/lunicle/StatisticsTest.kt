@@ -246,6 +246,76 @@ class StatisticsTest {
     }
 
     /**
+     * A refusal from GitHub does not delete the counts it last answered with.
+     *
+     * LNL-175, and the reason it was filed: the commit row simply *vanished* from
+     * Analytics. A compile whose GitHub half failed used to write Unavailable over
+     * the whole commit half of the snapshot, so one transient refusal took the
+     * numbers off the screen — for the freshness window at least, and for as long
+     * as the refusals lasted. Nothing looked broken afterwards; there was a
+     * sentence about a token where three numbers had been.
+     *
+     * So the counts are carried forward with the new reason riding along, and both
+     * reach the browser. Asserted through two real compiles rather than on the
+     * carry-forward helper alone, because the bug was in what got *stored*.
+     */
+    @Test
+    fun `a GitHub refusal keeps the last counts and says why they are old`(): Unit = runBlocking {
+        val f = seed()
+        projects.setRepositoryConfig(
+            f.projectId,
+            RepositoryConfig(RepositoryRef("soderbjorn", "lunicle"), TokenSource.Env("LUNICLE_GITHUB_TOKEN_TEST")),
+        )
+        var answer: CommitCounts = CommitCounts.Counted(week = 7, month = 30, allTime = 100)
+        val repository = StatisticsRepository(
+            projects = projects,
+            snapshots = snapshots,
+            issueCounts = issueCounts,
+            gitHub = { _, _, _, _ -> answer },
+            tokenLookup = { "a-token" },
+            now = { clock },
+        )
+
+        repository.refresh(f.projectId)
+        answer = CommitCounts.Unavailable("GitHub could not answer just now.")
+        clock += 16 * 60 * 1000
+        val second = repository.refresh(f.projectId)
+
+        assertEquals(
+            CommitCounts.Counted(7, 30, 100, notRefreshed = "GitHub could not answer just now."),
+            second.commits,
+            "the last good counts survive a refusal, with the reason on them",
+        )
+        // And they survive the round trip through SQLite, which is where they were
+        // being lost — the snapshot is read back, not merely returned.
+        assertEquals(second.commits, snapshots.forProject(f.projectId)?.commits)
+    }
+
+    /**
+     * Unlinking the repository *does* take the row away.
+     *
+     * The other half of the rule above, and the one that keeps it from becoming
+     * "commit counts are forever". A configuration absence is a deliberate state
+     * rather than a failure to reach GitHub, and a number left behind for a
+     * repository this project no longer tracks would be a lie no note could fix.
+     */
+    @Test
+    fun `unlinking the repository drops the carried-forward counts`(): Unit = runBlocking {
+        val f = seed()
+        val repository = repositoryWith(f, AtomicInteger())
+        repository.refresh(f.projectId)
+
+        projects.setRepositoryConfig(f.projectId, RepositoryConfig(null, TokenSource.None))
+        clock += 16 * 60 * 1000
+        val second = repository.refresh(f.projectId)
+
+        assertEquals(
+            CommitCounts.Unavailable("No GitHub repository is linked to this project."),
+            second.commits,
+        )
+    }
+
+    /**
      * A project with no repository reports why, rather than reporting zero.
      *
      * Zero would be a claim that nobody committed. The distinction is the reason

@@ -191,9 +191,28 @@ class StatisticsBackingViewModel(
         return previous.copy(
             errorMessage = null,
             rows = snapshot.toRows(),
-            commitsUnavailable = snapshot.commitsUnavailable,
+            commitsUnavailable = snapshot.commitsNote(),
             ageLabel = "Updated ${formatRelative(snapshot.computedAt, now())}",
         )
+    }
+
+    /**
+     * The sentence under the table, or null because there is nothing to say.
+     *
+     * Two different sentences share this one slot, and which one it is depends on
+     * whether there is a commit row above it (LNL-175):
+     *
+     *  - **No row.** The reason stands alone and explains the row's absence, which
+     *    is what it has always done.
+     *  - **A row.** The counts are the last ones GitHub answered with and the
+     *    reason says why they were not refreshed — so the sentence has to say that
+     *    the numbers above are old, or it reads as an explanation for numbers that
+     *    are plainly right there.
+     */
+    private fun ProjectStatistics.commitsNote(): String? {
+        val reason = commitsUnavailable ?: return null
+        if (commits == null) return reason
+        return "$reason The commit counts above are the last that could be read."
     }
 
     private fun ProjectStatistics.toRows(): List<Row> = buildList {

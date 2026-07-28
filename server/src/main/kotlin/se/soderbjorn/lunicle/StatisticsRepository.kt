@@ -101,9 +101,13 @@ class StatisticsRepository(
             // done. Without this the wait would be pointless: every queued caller
             // would go on to make the same calls anyway, which is the stampede the
             // lock exists to prevent rather than merely to serialise.
-            snapshots.forProject(projectId)?.takeIf { !isStale(it) }?.let { return@withLock it }
+            val previous = snapshots.forProject(projectId)
+            previous?.takeIf { !isStale(it) }?.let { return@withLock it }
 
-            compile(projectId).also { snapshots.upsert(projectId, it) }
+            // The snapshot being replaced is handed to the compile, not thrown
+            // away: it holds the last commit counts GitHub answered with, and a
+            // refusal must not delete them. See CommitCounts.orLastKnown.
+            compile(projectId, previous).also { snapshots.upsert(projectId, it) }
         }
     }
 
@@ -115,13 +119,13 @@ class StatisticsRepository(
      * the week and the month different starting points, and a snapshot's whole
      * claim is that its numbers describe one moment.
      */
-    private suspend fun compile(projectId: Long): StatisticsSnapshot {
+    private suspend fun compile(projectId: Long, previous: StatisticsSnapshot?): StatisticsSnapshot {
         val at = now()
         val weekStart = at - WEEK.inWholeMilliseconds
         val monthStart = at - MONTH.inWholeMilliseconds
         return StatisticsSnapshot(
             computedAt = at,
-            commits = commitCounts(projectId, weekStart, monthStart),
+            commits = commitCounts(projectId, weekStart, monthStart, previous?.commits),
             issuesCreated = issueCounts.created(projectId, weekStart, monthStart),
             issuesClosed = issueCounts.closed(projectId, weekStart, monthStart),
         )
@@ -135,8 +139,20 @@ class StatisticsRepository(
      * none of them which. An admin who has linked a repository but not a token is
      * one settings field away; an admin whose variable is missing from Railway is
      * one deployment variable away; and those are not the same errand.
+     *
+     * The three configuration absences below return *without* consulting
+     * [previous]: they are the states where the commit row is meant to disappear,
+     * and only what github.com itself refused is carried forward. See
+     * [CommitCounts.orLastKnown].
+     *
+     * @param previous the commit half of the snapshot this one replaces, if any.
      */
-    private suspend fun commitCounts(projectId: Long, weekStart: Long, monthStart: Long): CommitCounts {
+    private suspend fun commitCounts(
+        projectId: Long,
+        weekStart: Long,
+        monthStart: Long,
+        previous: CommitCounts?,
+    ): CommitCounts {
         val config = projects.repositoryConfig(projectId)
         val repository = config?.repository
             ?: return CommitCounts.Unavailable("No GitHub repository is linked to this project.")
@@ -153,7 +169,7 @@ class StatisticsRepository(
                     "The environment variable ${source.variableName} is not set on this server.",
                 )
         }
-        return gitHub.commitCounts(repository, token, weekStart, monthStart)
+        return gitHub.commitCounts(repository, token, weekStart, monthStart).orLastKnown(previous)
     }
 
     private companion object {
