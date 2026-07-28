@@ -2416,6 +2416,40 @@ body > .dt-pane-menu {
   padding: 1px 4px;
   font-size: .9em;
 }
+/* A code block, or a diagram the renderer recognised (LNL-181).
+
+   `white-space: pre` is the load-bearing declaration and the reason the feature
+   exists: every other element here collapses runs of spaces, which is precisely
+   what a column-aligned table is made of, so an ASCII table rendered as a
+   paragraph arrives as one squashed line of words. `pre` and not `pre-wrap` —
+   re-wrapping a drawing at the container's width destroys it just as thoroughly
+   as collapsing it, so a wide table scrolls instead.
+
+   The horizontal scroll is on the block itself, never on the page: an issue
+   description is inside a pane that must not grow a second scrollbar because
+   somebody pasted a wide table into it. */
+.markdown pre {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono, monospace);
+  font-size: .9em;
+  line-height: 1.35;
+  white-space: pre;
+  overflow-x: auto;
+}
+/* The <code> inside a fence is the block, not a chip in a sentence. Without this
+   it inherits .markdown code's border, background and padding and draws a second
+   box inside the first, inset by a few pixels along every edge. */
+.markdown pre code {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  font-size: inherit;
+}
 /* An oversized screenshot must not blow out the modal. */
 /* Scaled down to a thumbnail, not shown at whatever size the camera produced.
 

@@ -112,8 +112,15 @@ private fun collectBlocks(parent: Node, out: MutableList<String>) {
                 if (items.isNotEmpty()) out.add(items.joinToString("\n") { "- $it" })
             }
 
+            // A code block or a diagram (LNL-181) — the two things in this
+            // document whose *whitespace is content*, and the reason this branch
+            // exists at all rather than falling through to the one below. That
+            // one trims, and a trimmed diagram is a destroyed diagram: the
+            // indentation is what the drawing is made of.
+            "pre" -> preBlock(element)?.let { out.add(it) }
+
             else -> {
-                // p, div, li, blockquote, pre. A block that contains further
+                // p, div, li, blockquote. A block that contains further
                 // blocks — a div of divs, which is a shape browsers produce on
                 // their own — recurses, so its children each become a block
                 // rather than being flattened into one run-on paragraph.
@@ -128,6 +135,77 @@ private fun collectBlocks(parent: Node, out: MutableList<String>) {
     }
 
     flushParagraph()
+}
+
+/**
+ * A `<pre>` back to markdown, or null when there is nothing in it.
+ *
+ * ── The two spellings, and why they must not be confused ────────────────────
+ *
+ * [renderMarkdown] emits `<pre><code>` for a ``` fence and a bare `<pre>` for a
+ * run of lines it *recognised* as a diagram, and that distinction is the whole
+ * of what this reads back. A fence was written by its author and has to be
+ * written back as one, or opening the editor would quietly delete the ``` and
+ * leave the code sample's survival to a heuristic. A recognised diagram was
+ * never marked up at all, so emitting a fence around it would be this file
+ * inventing syntax the author did not write — the one thing its preamble says it
+ * must not do — and would change the stored document merely because somebody
+ * looked at it.
+ *
+ * ── Why the diagram survives a round trip anyway ────────────────────────────
+ *
+ * Because the escaping preserves *width*. [escapeMarkdown] puts a backslash in
+ * front of the characters it neutralises, which would shift every column in the
+ * drawing right — except that the renderer reads `\x` back as a single
+ * placeholder character before any of this is measured, so the line that reaches
+ * the detector is exactly as wide as the one that left it. None of the
+ * characters the detector actually looks for (`-`, `=`, `+`, `|`, `_`, the
+ * box-drawing range, the spaces between columns) is escaped at all.
+ *
+ * The fence branch escapes nothing, which is the point of a fence, and is safe
+ * for the same reason the renderer's side is: it is markdown that is being
+ * declined here, never HTML.
+ */
+private fun preBlock(element: Element): String? {
+    val code = element.childNodes.asList()
+        .filterIsInstance<Element>()
+        .firstOrNull { it.tagName.lowercase() == "code" }
+    val text = preText(element).trimEnd('\n')
+    if (text.isBlank()) return null
+    if (code == null) return escapeMarkdownBlock(escapeMarkdown(text))
+    val language = code.getAttribute("class").orEmpty()
+        .removePrefix("language-")
+        .takeIf { FENCE_LANGUAGE.matches(it) }
+        .orEmpty()
+    return "```$language\n$text\n```"
+}
+
+/**
+ * The info strings that may be written back into a fence.
+ *
+ * The renderer only ever writes one from its own narrow class, so this is
+ * agreement rather than defence — but the attribute is read off the live DOM,
+ * and a value with a newline or a backtick in it would reopen or break the fence
+ * it is being written into.
+ */
+private val FENCE_LANGUAGE = Regex("[A-Za-z0-9+#._-]{0,20}")
+
+/**
+ * The text of a `<pre>`, with the newlines that are in it.
+ *
+ * `textContent` would nearly do, and is wrong in the one case that matters: a
+ * contenteditable is a live document, and pressing Enter inside a `<pre>` leaves
+ * a `<br>` in some engines and a nested `<div>` in others. `textContent` reads
+ * both as no line break at all, which silently welds two rows of a table
+ * together.
+ */
+private fun preText(node: Node): String {
+    if (node is Text) return node.textContent.orEmpty()
+    val element = node as? Element ?: return ""
+    val tag = element.tagName.lowercase()
+    if (tag == "br") return "\n"
+    val inner = element.childNodes.asList().joinToString("") { preText(it) }
+    return if (tag != "pre" && tag in BLOCK_TAGS) inner + "\n" else inner
 }
 
 private fun hasBlockChild(element: Element): Boolean =
