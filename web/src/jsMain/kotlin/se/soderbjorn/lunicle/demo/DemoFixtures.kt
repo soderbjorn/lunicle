@@ -77,7 +77,7 @@ internal fun seedDemoWorld(): DemoWorld {
 
     val p = DemoProject(
         id = w.allocId(),
-        name = "Amiga Star Trek",
+        name = "Star Trek game",
         prefix = "AST",
         isPublic = true,
         // Forums and private messages are intentionally off in the demo — belt and

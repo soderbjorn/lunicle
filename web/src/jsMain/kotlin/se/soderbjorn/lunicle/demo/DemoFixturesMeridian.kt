@@ -82,7 +82,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
 
     val p = DemoProject(
         id = w.allocId(),
-        name = "Meridian",
+        name = "Meridian KMP",
         prefix = "MRD",
         isPublic = true,
         discussionsEnabled = false,
