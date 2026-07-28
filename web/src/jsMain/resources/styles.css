@@ -1230,6 +1230,57 @@ body > .dt-pane-menu {
   min-height: 40px;
   flex: 1;
   overflow-y: auto;
+  /* Reserve the scrollbar's channel whether or not a thumb is painted in it
+     (LNL-161, and see the hover block below). The thumb comes and goes with
+     hover; the SPACE it occupies must not, or every card in the lane would jump
+     10px sideways the moment the pointer crossed the column edge. Chrome and
+     Safari take a styled ::-webkit-scrollbar out of overlay mode and give it
+     layout width, so without this the gutter would appear and disappear with
+     the thumb.
+
+     Stated for the non-overflowing case too: a lane of three cards has no
+     scrollbar to reserve room for, and `stable` keeps its cards on the same
+     grid as the long lane beside it rather than 10px wider. */
+  scrollbar-gutter: stable;
+}
+
+/* LNL-161 — the lane's scrollbar is painted only while the pointer is in that
+   column. A board is five to eight lanes side by side, and a permanent thumb
+   down each one drew a set of vertical rules the board does not otherwise have:
+   more lines competing with the hairline that actually separates the columns
+   (see .column) than with the cards they belong to.
+
+   The scrollbar is HIDDEN, never removed. `overflow-y: auto` stays put above,
+   so the lane still scrolls by wheel, trackpad, keyboard and drag-to-edge with
+   no pointer in it at all — this only decides whether the thumb is inked.
+   Hiding it the other way, by toggling `scrollbar-width`/`display` on hover,
+   would take the channel away with it and shift the cards; painting the thumb
+   transparent leaves the geometry alone.
+
+   Both spellings again, for the reason given in the Scrollbars section at the
+   top: `scrollbar-color` for Firefox and modern Chrome, ::-webkit-scrollbar for
+   Safari. The base rules there are unscoped `*` selectors, so these — one class
+   deeper — win on specificity without !important.
+
+   Scoped to `.column:hover` rather than `.column-list:hover`: the ticket says
+   "hovering over that column", and the head is part of the column. Reaching for
+   the ⋮ menu already reveals the lane's thumb, which matches how the head's own
+   controls behave (see .column-menu).
+
+   Only where hover is a real thing. On a touch device `:hover` either never
+   matches — leaving a lane with no scrollbar and no scroll position indicator
+   at all — or sticks on after a tap; and those platforms already fade their
+   overlay scrollbars out on their own. */
+@media (hover: hover) {
+  .column-list { scrollbar-color: transparent transparent; }
+  .column-list::-webkit-scrollbar-thumb { background: transparent; }
+
+  .column:hover .column-list { scrollbar-color: var(--green-dim) transparent; }
+  .column:hover .column-list::-webkit-scrollbar-thumb { background: var(--green-dim); }
+  /* The global thumb:hover highlight, restated. It is `::-webkit-scrollbar-thumb:hover`
+     up top — one pseudo-class, which the rule above outranks — so grabbing the
+     thumb would otherwise have lost its brighten. */
+  .column:hover .column-list::-webkit-scrollbar-thumb:hover { background: var(--green); }
 }
 
 /* The header over each run of cards — a priority's name, or a resolution's in a
