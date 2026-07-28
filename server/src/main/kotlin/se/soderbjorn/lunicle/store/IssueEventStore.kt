@@ -77,4 +77,23 @@ interface IssueEventStore {
         createdAt: Long,
         agentName: String?,
     )
+
+    /**
+     * Delete an issue's whole history, values and all.
+     *
+     * The one exception to this store's append-only rule that is not an admin
+     * correction, and it is not really an exception: the issue these events describe
+     * is being deleted, so there is nothing left for them to be the history *of*.
+     *
+     * Redundant on SQLite — `issue_events.issue_id` is `ON DELETE CASCADE`, and
+     * `issue_event_values.event_id` cascades a second step from there — and
+     * load-bearing on Firestore, which has no cascade: the event documents outlive
+     * the issue document, naming an `issueId` nothing resolves. `IssueRepository.delete`
+     * is backend-agnostic and calls this on both, the pattern
+     * [AttachmentStore.deleteForIssue] set. See LNL-177.
+     *
+     * Firestore needs no second step for the values: they live on the event document
+     * as an array, so deleting the document takes them.
+     */
+    suspend fun deleteForIssue(issueId: Long)
 }

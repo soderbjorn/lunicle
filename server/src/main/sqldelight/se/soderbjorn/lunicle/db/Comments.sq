@@ -67,6 +67,20 @@ SELECT id, body FROM comments WHERE body LIKE '%/api/attachments/%';
 delete:
 DELETE FROM comments WHERE id = ?;
 
+-- Every comment on an issue, drafts included, deleted.
+--
+-- Redundant here and deliberately so, exactly as Attachments.sq's `deleteForIssue`
+-- is: `comments.issue_id` is ON DELETE CASCADE, so these rows would go with the
+-- issue a moment later anyway. It exists because the Firestore backend has no
+-- cascade to lean on and `IssueRepository.delete` is written once for both. See
+-- LNL-177.
+--
+-- No `is_draft` filter: an unsent comment on a deleted issue is exactly as
+-- unreachable as a published one, and the cascade this stands in for does not
+-- distinguish them either.
+deleteForIssue:
+DELETE FROM comments WHERE issue_id = ?;
+
 findById:
 SELECT id, issue_id, body, created_at, created_by, created_by_external, agent_name, is_draft
 FROM comments WHERE id = ?;

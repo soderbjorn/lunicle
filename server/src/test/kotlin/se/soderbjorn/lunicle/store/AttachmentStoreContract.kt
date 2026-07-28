@@ -97,6 +97,31 @@ abstract class AttachmentStoreContract {
         assertEquals(listOf("key-1"), store.keysForIssue(otherIssueId))
     }
 
+    /**
+     * The same cascade one level up (LNL-177) — the rows a project's deletion takes.
+     *
+     * `ProjectProvisioning.delete` already read [keysForProject] to unlink the files;
+     * before this method existed the Firestore side then left every row *naming*
+     * those unlinked files behind for good. So the sparing assertion here is doubly
+     * load-bearing: the two issues sit in **different projects**, which is what
+     * distinguishes a delete keyed on the project from one keyed on nothing.
+     */
+    @Test
+    fun `deleteForProject takes that project's rows and spares another project's`() = runBlocking {
+        val (projectId, issueId) = newIssue()
+        val (otherProjectId, otherIssueId) = newIssue()
+        val doomed = attach(issueId)
+        val spared = attach(otherIssueId)
+
+        store.deleteForProject(projectId)
+
+        assertNull(store.findById(doomed), "the project's row is gone")
+        assertEquals(emptyList(), store.keysForProject(projectId))
+        assertEquals(emptyList(), store.keysForIssue(issueId), "and so is the issue's view of it")
+        assertEquals(spared, store.findById(spared)?.id, "deleting one project's files took another's")
+        assertEquals(listOf("key-1"), store.keysForProject(otherProjectId))
+    }
+
     @Test
     fun `allStorageKeys reflects inserts, and delete removes the row`() = runBlocking {
         val (_, issueId) = newIssue()

@@ -66,4 +66,34 @@ interface SubscriptionStore {
 
     /** Candidates (actor-narrowed, but NOT visibility-narrowed) for a post comment. */
     suspend fun audienceForForumPost(postId: Long, actorId: Long?): List<NotificationRecipient>
+
+    // ── Cascade ──────────────────────────────────────────────────────────────
+
+    /**
+     * Forget everyone watching an issue, because the issue is going.
+     *
+     * Redundant on SQLite — `issue_subscriptions.issue_id` is `ON DELETE CASCADE` —
+     * and load-bearing on Firestore, which has no cascade: a subscription is a
+     * *document's presence*, so a watch on a deleted issue simply stays, and
+     * [audienceForIssueUpdate] would keep naming an audience for something that no
+     * longer exists. `IssueRepository.delete` calls this on both backends, the pattern
+     * [AttachmentStore.deleteForIssue] set. See LNL-177.
+     */
+    suspend fun deleteIssueSubscriptions(issueId: Long)
+
+    /**
+     * Forget the new-issue watches on a project, because the project is going.
+     *
+     * [deleteIssueSubscriptions]'s project-level twin, and cascaded for the same
+     * reason. The watches on that project's *issues*, forums and posts are not this
+     * method's business — the project cascade walks those containers and forgets each
+     * one's watches as it goes.
+     */
+    suspend fun deleteProjectSubscriptions(projectId: Long)
+
+    /** Forget the new-post watches on a forum, because the forum is going. */
+    suspend fun deleteForumSubscriptions(forumId: Long)
+
+    /** Forget the watches on a forum post, because the post is going. */
+    suspend fun deleteForumPostSubscriptions(postId: Long)
 }

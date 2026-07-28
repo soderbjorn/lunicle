@@ -82,6 +82,27 @@ interface CommentStore {
 
     suspend fun delete(id: Long)
 
+    /**
+     * Delete every comment on an issue, drafts included — the whole conversation,
+     * not just what [forIssue] would return.
+     *
+     * Redundant on SQLite, where `comments.issue_id` is `ON DELETE CASCADE` and the
+     * rows would go with the issue anyway, and load-bearing on Firestore, which has
+     * no cascade: deleting the issue document leaves its comment documents behind,
+     * hanging off an `issueId` that resolves to nothing. `IssueRepository.delete` is
+     * one backend-agnostic function, so it calls this on both — the pattern
+     * [AttachmentStore.deleteForIssue] set. See LNL-177.
+     *
+     * Drafts are included deliberately: an unsent comment on a deleted issue is
+     * exactly as unreachable as a published one, and the SQLite cascade makes no
+     * distinction either.
+     *
+     * The *files* on these comments are not this method's business — they are
+     * already in the set [AttachmentStore.deleteForIssue] takes, which is why the
+     * caller runs that first and unlinks the blobs afterwards.
+     */
+    suspend fun deleteForIssue(issueId: Long)
+
     suspend fun findById(id: Long): CommentRecord?
 
     /** Published comments on an issue, oldest first. Drafts excluded. */

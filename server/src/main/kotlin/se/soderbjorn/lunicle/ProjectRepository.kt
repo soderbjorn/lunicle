@@ -232,9 +232,17 @@ class ProjectRepository(
      *
      * A file that fails to unlink is left for
      * [AttachmentRepository.sweepOrphans] at the next restart.
+     *
+     * The attachment rows are dropped explicitly rather than left to the cascade
+     * that would take them a moment later, for the reason
+     * [IssueRepository.delete] drops an issue's explicitly: the Firestore backend
+     * has none, and both implementations of this seam are held to the same
+     * emptiness afterwards by `ProjectProvisioningContract`. Redundant here, and
+     * cheap; load-bearing there. See LNL-177.
      */
     override suspend fun delete(id: Long) {
         val doomed = attachmentStore.keysForProject(id)
+        attachmentStore.deleteForProject(id)
         projects.delete(id)
         doomed.forEach { attachments.deleteBlob(it) }
     }

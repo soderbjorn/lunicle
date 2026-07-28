@@ -339,17 +339,42 @@ class IssueRepository(
     }
 
     /**
-     * Delete an issue, its comments, and every file behind either.
+     * Delete an issue and everything that hangs off it — its comments, its history,
+     * the watches on it, its attachment rows, and every file behind any of them.
      *
      * The files must be *found* first, because once the rows are gone nothing knows
      * which files they were. So: collect the keys, delete the rows, then unlink.
      *
-     * The attachment rows are deleted explicitly rather than left to the cascade,
-     * for the same reason the children are detached below: SQLite's
-     * `ON DELETE CASCADE` would take them for free, the Firestore backend has no
-     * cascade at all, and this is one function serving both. Without it, deleting
-     * an issue on Firestore left its attachment documents behind pointing at
-     * objects nothing could ever name again (LNL-145).
+     * ── Why every child is deleted explicitly ────────────────────────────────
+     *
+     * SQLite's `ON DELETE CASCADE` would take all of it for free. The Firestore
+     * backend has no cascade at all — deleting a document deletes exactly that
+     * document — and this is one function serving both, so each child is swept by
+     * name. Left implicit, they simply stayed: attachment rows pointing at objects
+     * nothing could name again (LNL-145, fixed there), and then comments, history
+     * and watches on an issue that no longer existed (LNL-177, this). Those are
+     * documents no query in the app can reach, billable forever, and — for a comment
+     * on a deleted issue in a deleted private project — a privacy problem, not just
+     * a storage one.
+     *
+     * Two things that hang off an issue are deliberately *not* swept, because SQLite
+     * does not sweep them either and a cascade the reference backend lacks is a
+     * divergence rather than a fix: **notifications**, whose `dest_issue_id` is
+     * pointedly not a foreign key (a notification about a deleted issue is stale, and
+     * the client says so, but it is still a record that something happened), and
+     * **read marks**, which do not exist at issue level at all. See
+     * [FirestoreCascade] for the long version.
+     *
+     * The labels and components need no sweep on either backend: SQLite cascades
+     * their join tables, and Firestore keeps them as arrays on the issue document, so
+     * they go when it does.
+     *
+     * ── Order, and what a crash leaves ───────────────────────────────────────
+     *
+     * Children before the issue itself, so a failure part-way leaves an issue that
+     * still exists and can be deleted again — every step is "delete what names this
+     * id", so re-running finishes the job. The reverse order would leave unreachable
+     * debris instead.
      *
      * A file that fails to unlink is left on the volume and collected by
      * [AttachmentRepository.sweepOrphans] at the next restart — which is why
@@ -364,6 +389,9 @@ class IssueRepository(
         issues.childrenOf(issue.id).forEach { issues.setParent(it.id, null) }
         val doomed = attachmentStore.keysForIssue(issue.id)
         attachmentStore.deleteForIssue(issue.id)
+        comments.deleteForIssue(issue.id)
+        history?.deleteForIssue(issue.id)
+        subscriptions?.deleteIssueSubscriptions(issue.id)
         issues.delete(issue.id)
         doomed.forEach { attachments.deleteBlob(it) }
     }

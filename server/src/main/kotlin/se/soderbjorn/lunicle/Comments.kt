@@ -124,6 +124,15 @@ class CommentStore(
         database.commentsQueries.delete(id)
     }
 
+    /**
+     * The cascade the schema would have run anyway, a moment early. See the
+     * interface's comment on why it is called at all, and the query's on why it is
+     * harmless here.
+     */
+    override suspend fun deleteForIssue(issueId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.commentsQueries.deleteForIssue(issueId)
+    }
+
     override suspend fun findById(id: Long): CommentRecord? = withContext(DatabaseDispatcher) {
         database.commentsQueries.findById(id).executeAsOneOrNull()?.toRecord()
     }

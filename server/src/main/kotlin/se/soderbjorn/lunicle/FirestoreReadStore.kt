@@ -150,7 +150,7 @@ class FirestoreReadStore(
         collection.whereEqualTo(USER_ID, userId).get().await()
             .documents.associate { it.getLong(CONTAINER_ID)!! to (it.getLong(valueField) ?: 0L) }
 
-    private companion object {
+    internal companion object {
         const val CONVERSATION_READS = "conversationReads"
         const val FORUM_READS = "forumReads"
 

@@ -137,4 +137,64 @@ abstract class IssueEventStoreContract {
         assertEquals("In progress", reattributed.value, "and the snapshot value is untouched")
         assertEquals(listOf("ignored"), reattributed.values, "and the child values are untouched")
     }
+
+    /**
+     * The issue-delete cascade, at this store's scale (LNL-177) — the append-only
+     * rule's one non-admin exception, because the issue these events describe is
+     * going and there is nothing left for them to be the history of.
+     *
+     * The events carry child values deliberately: on SQLite those live in a second
+     * table reached only *through* the events, so a cascade that dropped the parents
+     * first would strand them. Reading the spared issue's values back afterwards is
+     * what proves the two-statement order held.
+     *
+     * The second issue is the load-bearing half, as everywhere else in this suite: a
+     * delete keyed on nothing empties the collection and passes the rest.
+     */
+    @Test
+    fun `deleteForIssue takes that issue's history with its values and spares another issue's`() = runBlocking {
+        val issue = newIssue()
+        val other = newIssue()
+        store.append(
+            issue,
+            listOf(
+                NewIssueEvent(IssueEventKind.STATUS_CHANGED, value = "In progress"),
+                NewIssueEvent(IssueEventKind.LABELS_CHANGED, values = listOf("Bug", "Feature")),
+            ),
+            author = Author.Nobody,
+            createdAt = 1_000,
+        )
+        store.append(
+            other,
+            listOf(NewIssueEvent(IssueEventKind.LABELS_CHANGED, values = listOf("Spared"))),
+            author = Author.Nobody,
+            createdAt = 2_000,
+        )
+        val doomedId = store.forIssue(issue).first().id
+
+        store.deleteForIssue(issue)
+
+        assertEquals(emptyList(), store.forIssue(issue).map { it.id }, "the history is gone")
+        assertNull(store.findById(doomedId), "and the events with it")
+
+        val survivor = store.forIssue(other).single()
+        assertEquals(IssueEventKind.LABELS_CHANGED, survivor.kind, "deleting one issue's history took another's")
+        assertEquals(listOf("Spared"), survivor.values, "the surviving event kept its child values")
+    }
+
+    @Test
+    fun `deleteForIssue on an issue with no history is a no-op`() = runBlocking {
+        val issue = newIssue()
+        val other = newIssue()
+        store.append(
+            other,
+            listOf(NewIssueEvent(IssueEventKind.STATUS_CHANGED, value = "Kept")),
+            author = Author.Nobody,
+            createdAt = 1_000,
+        )
+
+        store.deleteForIssue(issue)
+
+        assertEquals(1, store.forIssue(other).size, "an empty cascade deleted something")
+    }
 }

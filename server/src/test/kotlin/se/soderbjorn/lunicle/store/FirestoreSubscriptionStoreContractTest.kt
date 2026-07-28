@@ -41,6 +41,12 @@ class FirestoreSubscriptionStoreContractTest : SubscriptionStoreContract() {
 
     override suspend fun newPublishedIssue(projectId: Long): Long = ++seq
 
+    // Synthetic here for the same reason as everything above: this store validates no
+    // referent. The contract insists on real rows only because SQLite's foreign keys do.
+    override suspend fun newForum(projectId: Long): Long = ++seq
+
+    override suspend fun newForumPost(forumId: Long): Long = ++seq
+
     @BeforeTest
     fun requireEmulator() = assumeTrue("Firestore emulator not configured", FirestoreEmulator.isAvailable)
 

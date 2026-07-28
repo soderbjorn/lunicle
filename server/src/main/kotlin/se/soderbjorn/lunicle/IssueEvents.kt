@@ -200,4 +200,20 @@ class IssueEventStore(
     ): Unit = withContext(DatabaseDispatcher) {
         database.issueEventsQueries.reattribute(createdAt, author.accountId, author.externalName, agentName, id)
     }
+
+    /**
+     * The cascade the schema would have run anyway, a moment early. See the
+     * interface's comment on why it is called at all, and the query's on why it is
+     * harmless here.
+     *
+     * Both statements in one transaction: the values are reached *through* the
+     * events, so a crash between them would leave values whose join can no longer
+     * find them — the very orphan this method exists to prevent.
+     */
+    override suspend fun deleteForIssue(issueId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.issueEventsQueries.transaction {
+            database.issueEventsQueries.deleteValuesForIssue(issueId)
+            database.issueEventsQueries.deleteForIssue(issueId)
+        }
+    }
 }

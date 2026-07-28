@@ -107,6 +107,26 @@ class FirestoreSubscriptionStore(
     override suspend fun audienceForForumPost(postId: Long, actorId: Long?): List<NotificationRecipient> =
         audience(forumPost(), postId, actorId)
 
+    // ── Cascade ──────────────────────────────────────────────────────────────
+    //
+    // Forget everyone watching a container that is being deleted. Load-bearing on
+    // this backend: a subscription is a document's *presence*, so nothing but an
+    // explicit sweep ever removes one, and a watch on a deleted issue would go on
+    // naming an audience for something that no longer exists. One equality on
+    // `targetId` each, chunked. See the interface's comments.
+
+    override suspend fun deleteIssueSubscriptions(issueId: Long) =
+        deleteWhere(issueUpdate(), TARGET_ID, issueId)
+
+    override suspend fun deleteProjectSubscriptions(projectId: Long) =
+        deleteWhere(projectNewIssue(), TARGET_ID, projectId)
+
+    override suspend fun deleteForumSubscriptions(forumId: Long) =
+        deleteWhere(forumNewPost(), TARGET_ID, forumId)
+
+    override suspend fun deleteForumPostSubscriptions(postId: Long) =
+        deleteWhere(forumPost(), TARGET_ID, postId)
+
     // ── Shared machinery ─────────────────────────────────────────────────────
 
     private fun key(userId: Long, targetId: Long) = "${userId}_$targetId"
@@ -152,7 +172,7 @@ class FirestoreSubscriptionStore(
         }
     }
 
-    private companion object {
+    internal companion object {
         const val PROJECT_NEW_ISSUE = "projectNewIssueSubscriptions"
         const val ISSUE_UPDATE = "issueUpdateSubscriptions"
         const val FORUM_NEW_POST = "forumNewPostSubscriptions"

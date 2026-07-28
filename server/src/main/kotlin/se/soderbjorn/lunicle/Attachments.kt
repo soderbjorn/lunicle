@@ -189,6 +189,11 @@ class AttachmentStore(
         database.attachmentsQueries.deleteForIssue(issueId, issueId)
     }
 
+    /** [deleteForIssue]'s project-level twin, and redundant here for the same reason. */
+    override suspend fun deleteForProject(projectId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.attachmentsQueries.deleteForProject(projectId, projectId, projectId, projectId)
+    }
+
     /** Every key the volume is allowed to hold. Read by the startup sweep. */
     override suspend fun allStorageKeys(): Set<String> = withContext(DatabaseDispatcher) {
         database.attachmentsQueries.allStorageKeys().executeAsList().toSet()

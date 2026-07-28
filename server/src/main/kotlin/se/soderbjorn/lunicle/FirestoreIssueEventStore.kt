@@ -132,6 +132,14 @@ class FirestoreIssueEventStore(
     }
 
     /**
+     * An issue's whole history — one equality on `issueId`, chunked.
+     *
+     * No second step for the values, unlike SQLite: they are an array on the event
+     * document, so deleting the document takes them. See the interface's comment.
+     */
+    override suspend fun deleteForIssue(issueId: Long) = deleteWhere(collection(), ISSUE_ID, issueId)
+
+    /**
      * A document to a record, or null when its `kind` matches no constant — a row a
      * newer build wrote, dropped rather than thrown for the class preamble's reason.
      *
@@ -159,7 +167,7 @@ class FirestoreIssueEventStore(
         return (get(field) as? List<String>).orEmpty()
     }
 
-    private companion object {
+    internal companion object {
         const val COLLECTION = "issueEvents"
         const val COUNTER = "issueEvents"
 

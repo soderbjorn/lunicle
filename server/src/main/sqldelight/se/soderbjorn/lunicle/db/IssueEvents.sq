@@ -249,3 +249,26 @@ FROM issue_event_values v
 JOIN issue_events e ON e.id = v.event_id
 WHERE e.issue_id = ?
 ORDER BY v.event_id, v.position;
+
+-- One issue's whole history, deleted — the events and, a step behind them, their
+-- values.
+--
+-- The append-only rule's other exception, and the one that is not an admin
+-- correction: the issue these events describe is going, so there is nothing left
+-- for them to be the history of.
+--
+-- Redundant here and deliberately so, as Attachments.sq's `deleteForIssue` is:
+-- `issue_events.issue_id` is ON DELETE CASCADE and `issue_event_values.event_id`
+-- cascades a second step from it, so both tables would empty a moment later
+-- anyway. It exists because the Firestore backend has no cascade and
+-- `IssueRepository.delete` is written once for both. See LNL-177.
+--
+-- The values go first: deleting the parents first would leave this statement
+-- nothing to join against, and while the FK cascade would have taken them, the
+-- point of these statements is to not depend on that.
+deleteValuesForIssue:
+DELETE FROM issue_event_values
+WHERE event_id IN (SELECT id FROM issue_events WHERE issue_id = ?);
+
+deleteForIssue:
+DELETE FROM issue_events WHERE issue_id = ?;

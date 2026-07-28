@@ -54,6 +54,20 @@ class IssueHistory(
     suspend fun forIssue(issueId: Long): List<IssueEventRecord> = events.forIssue(issueId)
 
     /**
+     * Delete one issue's whole history, because the issue is being deleted.
+     *
+     * A pass-through to [IssueEventStore.deleteForIssue], and here for exactly the
+     * reason [forIssue] is: "has this deployment got a history at all" stays one
+     * nullable dependency. `IssueRepository` holds this class, not the event store,
+     * so a cascade that reached for the store directly would need a second nullable
+     * that must be set in step with this one — the state the comment above rules out.
+     *
+     * A deployment with no history configured has no events to sweep, so the
+     * null case is not a missed cascade; it is an empty one.
+     */
+    suspend fun deleteForIssue(issueId: Long) = events.deleteForIssue(issueId)
+
+    /**
      * One event by id, or null — the reattribution path's read half.
      *
      * A pass-through to [IssueEventStore], here for [forIssue]'s reason: the MCP

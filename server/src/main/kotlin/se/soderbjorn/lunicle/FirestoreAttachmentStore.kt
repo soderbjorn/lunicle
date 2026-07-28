@@ -199,17 +199,26 @@ class FirestoreAttachmentStore(
      * files behind them can never be named again. The caller reads the keys first
      * and unlinks the objects afterwards — see `IssueRepository.delete`.
      *
-     * One batch, because an issue's attachments are a handful and Firestore's
-     * limit is 500 writes; an issue that somehow exceeded it would need chunking,
-     * and nothing in this product can produce one.
+     * Chunked at Firestore's 500-write batch limit by [deleteWhere], though an
+     * issue's attachments are a handful and never approach it — the sibling
+     * [deleteForProject] genuinely can, and one primitive serving both is worth
+     * more than a bespoke single batch here.
      */
-    override suspend fun deleteForIssue(issueId: Long) {
-        val doomed = collection().whereEqualTo(SCOPE_ISSUE_ID, issueId).get().await().documents
-        if (doomed.isEmpty()) return
-        val batch = firestore.batch()
-        doomed.forEach { batch.delete(it.reference) }
-        batch.commit().await()
-    }
+    override suspend fun deleteForIssue(issueId: Long) = deleteWhere(collection(), SCOPE_ISSUE_ID, issueId)
+
+    /**
+     * Every attachment anywhere under a project — its issues', their comments', its
+     * forums', its posts' and those posts' comments' — in one equality on the
+     * denormalised `scopeProjectId` that [keysForProject] reads.
+     *
+     * [deleteForIssue]'s project-level twin, and the reason the denormalisation
+     * earns its keep twice: without `scopeProjectId` this would be a walk over four
+     * collections to collect owner ids, and with it, it is one query. Chunked rather
+     * than one batch, unlike [deleteForIssue] — a project's attachments are a whole
+     * product's worth of files, not an issue's handful, and 500 is not a number to
+     * bet against here.
+     */
+    override suspend fun deleteForProject(projectId: Long) = deleteWhere(collection(), SCOPE_PROJECT_ID, projectId)
 
     override suspend fun allStorageKeys(): Set<String> =
         collection().get().await().documents.mapNotNull { it.getString(STORAGE_KEY) }.toSet()
@@ -232,7 +241,7 @@ class FirestoreAttachmentStore(
     private suspend fun keysWhere(field: String, value: Long): List<String> =
         collection().whereEqualTo(field, value).get().await().documents.mapNotNull { it.getString(STORAGE_KEY) }
 
-    private companion object {
+    internal companion object {
         const val COLLECTION = "attachments"
         const val ID_COUNTER = "attachments"
 
