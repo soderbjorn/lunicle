@@ -123,12 +123,26 @@ class FirestoreProjectRepository(
     }
 
     /**
-     * Delete a project, its rows (by the store's own cascade), and every file
-     * behind any of it — the keys collected before the rows go, exactly as
-     * [ProjectRepository.delete] does one level up.
+     * Delete a project, everything in it, and every file behind any of it.
+     *
+     * The keys are collected before the rows go, exactly as [ProjectRepository.delete]
+     * does one level up and for the same reason: afterwards nothing can name those
+     * files.
+     *
+     * What is new since LNL-177 is [projectCascade]. This method used to say
+     * "its rows, by the store's own cascade" — but there is no store cascade on this
+     * backend, and [FirestoreProjectStore.delete] deletes exactly one document. So a
+     * deleted project left its entire contents behind: issues, comments, history,
+     * forums, posts, the whole board vocabulary, role grants, watches, and the
+     * attachment rows naming the very files this method had just unlinked. Documents
+     * nothing could ever reach again, billable, and — for a private project — still
+     * holding its text. The walk is written out in [projectCascade], deliberately in
+     * one readable list.
      */
     override suspend fun delete(id: Long) {
         val doomed = attachmentStore.keysForProject(id)
+        attachmentStore.deleteForProject(id)
+        projectCascade(firestore, id)
         projects.delete(id)
         doomed.forEach { attachments.deleteBlob(it) }
     }

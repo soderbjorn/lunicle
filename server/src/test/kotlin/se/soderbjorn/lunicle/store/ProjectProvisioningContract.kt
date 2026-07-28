@@ -24,6 +24,7 @@ package se.soderbjorn.lunicle.store
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
@@ -49,6 +50,37 @@ abstract class ProjectProvisioningContract {
     protected abstract suspend fun componentsOf(projectId: Long): List<VocabularyRecord>
     protected abstract suspend fun projectById(id: Long): ProjectRecord?
     protected abstract suspend fun allProjects(): List<ProjectRecord>
+
+    // ── The delete cascade (LNL-177) ─────────────────────────────────────────
+    //
+    // Seed a project with one of everything that hangs off it, then count what is
+    // left afterwards. The counts are read through the concrete stores, like the
+    // vocabulary read-backs above, so "gone" means gone as the app would see it.
+
+    /**
+     * Fill [projectId] with one of everything a project owns, and return the ids.
+     *
+     * One issue carrying a comment, a history entry, a watcher and an attachment;
+     * one forum carrying a post; and one role grant. Enough that every branch of the
+     * cascade has something to take, and small enough to seed on either backend.
+     */
+    protected abstract suspend fun seedContents(projectId: Long): SeededContents
+
+    /** What [seedContents] made, by id, so each can be looked for afterwards. */
+    protected data class SeededContents(
+        val issueId: Long,
+        val forumId: Long,
+    )
+
+    protected abstract suspend fun issueExists(id: Long): Boolean
+    protected abstract suspend fun commentCountOf(issueId: Long): Int
+    protected abstract suspend fun historyCountOf(issueId: Long): Int
+    protected abstract suspend fun issueWatcherCountOf(issueId: Long): Int
+    protected abstract suspend fun forumExists(id: Long): Boolean
+    protected abstract suspend fun postCountOf(forumId: Long): Int
+    protected abstract suspend fun attachmentCountOf(projectId: Long): Int
+    protected abstract suspend fun roleGrantCountOf(projectId: Long): Int
+    protected abstract suspend fun projectWatcherCountOf(projectId: Long): Int
 
     @Test
     fun `create seeds the default vocabularies in order`(): Unit = runBlocking {
@@ -125,14 +157,94 @@ abstract class ProjectProvisioningContract {
 
         provisioning.delete(project.id)
 
-        // The project row is gone on both backends. Whether its *child* rows go with
-        // it is a per-backend property of the delete cascade, not of this seam: SQLite
-        // cascades every child table by foreign key, whereas the Firestore document
-        // stores have no cross-collection cascade (project delete removes only the
-        // project document). Pinning "the board went too" here would assert a SQLite-FK
-        // behaviour the Firestore backend does not yet have — a separate concern from
-        // provisioning — so the contract pins only the guarantee both backends share.
         assertNull(projectById(project.id), "the project is gone")
+    }
+
+    /**
+     * Deleting a project takes everything in it — on **both** backends (LNL-177).
+     *
+     * This assertion used to be deliberately absent, and the comment where it should
+     * have been said so: SQLite cascades every child table by foreign key, the
+     * Firestore document stores had no cross-collection cascade at all, and pinning
+     * "the board went too" would have asserted a SQLite-FK behaviour Firestore did
+     * not have. That was an accurate description of a bug, not a reason not to test
+     * for it. On the Cloud Run deploy a deleted project left its entire contents
+     * behind — issues, comments, history, forums, posts, the whole vocabulary, role
+     * grants, watches and attachment rows — as documents no query could ever reach
+     * again: billable, permanent, and for a private project still holding its text.
+     *
+     * So it is pinned here, at the one seam both backends implement, and the
+     * Firestore side performs by hand what SQLite declares. Every assertion below
+     * names the collection that leaked if it fails.
+     *
+     * The vocabulary is checked through the same concrete-store read-backs the seed
+     * assertions use, so "gone" means gone as the board itself would see it.
+     */
+    @Test
+    fun `delete empties the project of everything it contained`(): Unit = runBlocking {
+        val project = provisioning.create("Full", "FUL", isPublic = false)
+        val seeded = seedContents(project.id)
+
+        // The seed is only meaningful if it actually put something there.
+        assertTrue(issueExists(seeded.issueId), "the fixture seeded no issue")
+        assertEquals(1, commentCountOf(seeded.issueId), "the fixture seeded no comment")
+        assertTrue(forumExists(seeded.forumId), "the fixture seeded no forum")
+
+        provisioning.delete(project.id)
+
+        assertNull(projectById(project.id), "the project is gone")
+
+        // The board vocabulary — all five seeded kinds.
+        assertEquals(emptyList(), statusesOf(project.id), "the statuses outlived the project")
+        assertEquals(emptyList(), prioritiesOf(project.id), "the priorities outlived the project")
+        assertEquals(emptyList(), resolutionsOf(project.id), "the resolutions outlived the project")
+        assertEquals(emptyList(), labelsOf(project.id), "the labels outlived the project")
+        assertEquals(emptyList(), componentsOf(project.id), "the components outlived the project")
+
+        // The issue and everything under it.
+        assertFalse(issueExists(seeded.issueId), "the issue outlived the project")
+        assertEquals(0, commentCountOf(seeded.issueId), "the comments outlived the issue")
+        assertEquals(0, historyCountOf(seeded.issueId), "the history outlived the issue")
+        assertEquals(0, issueWatcherCountOf(seeded.issueId), "the issue watches outlived the issue")
+
+        // The forum and its posts.
+        assertFalse(forumExists(seeded.forumId), "the forum outlived the project")
+        assertEquals(0, postCountOf(seeded.forumId), "the posts outlived the forum")
+
+        // And the three that hang off the project directly.
+        assertEquals(0, attachmentCountOf(project.id), "the attachment rows outlived the project")
+        assertEquals(0, roleGrantCountOf(project.id), "the role grants outlived the project")
+        assertEquals(0, projectWatcherCountOf(project.id), "the project watches outlived the project")
+    }
+
+    /**
+     * The other half, and the one a cascade keyed on nothing fails: deleting a
+     * project leaves the *next* project's contents alone.
+     *
+     * Every assertion above is satisfied by a cascade that empties the whole
+     * database, which is exactly the mistake a hand-written document-store walk
+     * invites — one query missing its `whereEqualTo`, and everything matches.
+     */
+    @Test
+    fun `delete spares another project's contents`(): Unit = runBlocking {
+        val doomed = provisioning.create("Doomed", "DOO", isPublic = false)
+        val spared = provisioning.create("Spared", "SPA", isPublic = false)
+        val doomedContents = seedContents(doomed.id)
+        val sparedContents = seedContents(spared.id)
+
+        provisioning.delete(doomed.id)
+
+        assertFalse(issueExists(doomedContents.issueId), "the doomed project's issue survived")
+        assertTrue(issueExists(sparedContents.issueId), "deleting one project took another's issue")
+        assertEquals(1, commentCountOf(sparedContents.issueId), "…and its comments")
+        assertEquals(1, historyCountOf(sparedContents.issueId), "…and its history")
+        assertEquals(1, issueWatcherCountOf(sparedContents.issueId), "…and its watches")
+        assertTrue(forumExists(sparedContents.forumId), "…and its forum")
+        assertEquals(1, postCountOf(sparedContents.forumId), "…and its posts")
+        assertEquals(1, attachmentCountOf(spared.id), "…and its attachment rows")
+        assertEquals(1, roleGrantCountOf(spared.id), "…and its role grants")
+        assertEquals(1, projectWatcherCountOf(spared.id), "…and its watches")
+        assertEquals(DEFAULT_STATUSES, statusesOf(spared.id).map { it.name }, "…and its board vocabulary")
     }
 
     @Test

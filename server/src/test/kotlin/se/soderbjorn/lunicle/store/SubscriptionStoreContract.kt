@@ -32,6 +32,19 @@ abstract class SubscriptionStoreContract {
     /** A fresh published issue in [projectId] that a subscription can reference. */
     protected abstract suspend fun newPublishedIssue(projectId: Long): Long
 
+    /**
+     * A fresh forum in [projectId] that a subscription can reference.
+     *
+     * Real rows rather than synthetic ids, because SQLite means it:
+     * `forum_new_post_subscriptions.forum_id` is a foreign key and the contract
+     * fixture opens the database exactly as the server does, `PRAGMA foreign_keys`
+     * and all — so an invented id is refused, not merely unreferenced.
+     */
+    protected abstract suspend fun newForum(projectId: Long): Long
+
+    /** A fresh published post in [forumId] that a subscription can reference. */
+    protected abstract suspend fun newForumPost(forumId: Long): Long
+
     // ── Presence-is-state, on the project pair ───────────────────────────────
 
     @Test
@@ -135,4 +148,71 @@ abstract class SubscriptionStoreContract {
         )
         assertEquals(1, store.watchersForIssue(issue).size)
     }
+
+    // ── The container-delete cascades (LNL-177) ──────────────────────────────
+
+    /**
+     * Forgetting an issue's watchers takes only that issue's.
+     *
+     * The sharper half of the pair on this seam: a subscription here is *presence*,
+     * so a leaked watch is not merely a stale row — [audienceForIssueUpdate] would go
+     * on naming an audience for an issue that no longer exists, and the notifier
+     * would mail them about it. The second issue guards the usual failure, a delete
+     * keyed on nothing.
+     */
+    @Test
+    fun `deleteIssueSubscriptions forgets that issue's watchers and spares another issue's`() = runBlocking {
+        val project = newProject()
+        val doomed = newPublishedIssue(project)
+        val spared = newPublishedIssue(project)
+        val watcher = newUser("watcher@example.com")
+        store.setIssueUpdateSubscription(watcher, doomed, true)
+        store.setIssueUpdateSubscription(watcher, spared, true)
+
+        store.deleteIssueSubscriptions(doomed)
+
+        assertFalse(store.isSubscribedToIssueUpdates(watcher, doomed), "the watch survived the issue")
+        assertEquals(emptyList(), store.audienceForIssueUpdate(doomed, actorId = null), "and still names an audience")
+        assertEquals(emptyList(), store.watchersForIssue(doomed))
+        assertTrue(store.isSubscribedToIssueUpdates(watcher, spared), "another issue's watch was taken too")
+    }
+
+    @Test
+    fun `deleteProjectSubscriptions forgets that project's watchers and spares another project's`() = runBlocking {
+        val doomed = newProject()
+        val spared = newProject()
+        val watcher = newUser("watcher@example.com")
+        store.setProjectNewIssueSubscription(watcher, doomed, true)
+        store.setProjectNewIssueSubscription(watcher, spared, true)
+
+        store.deleteProjectSubscriptions(doomed)
+
+        assertFalse(store.isSubscribedToProjectNewIssues(watcher, doomed), "the watch survived the project")
+        assertEquals(emptyList(), store.audienceForProjectNewIssue(doomed, actorId = null))
+        assertTrue(store.isSubscribedToProjectNewIssues(watcher, spared), "another project's watch was taken too")
+    }
+
+    /** The forum pair, both kinds at once. */
+    @Test
+    fun `deleteForumSubscriptions and deleteForumPostSubscriptions each take only their own container`() =
+        runBlocking {
+            val project = newProject()
+            val watcher = newUser("watcher@example.com")
+            val doomedForum = newForum(project)
+            val sparedForum = newForum(project)
+            val doomedPost = newForumPost(doomedForum)
+            val sparedPost = newForumPost(sparedForum)
+            store.setForumNewPostSubscription(watcher, doomedForum, true)
+            store.setForumNewPostSubscription(watcher, sparedForum, true)
+            store.setForumPostSubscription(watcher, doomedPost, true)
+            store.setForumPostSubscription(watcher, sparedPost, true)
+
+            store.deleteForumSubscriptions(doomedForum)
+            store.deleteForumPostSubscriptions(doomedPost)
+
+            assertFalse(store.isSubscribedToForumNewPosts(watcher, doomedForum), "the forum watch survived the forum")
+            assertTrue(store.isSubscribedToForumNewPosts(watcher, sparedForum), "another forum's watch was taken too")
+            assertFalse(store.isSubscribedToForumPost(watcher, doomedPost), "the post watch survived the post")
+            assertTrue(store.isSubscribedToForumPost(watcher, sparedPost), "another post's watch was taken too")
+        }
 }

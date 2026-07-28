@@ -127,7 +127,7 @@ class FirestoreForumStore(
         createdAt = getLong(CREATED_AT)!!,
     )
 
-    private companion object {
+    internal companion object {
         const val COLLECTION = "forums"
         const val ID_COUNTER = "forums"
 

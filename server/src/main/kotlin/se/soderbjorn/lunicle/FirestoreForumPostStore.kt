@@ -161,8 +161,12 @@ class FirestoreForumPostStore(
     override suspend fun withAttachmentLinks(): List<Pair<Long, String>> =
         bodiesContaining(collection(), "/api/attachments/")
 
-    private companion object {
+    internal companion object {
         const val POSTS_COUNTER = "forumPosts"
+
+        /** Re-exported for the project cascade, which has to reach these documents by forum. */
+        const val COLLECTION = POSTS_COLLECTION
+        const val FORUM = FORUM_ID
     }
 }
 
@@ -251,8 +255,12 @@ class FirestoreForumCommentStore(
     override suspend fun withAttachmentLinks(): List<Pair<Long, String>> =
         bodiesContaining(collection(), "/api/attachments/")
 
-    private companion object {
+    internal companion object {
         const val COMMENTS_COUNTER = "forumComments"
+
+        /** Re-exported for the project cascade, which has to reach these documents by post. */
+        const val COLLECTION = COMMENTS_COLLECTION
+        const val POST = COMMENT_POST_ID
     }
 }
 

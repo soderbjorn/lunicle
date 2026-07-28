@@ -194,6 +194,33 @@ DELETE FROM attachments
 WHERE issue_id = ?
    OR comment_id IN (SELECT id FROM comments WHERE issue_id = ?);
 
+-- Every row anywhere under a project — the same set `keysForProject` names,
+-- deleted. `deleteForIssue`'s project-level twin, and redundant here for the same
+-- reason: the project's cascade would take all of it anyway, a moment later. It
+-- exists so `ProjectProvisioning.delete`, which is written once for both backends
+-- at the seam, can drop the rows explicitly — the Firestore side has no cascade,
+-- and before LNL-177 it read these keys, unlinked the files, and left every row
+-- naming them behind.
+deleteForProject:
+DELETE FROM attachments
+WHERE issue_id IN (SELECT id FROM issues WHERE project_id = ?)
+   OR comment_id IN (
+       SELECT comments.id FROM comments
+       JOIN issues ON issues.id = comments.issue_id
+       WHERE issues.project_id = ?
+   )
+   OR forum_post_id IN (
+       SELECT forum_posts.id FROM forum_posts
+       JOIN forums ON forums.id = forum_posts.forum_id
+       WHERE forums.project_id = ?
+   )
+   OR forum_comment_id IN (
+       SELECT forum_comments.id FROM forum_comments
+       JOIN forum_posts ON forum_posts.id = forum_comments.post_id
+       JOIN forums ON forums.id = forum_posts.forum_id
+       WHERE forums.project_id = ?
+   );
+
 -- Every key the volume is allowed to hold. Read by the startup sweep, which
 -- deletes any file under $VOLUME/attachments/ that is not in this set — the
 -- files behind cancelled drafts and failed inserts.

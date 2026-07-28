@@ -120,7 +120,7 @@ class FirestoreRoleStore(
         grants().document(grantKey(userId, projectId, role)).delete().await()
     }
 
-    private companion object {
+    internal companion object {
         const val GRANTS = "projectRoles"
         const val ROLES = "roles"
 

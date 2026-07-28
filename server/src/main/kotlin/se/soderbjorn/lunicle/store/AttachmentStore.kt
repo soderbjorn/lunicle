@@ -67,6 +67,19 @@ interface AttachmentStore {
      */
     suspend fun deleteForIssue(issueId: Long)
 
+    /**
+     * Delete every row anywhere under a project — the set [keysForProject] names,
+     * which is issues, their comments, forums, their posts and those posts'
+     * comments, all of it.
+     *
+     * [deleteForIssue]'s project-level twin, redundant on SQLite and load-bearing on
+     * Firestore for the same reasons. `ProjectProvisioning.delete` already reads
+     * [keysForProject] to unlink the files; before LNL-177 it dropped only the
+     * project document on Firestore, so the *rows* naming those now-deleted files
+     * stayed behind for good.
+     */
+    suspend fun deleteForProject(projectId: Long)
+
     /** Every storage key the database knows about — the reconcile side of orphan sweeping. */
     suspend fun allStorageKeys(): Set<String>
 

@@ -207,3 +207,24 @@ SELECT u.id, u.email, COALESCE(u.display_name, u.provider_name) AS name
 FROM forum_post_subscriptions s
 JOIN users u ON u.id = s.user_id
 WHERE s.post_id = ? AND u.id != ?;
+
+-- The four container-level unsubscribe-everyone statements, for when the thing
+-- being watched is deleted.
+--
+-- Redundant here and deliberately so, as Attachments.sq's `deleteForIssue` is:
+-- every one of these tables cascades on its container's id already. They exist
+-- because the Firestore backend has no cascade — there a subscription is a
+-- document's presence, so a watch on a deleted issue simply stays and keeps
+-- naming an audience for something that no longer exists — and the delete paths
+-- are written once for both backends. See LNL-177.
+deleteIssueSubscriptions:
+DELETE FROM issue_update_subscriptions WHERE issue_id = ?;
+
+deleteProjectSubscriptions:
+DELETE FROM project_new_issue_subscriptions WHERE project_id = ?;
+
+deleteForumSubscriptions:
+DELETE FROM forum_new_post_subscriptions WHERE forum_id = ?;
+
+deleteForumPostSubscriptions:
+DELETE FROM forum_post_subscriptions WHERE post_id = ?;

@@ -219,4 +219,26 @@ class SubscriptionStore(
                 }
                 .executeAsList()
         }
+
+    // ── Cascade ──────────────────────────────────────────────────────────────
+    //
+    // Four cascades the schema would have run anyway, a moment early. See the
+    // interface's comments on why they are called at all, and the queries' on why
+    // they are harmless here.
+
+    override suspend fun deleteIssueSubscriptions(issueId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.subscriptionsQueries.deleteIssueSubscriptions(issueId)
+    }
+
+    override suspend fun deleteProjectSubscriptions(projectId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.subscriptionsQueries.deleteProjectSubscriptions(projectId)
+    }
+
+    override suspend fun deleteForumSubscriptions(forumId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.subscriptionsQueries.deleteForumSubscriptions(forumId)
+    }
+
+    override suspend fun deleteForumPostSubscriptions(postId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.subscriptionsQueries.deleteForumPostSubscriptions(postId)
+    }
 }

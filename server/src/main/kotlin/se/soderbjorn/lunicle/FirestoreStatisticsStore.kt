@@ -187,7 +187,7 @@ class FirestoreStatisticsStore(
 
     private val refreshLocks = ConcurrentHashMap<Long, Mutex>()
 
-    private companion object {
+    internal companion object {
         val FRESH_FOR = 15.minutes
         val WEEK = 7.days
         val MONTH = 30.days

@@ -368,7 +368,7 @@ class FirestoreIssueStore(
             .map { it.getLong(ID)!! to it.getString(DESCRIPTION).orEmpty() }
             .filter { it.second.contains(needle) }
 
-    private companion object {
+    internal companion object {
         const val COLLECTION = "issues"
         const val GLOBAL_ID_COUNTER = "issues"
 

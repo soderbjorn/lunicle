@@ -107,6 +107,13 @@ class FirestoreCommentStore(
         doc(id).delete().await()
     }
 
+    /**
+     * Every comment on an issue, drafts included — one equality on `issueId`,
+     * chunked. Load-bearing here: nothing else would ever delete these documents.
+     * See [deleteWhere] and the interface's comment.
+     */
+    override suspend fun deleteForIssue(issueId: Long) = deleteWhere(collection(), ISSUE_ID, issueId)
+
     override suspend fun findById(id: Long): CommentRecord? =
         doc(id).get().await().takeIf { it.exists() }?.toRecord()
 
@@ -132,7 +139,7 @@ class FirestoreCommentStore(
             .map { it.getLong(ID)!! to it.getString(BODY).orEmpty() }
             .filter { it.second.contains(needle) }
 
-    private companion object {
+    internal companion object {
         const val COLLECTION = "comments"
         const val COUNTER = "comments"
 

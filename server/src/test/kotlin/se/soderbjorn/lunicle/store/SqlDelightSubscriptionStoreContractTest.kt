@@ -72,6 +72,18 @@ class SqlDelightSubscriptionStoreContractTest : SubscriptionStoreContract() {
         return id
     }
 
+    // Real forum and post rows, because the subscription foreign keys are enforced
+    // here — see the contract's comment on [newForum].
+    override suspend fun newForum(projectId: Long): Long =
+        se.soderbjorn.lunicle.ForumStore(db).insert(projectId, "Forum ${seq++}", null).id
+
+    override suspend fun newForumPost(forumId: Long): Long {
+        val posts = se.soderbjorn.lunicle.ForumPostStore(db)
+        val id = posts.insertDraft(forumId, Author.Nobody)
+        posts.publish(id, "Post $id", "")
+        return id
+    }
+
     @AfterTest
     fun tearDown() {
         fixture.close()

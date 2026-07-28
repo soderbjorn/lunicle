@@ -109,6 +109,44 @@ abstract class CommentStoreContract {
         assertEquals(emptyList(), store.forIssue(issue).map { it.id })
     }
 
+    /**
+     * The issue-delete cascade, at this store's scale (LNL-177).
+     *
+     * Three things at once, and the last two are the ones that matter. Drafts go as
+     * well as published comments — an unsent comment on a deleted issue is exactly
+     * as unreachable, and SQLite's cascade makes no distinction either — and another
+     * issue's comments are spared. Without that second issue a delete keyed on the
+     * wrong field, or on nothing at all, empties the whole collection and still
+     * passes everything above it.
+     */
+    @Test
+    fun `deleteForIssue takes that issue's comments, drafts included, and spares another issue's`() = runBlocking {
+        val issue = newIssue()
+        val other = newIssue()
+        val published = publishedComment(issue, createdAt = 1_000)
+        val draft = store.insertDraft(issue, Author.Nobody, createdAt = 2_000)
+        val spared = publishedComment(other, createdAt = 3_000)
+
+        store.deleteForIssue(issue)
+
+        assertNull(store.findById(published), "the published comment is gone")
+        assertNull(store.findById(draft), "the draft went too")
+        assertEquals(emptyList(), store.forIssue(issue).map { it.id })
+        assertEquals(spared, store.findById(spared)?.id, "deleting one issue's comments took another's")
+        assertEquals(listOf(spared), store.forIssue(other).map { it.id })
+    }
+
+    @Test
+    fun `deleteForIssue on an issue with no comments is a no-op`() = runBlocking {
+        val issue = newIssue()
+        val other = newIssue()
+        val spared = publishedComment(other, createdAt = 1_000)
+
+        store.deleteForIssue(issue)
+
+        assertEquals(listOf(spared), store.forIssue(other).map { it.id }, "an empty cascade deleted something")
+    }
+
     @Test
     fun `withPossibleMentions and withAttachmentLinks find drafts too`() = runBlocking {
         val issue = newIssue()
