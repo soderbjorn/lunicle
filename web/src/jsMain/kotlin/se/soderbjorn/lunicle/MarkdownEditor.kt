@@ -217,6 +217,11 @@ class MarkdownEditor(
      * away from the surface, and by the time the insert happens the browser has
      * no idea where it was meant to go — the text lands at the start of the
      * document, or nowhere. Saved on the way out, restored on the way back.
+     *
+     * A *hint*, not an instruction: what gets saved is the page's selection, and
+     * that is only in the surface when the user had actually been typing there.
+     * See [putCaretBackInto], which is where the difference is decided, and which
+     * is the whole of LNL-160.
      */
     private var savedRange: dynamic = null
 
@@ -1336,11 +1341,7 @@ class MarkdownEditor(
     }
 
     private fun restoreRange() {
-        surface.focus()
-        val range = savedRange ?: return
-        val selection = window.asDynamic().getSelection() ?: return
-        selection.removeAllRanges()
-        selection.addRange(range)
+        putCaretBackInto(surface, savedRange)
     }
 
     /**
@@ -1356,6 +1357,71 @@ class MarkdownEditor(
         temp.textContent = text
         return temp.innerHTML
     }
+}
+
+/**
+ * Put the caret back inside [surface], wherever it has to come from.
+ *
+ * ── The bug this exists to stop (LNL-160) ───────────────────────────────────
+ *
+ * Every insert this editor makes — an attachment, a link — goes through
+ * `document.execCommand("insertHTML")`, and that command acts on **the current
+ * selection**. Point the selection at something that is not editable and the
+ * command does not fail loudly: it does nothing at all, and returns.
+ *
+ * Which is exactly what happened after the file picker. The Attach button saves
+ * the selection on the way out and restores it on the way back, and the saved
+ * selection is only *usually* in the surface. Open an issue, press Edit, press
+ * Attach without having clicked in the description first, and what gets saved is
+ * whatever the page's selection was — a paragraph in the issue behind, a stray
+ * click in the sidebar, the leftovers of a select-all. Restoring that put the
+ * caret outside the surface, `insertHTML` quietly declined, and the file the user
+ * had just waited for was **uploaded, stored, and then invisible**: no link, no
+ * error, and an orphaned blob on the volume. "It doesn't get added or seen
+ * anywhere" is the whole of the reported symptom, and this is all of it.
+ *
+ * So a saved range is a *hint*, not an instruction. It is honoured when it points
+ * into the surface, and dropped when it does not — and when it is dropped the
+ * caret goes to the end of the surface, which is where an attachment appended to
+ * a description belongs and where the reader's eye already is. The one thing that
+ * must never happen again is an insert with nowhere to land.
+ *
+ * `contains` rather than comparing ancestors by hand, and asked of the range's
+ * `commonAncestorContainer` rather than the selection's anchor: a range that
+ * *spans* the surface and something else is not a caret in it. A text node
+ * answers `contains` fine — it is `Node.contains`, not an element-only API.
+ *
+ * @param savedRange the range to prefer, or null when nothing was saved. Typed
+ *   `dynamic` for the same reason the field is: a Range's members are reached
+ *   through JS, and Kotlin's DOM bindings do not carry the ones used here.
+ * @return whether the caret ended up inside the surface at all. Only false when
+ *   the browser has no selection API to speak of, which no engine this runs on
+ *   is; callers that ignore it are not ignoring a failure they could handle.
+ */
+internal fun putCaretBackInto(surface: HTMLElement, savedRange: dynamic): Boolean {
+    surface.focus()
+    val selection = window.asDynamic().getSelection() ?: return false
+    val container = savedRange?.commonAncestorContainer as? org.w3c.dom.Node
+    val range = if (container != null && surface.contains(container)) {
+        savedRange
+    } else {
+        // Collapsed at the very end of the surface. `selectNodeContents` then
+        // `collapse(false)` rather than arithmetic on the last child: the last
+        // child may be an element, a text node or nothing at all, and this is the
+        // one spelling that gives a caret position in all three.
+        //
+        // Built statement by statement, NOT with `also`: on a `dynamic` receiver
+        // Kotlin compiles a scope function to a member call — `range.also(…)` —
+        // and no Range has one, so it would throw at runtime where it reads as
+        // ordinary Kotlin. The same trap `.let` sets three hundred lines up.
+        val fresh = document.createRange().asDynamic()
+        fresh.selectNodeContents(surface)
+        fresh.collapse(false)
+        fresh
+    }
+    selection.removeAllRanges()
+    selection.addRange(range)
+    return true
 }
 
 /**
