@@ -128,10 +128,11 @@ default). Start the next as each one returns. The cap exists because concurrent
 Gradle builds contend on the shared caches and RAM — it is not a correctness
 constraint, so `--max 1` is always safe.
 
-**Assign each ticket a port** before you write its brief: `config.run.basePort + i`,
+**Assign each ticket a port** before you write its brief: `config.basePort + i`,
 where `i` is the ticket's zero-based position in the dispatch order. Ports are
 assigned per ticket rather than per slot, so a ticket that outlives its neighbours
-can never collide with the one that replaced it.
+can never collide with the one that replaced it. It is substituted for `{port}` in
+`config.runInstructions`.
 
 Each subagent returns exactly four lines:
 
@@ -237,20 +238,13 @@ requirements, not suggestions.
 
 1. `<config.build> -P<toolkit property>=<relative path>` is MANDATORY. If it fails,
    fix it and retry. Never open a PR on a broken build.
-2. Verify at runtime when the change is user-visible. Other tickets may be running
-   concurrently, so you MUST isolate yourself:
-   - `<config.run.portVariable>=<assigned port>` — the run script refuses a port
-     that is already in use.
-   - `<config.run.dataDirVariable>=/tmp/ai-dev/<KEY>` — otherwise every worktree
-     shares one local database, and a worktree carrying a newer migration poisons
-     it for the others.
-   - Browse `http://127.0.0.1:<assigned port>/`, NOT localhost — a stale HttpOnly
-     cookie on the localhost host makes sign-in impossible to script.
-   - Sign in by setting `document.cookie = "lunicle_session=<id>; path=/"` from a
-     session row. Never run the real OAuth flow.
-   - For a pure-frontend change, `<config.run.demo>` (then `?demo=1`) is faster —
-     no JVM, no database, no sign-in.
-   - Stop what you started: `<config.run.stop>`.
+2. Verify at runtime when the change is user-visible, following this project's own
+   instructions below. Other tickets may be running at the same time, so the
+   isolation they describe is not optional.
+
+<config.runInstructions, joined with newlines, verbatim — with {port} replaced by
+your assigned port and {key} by <KEY>>
+
 3. Anything you could NOT verify goes in the PR's Verification section as an
    explicit gap. Do not dress a compile-only check up as success.
 

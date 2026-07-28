@@ -32,14 +32,25 @@
   },
 
   "build": "./gradlew build",
-  "run": {
-    "server": "./scripts/run-dev.sh --no-open",
-    "demo": "./scripts/run-demo.sh --no-open",
-    "stop": "./scripts/stop-all.sh",
-    "portVariable": "LUNICLE_PORT",
-    "basePort": 8090,
-    "dataDirVariable": "LUNICLE_LOCAL_DATA"
-  },
+  "basePort": 8090,
+  "runInstructions": [
+    "Run the full app:",
+    "    LUNICLE_PORT={port} LUNICLE_LOCAL_DATA=/tmp/ai-dev/{key} ./scripts/run-dev.sh --no-open",
+    "Both variables are isolation, not decoration. The script refuses a port that is",
+    "already in use, and without LUNICLE_LOCAL_DATA every worktree shares ~/.lunicle/ —",
+    "where a worktree carrying a newer migration poisons the database for the others.",
+    "",
+    "Browse http://127.0.0.1:{port}/ — NOT localhost. A stale HttpOnly cookie on the",
+    "localhost host makes sign-in impossible to script. Sign in by setting",
+    "document.cookie = \"lunicle_session=<id>; path=/\" from a row in the sessions table.",
+    "Never run the real OAuth flow.",
+    "",
+    "For a pure-frontend change ./scripts/run-demo.sh --no-open (then ?demo=1) is much",
+    "faster — no JVM, no database, no sign-in. After an edit, rebuild",
+    ":web:jsBrowserDevelopmentExecutableDistribution and reload.",
+    "",
+    "Stop whatever you started: ./scripts/stop-all.sh"
+  ],
 
   "maxConcurrent": 3
 }
