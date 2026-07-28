@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "The only per-repo file in this skill. SKILL.md and repos.md are identical",
+    "across every repo that uses /ai-dev — when you copy the skill to another",
+    "project, edit this file and nothing else.",
+    "",
+    "'toolkit' is the shared UI library this repo consumes from sources via a",
+    "relative path. Set it to null in a repo that has no such dependency."
+  ],
+
+  "project": "Lunicle - issue tracker",
+  "keyPrefix": "LNL",
+  "issueUrl": "https://issues.lunicle.dev/?issue={id}",
+
+  "statuses": {
+    "ready": "Ready for AI development",
+    "claimed": "In progress",
+    "review": "Ready for review"
+  },
+
+  "github": "soderbjorn/lunicle",
+  "repoRoot": "/Users/soderbjorn/repo-private/lunicle/main",
+  "worktreeParent": "/Users/soderbjorn/repo-private/lunicle",
+
+  "toolkit": {
+    "name": "lunula",
+    "github": "soderbjorn/lunula",
+    "repoRoot": "/Users/soderbjorn/repo-private/lunula/main",
+    "worktreeParent": "/Users/soderbjorn/repo-private/lunula",
+    "gradleProperty": "lunula.toolkit.path",
+    "relativeFromWorktree": "../../lunula/{slug}"
+  },
+
+  "build": "./gradlew build",
+  "run": {
+    "server": "./scripts/run-dev.sh --no-open",
+    "demo": "./scripts/run-demo.sh --no-open",
+    "stop": "./scripts/stop-all.sh",
+    "portVariable": "LUNICLE_PORT",
+    "basePort": 8090,
+    "dataDirVariable": "LUNICLE_LOCAL_DATA"
+  },
+
+  "maxConcurrent": 3
+}
