@@ -1004,7 +1004,9 @@ class IssueWindow(
             historyElement.appendChild(element("p", "comments-empty", "No history yet."))
             return
         }
-        state.history.forEach { event -> historyElement.appendChild(renderHistoryEvent(state, event)) }
+        // Newest first (LNL-186) — the order is the view model's decision, not
+        // this loop's. See State.historyNewestFirst.
+        state.historyNewestFirst.forEach { event -> historyElement.appendChild(renderHistoryEvent(state, event)) }
     }
 
     /**

@@ -245,7 +245,10 @@ class IssueBackingViewModel(
         val agentName: String? = null,
         val createdAt: Long = 0,
         val comments: List<CommentView> = emptyList(),
-        /** What has happened to this issue, oldest first. See [historyLine]. */
+        /**
+         * What has happened to this issue, oldest first — as stored and as the API
+         * sends it. The read face draws [historyNewestFirst] instead; see there.
+         */
         val history: List<IssueEventView> = emptyList(),
         val canEdit: Boolean = false,
         val canDelete: Boolean = false,
@@ -642,6 +645,37 @@ class IssueBackingViewModel(
 
         /** One comment's agent badge text, or null when a human wrote it. See [agentBadge]. */
         fun commentAgentBadge(comment: CommentView): String? = comment.agentName?.let { "Agent · $it" }
+
+        /**
+         * The history as the read face shows it: **most recent first** (LNL-186).
+         *
+         * [history] arrives oldest first, which is how it is stored and how the
+         * API hands it out — a log is written in the order it happened, and a
+         * reader of the JSON wants it that way. On screen it is the wrong way
+         * round: the history sits under the description and the whole comment
+         * thread, so the newest event — the one that tells you what just happened
+         * to this issue — was the one furthest down the page, past every event
+         * that no longer matters.
+         *
+         * A derivation on State rather than a reversal in the view, for
+         * `HiddenColumnsTest`'s reason: the order is a decision, decisions are
+         * worth pinning, and one testable property is cheaper to pin than a DOM.
+         *
+         * Reversed **and then** sorted, which is not belt and braces:
+         *
+         * - The reversal is what does the work. The list is stored ordered by id,
+         *   so reversing it puts the last-written event first, and that stays true
+         *   for events written in the same millisecond — which happens whenever
+         *   one save records several changes at once.
+         * - The sort exists for back-filled and reattributed history, where
+         *   `createdAt` was set by hand and need not agree with the write order
+         *   (see `McpTools.updateHistoryEvent`). Every row shows its date, so a
+         *   list whose order contradicts the dates beside it reads as a bug.
+         *   `sortedByDescending` is stable, so it only moves rows whose dates
+         *   genuinely disagree and leaves the reversal's tie-break intact.
+         */
+        val historyNewestFirst: List<IssueEventView> get() =
+            history.asReversed().sortedByDescending { it.createdAt }
 
         /**
          * What one history event says happened, as a sentence.
