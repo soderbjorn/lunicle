@@ -1459,6 +1459,12 @@ class MainScreenBackingViewModel(
      * Guarded on the same affordance the button is shown by, so a stale click —
      * the session changing between render and mouseup — opens nothing rather than
      * a dialog that immediately renders a 403.
+     *
+     * **No caller since LNL-193**: the gear opens the settings pane at its Instance
+     * tab instead. Kept, with [ActiveDialog.AdminSettings], only so the old dialog
+     * still compiles and tickets 4 and 5 can move its sections into that pane rather
+     * than rewrite them — see main.kt's openAdminSettings, which says the same and
+     * says when to delete all three.
      */
     fun onAdminSettingsTapped() {
         val state = _stateFlow.value

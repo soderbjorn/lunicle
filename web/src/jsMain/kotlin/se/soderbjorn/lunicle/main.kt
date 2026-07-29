@@ -2056,6 +2056,16 @@ private class Dialogs(
      * `changed = false` on close: nothing this dialog writes is on the board. The
      * agent-access flag changes what a *token* may do, not what a card shows, so
      * reloading would be a round-trip that repaints the same pixels.
+     *
+     * ── Parked, not forgotten (LNL-193) ─────────────────────────────────────
+     *
+     * **Nothing opens this any more.** The top bar's gear opens the settings pane at
+     * its Instance tab, and `ActiveDialog.AdminSettings` is no longer raised by
+     * anything — this branch is what keeps [AdminSettingsDialog] compiling, so the
+     * General switches, the account directory and the project list are still here to
+     * be *moved* into that pane's tabs by tickets 4 and 5 of this epic rather than
+     * rewritten from memory. Delete the dialog, this method and the ActiveDialog case
+     * together, once the last of its sections has a new home.
      */
     private fun openAdminSettings() {
         val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
