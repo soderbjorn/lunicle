@@ -113,6 +113,63 @@ abstract class UserStoreContract {
         assertEquals(user.id, store.findExisting(identity("gh-9", "  Alice@Example.COM  "))?.id)
     }
 
+    // ── addByEmail: an account before anybody has signed in (LNL-194) ───────
+
+    /**
+     * The row an administrator's "Add a person…" writes: an address, no arrival, and a
+     * rung it can hold immediately.
+     *
+     * Pinned in the contract because the two backends express "never signed in"
+     * differently — a NULL column, and an explicitly-null document field that has to be
+     * told apart from an absent one — and getting it wrong on either makes every added
+     * person look like somebody who has already turned up. It is also what the
+     * plus-added admission policy keys on, so a backend that stamped an arrival here
+     * would quietly widen the door.
+     */
+    @Test
+    fun `addByEmail writes an account nobody has signed into`() = runBlocking {
+        val added = store.addByEmail("newcomer@example.com")
+        assertFalse(added.hasSignedIn, "an added account claims somebody has arrived")
+        assertEquals("newcomer@example.com", added.email)
+        assertFalse(added.isEmailVerified, "an address an administrator typed is not a proved one")
+        assertFalse(added.isInstanceAdmin, "being added by somebody made them run the instance")
+        assertEquals(added.id, store.findById(added.id)?.id, "the row cannot be read back")
+    }
+
+    /** Adding somebody who is already here is their row, not a second one. */
+    @Test
+    fun `addByEmail is idempotent on the address`() = runBlocking {
+        val first = store.addByEmail("twice@example.com")
+        assertEquals(first.id, store.addByEmail("twice@example.com").id)
+        assertEquals(1, store.selectAll().count { it.email == "twice@example.com" })
+        // And it finds an account that arrived the ordinary way, rather than colliding
+        // with it: the whole point is one row per address.
+        val signedIn = store.upsert(identity("gh-1", "already@example.com"))
+        assertEquals(signedIn.id, store.addByEmail("already@example.com").id)
+        assertTrue(store.addByEmail("already@example.com").hasSignedIn, "an added row overwrote a real arrival")
+    }
+
+    /**
+     * Signing in **adopts** the added row rather than making a second account beside it
+     * — which is what makes the rung they were granted already theirs when they arrive.
+     */
+    @Test
+    fun `signing in adopts an added row and stamps the arrival`() = runBlocking {
+        val added = store.addByEmail("claimed@example.com")
+        val arrived = store.upsert(identity("goog-7", "claimed@example.com", AuthProvider.GOOGLE))
+        assertEquals(added.id, arrived.id, "the first sign-in made a second account")
+        assertTrue(arrived.hasSignedIn, "the arrival was not stamped")
+        assertEquals(1, store.selectAll().count { it.email == "claimed@example.com" })
+    }
+
+    /** The address is normalised on the way in, or a sign-in would never find the row. */
+    @Test
+    fun `addByEmail folds case and whitespace like the keying does`() = runBlocking {
+        val added = store.addByEmail("  Newcomer@Example.COM  ")
+        assertEquals("newcomer@example.com", added.email)
+        assertEquals(added.id, store.findExisting(identity("gh-9", "newcomer@example.com"))?.id)
+    }
+
     @Test
     fun `the mutable fields round-trip`() = runBlocking {
         val user = store.upsert(identity("gh-1", null))
