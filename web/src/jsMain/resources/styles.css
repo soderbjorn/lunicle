@@ -600,7 +600,7 @@ body > .dt-pane-menu {
   white-space: nowrap;
 }
 
-/* The "Open the full site" link shown in the leading slot when the tracker is
+/* The "Open full site" link shown in the sidebar's brand line when the tracker is
    embedded in another site (see main.kt's fullSiteLink). Rides beside the brand
    line at the same weight, accented so it is obviously the clickable part, and
    set off from the brand by a separator pipe. */

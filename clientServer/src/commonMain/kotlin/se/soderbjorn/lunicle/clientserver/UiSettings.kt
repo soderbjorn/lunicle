@@ -113,6 +113,27 @@ object UiSettingKeys {
      */
     const val LAYOUT_STATE: String = "darkness.layoutState"
 
+    /**
+     * `darkness.sidebarWidth` — how wide the user dragged the left sidebar.
+     *
+     * A toolkit key like [LAYOUT_STATE], and checked against its `PersistKeys`
+     * original the same way. The blob is the toolkit's and opaque here: today
+     * `{"leftPx": 210}`.
+     *
+     * Stored because the sidebar's width is now something an *app* has an
+     * opinion about, not only the toolkit — Lunicle opens a tighter sidebar
+     * when the tracker is embedded in another site's page (LNL-188), where the
+     * chrome eats a column the host's slot cannot spare. That narrower value is
+     * a seed for a browser that has never touched the handle; the only thing
+     * that can outrank it is a width the user chose, and this key is where such
+     * a width lives. Without it the embed's default would be re-imposed on
+     * every load, on someone who had already said otherwise.
+     *
+     * Signed out, nothing is stored and the app's seed applies on every load —
+     * which is the common case inside an embed.
+     */
+    const val SIDEBAR_WIDTH: String = "darkness.sidebarWidth"
+
     /** Every key the server will store. Anything else is refused. */
     val persisted: Set<String> = setOf(
         THEME_SELECTION,
@@ -120,6 +141,7 @@ object UiSettingKeys {
         PROJECT_PREFS,
         WORKSPACE,
         LAYOUT_STATE,
+        SIDEBAR_WIDTH,
     )
 }
 
