@@ -124,12 +124,7 @@ class ProjectRepository(
      * @throws ProjectConflict if the name or the prefix is taken, or either is
      *   blank.
      */
-    override suspend fun create(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
-    ): ProjectRecord {
+    override suspend fun create(name: String, namePrefix: String): ProjectRecord {
         val cleanName = name.trim()
         val cleanPrefix = namePrefix.trim().uppercase()
         validate(cleanName, cleanPrefix, existingId = null)
@@ -148,8 +143,6 @@ class ProjectRepository(
                     .insert(
                         cleanName,
                         cleanPrefix,
-                        if (isPublic) 1L else 0L,
-                        if (visibleToAllSignedIn) 1L else 0L,
                         position,
                         now(),
                     )
@@ -186,8 +179,6 @@ class ProjectRepository(
                     row.id,
                     row.name,
                     row.name_prefix,
-                    row.is_public != 0L,
-                    row.visible_to_all_signed_in != 0L,
                     // Not row.discussions_enabled/row.messages_enabled: retired, see LNL-190.
                     PROJECT_FORUM_FEATURES_ENABLED,
                     PROJECT_FORUM_FEATURES_ENABLED,
@@ -212,13 +203,11 @@ class ProjectRepository(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
     ): ProjectRecord {
         val cleanName = name.trim()
         val cleanPrefix = namePrefix.trim().uppercase()
         validate(cleanName, cleanPrefix, existingId = id)
-        projects.update(id, cleanName, cleanPrefix, isPublic, visibleToAllSignedIn)
+        projects.update(id, cleanName, cleanPrefix)
         return projects.findById(id) ?: throw ProjectConflict("That project no longer exists.")
     }
 

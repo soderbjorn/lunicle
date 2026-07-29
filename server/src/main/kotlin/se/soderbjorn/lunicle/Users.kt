@@ -46,20 +46,25 @@ private val logger = LoggerFactory.getLogger("Users")
  *   Moves with [email] and never independently: [UserStore.setEmail] writes both,
  *   because a flag left describing the previous address is precisely the lie this
  *   is for. See Users.sq.
- * @property isSysAdmin whether this is the instance admin. Global rather than
- *   per-project, which is why it is a column here rather than a fourth row in
- *   `roles` — the first user to sign in is the admin of the whole instance,
- *   before any project exists to grant a role in.
+ * @property kind whether this account belongs to the deployment's own domain —
+ *   staff, or member for everybody else. Derived, never chosen: see
+ *   [UserKind.forEmail], which sign-in and the startup stamp both call, so the two
+ *   cannot reach different answers.
+ * @property isInstanceAdmin whether this account runs the instance
+ *   (`users.instance_role = 'admin'`). Global rather than per-project, which is
+ *   why it is a column here rather than a project rung — the first user to sign in
+ *   runs the whole instance, before any project exists to hold a rung in.
+ *
+ *   **Not the top of the ladder.** The instance *owner* is senior to this and is
+ *   not on this record at all: it is `instance_settings.owner_user_id`, and only
+ *   [AccessControl.instanceRole] can see it. See [storedInstanceRole], which is
+ *   what this record can honestly answer on its own.
  * @property isMcpEnabled whether this user has **turned on** agent access. Their
  *   own choice, made from the MCP tab of their profile dialog. Global for the same
- *   reason [isSysAdmin] is, and — unlike [isSysAdmin] — not an affordance: it is checked
+ *   reason [isInstanceAdmin] is, and — unlike it — not an affordance: it is checked
  *   server-side, so switching it off cuts live agents off mid-conversation. Never
  *   crosses the wire on this type; the Connections section reads it from its own
  *   endpoint. See McpRoutes.
- * @property isMcpAllowed whether an admin **permits** this user to have agent
- *   access at all. Not the same question as [isMcpEnabled] and not the same
- *   person answering it — see [canUseMcp], which is the only thing any gate should
- *   ever read, and Users.sq for why the two cannot share one column.
  */
 data class UserRecord(
     val id: Long,
@@ -69,23 +74,26 @@ data class UserRecord(
     val displayNameOverride: String?,
     val email: String?,
     val isEmailVerified: Boolean = false,
-    val isSysAdmin: Boolean,
+    val kind: UserKind = UserKind.MEMBER,
+    val isInstanceAdmin: Boolean = false,
     val isMcpEnabled: Boolean = false,
-    val isMcpAllowed: Boolean = false,
 ) {
     /**
-     * Does this account have permission to hold agent access at all — because an
-     * admin granted it, or because the account *is* an admin, who is permitted by
-     * virtue of being one?
+     * Does this account have permission to hold agent access at all?
      *
-     * The one place admin-ness enters the MCP story. [isMcpAllowed] is a right one
-     * person grants another, exactly the shape [AccessControl] lets an admin past
-     * everywhere (`user.isSysAdmin || roles.hasRole(...)`), so an admin needing a
-     * second admin to grant it — and, with no back-fill, there being no such second
-     * admin — was the gap this closes. It short-circuits **only** the permission
-     * half: it is not, and must not be, folded into [isMcpEnabled] below.
+     * **Everybody, for now.** `users.mcp_allowed` — an administrator's per-account
+     * grant — was dropped in LNL-191 along with the rest of the old privilege
+     * columns, and what replaces it is a permission attached to a rung on the
+     * instance ladder rather than a box ticked per person.
+     *
+     * The property survives the column deliberately, and is still what every gate
+     * reads (see [canUseMcp]): the five MCP gates already go through here, so
+     * restoring the permission is an edit to this one line rather than five.
+     *
+     * TODO(LNL-192): make this a per-tier rule on [InstanceRole] — the ticket that
+     *  brings the deployment's `domain` field brings this with it.
      */
-    val isMcpPermitted: Boolean get() = isMcpAllowed || isSysAdmin
+    val isMcpPermitted: Boolean get() = true
 
     /**
      * May an agent act as this user right now?
@@ -131,14 +139,14 @@ data class UserRecord(
      * this is the person's own address going back to them — the User tab shows and
      * edits it, and the notification toggles need to know it exists. Other
      * people's addresses still stop at the server; see this file's preamble and
-     * SignedInUser.email. [isSysAdmin] is an affordance only — it greys out a button
+     * SignedInUser.email. `isSysAdmin` on the wire is an affordance only — it greys out a button
      * the server would refuse anyway. See AccessControl's preamble.
      */
     fun toSignedInUser(): SignedInUser = SignedInUser(
         id = id,
         displayName = resolvedName,
         provider = provider,
-        isSysAdmin = isSysAdmin,
+        isSysAdmin = isInstanceAdmin,
         hasDisplayNameOverride = displayNameOverride != null,
         email = email,
         isEmailVerified = isEmailVerified,
@@ -272,9 +280,9 @@ internal fun userRecordOf(
     displayName: String?,
     email: String?,
     emailVerified: Long,
-    isSysAdmin: Long,
+    kind: String,
+    instanceRole: String?,
     mcpEnabled: Long,
-    mcpAllowed: Long,
 ): UserRecord? = parseProvider(provider)?.let {
     UserRecord(
         id = id,
@@ -284,9 +292,11 @@ internal fun userRecordOf(
         displayNameOverride = displayName,
         email = email,
         isEmailVerified = emailVerified != 0L,
-        isSysAdmin = isSysAdmin != 0L,
+        kind = UserKind.byKey(kind),
+        // Any value but 'admin' — including one written by a newer build — reads as
+        // "not an administrator", which is the safe direction for an unknown rung.
+        isInstanceAdmin = instanceRole == InstanceRole.ADMIN.key,
         isMcpEnabled = mcpEnabled != 0L,
-        isMcpAllowed = mcpAllowed != 0L,
     )
 }
 
@@ -314,7 +324,7 @@ class UserStore(
      *   back as a valid provider — impossible unless the enum changed under us,
      *   and not something to paper over.
      */
-    override suspend fun upsert(identity: ProviderIdentity): UserRecord = withContext(DatabaseDispatcher) {
+    override suspend fun upsert(identity: ProviderIdentity, kind: UserKind): UserRecord = withContext(DatabaseDispatcher) {
         // Normalized once, here, so both branches below and the write they lead to
         // are all looking at the same spelling. A lookup that normalized
         // differently from its write would miss the row and create a second
@@ -331,7 +341,7 @@ class UserStore(
             if (email != null) {
                 val existing = database.usersQueries.findByEmail(email).executeAsOneOrNull()
                 if (existing != null) {
-                    database.usersQueries.refreshOnSignIn(identity.providerName, existing.id)
+                    database.usersQueries.refreshOnSignIn(identity.providerName, kind.key, existing.id)
                     // Built from the row we already have plus the two values the
                     // update just wrote, rather than re-reading. A second SELECT
                     // would be a round-trip to learn what this statement was told
@@ -341,7 +351,7 @@ class UserStore(
                     return@transactionWithResult userRecordOf(
                         existing.id, existing.provider, existing.provider_id, identity.providerName,
                         existing.display_name, existing.email, 1L,
-                        existing.is_sys_admin, existing.mcp_enabled, existing.mcp_allowed,
+                        kind.key, existing.instance_role, existing.mcp_enabled,
                     ) ?: error("User ${existing.id} has provider ${existing.provider}, which cannot be parsed.")
                 }
             }
@@ -361,13 +371,14 @@ class UserStore(
                 providerId = identity.providerId,
                 providerName = identity.providerName,
                 email = email,
-                createdAt = now(),
+                kind = kind.key,
+                addedAt = now(),
             ).executeAsOne()
 
             userRecordOf(
                 row.id, row.provider, row.provider_id, row.provider_name,
                 row.display_name, row.email, row.email_verified,
-                row.is_sys_admin, row.mcp_enabled, row.mcp_allowed,
+                row.kind, row.instance_role, row.mcp_enabled,
             ) ?: error("Just wrote user ${row.id} with provider ${row.provider}, which cannot be parsed back.")
         }
     }
@@ -377,7 +388,7 @@ class UserStore(
         database.usersQueries.findById(id).executeAsOneOrNull()?.let {
             userRecordOf(
                 it.id, it.provider, it.provider_id, it.provider_name,
-                it.display_name, it.email, it.email_verified, it.is_sys_admin, it.mcp_enabled, it.mcp_allowed,
+                it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
             )
         }
     }
@@ -399,7 +410,7 @@ class UserStore(
         database.usersQueries.selectAll().executeAsList().mapNotNull {
             userRecordOf(
                 it.id, it.provider, it.provider_id, it.provider_name,
-                it.display_name, it.email, it.email_verified, it.is_sys_admin, it.mcp_enabled, it.mcp_allowed,
+                it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
             )
         }
     }
@@ -474,22 +485,26 @@ class UserStore(
     }
 
     /**
-     * Permit this user to have agent access, or withdraw that. **An admin's
-     * decision**, and the counterpart to [setMcpEnabled].
+     * Set this user's derived staff/member kind.
      *
-     * Two methods rather than one that writes both columns, because they answer to
-     * two different people and neither may clobber the other: withdrawing
-     * permission must leave the user's own preference intact, so that granting it
-     * again restores exactly the state they had rather than silently switching
-     * them off. See Users.sq.
-     *
-     * Touches no tokens either, for [setMcpEnabled]'s reason and more forcefully:
-     * an admin withdrawing permission stops every one of that user's agents at
-     * their next request, and restoring it brings them all back with no
-     * reconnection. A purge here would make a mistaken click unrecoverable for
-     * somebody other than the person who made it.
+     * Not a switch anybody sets: the only two callers are sign-in and the startup
+     * stamp, and both get their answer from [UserKind.forEmail]. It exists as a
+     * store method rather than being folded into the upsert because the stamp has
+     * to be able to correct a row whose owner has not signed in since the
+     * deployment learned its own domain.
      */
-    override suspend fun setMcpAllowed(id: Long, isAllowed: Boolean): Unit = withContext(DatabaseDispatcher) {
-        database.usersQueries.setMcpAllowed(if (isAllowed) 1L else 0L, id)
+    override suspend fun setKind(id: Long, kind: UserKind): Unit = withContext(DatabaseDispatcher) {
+        database.usersQueries.setKind(kind.key, id)
+    }
+
+    /**
+     * Put this user on the instance ladder, or take them off it.
+     *
+     * Only [InstanceRole.ADMIN] and null are storable — see Users.sq's
+     * `instance_role`. Ownership is a setting and does not come through here, which
+     * is why this takes a nullable rung rather than the whole enum.
+     */
+    override suspend fun setInstanceAdmin(id: Long, isAdmin: Boolean): Unit = withContext(DatabaseDispatcher) {
+        database.usersQueries.setInstanceRole(InstanceRole.ADMIN.key.takeIf { isAdmin }, id)
     }
 }

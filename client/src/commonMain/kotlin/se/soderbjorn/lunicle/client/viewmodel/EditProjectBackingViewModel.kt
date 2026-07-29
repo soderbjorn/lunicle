@@ -52,17 +52,17 @@ import se.soderbjorn.lunicle.clientserver.VocabularyEntry
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
 
 /**
- * The two senior roles' wire keys, as the server spells them.
+ * The two senior rungs' wire keys, as the server spells them (LNL-191).
  *
- * Literals here because the client has no copy of the server's `Role` enum — the
- * keys ARE the wire format and are branched on by name (see Roles.kt, which says
- * so and warns that changing one is a migration). These are the only keys the
+ * Literals here because the client has no copy of the server's `ProjectRole` enum
+ * — the keys ARE the wire format and are branched on by name (see Roles.kt, which
+ * says so and warns that changing one is a migration). These are the only keys the
  * client has to recognise rather than merely render, because they are the two rows
  * of the privileges table whose availability depends on who is looking: both are
- * handed out only by an owner or a system administrator (LNL-107).
+ * handed out only by an owner.
  */
-private const val PROJECT_ADMIN_ROLE_KEY = "project_admin"
-private const val PROJECT_OWNER_ROLE_KEY = "project_owner"
+private const val PROJECT_ADMIN_ROLE_KEY = "admin"
+private const val PROJECT_OWNER_ROLE_KEY = "owner"
 
 /** The two rows gated on [ProjectSettingsState.canGrantSeniorRoles]. */
 private val SENIOR_ROLE_KEYS = setOf(PROJECT_ADMIN_ROLE_KEY, PROJECT_OWNER_ROLE_KEY)

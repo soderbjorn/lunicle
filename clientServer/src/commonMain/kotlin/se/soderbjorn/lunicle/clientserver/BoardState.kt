@@ -19,14 +19,13 @@ import kotlinx.serialization.Serializable
  * A project, as the picker and the top bar need it.
  *
  * @property namePrefix the "FOO" in FOO-123.
- * @property isPublic whether a signed-out visitor may read it. An affordance
- *   here — the checkbox's state in the edit dialog — never a permission.
- * @property visibleToAllSignedIn whether any signed-in account may read it — the
- *   middle tier between members-only and [isPublic] (LNL-138). An affordance like
- *   [isPublic]: it drives the second toggle's state in the edit dialog, and the
- *   server re-derives the real read rule on every request. Defaults false, so an
- *   older server that does not send it, or a project made before the tier existed,
- *   reads as members-only.
+ * @property isPublic and [visibleToAllSignedIn] — **retired, and sent false**
+ *   (LNL-191). Who may see a project is no longer two booleans on the project: it
+ *   is the project's audience rows, which say at what *rung* each audience arrives
+ *   rather than merely that it may look. The fields stay on the wire, unused, until
+ *   tickets 3–5 rebuild the dialog around audiences — a client that still reads
+ *   them keeps deserialising, and both read false, which is what a dialog with no
+ *   audience UI should show rather than a stale yes.
  * @property discussionsEnabled whether this project offers a discussion forum,
  *   and [messagesEnabled] whether it offers private messages (LNL-96). The tab
  *   shell reads these off the board it already loads and hides the Discussion or
@@ -44,7 +43,7 @@ data class ProjectSummary(
     val id: Long,
     val name: String,
     val namePrefix: String,
-    val isPublic: Boolean,
+    val isPublic: Boolean = false,
     val visibleToAllSignedIn: Boolean = false,
     val discussionsEnabled: Boolean = false,
     val messagesEnabled: Boolean = false,
@@ -192,27 +191,35 @@ data class ProjectPermissionsView(
     val canComment: Boolean = false,
     val canChangeUnownedIssues: Boolean = false,
     /**
-     * Whether the caller administers this project — its vocabulary, its sprints
-     * and its privileges. A system administrator, or a project administrator
-     * here. What renders the settings dialog's admin sections and the sprint
-     * actions in the scope picker.
+     * Whether the caller may add, rename, reorder and complete this project's
+     * sprints and versions.
+     *
+     * A **maintainer**'s, one rung below the rest of the settings dialog (LNL-191):
+     * planning the next two weeks is work on a board somebody already edits every
+     * issue on, where the set of statuses a project *has* is a decision about the
+     * board. Its own field precisely because that is where [canMutateProject] and
+     * this now differ — the scope picker's sprint actions read this, and the
+     * vocabulary sections read that one.
+     */
+    val canManageSprintsAndVersions: Boolean = false,
+    /**
+     * Whether the caller administers this project — its vocabulary, its display
+     * settings and its privileges up to maintainer. An instance administrator, or
+     * a project administrator here. What renders the settings dialog's admin
+     * sections. Note it no longer covers sprints; see
+     * [canManageSprintsAndVersions].
      */
     val canMutateProject: Boolean = false,
     /**
-     * Whether the caller may rename this project, change its prefix or
-     * visibility, or delete it outright.
+     * Whether the caller may rename this project, change its prefix, decide which
+     * audiences it admits, or delete it outright.
      *
      * Strictly narrower than [canMutateProject], and split off from it by LNL-37
-     * for a reason you can see in the dialog: a project administrator gets the
-     * whole settings dialog, but a project's *name, prefix, visibility and
-     * existence* are the instance's business, not one board's — the prefix is
-     * unique across the deployment and "public" exposes it to callers with no
-     * account. Those stay with the system administrator.
-     *
-     * Without this field the dialog showed a project administrator a name field,
-     * a public toggle and a Delete button that all 403 on save, which is exactly
-     * the "invited to do something that will fail" this whole object exists to
-     * prevent.
+     * for a reason you can see in the dialog: an administrator gets the whole
+     * settings dialog, but a project's *name, prefix, audiences and existence* are
+     * the owner's. Without this field the dialog showed an administrator a name
+     * field and a Delete button that both 403 on save, which is exactly the
+     * "invited to do something that will fail" this whole object exists to prevent.
      */
     val canMutateProjectIdentity: Boolean = false,
     /**
@@ -968,14 +975,17 @@ data class CommentUpdate(
 data class ProjectUpdate(
     val name: String,
     val namePrefix: String,
-    val isPublic: Boolean,
     /**
-     * Whether any signed-in account may read this project — the middle read tier
-     * (LNL-138). Rides the same owner identity write as [isPublic]; the server ORs
-     * the two into the read rule and grants no write from this one. Defaulted so the
-     * create dialog and any older client send a body that means "members only"
-     * without having to say so.
+     * **Accepted and ignored** (LNL-191), together with [visibleToAllSignedIn].
+     *
+     * Who may see a project is its audience rows now, set through their own gesture
+     * rather than riding along on a rename — see the server's
+     * `AccessControl.canSetAudience`. Both fields stay here, defaulted, so the
+     * existing dialog's body still deserialises until tickets 3–5 rebuild it; the
+     * server reads neither. They are not silently *applied*, which is the failure
+     * worth avoiding: a stale client cannot un-publish a board by saving its name.
      */
+    val isPublic: Boolean = false,
     val visibleToAllSignedIn: Boolean = false,
     /**
      * The GitHub repository, however the admin cared to write it — a browser URL,

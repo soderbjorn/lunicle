@@ -59,18 +59,13 @@ class FirestoreProjectStore(
      * position is `max + 1` (0 on an empty instance), matching Projects.sq's
      * `nextPosition`, so a new project sorts last until a reorder moves it.
      */
-    override suspend fun insert(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
-    ): ProjectRecord {
+    override suspend fun insert(name: String, namePrefix: String): ProjectRecord {
         val createdAt = now()
         return firestore.runTransaction { txn ->
             val existing = txn.get(collection()).get().documents
             val position = (existing.mapNotNull { it.getLong(POSITION) }.maxOrNull() ?: -1L) + 1L
             val id = counters.next(txn, COUNTER).getValue(COUNTER)
-            writeInTransaction(txn, id, name, namePrefix, isPublic, visibleToAllSignedIn, position, createdAt)
+            writeInTransaction(txn, id, name, namePrefix, position, createdAt)
         }.await()
     }
 
@@ -89,8 +84,6 @@ class FirestoreProjectStore(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
         position: Long,
         createdAt: Long,
     ): ProjectRecord {
@@ -101,8 +94,6 @@ class FirestoreProjectStore(
                 NAME to name,
                 NAME_FOLD to name.lowercase(),
                 NAME_PREFIX to namePrefix,
-                IS_PUBLIC to isPublic,
-                VISIBLE_TO_ALL_SIGNED_IN to visibleToAllSignedIn,
                 // Defaults a fresh row carries — see the class preamble. The two
                 // forum flags are written off and read off (LNL-190); the fields
                 // stay so a re-enable has somewhere to put the answer.
@@ -125,8 +116,6 @@ class FirestoreProjectStore(
             id = id,
             name = name,
             namePrefix = namePrefix,
-            isPublic = isPublic,
-            visibleToAllSignedIn = visibleToAllSignedIn,
             discussionsEnabled = PROJECT_FORUM_FEATURES_ENABLED,
             messagesEnabled = PROJECT_FORUM_FEATURES_ENABLED,
             requireLabel = false,
@@ -137,14 +126,12 @@ class FirestoreProjectStore(
         )
     }
 
-    override suspend fun update(id: Long, name: String, namePrefix: String, isPublic: Boolean, visibleToAllSignedIn: Boolean) {
+    override suspend fun update(id: Long, name: String, namePrefix: String) {
         doc(id).update(
             mapOf(
                 NAME to name,
                 NAME_FOLD to name.lowercase(),
                 NAME_PREFIX to namePrefix,
-                IS_PUBLIC to isPublic,
-                VISIBLE_TO_ALL_SIGNED_IN to visibleToAllSignedIn,
             ),
         ).await()
     }
@@ -265,8 +252,12 @@ class FirestoreProjectStore(
         const val NAME = "name"
         const val NAME_FOLD = "nameFold"
         const val NAME_PREFIX = "namePrefix"
-        const val IS_PUBLIC = "isPublic"
-        const val VISIBLE_TO_ALL_SIGNED_IN = "visibleToAllSignedIn"
+        // `isPublic` and `visibleToAllSignedIn` were fields here until LNL-191.
+        // Visibility is now the project's audience rows, which live on this same
+        // document under the key below and are read and written by
+        // FirestoreRoleStore — a project's audiences belong with the project, not in
+        // a collection of their own that every read would have to join to.
+        const val AUDIENCE_ROLES = "audienceRoles"
         const val DISCUSSIONS = "discussionsEnabled"
         const val MESSAGES = "messagesEnabled"
         const val REQUIRE_LABEL = "requireLabel"
@@ -287,11 +278,6 @@ private fun DocumentSnapshot.toRecord(): ProjectRecord = ProjectRecord(
     id = getLong("id")!!,
     name = getString("name").orEmpty(),
     namePrefix = getString("namePrefix").orEmpty(),
-    isPublic = getBoolean("isPublic") ?: false,
-    // Absent on a doc written before the middle read tier existed — defaults false,
-    // the members-only/public behaviour it had then, exactly like the SQLite column's
-    // DEFAULT 0. See LNL-138 and the class preamble on why absent = default here.
-    visibleToAllSignedIn = getBoolean("visibleToAllSignedIn") ?: false,
     // Not read from the document at all: discussions and private messages are
     // retired, so a doc written while the switches still existed reads off (LNL-190).
     discussionsEnabled = PROJECT_FORUM_FEATURES_ENABLED,

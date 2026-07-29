@@ -283,7 +283,7 @@ class EmailChangeTest {
         val admin = user("gh-admin", "Admin")
         val victim = user("gh-victim", "Victim")
         val session = sessions.create(admin.id)
-        assertTrue(admin.isSysAdmin, "The first user seeded was not the admin; the fixture is wrong.")
+        assertTrue(admin.isInstanceAdmin, "The first user seeded was not the admin; the fixture is wrong.")
 
         withRoutes { client ->
             client.post(ApiRoutes.IMPERSONATE) {

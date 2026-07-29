@@ -24,18 +24,15 @@ interface ProjectStore {
     /**
      * Insert a project row (no vocabulary seeding — that is the repository's job).
      *
-     * [visibleToAllSignedIn] defaults false, the tier a project has until its owner
-     * opts in (LNL-138) — so callers that predate the middle read tier need not
-     * mention it, exactly as the row's own DEFAULT lets the SQL omit it.
+     *
+     * Visibility is not a parameter, and not a column: who may see a project is its
+     * audience rows in `project_audience_roles` (LNL-191). A newly created project
+     * has none — it admits nobody but its owner until somebody says otherwise, which
+     * is the safe default and the one a fresh row has always had.
      */
-    suspend fun insert(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean = false,
-    ): ProjectRecord
+    suspend fun insert(name: String, namePrefix: String): ProjectRecord
 
-    suspend fun update(id: Long, name: String, namePrefix: String, isPublic: Boolean, visibleToAllSignedIn: Boolean)
+    suspend fun update(id: Long, name: String, namePrefix: String)
 
     /** Toggle the discussion-forum and private-message features. */
     suspend fun setFeatures(id: Long, discussionsEnabled: Boolean, messagesEnabled: Boolean)

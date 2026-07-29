@@ -53,7 +53,7 @@ class SqlDelightVocabularyStoreContractTest : VocabularyStoreContract() {
         VocabularyRepository(db, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
 
     override suspend fun newProject(): Long =
-        projectRepository.create("Project ${seq}", "VC${seq++}", isPublic = false).id
+        projectRepository.create("Project ${seq}", "VC${seq++}").id
 
     override suspend fun fileIssue(projectId: Long): Long {
         val (id, _) = issueRepository.createDraft(projectId, Author.Nobody)

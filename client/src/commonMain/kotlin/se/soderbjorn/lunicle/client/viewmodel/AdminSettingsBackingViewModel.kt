@@ -429,7 +429,7 @@ class AdminSettingsBackingViewModel(
                                         // Without this it shows a cross for a user
                                         // the server would let in. Every other row
                                         // is exactly "do they hold this key".
-                                        isHeld = if (role.key == RoleKeys.VIEW_PROJECT) {
+                                        isHeld = if (role.key == RoleKeys.VIEWER) {
                                             project.canSeeProject
                                         } else {
                                             role.key in project.heldRoleKeys

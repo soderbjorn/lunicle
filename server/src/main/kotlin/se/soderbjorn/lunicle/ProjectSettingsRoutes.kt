@@ -122,8 +122,13 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
     }
 
     post("${ApiRoutes.PROJECTS}/{id}/vocabulary/{kind}") {
-        val scope = call.adminProject(deps, "change this project's vocabulary") ?: return@post
+        // The kind is resolved BEFORE the gate, which is the reverse of the order
+        // this read until LNL-191 split the vocabulary in two. It has to be: sprints
+        // and versions are a maintainer's and the other five are an administrator's,
+        // so there is no rung to check against until the kind is known. See
+        // AccessControl.canEditVocabulary.
         val kind = call.vocabularyKind() ?: return@post
+        val scope = call.vocabularyProject(deps, kind, "change this project's vocabulary") ?: return@post
         val body = call.receiveOrNull<VocabularyAdd>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed name.")
             return@post
@@ -145,8 +150,8 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
      * project's "Closed" because it sent the id it had lying around.
      */
     put("${ApiRoutes.PROJECTS}/{id}/vocabulary/{kind}/{itemId}") {
-        val scope = call.adminProject(deps, "change this project's vocabulary") ?: return@put
         val kind = call.vocabularyKind() ?: return@put
+        val scope = call.vocabularyProject(deps, kind, "change this project's vocabulary") ?: return@put
         val row = call.vocabularyRow(deps, scope.project, kind) ?: return@put
         val body = call.receiveOrNull<VocabularyEdit>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed name.")
@@ -167,8 +172,8 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
      * that lived in a handler would be a rule the other door does not have.
      */
     delete("${ApiRoutes.PROJECTS}/{id}/vocabulary/{kind}/{itemId}") {
-        val scope = call.adminProject(deps, "change this project's vocabulary") ?: return@delete
         val kind = call.vocabularyKind() ?: return@delete
+        val scope = call.vocabularyProject(deps, kind, "change this project's vocabulary") ?: return@delete
         val row = call.vocabularyRow(deps, scope.project, kind) ?: return@delete
         deps.runVocabularyWrite(call) {
             deps.vocabularies.delete(scope.project.id, kind, row)
@@ -178,8 +183,8 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
     }
 
     post("${ApiRoutes.PROJECTS}/{id}/vocabulary/{kind}/order") {
-        val scope = call.adminProject(deps, "reorder this project's vocabulary") ?: return@post
         val kind = call.vocabularyKind() ?: return@post
+        val scope = call.vocabularyProject(deps, kind, "reorder this project's vocabulary") ?: return@post
         val body = call.receiveOrNull<VocabularyOrder>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed order.")
             return@post
@@ -294,7 +299,7 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed grant.")
             return@post
         }
-        val role = Role.entries.firstOrNull { it.key == body.roleKey } ?: run {
+        val role = ProjectRole.byKey(body.roleKey) ?: run {
             call.respond(HttpStatusCode.BadRequest, "This server has no role called \"${body.roleKey}\".")
             return@post
         }
@@ -309,10 +314,15 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.NotFound, "No such user.")
             return@post
         }
+        // A rung is single-valued, so "granted" is a move TO it and "not granted" is
+        // a move OFF it — and only off the rung named, so a stale dialog unticking a
+        // box for a rung this person no longer holds does not knock them off the one
+        // they do. The tick-box wire shape is what tickets 3–5 replace; until then
+        // this is the honest reading of it.
         if (body.isGranted) {
-            deps.roles.grant(target.id, scope.project.id, role)
-        } else {
-            deps.roles.revoke(target.id, scope.project.id, role)
+            deps.roles.setRole(target.id, scope.project.id, role)
+        } else if (deps.roles.roleFor(target.id, scope.project.id) == role) {
+            deps.roles.setRole(target.id, scope.project.id, null)
         }
         logger.info(
             "Role ${if (body.isGranted) "granted" else "revoked"}: ${role.key} for user " +
@@ -359,6 +369,7 @@ private data class AdminScope(
 private suspend fun ApplicationCall.adminProject(
     deps: BoardDependencies,
     action: String,
+    minimumRole: ProjectRole = ProjectRole.ADMIN,
 ): AdminScope? {
     val user = caller(deps)
     // The effective user, and admin re-derived from the session — so an admin who
@@ -384,12 +395,26 @@ private suspend fun ApplicationCall.adminProject(
         respond(HttpStatusCode.NotFound, "No such project.")
         return null
     }
-    if (!deps.access.canAdministerProject(user, project.id)) {
+    if (deps.access.effectiveRole(user, project.id)?.atLeast(minimumRole) != true) {
         respond(HttpStatusCode.Forbidden, "Only an administrator of this project can $action.")
         return null
     }
     return AdminScope(user, project)
 }
+
+/**
+ * Resolve a project this caller may edit [kind] in, or respond and return null.
+ *
+ * [adminProject] with a rung that depends on what is being edited: sprints and
+ * versions are a maintainer's, the five vocabularies that define the board are an
+ * administrator's. See [AccessControl.canEditVocabulary], which is where that split
+ * lives — this only passes the kind to it.
+ */
+private suspend fun ApplicationCall.vocabularyProject(
+    deps: BoardDependencies,
+    kind: VocabularyKind,
+    action: String,
+): AdminScope? = adminProject(deps, action, kind.minimumRole)
 
 /** The `{kind}` segment as a [VocabularyKind], or respond and return null. */
 private suspend fun ApplicationCall.vocabularyKind(): VocabularyKind? {
@@ -522,7 +547,7 @@ private suspend fun BoardDependencies.buildSettings(
         )
     }
 
-    val grants = roles.grantsForProject(project.id)
+    val rungs = roles.rolesForProject(project.id)
     // ── Why this is a SECOND gate, and not the one just above ───────────────
     //
     // Everything else in this response is the project-administrator's business,
@@ -558,7 +583,7 @@ private suspend fun BoardDependencies.buildSettings(
         // The enum, not a table read: `roles` associates users with these, it does
         // not define them, and a row naming a role this build has never heard of
         // grants nothing. See RoleStore.seed.
-        roles = Role.entries.map { RoleDescription(it.key, it.description) },
+        roles = ProjectRole.entries.map { RoleDescription(it.key, it.description) },
         members = users.selectAll().map { member ->
             ProjectMember(
                 userId = member.id,
@@ -566,9 +591,11 @@ private suspend fun BoardDependencies.buildSettings(
                 // Note what does NOT cross: the email and the provider id are on
                 // the UserRecord right here and stop at this line. See Users.kt.
                 name = member.resolvedName,
-                isSysAdmin = member.isSysAdmin,
+                isSysAdmin = member.isInstanceAdmin,
                 isSelf = member.id == caller.id,
-                roleKeys = grants[member.id].orEmpty().map { it.key },
+                // At most one now — a person holds one rung per project. The wire
+                // field stays a list because tickets 3–5 rebuild this table.
+                roleKeys = listOfNotNull(rungs[member.id]?.key),
             )
         },
         canMutateProject = true,

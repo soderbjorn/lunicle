@@ -23,44 +23,38 @@ abstract class ProjectStoreContract {
     protected abstract val store: ProjectStore
 
     private var seq = 0
-    private suspend fun insertProject(public: Boolean = false) =
-        store.insert("Project ${seq}", "PR${seq++}", public)
+    private suspend fun insertProject() = store.insert("Project ${seq}", "PR${seq++}")
 
     @Test
     fun `an inserted project round-trips through findById`() = runBlocking {
-        val created = store.insert("Lunamux", "LMX", isPublic = true)
+        val created = store.insert("Lunamux", "LMX")
         val read = store.findById(created.id)!!
         assertEquals("Lunamux", read.name)
         assertEquals("LMX", read.namePrefix)
-        assertEquals(true, read.isPublic)
     }
 
+    /**
+     * The two visibility tests that stood here are gone with the columns (LNL-191).
+     *
+     * `is_public` and `visible_to_all_signed_in` were the only fields this store
+     * carried that were *about permissions* rather than about a project, and they
+     * are now audience rows in the role store — where they are covered by
+     * [RoleStoreContract]'s audience section. There is nothing to assert here in
+     * their place: a project row no longer has an opinion about who may read it,
+     * which is the whole change.
+     */
     @Test
-    fun `the signed-in-visibility flag round-trips and defaults off`() = runBlocking {
-        // Default off, the tier a project has until its owner opts in (LNL-138).
-        val default = store.insert("Members Only", "MEM", isPublic = false)
-        assertEquals(false, store.findById(default.id)!!.visibleToAllSignedIn)
-        // Set on insert, read back on and independent of is_public.
-        val opened = store.insert("Browsable", "BRW", isPublic = false, visibleToAllSignedIn = true)
-        val read = store.findById(opened.id)!!
-        assertEquals(true, read.visibleToAllSignedIn)
-        assertEquals(false, read.isPublic)
-    }
-
-    @Test
-    fun `update writes the signed-in-visibility flag alongside is_public`() = runBlocking {
-        val p = store.insert("Toggling", "TGL", isPublic = false, visibleToAllSignedIn = false)
-        store.update(p.id, "Toggling", "TGL", isPublic = false, visibleToAllSignedIn = true)
-        assertEquals(true, store.findById(p.id)!!.visibleToAllSignedIn)
-        store.update(p.id, "Toggling", "TGL", isPublic = true, visibleToAllSignedIn = false)
+    fun `update rewrites the name and the prefix`() = runBlocking {
+        val p = store.insert("Before", "BEF")
+        store.update(p.id, "After", "AFT")
         val read = store.findById(p.id)!!
-        assertEquals(false, read.visibleToAllSignedIn)
-        assertEquals(true, read.isPublic)
+        assertEquals("After", read.name)
+        assertEquals("AFT", read.namePrefix)
     }
 
     @Test
     fun `findByName finds a project and misses cleanly`() = runBlocking {
-        val created = store.insert("Findable", "FND", isPublic = false)
+        val created = store.insert("Findable", "FND")
         assertEquals(created.id, store.findByName("Findable")?.id)
         assertNull(store.findByName("Nonexistent"))
     }

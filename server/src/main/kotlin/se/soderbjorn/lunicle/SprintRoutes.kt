@@ -34,6 +34,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
+import se.soderbjorn.lunicle.clientserver.VocabularyKind
 import se.soderbjorn.lunicle.clientserver.IssueSprintUpdate
 import se.soderbjorn.lunicle.clientserver.SprintActivation
 import se.soderbjorn.lunicle.clientserver.SprintCompletion
@@ -176,7 +177,11 @@ private suspend fun ApplicationCall.adminSprintScope(
         return null
     }
     val project = readableProject(deps, user, projectId) ?: return null
-    if (!deps.access.canAdministerProject(user, project.id)) {
+    // A maintainer's, not an administrator's, since LNL-191: planning the next two
+    // weeks is work on a board somebody already edits every issue on. See
+    // ProjectRole.MAINTAINER and AccessControl.canEditVocabulary, which draws the
+    // same line for the sprint rows themselves.
+    if (!deps.access.canEditVocabulary(user, project.id, VocabularyKind.SPRINT)) {
         respond(HttpStatusCode.Forbidden, "You cannot configure this project's sprints.")
         return null
     }

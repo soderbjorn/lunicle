@@ -78,7 +78,8 @@ class StatisticsTest {
     private val history = IssueHistory(events, statuses, labels, components, users)
     private val snapshots = ProjectStatisticsStore(database)
     private val issueCounts = IssueStatisticsStore(database)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     /** Moves under the test's control, so a window can age without anybody sleeping. */
     private var clock = 1_000_000_000_000L
@@ -423,8 +424,7 @@ class StatisticsTest {
             RepositoryConfig(RepositoryRef("soderbjorn", "lunicle"), TokenSource.Env("LUNICLE_GITHUB_TOKEN_TEST")),
         )
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-padmin", "Pat", null))
-        roles.seed()
-        roles.grant(projectAdmin.id, f.projectId, Role.PROJECT_ADMIN)
+        roles.setRole(projectAdmin.id, f.projectId, ProjectRole.ADMIN)
         val cookie = sessions.create(projectAdmin.id)
 
         withRoutes { client ->
@@ -514,7 +514,14 @@ class StatisticsTest {
 
     private suspend fun seed(prefix: String = "LMX", isPublic: Boolean = false): Fixture {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin-$prefix", "Admin", null))
-        val project = projectRepository.create("Lunamux", prefix, isPublic = isPublic)
+        val project = projectRepository.create("Lunamux", prefix)
+            .also { if (isPublic) roles.setAudienceRole(it.id, Audience.GUEST, ProjectRole.VIEWER) }
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -595,7 +602,7 @@ class StatisticsTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(

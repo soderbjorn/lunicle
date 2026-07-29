@@ -35,7 +35,7 @@
  * called it, and every claim here is about a route.
  *
  * @see AccessControl.canReadProject
- * @see Role.VIEW_PROJECT
+ * @see ProjectRole.VIEWER
  * @see RoleStore.isMember
  */
 package se.soderbjorn.lunicle
@@ -105,7 +105,8 @@ class ProjectVisibilityTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -220,11 +221,11 @@ class ProjectVisibilityTest {
 
     // ── The private project, from inside ─────────────────────────────────────
 
-    /** [Role.VIEW_PROJECT] on its own is enough, which is the whole reason it exists. */
+    /** [ProjectRole.VIEWER] on its own is enough, which is the whole reason it exists. */
     @Test
     fun `a member holding only view_project reads the board`(): Unit = runBlocking {
         val f = seed()
-        roles.grant(f.outsiderId, f.privateId, Role.VIEW_PROJECT)
+        roles.setRole(f.outsiderId, f.privateId, ProjectRole.VIEWER)
         withRoutes { client ->
             assertEquals(
                 HttpStatusCode.OK,
@@ -247,7 +248,7 @@ class ProjectVisibilityTest {
     @Test
     fun `a member holding only an issue-scoped role reads the board`(): Unit = runBlocking {
         val f = seed()
-        roles.grant(f.outsiderId, f.privateId, Role.CREATE_ISSUE)
+        roles.setRole(f.outsiderId, f.privateId, ProjectRole.CONTRIBUTOR)
         withRoutes { client ->
             assertEquals(
                 HttpStatusCode.OK,
@@ -262,7 +263,7 @@ class ProjectVisibilityTest {
     fun `a system administrator reads a private project without holding a role`(): Unit = runBlocking {
         val f = seed()
         assertFalse(
-            roles.isMember(f.sysAdminId, f.privateId),
+            (roles.roleFor(f.sysAdminId, f.privateId) != null),
             "The fixture's system administrator holds a row, so this test proves nothing.",
         )
         withRoutes { client ->
@@ -300,7 +301,7 @@ class ProjectVisibilityTest {
     @Test
     fun `a public project is readable by a signed-in non-member`(): Unit = runBlocking {
         val f = seed()
-        assertFalse(roles.isMember(f.outsiderId, f.publicId), "The fixture's outsider is a member of the public one.")
+        assertFalse((roles.roleFor(f.outsiderId, f.publicId) != null), "The fixture's outsider is a member of the public one.")
         withRoutes { client ->
             assertEquals(
                 HttpStatusCode.OK,
@@ -321,7 +322,7 @@ class ProjectVisibilityTest {
     fun `a signed-in non-member reads a project visible to all signed-in users`(): Unit = runBlocking {
         val f = seed()
         assertFalse(
-            roles.isMember(f.outsiderId, f.signedInVisibleId),
+            (roles.roleFor(f.outsiderId, f.signedInVisibleId) != null),
             "The fixture's outsider holds a role on the signed-in-visible project.",
         )
         withRoutes { client ->
@@ -372,27 +373,41 @@ class ProjectVisibilityTest {
     }
 
     /**
-     * The read-only guarantee: the tier grants reading and nothing else.
+     * The read-only guarantee: a `member → viewer` audience grants reading and
+     * nothing else.
      *
      * Asserted against [AccessControl] directly rather than through a route, because
-     * the claim is precisely the split between two of its functions — the tier is in
-     * [AccessControl.canReadProject] and deliberately out of
-     * [AccessControl.canPostInProject], so a signed-in reader admitted only by this
-     * flag may browse a forum but not answer in it. That distinction is the ticket's
-     * "browse … but not make changes", and no route asserts it as sharply as this.
+     * the claim is precisely about the rung: the audience row admits every account at
+     * [ProjectRole.VIEWER], and every write in this codebase asks for
+     * [ProjectRole.CONTRIBUTOR] or above. That is the ticket's "browse … but not make
+     * changes", and it is now structural — there is no flag to forget to exclude from
+     * a write gate, because a viewer simply does not reach the rung a write asks for.
+     *
+     * This test used to end on `canPostInProject`, which is false for everybody since
+     * discussions were retired; the claim is re-pointed at issue writing rather than
+     * dropped, because it is the same claim about the same tier.
      */
     @Test
-    fun `the signed-in-visibility tier grants reading but not forum posting`(): Unit = runBlocking {
+    fun `an audience admitted as viewer may read and may not write`(): Unit = runBlocking {
         val f = seed()
         val project = projects.findById(f.signedInVisibleId)!!
         val outsider = users.findById(f.outsiderId)!!
         assertTrue(
             access.canReadProject(outsider, project),
-            "A signed-in account could not read a project visible to all signed-in users.",
+            "A signed-in account could not read a project its member audience admits.",
+        )
+        assertEquals(
+            ProjectRole.VIEWER,
+            access.effectiveRole(outsider, project.id),
+            "The audience row put them on a rung other than the one it names.",
         )
         assertFalse(
-            access.canPostInProject(outsider, project),
-            "The read-only tier let a non-member post in the forum — it grants reading only.",
+            access.canCreateIssue(outsider, project.id),
+            "A viewer filed an issue — the audience grants reading only.",
+        )
+        assertFalse(
+            access.canComment(outsider, project.id),
+            "A viewer commented — the audience grants reading only.",
         )
     }
 
@@ -413,18 +428,18 @@ class ProjectVisibilityTest {
             val granted = client.post(ApiRoutes.projectRoles(f.privateId)) {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.VIEW_PROJECT.key, isGranted = true))
+                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.VIEWER.key, isGranted = true))
             }
             assertEquals(HttpStatusCode.OK, granted.status, "A project administrator could not grant visibility.")
-            assertTrue(roles.isMember(f.outsiderId, f.privateId))
+            assertTrue((roles.roleFor(f.outsiderId, f.privateId) != null))
 
             val revoked = client.post(ApiRoutes.projectRoles(f.privateId)) {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.VIEW_PROJECT.key, isGranted = false))
+                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.VIEWER.key, isGranted = false))
             }
             assertEquals(HttpStatusCode.OK, revoked.status)
-            assertFalse(roles.isMember(f.outsiderId, f.privateId), "Revoking visibility left the caller a member.")
+            assertFalse((roles.roleFor(f.outsiderId, f.privateId) != null), "Revoking visibility left the caller a member.")
         }
     }
 
@@ -444,7 +459,7 @@ class ProjectVisibilityTest {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
             }.body()
             assertTrue(
-                state.roles.any { it.key == Role.VIEW_PROJECT.key },
+                state.roles.any { it.key == ProjectRole.VIEWER.key },
                 "The privileges table has no row for the role that decides who sees the project.",
             )
         }
@@ -466,23 +481,26 @@ class ProjectVisibilityTest {
     )
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val member = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-mem", "Mem", "mem@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isSysAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(outsider.isSysAdmin, "The fixture's outsider is a system administrator.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the system administrator.")
+        assertFalse(outsider.isInstanceAdmin, "The fixture's outsider is a system administrator.")
 
-        val public = projectRepository.create("Lunamux", "LMX", isPublic = true)
-        val private = projectRepository.create("Skunkworks", "SKW", isPublic = false)
+        val public = projectRepository.createOpenToAll("Lunamux", "LMX", roles)
+        val private = projectRepository.create("Skunkworks", "SKW")
         // The middle read tier (LNL-138): readable by any signed-in account, no
         // membership granted on it — the outsider holds nothing here, which is what
         // the tier tests below turn on.
-        val signedInVisible =
-            projectRepository.create("Browsable", "BRW", isPublic = false, visibleToAllSignedIn = true)
-        roles.grant(projectAdmin.id, private.id, Role.PROJECT_ADMIN)
-        roles.grant(member.id, private.id, Role.VIEW_PROJECT)
+        // The middle tier is a `member → viewer` audience row now (LNL-191), where it
+        // was the `visible_to_all_signed_in` column: readable by any account, no
+        // membership granted on it. The outsider holds nothing here, which is what the
+        // tier tests below turn on.
+        val signedInVisible = projectRepository.create("Browsable", "BRW")
+            .also { roles.setAudienceRole(it.id, Audience.MEMBER, ProjectRole.VIEWER) }
+        roles.setRole(projectAdmin.id, private.id, ProjectRole.ADMIN)
+        roles.setRole(member.id, private.id, ProjectRole.VIEWER)
         // Deliberately no grant for the outsider anywhere, and none for the
         // system administrator: both of those absences are what tests above
         // assert against.
@@ -503,6 +521,12 @@ class ProjectVisibilityTest {
             componentIds = emptyList(),
         )
 
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(
             sysAdminId = sysAdmin.id,
             sysAdminCookie = sessions.create(sysAdmin.id),
@@ -530,7 +554,6 @@ class ProjectVisibilityTest {
 
     /** A real access token for [userId], with MCP enabled — see McpDeleteTest.tokenFor. */
     private suspend fun tokenFor(userId: Long): String {
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client =
             clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
@@ -587,7 +610,7 @@ class ProjectVisibilityTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(

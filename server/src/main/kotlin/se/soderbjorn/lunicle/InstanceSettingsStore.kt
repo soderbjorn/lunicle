@@ -43,6 +43,12 @@ class InstanceSettingsStore(
             requireSignIn = rows[InstanceSettingKey.REQUIRE_SIGN_IN.storageKey].isTrue(),
             anyoneCanCreateProject = rows[InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT.storageKey].isTrue(),
             hideDisplayName = rows[InstanceSettingKey.HIDE_DISPLAY_NAME.storageKey].isTrue(),
+            // Not a switch, so not read through isTrue(): the stored form is the id
+            // as text. A value that is not a number — a hand-edited row, a row from
+            // a build that meant something else by this key — reads as "nobody owns
+            // this instance", which is the safe direction: it withholds authority
+            // rather than handing it to whoever happens to have id 0.
+            ownerUserId = rows[OWNER_USER_ID_KEY]?.toLongOrNull(),
         )
     }
 
@@ -57,6 +63,23 @@ class InstanceSettingsStore(
             database.instanceSettingsQueries.upsert(key = key.storageKey, value_ = isEnabled.toString())
         }
 
+    override suspend fun setOwnerUserId(userId: Long?): Unit = withContext(DatabaseDispatcher) {
+        if (userId == null) {
+            database.instanceSettingsQueries.delete(OWNER_USER_ID_KEY)
+        } else {
+            database.instanceSettingsQueries.upsert(key = OWNER_USER_ID_KEY, value_ = userId.toString())
+        }
+    }
+
     /** "true" is on; everything else — including a null, an unknown, a typo — is off. */
     private fun String?.isTrue(): Boolean = this == "true"
+
+    private companion object {
+        /**
+         * The key ownership is stored under. Not an [InstanceSettingKey], because that
+         * enum is the closed set of *switches* the admin dialog toggles and this is a
+         * user id — see 33.sqm, which writes the same string.
+         */
+        const val OWNER_USER_ID_KEY = "owner_user_id"
+    }
 }

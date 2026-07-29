@@ -112,7 +112,6 @@ class UserIdentityTest {
     fun `a row found by address keeps its provenance and its own settings`(): Unit = runBlocking {
         val original = users.upsert(google("sub-1", "Alice", "alice@example.com"))
         users.setDisplayName(original.id, "Ali")
-        users.setMcpAllowed(original.id, true)
         users.setMcpEnabled(original.id, true)
 
         val returning = users.upsert(
@@ -121,7 +120,7 @@ class UserIdentityTest {
         assertEquals(AuthProvider.GOOGLE, returning.provider, "Provenance was rewritten by a later sign-in.")
         assertEquals("sub-1", returning.providerId, "The provider id was rewritten by a later sign-in.")
         assertEquals("Ali", returning.resolvedName, "The user's own display-name override was overwritten.")
-        assertTrue(returning.isSysAdmin, "The admin bit was recomputed on a repeat sign-in.")
+        assertTrue(returning.isInstanceAdmin, "The admin bit was recomputed on a repeat sign-in.")
         assertTrue(returning.canUseMcp, "Signing in again reset the MCP switches.")
         // The provider's own name is refreshed, which is the one thing that should
         // follow — it is theirs to change.
@@ -201,12 +200,12 @@ class UserIdentityTest {
     fun `the first account is the admin and the second is not`(): Unit = runBlocking {
         val first = users.upsert(google("sub-1", "First", "first@example.com"))
         val second = users.upsert(google("sub-2", "Second", "second@example.com"))
-        assertTrue(first.isSysAdmin, "The first account did not become the instance admin.")
-        assertFalse(second.isSysAdmin, "A second account became an admin too.")
+        assertTrue(first.isInstanceAdmin, "The first account did not become the instance admin.")
+        assertFalse(second.isInstanceAdmin, "A second account became an admin too.")
 
         // And signing in again does not recompute it in either direction.
-        assertTrue(users.upsert(google("sub-1", "First", "first@example.com")).isSysAdmin)
-        assertFalse(users.upsert(google("sub-2", "Second", "second@example.com")).isSysAdmin)
+        assertTrue(users.upsert(google("sub-1", "First", "first@example.com")).isInstanceAdmin)
+        assertFalse(users.upsert(google("sub-2", "Second", "second@example.com")).isInstanceAdmin)
     }
 
     // ── Uniqueness is real, at the storage layer ────────────────────────────

@@ -113,7 +113,7 @@ class FreshSignInStateTest {
     fun `an ordinary account is told nothing about impersonation`(): Unit = runBlocking {
         users.upsert(ProviderIdentity(AuthProvider.GOOGLE, "g-admin", "Admin", null))
         val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ada", "Ada", null))
-        assertFalse(ordinary.isSysAdmin, "The fixture's second account is somehow an admin.")
+        assertFalse(ordinary.isInstanceAdmin, "The fixture's second account is somehow an admin.")
 
         val state = freshSignInState(ordinary, users, config)
 

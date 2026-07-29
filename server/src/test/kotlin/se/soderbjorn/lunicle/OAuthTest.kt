@@ -607,7 +607,6 @@ class OAuthTest {
                 email = null,
             ),
         )
-        users.setMcpAllowed(user.id, true)
         users.setMcpEnabled(user.id, true)
         val client = clients.register(clientName, listOf("http://localhost:1/cb"), listOf("authorization_code"))
         return Fixture(user.id, client.clientId)

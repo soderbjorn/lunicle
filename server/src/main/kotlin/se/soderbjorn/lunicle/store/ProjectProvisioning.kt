@@ -28,31 +28,21 @@ interface ProjectProvisioning {
      * Create a project and everything it needs to be usable — its row and its five
      * seeded vocabularies.
      *
-     * [visibleToAllSignedIn] defaults false, the tier a project has until its owner
-     * opts into the middle read tier (LNL-138), so callers made before it need not
-     * mention it.
+     * Visibility is not a parameter, and not a column: who may see a project is its
+     * audience rows in `project_audience_roles` (LNL-191). A newly created project
+     * has none — it admits nobody but its owner until somebody says otherwise, which
+     * is the safe default and the one a fresh row has always had.
      *
      * @throws se.soderbjorn.lunicle.ProjectConflict if the name or the prefix is taken, or either is blank.
      */
-    suspend fun create(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean = false,
-    ): ProjectRecord
+    suspend fun create(name: String, namePrefix: String): ProjectRecord
 
     /**
      * Rename or re-configure a project.
      *
      * @throws se.soderbjorn.lunicle.ProjectConflict if the new name or prefix belongs to a different project.
      */
-    suspend fun update(
-        id: Long,
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
-    ): ProjectRecord
+    suspend fun update(id: Long, name: String, namePrefix: String): ProjectRecord
 
     /** Delete a project, everything in it, and every file behind any of it. */
     suspend fun delete(id: Long)

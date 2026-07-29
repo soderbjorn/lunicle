@@ -1285,7 +1285,7 @@ class McpTools(private val deps: BoardDependencies) {
      * for the general form of the rule. Every filter here has a matching refusal
      * in the tool itself.
      */
-    fun toolsFor(user: UserRecord): List<McpTool> = tools.filter { tool ->
+    suspend fun toolsFor(user: UserRecord): List<McpTool> = tools.filter { tool ->
         when (tool.name) {
             "send_email" -> deps.access.canSendAgentMail(user)
             // Whole-tool admin-only, exactly as send_email and the forum tools:
@@ -1317,7 +1317,7 @@ class McpTools(private val deps: BoardDependencies) {
      * caller offered a tool and not told what it is for gets a worse answer than
      * one told nothing about it.
      */
-    fun instructionsFor(user: UserRecord): String = buildString {
+    suspend fun instructionsFor(user: UserRecord): String = buildString {
         append(MCP_INSTRUCTIONS)
         if (deps.access.canSendAgentMail(user)) append("\n\n").append(MCP_AGENT_MAIL_INSTRUCTIONS)
         // [MCP_FORUM_INSTRUCTIONS] is appended for nobody since LNL-190 retired
@@ -1396,8 +1396,12 @@ class McpTools(private val deps: BoardDependencies) {
                             put("id", project.id)
                             put("name", project.name)
                             put("keyPrefix", project.namePrefix)
-                            put("isPublic", project.isPublic)
-                            put("visibleToAllSignedIn", project.visibleToAllSignedIn)
+                            // Retired pending tickets 3–5, which give the tool the
+                            // project's audience rows instead. Kept on the output,
+                            // reading false, so a running agent's parsing does not
+                            // break mid-epic. See ProjectSummary.
+                            put("isPublic", false)
+                            put("visibleToAllSignedIn", false)
                         },
                     )
                 }
@@ -2241,11 +2245,11 @@ class McpTools(private val deps: BoardDependencies) {
 
     // ── Sprints: the lifecycle a vocabulary has no verb for (LNL-35) ───────────
     //
-    // Gated on canAdministerProject, the same right the web routes ask — see
-    // SprintRoutes and the clarification on LNL-35: an agent gets its user's own
-    // sprint powers, no more and no less, so a project administrator's MCP can run
-    // sprints and an ordinary member's cannot. Per-project, so these are shown to
-    // everyone (like create_issue) and refused per project rather than hidden.
+    // Gated on the same right the web routes ask — see SprintRoutes and the
+    // clarification on LNL-35: an agent gets its user's own sprint powers, no more
+    // and no less. Since LNL-191 that right is a maintainer's rather than an
+    // administrator's. Per-project, so these are shown to everyone (like
+    // create_issue) and refused per project rather than hidden.
 
     /**
      * The project for a sprint-lifecycle write, or a refusal.
@@ -2257,11 +2261,11 @@ class McpTools(private val deps: BoardDependencies) {
     private suspend fun sprintAdminProject(user: UserRecord, arguments: JsonObject): Result<ProjectRecord> {
         val project = resolveProject(user, arguments)
             ?: return Result.failure(ResolutionRefusal("No such project."))
-        if (!deps.access.canAdministerProject(user, project.id)) {
+        if (!deps.access.canEditVocabulary(user, project.id, VocabularyKind.SPRINT)) {
             return Result.failure(
                 ResolutionRefusal(
-                    "You cannot configure sprints in ${project.name} — that is a project-administrator " +
-                        "action, and you do not administer this project. Nothing was changed.",
+                    "You cannot configure sprints in ${project.name} — that is a project-maintainer " +
+                        "action, and you do not maintain this project. Nothing was changed.",
                 ),
             )
         }
@@ -3557,7 +3561,7 @@ class McpTools(private val deps: BoardDependencies) {
      *    Not admin-only; labelling a row you are already allowed to edit is the
      *    ordinary case.
      */
-    private fun resolveAgentNameEdit(
+    private suspend fun resolveAgentNameEdit(
         user: UserRecord,
         arguments: JsonObject,
         current: String?,

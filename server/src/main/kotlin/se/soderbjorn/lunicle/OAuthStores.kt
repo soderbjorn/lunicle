@@ -706,8 +706,8 @@ class OAuthTokenStore(
             // and makes the drift impossible rather than merely unlikely.
             val record = userRecordOf(
                 owner.id, owner.provider, owner.provider_id, owner.provider_name,
-                owner.display_name, owner.email, owner.email_verified, owner.is_sys_admin,
-                owner.mcp_enabled, owner.mcp_allowed,
+                owner.display_name, owner.email, owner.email_verified, owner.kind,
+                owner.instance_role, owner.mcp_enabled,
             ) ?: return@transactionWithResult RefreshResult.Refused
             if (!record.canUseMcp) {
                 return@transactionWithResult RefreshResult.Refused

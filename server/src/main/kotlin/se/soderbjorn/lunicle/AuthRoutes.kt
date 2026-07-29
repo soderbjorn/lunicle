@@ -286,7 +286,7 @@ internal suspend fun freshSignInState(
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore? = null,
 ): SessionState {
     val base = sessionStateFor(user.toSignedInUser(), config, instanceSettingsOrDefault(instanceSettings))
-    if (!user.isSysAdmin) return base
+    if (!user.isInstanceAdmin) return base
     return base.copy(
         canImpersonate = true,
         impersonatableUsers = users.selectAll().map {
@@ -867,6 +867,11 @@ fun Route.authRoutes(
                 // ProviderIdentity.email. This is what sets `email_verified`.
                 email = redemption.address,
             ),
+            // Derived here rather than in the store, from the same function the
+            // startup stamp uses — see UserKind.forEmail. A code sign-in proves the
+            // address, so it is exactly as good a basis for the staff/member answer
+            // as Google's is.
+            kind = UserKind.forEmail(redemption.address, googleHostedDomain),
         )
         call.setSessionCookie(sessions.create(user.id))
         logger.info("Signed in with an e-mail code: ${user.resolvedName} (user ${user.id})")
@@ -893,7 +898,7 @@ fun Route.authRoutes(
             // Find-or-create the account, then point a session at it. On a
             // returning user this finds the row written the first time — which
             // is what reunites them with their issues, and their admin bit.
-            val user = users.upsert(identity)
+            val user = users.upsert(identity, UserKind.forEmail(identity.email, googleHostedDomain))
             call.setSessionCookie(sessions.create(user.id))
             logger.info("Signed in via Google: ${user.resolvedName} (user ${user.id})")
             call.respond(freshSignInState(user, users, config, instanceSettings))

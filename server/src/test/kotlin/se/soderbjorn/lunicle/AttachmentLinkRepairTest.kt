@@ -165,7 +165,7 @@ class AttachmentLinkRepairTest {
 
     private suspend fun seed(): Fixture {
         val user = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-tester", "Tester", null))
-        val project = projects.create("Lunamux", "LMX", isPublic = false)
+        val project = projects.create("Lunamux", "LMX")
         val (issueId, _) = issueRepository.createDraft(project.id, Author.Account(user.id))
         return Fixture(user.id, issueId)
     }

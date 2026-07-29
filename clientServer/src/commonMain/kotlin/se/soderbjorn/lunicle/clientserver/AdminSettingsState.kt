@@ -40,7 +40,7 @@ import kotlinx.serialization.Serializable
  *   what any of them mean. The **raw grant**, deliberately — see [canSeeProject]
  *   for why "can they see it" is not one of these keys.
  * @property canSeeProject whether this user can read this project *at all*, which
- *   is not the same as holding [RoleKeys.VIEW_PROJECT]. The server's
+ *   is not the same as holding [RoleKeys.VIEWER]. The server's
  *   [se.soderbjorn.lunicle.AccessControl.canReadProject] says yes to a public
  *   project for everyone, and to anyone holding any role here — so a user with no
  *   `view_project` grant, or no grant at all on a public board, still sees it. The

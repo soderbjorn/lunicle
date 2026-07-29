@@ -22,7 +22,7 @@
  *    wire, and a blank field on save keeps it. Both are asserted, because both are
  *    the difference between "a secret an owner set" and "a secret on every screen".
  *
- * @see Role.PROJECT_OWNER
+ * @see ProjectRole.OWNER
  * @see AccessControl.canOwnProject
  * @see AccessControl.canGrant
  */
@@ -85,7 +85,8 @@ class ProjectOwnerTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -155,7 +156,7 @@ class ProjectOwnerTest {
     fun `an owner promotes an administrator and another owner`(): Unit = runBlocking {
         val f = seed()
         withRoutes { client ->
-            listOf(Role.PROJECT_ADMIN, Role.PROJECT_OWNER).forEach { role ->
+            listOf(ProjectRole.ADMIN, ProjectRole.OWNER).forEach { role ->
                 val response = client.post("/api/projects/${f.projectId}/roles") {
                     cookie(SESSION_COOKIE, f.ownerCookie)
                     contentType(ContentType.Application.Json)
@@ -164,8 +165,9 @@ class ProjectOwnerTest {
                 assertEquals(HttpStatusCode.OK, response.status, "An owner could not grant ${role.key}.")
             }
         }
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN))
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_OWNER))
+        // One rung per person, so the second grant replaces the first rather than
+        // adding to it — the owner rung is where they end up, and it contains admin.
+        assertEquals(ProjectRole.OWNER, roles.roleFor(f.outsiderId, f.projectId))
     }
 
     /** The administrator's tier still refuses the senior roles — the escalation stops at the owner. */
@@ -178,11 +180,11 @@ class ProjectOwnerTest {
                 client.post("/api/projects/${f.projectId}/roles") {
                     cookie(SESSION_COOKIE, f.projectAdminCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(RoleGrant(f.outsiderId, Role.PROJECT_ADMIN.key, isGranted = true))
+                    setBody(RoleGrant(f.outsiderId, ProjectRole.ADMIN.key, isGranted = true))
                 }.status,
             )
         }
-        assertFalse(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN))
+        assertFalse((roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.ADMIN))
     }
 
     // ── Per-project ──────────────────────────────────────────────────────────
@@ -326,7 +328,6 @@ class ProjectOwnerTest {
     )
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         // The first account is the system administrator, who owns everything by the
         // flag; this fixture's owner is deliberately NOT that account, so the tests
         // are about the role rather than about isSysAdmin short-circuiting.
@@ -334,19 +335,25 @@ class ProjectOwnerTest {
         val owner = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-owner", "Ona", "ona@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isSysAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(owner.isSysAdmin, "The fixture's owner is a system administrator, which defeats the point.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the system administrator.")
+        assertFalse(owner.isInstanceAdmin, "The fixture's owner is a system administrator, which defeats the point.")
 
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        val other = projectRepository.create("Elsewhere", "ELS", isPublic = false)
-        roles.grant(owner.id, project.id, Role.PROJECT_OWNER)
-        roles.grant(projectAdmin.id, project.id, Role.PROJECT_ADMIN)
+        val project = projectRepository.create("Lunamux", "LMX")
+        val other = projectRepository.create("Elsewhere", "ELS")
+        roles.setRole(owner.id, project.id, ProjectRole.OWNER)
+        roles.setRole(projectAdmin.id, project.id, ProjectRole.ADMIN)
         // Bare visibility elsewhere, so the owner can see the other project and its
         // refusals are about ownership rather than about the project being invisible
         // (LNL-57) — the same care ProjectAdminTest's fixture takes.
-        roles.grant(owner.id, other.id, Role.VIEW_PROJECT)
-        roles.grant(outsider.id, project.id, Role.VIEW_PROJECT)
+        roles.setRole(owner.id, other.id, ProjectRole.VIEWER)
+        roles.setRole(outsider.id, project.id, ProjectRole.VIEWER)
 
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(
             ownerId = owner.id,
             ownerCookie = sessions.create(owner.id),
@@ -383,7 +390,7 @@ class ProjectOwnerTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         conversations = ConversationRepository(
             ConversationStore(database), MessageStore(database), attachments, attachmentStore,
         ),

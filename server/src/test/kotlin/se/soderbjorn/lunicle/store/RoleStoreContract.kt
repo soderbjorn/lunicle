@@ -1,173 +1,250 @@
 /**
- * The behaviour every [RoleStore] implementation must exhibit.
+ * The behaviour every [RoleStore] implementation must exhibit (LNL-191).
  *
- * The semantics pinned here: [RoleStore.seed] reports the whole [Role] vocabulary
- * and is idempotent; a fresh user holds nothing; [RoleStore.grant] is idempotent
- * and [RoleStore.revoke] takes exactly one role away, leaving the rest;
- * [RoleStore.hasRole] answers a single (user, project, role) grant while
- * [RoleStore.isMember] answers "holds anything here"; [RoleStore.memberIds],
- * [RoleStore.rolesFor] and [RoleStore.grantsForProject] read the grants as sets and
- * maps; and — the parity-critical part — grants are scoped strictly to their own
- * user and their own project.
+ * The semantics pinned here: a fresh user holds nothing and a fresh project admits
+ * nobody; [RoleStore.setRole] is single-valued and idempotent, so a person has one
+ * rung per project and moving them rewrites it rather than adding a second; null
+ * clears; [RoleStore.roleFor], [RoleStore.rolesForUser], [RoleStore.rolesForProject]
+ * and [RoleStore.memberIds] read the own rows from either direction;
+ * [RoleStore.audienceRoles] and [RoleStore.setAudienceRole] read and write at most
+ * one row per [Audience]; and — the parity-critical part — rows are scoped strictly
+ * to their own user, their own project, and their own audience.
  *
- * Every grant test seeds first, because the SQLite reference's `grant` resolves a
- * `role_key` against the seeded `roles` table; the Firestore backend stores the key
- * directly and does not need it, but seeding is idempotent and harmless there.
+ * ── The max rule is tested here, and it is not the store's ──────────────────
+ *
+ * `effective = max(audience, own row)` lives in
+ * [se.soderbjorn.lunicle.AccessControl] and nowhere else, so what this suite pins
+ * is the *ingredients*: that the two tables are independent, that neither write
+ * disturbs the other, and that clearing an own row leaves an audience row standing.
+ * The last of those is the storage-level half of "an own row can raise somebody and
+ * never cut them below their audience" — a backend where clearing a row also
+ * removed somebody from their audience would make that rule unenforceable however
+ * carefully AccessControl was written. The rule itself is exercised against the
+ * ladder in AccessControlLadderTest.
  *
  * A subclass per backend supplies the store and a way to make a user and a project
- * a grant can reference — real rows on SQLite (foreign keys), synthetic ids on
+ * a row can reference — real rows on SQLite (foreign keys), synthetic ids on
  * Firestore (a document store validates none).
  */
 package se.soderbjorn.lunicle.store
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
-import se.soderbjorn.lunicle.Role
+import se.soderbjorn.lunicle.Audience
+import se.soderbjorn.lunicle.ProjectRole
 
 abstract class RoleStoreContract {
     protected abstract val store: RoleStore
 
-    /** A fresh user a grant can reference, returning their id. */
+    /** A fresh user a row can reference, returning their id. */
     protected abstract suspend fun newUser(): Long
 
-    /** A fresh project a grant can reference, returning its id. */
+    /** A fresh project a row can reference, returning its id. */
     protected abstract suspend fun newProject(): Long
 
-    @Test
-    fun `seed reports the whole role vocabulary and is idempotent`() = runBlocking {
-        assertEquals(Role.entries.size, store.seed(), "seed reports how many roles the instance has")
-        assertEquals(Role.entries.size, store.seed(), "and running it again reports the same, changing nothing")
-    }
+    // ── Own rows ─────────────────────────────────────────────────────────────
 
     @Test
-    fun `a fresh user holds nothing`() = runBlocking {
-        store.seed()
+    fun `a fresh user holds nothing and a fresh project admits nobody`() = runBlocking {
         val user = newUser()
         val project = newProject()
-        assertFalse(store.hasRole(user, project, Role.CREATE_ISSUE))
-        assertFalse(store.isMember(user, project))
-        assertTrue(store.rolesFor(user, project).isEmpty())
+        assertNull(store.roleFor(user, project))
+        assertTrue(store.rolesForUser(user).isEmpty())
+        assertTrue(store.rolesForProject(project).isEmpty())
         assertTrue(store.memberIds(project).isEmpty())
-        assertTrue(store.grantsForProject(project).isEmpty())
+        assertTrue(store.audienceRoles(project).isEmpty())
     }
 
     @Test
-    fun `grant then hasRole reports the granted role and not another`() = runBlocking {
-        store.seed()
+    fun `setRole then roleFor reports the rung`() = runBlocking {
         val user = newUser()
         val project = newProject()
-        store.grant(user, project, Role.CREATE_ISSUE)
-        assertTrue(store.hasRole(user, project, Role.CREATE_ISSUE), "the granted role is held")
-        assertFalse(store.hasRole(user, project, Role.COMMENT_ON_ISSUE), "an ungranted role is not")
+        store.setRole(user, project, ProjectRole.CONTRIBUTOR)
+        assertEquals(ProjectRole.CONTRIBUTOR, store.roleFor(user, project))
     }
 
     @Test
-    fun `grant is idempotent`() = runBlocking {
-        store.seed()
+    fun `setRole is idempotent`() = runBlocking {
         val user = newUser()
         val project = newProject()
-        store.grant(user, project, Role.CREATE_ISSUE)
-        store.grant(user, project, Role.CREATE_ISSUE)
-        assertEquals(setOf(Role.CREATE_ISSUE), store.rolesFor(user, project), "granting twice holds one role")
+        store.setRole(user, project, ProjectRole.CONTRIBUTOR)
+        store.setRole(user, project, ProjectRole.CONTRIBUTOR)
+        assertEquals(mapOf(user to ProjectRole.CONTRIBUTOR), store.rolesForProject(project))
     }
 
+    /** A person has ONE rung per project — the whole point of the shape. */
     @Test
-    fun `isMember reflects any grant at all`() = runBlocking {
-        store.seed()
+    fun `setRole replaces the rung rather than adding a second`() = runBlocking {
         val user = newUser()
         val project = newProject()
-        assertFalse(store.isMember(user, project))
-        store.grant(user, project, Role.VIEW_PROJECT)
-        assertTrue(store.isMember(user, project), "holding any role is membership")
+        store.setRole(user, project, ProjectRole.CONTRIBUTOR)
+        store.setRole(user, project, ProjectRole.ADMIN)
+        assertEquals(ProjectRole.ADMIN, store.roleFor(user, project))
+        assertEquals(mapOf(user to ProjectRole.ADMIN), store.rolesForProject(project))
+        assertEquals(setOf(user), store.memberIds(project), "still one member, not two rows")
+    }
+
+    /** Demotion is a write like any other: nothing here refuses to go down a rung. */
+    @Test
+    fun `setRole moves somebody down as readily as up`() = runBlocking {
+        val user = newUser()
+        val project = newProject()
+        store.setRole(user, project, ProjectRole.OWNER)
+        store.setRole(user, project, ProjectRole.VIEWER)
+        assertEquals(ProjectRole.VIEWER, store.roleFor(user, project))
     }
 
     @Test
-    fun `memberIds returns everyone holding anything, and nobody who holds nothing`() = runBlocking {
-        store.seed()
+    fun `a null rung removes the row, and doing it twice is not an error`() = runBlocking {
+        val user = newUser()
+        val project = newProject()
+        store.setRole(user, project, ProjectRole.MAINTAINER)
+        store.setRole(user, project, null)
+        assertNull(store.roleFor(user, project))
+        assertTrue(store.memberIds(project).isEmpty())
+        store.setRole(user, project, null)
+        assertNull(store.roleFor(user, project), "clearing what nobody holds is not an error")
+    }
+
+    @Test
+    fun `rolesForUser reads one person's rungs across projects in one go`() = runBlocking {
+        val user = newUser()
+        val here = newProject()
+        val there = newProject()
+        val elsewhere = newProject()
+        store.setRole(user, here, ProjectRole.VIEWER)
+        store.setRole(user, there, ProjectRole.ADMIN)
+        assertEquals(mapOf(here to ProjectRole.VIEWER, there to ProjectRole.ADMIN), store.rolesForUser(user))
+        assertTrue(elsewhere !in store.rolesForUser(user).keys)
+    }
+
+    @Test
+    fun `rolesForProject and memberIds read one project's rows`() = runBlocking {
         val alice = newUser()
         val bob = newUser()
         val carol = newUser()
         val project = newProject()
-        store.grant(alice, project, Role.CREATE_ISSUE)
-        store.grant(bob, project, Role.VIEW_PROJECT)
-        assertEquals(setOf(alice, bob), store.memberIds(project), "granted users are members; carol is not")
-        assertFalse(carol in store.memberIds(project))
-    }
-
-    @Test
-    fun `rolesFor returns every role a user holds in a project`() = runBlocking {
-        store.seed()
-        val user = newUser()
-        val project = newProject()
-        store.grant(user, project, Role.CREATE_ISSUE)
-        store.grant(user, project, Role.COMMENT_ON_ISSUE)
-        assertEquals(setOf(Role.CREATE_ISSUE, Role.COMMENT_ON_ISSUE), store.rolesFor(user, project))
-    }
-
-    @Test
-    fun `grantsForProject maps each user to the roles they hold`() = runBlocking {
-        store.seed()
-        val alice = newUser()
-        val bob = newUser()
-        val project = newProject()
-        store.grant(alice, project, Role.CREATE_ISSUE)
-        store.grant(alice, project, Role.COMMENT_ON_ISSUE)
-        store.grant(bob, project, Role.VIEW_PROJECT)
+        store.setRole(alice, project, ProjectRole.CONTRIBUTOR)
+        store.setRole(bob, project, ProjectRole.VIEWER)
         assertEquals(
-            mapOf(
-                alice to setOf(Role.CREATE_ISSUE, Role.COMMENT_ON_ISSUE),
-                bob to setOf(Role.VIEW_PROJECT),
-            ),
-            store.grantsForProject(project),
+            mapOf(alice to ProjectRole.CONTRIBUTOR, bob to ProjectRole.VIEWER),
+            store.rolesForProject(project),
         )
+        assertEquals(setOf(alice, bob), store.memberIds(project))
+        assertTrue(carol !in store.memberIds(project))
     }
 
     @Test
-    fun `revoke removes one role and leaves the rest`() = runBlocking {
-        store.seed()
-        val user = newUser()
-        val project = newProject()
-        store.grant(user, project, Role.CREATE_ISSUE)
-        store.grant(user, project, Role.COMMENT_ON_ISSUE)
-        store.revoke(user, project, Role.CREATE_ISSUE)
-        assertFalse(store.hasRole(user, project, Role.CREATE_ISSUE), "the revoked role is gone")
-        assertTrue(store.hasRole(user, project, Role.COMMENT_ON_ISSUE), "the other role stays")
-        assertTrue(store.isMember(user, project), "and they are still a member")
-    }
-
-    @Test
-    fun `revoke is idempotent`() = runBlocking {
-        store.seed()
-        val user = newUser()
-        val project = newProject()
-        store.revoke(user, project, Role.CREATE_ISSUE)
-        assertFalse(store.hasRole(user, project, Role.CREATE_ISSUE), "revoking what nobody holds is not an error")
-    }
-
-    @Test
-    fun `grants are scoped to their project`() = runBlocking {
-        store.seed()
+    fun `rows are scoped to their project`() = runBlocking {
         val user = newUser()
         val here = newProject()
         val elsewhere = newProject()
-        store.grant(user, here, Role.CREATE_ISSUE)
-        assertTrue(store.hasRole(user, here, Role.CREATE_ISSUE))
-        assertFalse(store.hasRole(user, elsewhere, Role.CREATE_ISSUE), "a grant in one project does not reach another")
-        assertFalse(store.isMember(user, elsewhere))
+        store.setRole(user, here, ProjectRole.ADMIN)
+        assertEquals(ProjectRole.ADMIN, store.roleFor(user, here))
+        assertNull(store.roleFor(user, elsewhere), "a rung in one project does not reach another")
         assertTrue(store.memberIds(elsewhere).isEmpty())
     }
 
     @Test
-    fun `grants are scoped to their user`() = runBlocking {
-        store.seed()
+    fun `rows are scoped to their user`() = runBlocking {
         val alice = newUser()
         val bob = newUser()
         val project = newProject()
-        store.grant(alice, project, Role.CREATE_ISSUE)
-        assertFalse(store.hasRole(bob, project, Role.CREATE_ISSUE), "alice's grant is not bob's")
-        assertTrue(store.rolesFor(bob, project).isEmpty())
+        store.setRole(alice, project, ProjectRole.ADMIN)
+        assertNull(store.roleFor(bob, project), "alice's rung is not bob's")
+        assertTrue(store.rolesForUser(bob).isEmpty())
+    }
+
+    // ── Audience rows ────────────────────────────────────────────────────────
+
+    @Test
+    fun `setAudienceRole then audienceRoles reports the rung`() = runBlocking {
+        val project = newProject()
+        store.setAudienceRole(project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        assertEquals(mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR), store.audienceRoles(project))
+    }
+
+    @Test
+    fun `a project may admit all three audiences at once, at different rungs`() = runBlocking {
+        val project = newProject()
+        store.setAudienceRole(project, Audience.GUEST, ProjectRole.VIEWER)
+        store.setAudienceRole(project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        store.setAudienceRole(project, Audience.STAFF, ProjectRole.MAINTAINER)
+        assertEquals(
+            mapOf(
+                Audience.GUEST to ProjectRole.VIEWER,
+                Audience.MEMBER to ProjectRole.CONTRIBUTOR,
+                Audience.STAFF to ProjectRole.MAINTAINER,
+            ),
+            store.audienceRoles(project),
+        )
+    }
+
+    @Test
+    fun `setAudienceRole replaces one audience's rung and leaves the others`() = runBlocking {
+        val project = newProject()
+        store.setAudienceRole(project, Audience.GUEST, ProjectRole.VIEWER)
+        store.setAudienceRole(project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        store.setAudienceRole(project, Audience.MEMBER, ProjectRole.MAINTAINER)
+        assertEquals(
+            mapOf(Audience.GUEST to ProjectRole.VIEWER, Audience.MEMBER to ProjectRole.MAINTAINER),
+            store.audienceRoles(project),
+        )
+    }
+
+    @Test
+    fun `a null rung shuts an audience out again, and doing it twice is not an error`() = runBlocking {
+        val project = newProject()
+        store.setAudienceRole(project, Audience.GUEST, ProjectRole.VIEWER)
+        store.setAudienceRole(project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        store.setAudienceRole(project, Audience.GUEST, null)
+        assertEquals(mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR), store.audienceRoles(project))
+        store.setAudienceRole(project, Audience.GUEST, null)
+        assertEquals(mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR), store.audienceRoles(project))
+    }
+
+    @Test
+    fun `audience rows are scoped to their project`() = runBlocking {
+        val here = newProject()
+        val elsewhere = newProject()
+        store.setAudienceRole(here, Audience.GUEST, ProjectRole.VIEWER)
+        assertTrue(store.audienceRoles(elsewhere).isEmpty(), "one project's audience is not another's")
+    }
+
+    // ── The two tables are independent ───────────────────────────────────────
+
+    /**
+     * The storage-level half of "an own row never cuts somebody below their
+     * audience": clearing the row leaves the audience standing, so there is nothing
+     * a write here can do that would strand somebody outside a room the project
+     * still admits them to. See the class preamble.
+     */
+    @Test
+    fun `clearing an own row leaves the audience row standing`() = runBlocking {
+        val user = newUser()
+        val project = newProject()
+        store.setAudienceRole(project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        store.setRole(user, project, ProjectRole.ADMIN)
+        store.setRole(user, project, null)
+        assertNull(store.roleFor(user, project))
+        assertEquals(
+            mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR),
+            store.audienceRoles(project),
+            "shutting one person's row does not shut the audience they were also in",
+        )
+    }
+
+    @Test
+    fun `shutting an audience out leaves own rows standing`() = runBlocking {
+        val user = newUser()
+        val project = newProject()
+        store.setAudienceRole(project, Audience.GUEST, ProjectRole.VIEWER)
+        store.setRole(user, project, ProjectRole.MAINTAINER)
+        store.setAudienceRole(project, Audience.GUEST, null)
+        assertTrue(store.audienceRoles(project).isEmpty())
+        assertEquals(ProjectRole.MAINTAINER, store.roleFor(user, project), "the named person keeps their rung")
     }
 }

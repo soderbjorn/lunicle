@@ -81,12 +81,11 @@ class InstanceSettingsTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
-
     // The real SQLite-backed store, shared by both route bundles below — the whole
     // point of the file is that a switch set through the admin route is the same
     // switch the session and project routes read.
     private val instanceSettings = InstanceSettingsStore(database)
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -215,7 +214,14 @@ class InstanceSettingsTest {
                 }.status,
             )
         }
-        assertEquals(InstanceSettings(), instanceSettings.current(), "A signed-out write changed a switch.")
+        // Only the switches: the fixture seats an instance owner, as boot does, so
+        // `current()` is never the all-defaults value any more.
+        val after = instanceSettings.current()
+        assertEquals(
+            InstanceSettings(ownerUserId = after.ownerUserId),
+            after,
+            "A signed-out write changed a switch.",
+        )
     }
 
     /** The admin sets both switches, and the directory reports both back. */
@@ -239,9 +245,10 @@ class InstanceSettingsTest {
             assertTrue(after.requireSignIn, "The first switch did not survive the second write.")
             assertTrue(after.anyoneCanCreateProject, "The second switch was not reported.")
         }
+        val stored = instanceSettings.current()
         assertEquals(
-            InstanceSettings(requireSignIn = true, anyoneCanCreateProject = true),
-            instanceSettings.current(),
+            InstanceSettings(requireSignIn = true, anyoneCanCreateProject = true, ownerUserId = stored.ownerUserId),
+            stored,
         )
     }
 
@@ -361,9 +368,14 @@ class InstanceSettingsTest {
     private class Fixture(val adminId: Long, val projectId: Long)
 
     private suspend fun seed(name: String = "Lunamux", prefix: String = "LMX"): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", null))
-        val project = projectRepository.create(name, prefix, isPublic = false)
+        val project = projectRepository.create(name, prefix)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -401,7 +413,7 @@ class InstanceSettingsTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         conversations = ConversationRepository(
             ConversationStore(database), MessageStore(database), attachments, attachmentStore,
         ),

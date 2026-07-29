@@ -31,4 +31,8 @@ class InMemoryInstanceSettingsStore(
             InstanceSettingKey.HIDE_DISPLAY_NAME -> settings.copy(hideDisplayName = isEnabled)
         }
     }
+
+    override suspend fun setOwnerUserId(userId: Long?) {
+        settings = settings.copy(ownerUserId = userId)
+    }
 }

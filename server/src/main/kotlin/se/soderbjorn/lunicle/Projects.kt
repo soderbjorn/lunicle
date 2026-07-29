@@ -39,21 +39,17 @@ internal const val PROJECT_FORUM_FEATURES_ENABLED = false
  *
  * @property namePrefix the "FOO" in FOO-123. Unique across all projects, so a
  *   ticket reference in a commit message names exactly one issue.
- * @property isPublic whether a caller with no session at all may read this
- *   project's issues. The one rule that says yes to nobody; see
- *   [AccessControl.canReadProject].
- * @property visibleToAllSignedIn whether any signed-in account may read this
- *   project — the middle read tier between members-only and [isPublic] (LNL-138).
- *   Grants reading only; every write gate stays membership-scoped, so a project
- *   with this on is read-only to the signed-in users it admits. ORs with [isPublic]
- *   in [AccessControl.canReadProject], so "public" already implies it.
+ *
+ * `isPublic` and `visibleToAllSignedIn` were here and are gone (LNL-191). Who may
+ * see a project is no longer a fact about the project row at all: it is the
+ * project's audience rows, which live in `project_audience_roles` and say at what
+ * *rung* each audience arrives rather than merely that it may look. See Roles.sq
+ * and [AccessControl.effectiveRole].
  */
 data class ProjectRecord(
     val id: Long,
     val name: String,
     val namePrefix: String,
-    val isPublic: Boolean,
-    val visibleToAllSignedIn: Boolean,
     /**
      * Whether this project offers a discussion forum and private messages —
      * independent per-project switches a project administrator sets (LNL-96).
@@ -178,8 +174,6 @@ class ProjectStore(
     override suspend fun insert(
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
     ): ProjectRecord =
         withContext(DatabaseDispatcher) {
             // Appended to the end of the list, like every other insert path — see
@@ -189,8 +183,6 @@ class ProjectStore(
                 .insert(
                     name,
                     namePrefix,
-                    if (isPublic) 1L else 0L,
-                    if (visibleToAllSignedIn) 1L else 0L,
                     position,
                     now(),
                 )
@@ -199,8 +191,6 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
                 // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
                 PROJECT_FORUM_FEATURES_ENABLED,
                 PROJECT_FORUM_FEATURES_ENABLED,
@@ -216,17 +206,9 @@ class ProjectStore(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
     ): Unit =
         withContext(DatabaseDispatcher) {
-            database.projectsQueries.update(
-                name,
-                namePrefix,
-                if (isPublic) 1L else 0L,
-                if (visibleToAllSignedIn) 1L else 0L,
-                id,
-            )
+            database.projectsQueries.update(name, namePrefix, id)
         }
 
     /**
@@ -306,8 +288,6 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
                 // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
                 PROJECT_FORUM_FEATURES_ENABLED,
                 PROJECT_FORUM_FEATURES_ENABLED,
@@ -326,8 +306,6 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
                 // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
                 PROJECT_FORUM_FEATURES_ENABLED,
                 PROJECT_FORUM_FEATURES_ENABLED,
@@ -352,8 +330,6 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
                 // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
                 PROJECT_FORUM_FEATURES_ENABLED,
                 PROJECT_FORUM_FEATURES_ENABLED,

@@ -1862,7 +1862,7 @@ class MainScreenBackingViewModel(
                     resolutions = board.resolutions,
                     versions = board.versions,
                     requireFixedVersion = board.project.requireFixedVersionOnResolve,
-                    canManageVersions = board.permissions.canMutateProject,
+                    canManageVersions = board.permissions.canManageSprintsAndVersions,
                 ),
             )
             return

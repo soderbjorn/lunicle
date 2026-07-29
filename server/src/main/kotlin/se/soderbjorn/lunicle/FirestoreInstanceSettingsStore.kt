@@ -47,6 +47,11 @@ class FirestoreInstanceSettingsStore(
             requireSignIn = values[InstanceSettingKey.REQUIRE_SIGN_IN.storageKey] == true,
             anyoneCanCreateProject = values[InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT.storageKey] == true,
             hideDisplayName = values[InstanceSettingKey.HIDE_DISPLAY_NAME.storageKey] == true,
+            // Not a switch (LNL-191): a user id, stored as a number beside the
+            // booleans in the same map. Anything that is not a number — including the
+            // absent case — reads as "nobody owns this instance", which withholds
+            // authority rather than handing it to whoever has id 0.
+            ownerUserId = (values[OWNER_USER_ID_KEY] as? Number)?.toLong(),
         )
     }
 
@@ -58,9 +63,19 @@ class FirestoreInstanceSettingsStore(
         doc.set(mapOf(VALUES to mapOf(key.storageKey to isEnabled)), SetOptions.merge()).await()
     }
 
+    override suspend fun setOwnerUserId(userId: Long?) {
+        // The same single-entry merge as `set`. A null writes a null rather than
+        // deleting the key, which reads back identically through the `as? Number`
+        // above — one write path instead of a delete branch that only Firestore has.
+        doc.set(mapOf(VALUES to mapOf(OWNER_USER_ID_KEY to userId)), SetOptions.merge()).await()
+    }
+
     private companion object {
         const val COLLECTION = "instanceSettings"
         const val DOCUMENT = "singleton"
         const val VALUES = "values"
+
+        /** Ownership's key in the map — the same string 33.sqm writes on the SQLite side. */
+        const val OWNER_USER_ID_KEY = "owner_user_id"
     }
 }

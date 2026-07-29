@@ -72,15 +72,14 @@ interface FirestoreMigration {
 /**
  * The ordered chain of Firestore migrations — the analog of the `.sqm` directory.
  *
- * Empty today: the Firestore stores (LNL-111) write the current document shape
- * directly, so there is no prior shape to migrate yet. The first breaking change
- * to a Firestore collection appends its step here, and the runner picks it up on
- * the next boot of the Firestore backend. Appending is the *only* correct edit —
- * a released step's [FirestoreMigration.version] is frozen the moment a production
- * database has checkpointed past it, exactly as a released `.sqm` is frozen.
+ * One step today: the LNL-111 stores wrote the then-current document shape
+ * directly, so the permission rework is the first prior shape there has been to
+ * move. Appending is the *only* correct edit — a released step's
+ * [FirestoreMigration.version] is frozen the moment a production database has
+ * checkpointed past it, exactly as a released `.sqm` is frozen.
  */
 object FirestoreMigrations {
-    val ALL: List<FirestoreMigration> = emptyList()
+    val ALL: List<FirestoreMigration> = listOf(FirestorePermissionModelMigration())
 }
 
 /**

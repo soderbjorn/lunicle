@@ -347,7 +347,7 @@ internal suspend fun ApplicationCall.resolveCaller(
     val impersonation = impersonations.current(sessionId)
         ?: return Caller(effective = real, real = real)
 
-    if (!real.isSysAdmin) {
+    if (!real.isInstanceAdmin) {
         // Demoted while impersonating. Drop it and be themselves.
         impersonations.stop(sessionId)
         return Caller(effective = real, real = real)
@@ -440,9 +440,10 @@ internal suspend fun BoardDependencies.authorNames(authors: Collection<Author>):
  *   [UserStore.selectAll] documents for the impersonation menu.
  */
 internal suspend fun BoardDependencies.assignableUsers(projectId: Long): List<UserRecord> {
-    val grants = roles.grantsForProject(projectId)
+    val rungs = roles.rolesForProject(projectId)
+    val audiences = roles.audienceRoles(projectId)
     return users.selectAll().filter { candidate ->
-        candidate.isSysAdmin || Role.BE_ASSIGNED_ISSUE in grants[candidate.id].orEmpty()
+        candidate.effectiveRungAmong(rungs, audiences)?.atLeast(ProjectRole.CONTRIBUTOR) == true
     }
 }
 
@@ -484,10 +485,49 @@ internal suspend fun mentionableUsersIn(
     users: se.soderbjorn.lunicle.store.UserStore,
     roles: se.soderbjorn.lunicle.store.RoleStore,
 ): List<UserRecord> {
-    val grants = roles.grantsForProject(projectId)
+    val rungs = roles.rolesForProject(projectId)
+    val audiences = roles.audienceRoles(projectId)
     return users.selectAll().filter { candidate ->
-        candidate.isSysAdmin || grants[candidate.id].orEmpty().isNotEmpty()
+        candidate.effectiveRungAmong(rungs, audiences) != null
     }
+}
+
+/**
+ * [AccessControl.effectiveRole]'s rule, applied to a whole directory from two maps
+ * already in hand.
+ *
+ * ── Why a second spelling of the rule exists at all ─────────────────────────
+ *
+ * Every *decision* goes through [AccessControl], one caller at a time, from the
+ * session — that is this codebase's whole permission story and nothing here
+ * changes it. The two callers above are not decisions: they build a **set** for a
+ * dropdown, over every account on the instance, and asking `effectiveRole` per row
+ * would be two queries per account to compute what two queries already know.
+ *
+ * So this is the same `max(audience, own row)` in the same order, over maps rather
+ * than over reads, and it is written directly beneath its callers rather than
+ * hidden in a helpers file so that a change to the rule and a change to this are
+ * the same edit. It is deliberately *not* exported: nothing outside this file may
+ * reach it, and nothing may decide a write with it.
+ *
+ * The instance owner is not consulted here, and does not need to be: an owner
+ * reaches [ProjectRole.OWNER] everywhere, and the only thing these two sets are
+ * used for is offering names in a picker — where an administrator already appears
+ * by the first clause and the owner appears by whichever of the two routes seats
+ * them. See ProjectAudience, which does read ownership, because its answer is a
+ * *membership* claim rather than a picker.
+ */
+private fun UserRecord.effectiveRungAmong(
+    rungs: Map<Long, ProjectRole>,
+    audiences: Map<Audience, ProjectRole>,
+): ProjectRole? {
+    if (storedInstanceRole.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
+    val fromAudience = audiences.entries
+        .filter { storedInstanceRole.atLeast(it.key.instanceRole) }
+        .maxByOrNull { it.value.rank }
+        ?.value
+    val own = rungs[id]
+    return listOfNotNull(fromAudience, own).maxByOrNull { it.rank }
 }
 
 /**
@@ -708,7 +748,7 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             return@post
         }
         try {
-            val created = deps.projectRepository.create(body.name, body.namePrefix, body.isPublic, body.visibleToAllSignedIn)
+            val created = deps.projectRepository.create(body.name, body.namePrefix)
             logger.info("Project created: ${created.name} (${created.namePrefix}) by user ${user?.id}")
             call.respond(created.toSummary())
         } catch (conflict: ProjectConflict) {
@@ -747,7 +787,7 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
         // "keep the stored token" rather than clearing it. See parseRepositoryConfig.
         val repositoryConfig = call.parseRepositoryConfig(body, deps.projects.repositoryConfig(id)) ?: return@put
         try {
-            val updated = deps.projectRepository.update(id, body.name, body.namePrefix, body.isPublic, body.visibleToAllSignedIn)
+            val updated = deps.projectRepository.update(id, body.name, body.namePrefix)
             deps.projects.setRepositoryConfig(id, repositoryConfig)
             call.respond(updated.toSummary())
         } catch (conflict: ProjectConflict) {
@@ -2349,8 +2389,11 @@ private fun ProjectRecord.toSummary(): ProjectSummary =
         id = id,
         name = name,
         namePrefix = namePrefix,
-        isPublic = isPublic,
-        visibleToAllSignedIn = visibleToAllSignedIn,
+        // Retired on the wire pending tickets 3–5, which rebuild the dialog around
+        // audience rows. Sent false rather than removed so a client that still reads
+        // the fields keeps deserialising. See ProjectSummary.
+        isPublic = false,
+        visibleToAllSignedIn = false,
         discussionsEnabled = discussionsEnabled,
         messagesEnabled = messagesEnabled,
         requireLabel = requireLabel,
@@ -2363,6 +2406,7 @@ private fun ProjectPermissions.toView(): ProjectPermissionsView = ProjectPermiss
     canCreateIssue = canCreateIssue,
     canComment = canComment,
     canChangeUnownedIssues = canChangeUnownedIssues,
+    canManageSprintsAndVersions = canManageSprintsAndVersions,
     canMutateProject = canMutateProject,
     canMutateProjectIdentity = canMutateProjectIdentity,
     canBeAssigned = canBeAssigned,

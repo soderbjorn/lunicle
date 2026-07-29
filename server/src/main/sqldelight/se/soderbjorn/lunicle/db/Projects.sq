@@ -20,24 +20,24 @@ CREATE TABLE projects (
     -- Upper-cased server-side by convention.
     name_prefix TEXT NOT NULL COLLATE NOCASE UNIQUE,
 
-    -- The one read gate that says yes to a caller with no session at all.
-    -- Enforced in AccessControl.canReadProject, never in the browser.
-    is_public INTEGER NOT NULL DEFAULT 0,
-
-    -- The middle read tier (LNL-138): yes to any signed-in account, no to a caller
-    -- with no session. `is_public` says yes to a stranger; this says yes to
-    -- everyone with a login and nobody without one, so a project can be browsable
-    -- across the instance without being exposed to the anonymous web. It grants
-    -- reading only — every write gate stays membership-scoped, so a project turned
-    -- on here is read-only to the signed-in users it newly admits. Enforced in
-    -- AccessControl.canReadProject beside is_public, never in the browser.
+    -- ── Where `is_public` and `visible_to_all_signed_in` went (LNL-191) ──────
     --
-    -- Independent of is_public rather than an enum replacing it: a fresh row
-    -- defaults 0 like is_public, and the two OR together in the read rule, so
-    -- turning on "public" already implies signed-in visibility and this adds the
-    -- signed-in-only middle. Default 0 — the tier every project had before this
-    -- column existed. See 30.sqm, which adds it to an existing volume.
-    visible_to_all_signed_in INTEGER NOT NULL DEFAULT 0,
+    -- Both columns lived here until 33.sqm dropped them, and this paragraph is
+    -- their forwarding address because a project's visibility is the first thing
+    -- anybody looks for in this table.
+    --
+    -- They were two booleans that could each say one thing: "readable by a caller
+    -- with no session" and "readable by any account". Neither could say at what
+    -- *rung* — a public project was public and read-only, and there was no way to
+    -- express "anybody on this instance may file bugs here" short of a grant per
+    -- person. They are replaced wholesale by `project_audience_roles`: at most
+    -- three rows per project, one per audience (guest, member, staff), each naming
+    -- a rung. `is_public = 1` is now a `guest → viewer` row and
+    -- `visible_to_all_signed_in = 1` is a `member → viewer` row, and both are now
+    -- one mechanism rather than two special cases the read rule had to OR together.
+    --
+    -- See Roles.sq, and AccessControl.effectiveRole for the rule that combines an
+    -- audience row with a person's own.
 
     -- Whether this project offers a discussion forum and private messages. Two
     -- flags a project administrator sets, independently — a project may want
@@ -183,12 +183,12 @@ CREATE TABLE projects (
 );
 
 insert:
-INSERT INTO projects (name, name_prefix, is_public, visible_to_all_signed_in, position, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at;
+INSERT INTO projects (name, name_prefix, position, created_at)
+VALUES (?, ?, ?, ?)
+RETURNING id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at;
 
 update:
-UPDATE projects SET name = ?, name_prefix = ?, is_public = ?, visible_to_all_signed_in = ? WHERE id = ?;
+UPDATE projects SET name = ?, name_prefix = ? WHERE id = ?;
 
 -- The two forum feature flags, together, project-administrator only (LNL-96).
 -- Its own query rather than folded into `update`, because that one is the
@@ -230,14 +230,14 @@ delete:
 DELETE FROM projects WHERE id = ?;
 
 findById:
-SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
 FROM projects WHERE id = ?;
 
 -- Name lookup for the embed's ?project= parameter. NOCASE on the column makes
 -- this case-insensitive without a function on either side, so the UNIQUE index
 -- is still usable.
 findByName:
-SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
 FROM projects WHERE name = ?;
 
 -- Every project, for the picker and for the Unicode-fold uniqueness check.
@@ -252,7 +252,7 @@ FROM projects WHERE name = ?;
 -- needs the whole list to do it. A store makes no decisions. See §2 — the route
 -- is what must never ship a private project's name to a signed-out visitor.
 selectAll:
-SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
 FROM projects ORDER BY position, id;
 
 -- Which sprint this project is working on. Its own query rather than a column on

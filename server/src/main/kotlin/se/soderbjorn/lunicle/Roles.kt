@@ -1,10 +1,36 @@
 /**
- * The permission vocabulary, and who holds what where.
+ * The permission vocabulary — two cumulative ladders — and who stands where.
  *
- * This store answers exactly one interesting question — "does this user hold
- * this role in this project?" — and [AccessControl] is the only thing that asks
- * it. Nothing here decides anything; see AccessControl's preamble for where the
- * deciding happens and why it happens in one place.
+ * ── Two ladders and one rule (LNL-191) ──────────────────────────────────────
+ *
+ * A **project role** is one of five rungs: Viewer, Contributor, Maintainer,
+ * Admin, Owner. They are cumulative, so a rung answers every question the rungs
+ * below it answer, and the rung *name* is the only thing ever stored — one row
+ * per person per project in `project_roles`, and not a column per privilege
+ * anywhere. What a rung permits is a function in [AccessControl], which is what
+ * makes widening one later a deploy rather than a migration: every existing
+ * holder gains the widened power the moment the new build runs.
+ *
+ * An **instance role** is one of five, also ascending: guest (no account at all),
+ * member, staff, instance administrator, instance owner. The lowest three are
+ * exactly the [Audience]s a project may grant a rung to — one vocabulary, not two,
+ * so "who is a member" cannot come to mean one thing on a project and another on
+ * the instance.
+ *
+ * The rule joining them, and the whole of the access model:
+ *
+ *     effectiveRole(user, project) = max(the audience rows the user matches,
+ *                                        the user's own row)
+ *
+ * A person's own row can raise them above their audience and **never cuts them
+ * below it**. That is why the rule is a `max` and not an override: a project that
+ * admits every member as a Contributor cannot be made to admit one named person
+ * as a Viewer by writing a smaller row, because there is nothing to write that
+ * subtracts. Revoking is done by lowering the audience, which is a statement about
+ * everybody.
+ *
+ * Nothing here decides anything. See [AccessControl]'s preamble for where the
+ * deciding happens and why it happens in exactly one place.
  *
  * @see AccessControl
  * @see Database
@@ -12,286 +38,288 @@
 package se.soderbjorn.lunicle
 
 import kotlinx.coroutines.withContext
-import se.soderbjorn.lunicle.clientserver.RoleKeys
 import se.soderbjorn.lunicle.db.LunicleDatabase
 
 /**
- * The roles this instance has, and what each one grants.
+ * What somebody may do in one project: five rungs, each containing the last.
  *
- * Hardcoded rather than a table anyone can write to: every value here is
- * branched on by name in [AccessControl], so a role invented at runtime would
- * grant nothing and a renamed one would silently stop granting what it used to.
- * The table exists to *associate* users with these, not to define them.
+ * Declaration order **is** the ladder — [rank] is the ordinal, and every rule in
+ * [AccessControl] is spelled `atLeast(...)`. Reordering these is not a
+ * refactor; it is a change to who may do what.
  *
- * The keys are also wire format — the client receives the caller's roles as
- * these strings to render affordances with. Changing one is a migration.
+ * @property key what is stored and what crosses the wire. Explicit rather than
+ *   `name.lowercase()` so a rename of the constant is not silently a migration of
+ *   every row in `project_roles`.
+ * @property description the sentence the settings dialog shows under the rung.
+ *   Written once, here, so the dialog cannot describe a rung differently from the
+ *   thing granting it.
  */
-enum class Role(val key: String, val description: String) {
+enum class ProjectRole(val key: String, val description: String) {
+    /** Read, and nothing else. */
+    VIEWER("viewer", "Read this project, without being able to change anything in it."),
+
     /**
-     * See this project at all, and nothing else.
+     * File issues, comment on them, and be assignable.
      *
-     * The second departure from "a role is an ability", after
-     * [BE_ASSIGNED_ISSUE], and worth the same paragraph that one got. Visibility
-     * is not something you *do*; it is a fact about whether a private project
-     * exists as far as you are concerned. It is a role anyway, and for
-     * [BE_ASSIGNED_ISSUE]'s reason: the question is per-project, and
-     * `project_roles` is still the only thing that holds a per-project fact about
-     * a person. A `project_members` table would have been a second answer to a
-     * question this one already answers — and one with no grant UI, no wire
-     * format, and no tiering in [AccessControl.canGrant].
-     *
-     * **It is not what membership means.** [AccessControl.canReadProject] asks
-     * "holds any role here", not "holds this one". That is the point: someone
-     * granted `create_issue` on a private project could not previously see the
-     * project they were meant to file issues in, and phrasing membership as
-     * "holds something" retires that incoherence instead of leaving a second
-     * box every admin must remember to tick alongside the first. This role
-     * exists so that a read-only member — somebody who should follow a board and
-     * touch nothing on it — has something to hold.
-     *
-     * Consequently it grants nothing that any other role does not already imply,
-     * and that is not the trap [BE_ASSIGNED_ISSUE] documents. Holding only this
-     * one is a coherent, useful state; holding only that one is not.
-     *
-     * Declared first because the privileges table renders in declaration order,
-     * and this is the weakest grant there is — every other row in that table
-     * implies it. Note the one visible consequence of the position: on a fresh
-     * volume the seed writes this row first, so `roles.id` differs from a
-     * migrated volume's. Nothing joins on that id from outside this table —
-     * `project_roles` is populated through `grant`, which looks the id up by
-     * `role_key` — so the two volumes disagree about a number neither reads.
+     * The rung that makes somebody a participant rather than an audience. It
+     * deliberately does **not** carry editing other people's issues — that is
+     * [MAINTAINER] — but it does carry editing your own, which is authorship
+     * rather than a rung; see [AccessControl.canEditIssue].
      */
-    VIEW_PROJECT(RoleKeys.VIEW_PROJECT, "See this project, without being able to change anything in it."),
-
-    CREATE_ISSUE("create_issue", "Create issues in this project."),
-    COMMENT_ON_ISSUE("comment_on_issue", "Post comments on this project's issues."),
-    CHANGE_UNOWNED_ISSUES("change_unowned_issues", "Edit issues they did not create."),
+    CONTRIBUTOR("contributor", "File issues, comment on them, and be assigned them."),
 
     /**
-     * Be nameable as an issue's assignee here.
+     * Edit anyone's issue, and run the timeboxes: sprints and versions.
      *
-     * The odd one out, and worth saying why it is a role rather than falling out
-     * of the three above. The others describe what somebody may *do*; this
-     * describes what may be done *to* them — it is the difference between a
-     * permission and an eligibility. It is here anyway, because the question it
-     * answers is per-project ("who works on this board?") and `project_roles` is
-     * the only thing that holds a per-project fact about a person.
+     * "Edits anyone's issue" includes moving it between columns and closing it,
+     * because a status write is an issue write — see [AccessControl.canEditIssue],
+     * which says at length why dragging a card must not become a lighter question
+     * than editing one.
      *
-     * The consequence of that shape, stated so it is not discovered: holding this
-     * grants nothing on its own. Someone with only this role can be handed an
-     * issue and then cannot edit it — which is coherent (they can still comment,
-     * if they hold that, and the "Assign to me" button still works) but is not
-     * what an admin ticking one box may expect. The settings dialog shows the
-     * description below; it does not warn.
+     * Sprints and versions sit here rather than with [ADMIN] on purpose: planning
+     * the next two weeks is day-to-day work on a board somebody already edits every
+     * issue on, where the vocabulary — the set of statuses a project *has* — is a
+     * decision about the board's shape.
      */
-    BE_ASSIGNED_ISSUE("be_assigned_issue", "Be assigned this project's issues."),
+    MAINTAINER("maintainer", "Edit anyone's issue here, and manage the sprints and versions."),
 
     /**
-     * Run this project: its vocabulary, its sprints, and who holds what in it.
+     * Run the board: its vocabulary, its display settings, its project settings,
+     * deleting issues, and handing out rungs up to [MAINTAINER].
      *
-     * The per-project half of what used to be one instance-wide flag. A system
-     * administrator (`users.is_sys_admin`) administers every project and always
-     * did; this is how one person comes to administer *one* board, which the
-     * permission vocabulary previously had no way to say. See 11.sqm, which
-     * renamed the flag so the two read as distinct.
+     * **Vocabulary is deliberately here and not on [MAINTAINER].** Adding a status
+     * changes every board view for everybody and can strand issues in a column
+     * nobody planned; renaming a priority rewrites what every card means. Those are
+     * decisions about the project, not work inside it.
      *
-     * **It implies the other four**, and that is a deliberate departure from how
-     * the rest of this enum behaves. Someone who runs a board files issues,
-     * comments on them, edits other people's, and gets work assigned to them —
-     * requiring five ticked boxes to express "this person runs this project"
-     * makes the common grant a checklist, and the one that gets half-done. It
-     * also avoids repeating [BE_ASSIGNED_ISSUE]'s trap, documented above: a role
-     * that grants nothing on its own is a role people mis-grant.
-     *
-     * The implication lives in [AccessControl], not in the grant: holding this
-     * writes ONE row, and the other four are answered by asking about this one.
-     * Expanding it into five rows at grant time would make the bundle a fact
-     * about history rather than about the role, so revoking it later would leave
-     * four grants nobody chose behind.
-     *
-     * **What it does not reach.** Renaming or deleting a project, editing its
-     * repository, impersonation, MCP backfill authorship, and granting this role
-     * or a more senior one. Some of those are instance-wide and stay with the
-     * system administrator (see [AccessControl.canMutateProjects]); the rest are
-     * this project's own but senior to running it, and belong to [PROJECT_OWNER] —
-     * see [AccessControl.canOwnProject] and [AccessControl.canGrant]. A project
-     * administrator promoting a peer was once "a different feature, decided rather
-     * than inherited"; LNL-107 decided it, and the answer was that promotion is an
-     * owner's power, not an administrator's.
+     * **Deleting an issue is here, where editing one is a rung lower.** A
+     * maintainer can already empty an issue of everything it said and close it; the
+     * thing they cannot do is make it stop existing, which is the one act with no
+     * history and no undo.
      */
-    PROJECT_ADMIN("project_admin", "Administer this project: its sprints, its vocabulary and its privileges."),
+    ADMIN(
+        "admin",
+        "Administer this project: its vocabulary, its settings, deleting issues, " +
+            "and granting roles up to maintainer.",
+    ),
 
     /**
-     * Own this project outright — everything a system administrator may do *to*
-     * it, without being one.
+     * Own the project: its identity, its prefix, its repository, its visibility,
+     * its deletion — and promoting other Admins and Owners.
      *
-     * The top of the per-project ladder, and the answer LNL-107 gives to the one
-     * thing [PROJECT_ADMIN] deliberately could not reach: a project has settings
-     * that are not about running the board but about the board's *existence* — its
-     * name, its prefix, whether it is public, its linked repository, and whether it
-     * goes on existing at all — and until now those stayed with the system
-     * administrator because there was no per-project role senior enough to hold
-     * them. This is that role.
-     *
-     * **It implies [PROJECT_ADMIN]**, which implies the other four — so like that
-     * one, holding it writes ONE row and every lesser question is answered by
-     * asking about this one (see [AccessControl.administers] and
-     * [AccessControl.holds]). Someone who owns a board self-evidently also runs it;
-     * requiring both rows ticked would be the checklist [PROJECT_ADMIN] already
-     * rejected, one rung up.
-     *
-     * **What it reaches that [PROJECT_ADMIN] does not**, all confined to this one
-     * project: renaming and re-prefixing it and flipping its visibility, editing
-     * its GitHub configuration, deleting it, and promoting others to
-     * [PROJECT_ADMIN] *or* to owner. See [AccessControl.canOwnProject] and
+     * The top rung, and the only one that can grant itself. That is not an
+     * oversight but the place the escalation is allowed to stop: an Admin who could
+     * promote a peer could make a second Admin, who could make a third, and nobody
+     * senior would have a say. The owner is the project's answerable party. See
      * [AccessControl.canGrant].
-     *
-     * **What it still does not reach**, because these are the instance's business
-     * and not one project's: bringing a *new* project into existence — there is no
-     * project to own before it exists, so creating stays with the system
-     * administrator (see [AccessControl.canMutateProjects]) — and everything
-     * instance-wide the way impersonation and MCP backfill authorship are. "But
-     * not other projects" is not a rule that had to be written: this is a
-     * `project_roles` row, scoped to one project like every other role here.
-     *
-     * On migrating an existing database the system administrator is granted this
-     * on every project, so each board has an owner of record from day one; see
-     * 25.sqm. That is the only role this instance has ever needed a migration to
-     * seat, and only because a grant needs the role row to exist at the moment it
-     * is written — the enum row itself still arrives through [RoleStore.seed] like
-     * all the others.
      */
-    PROJECT_OWNER("project_owner", "Own this project: everything an administrator can do, plus its name, its repository, and deleting it."),
+    OWNER(
+        "owner",
+        "Own this project: everything an administrator can do, plus its name, its prefix, " +
+            "its repository, its visibility, its deletion, and promoting administrators and owners.",
+    ),
+    ;
+
+    /** Where this rung sits on the ladder, 0 lowest. Declaration order. */
+    val rank: Int get() = ordinal
+
+    /** Is this rung [other], or senior to it? The shape every rule in [AccessControl] takes. */
+    fun atLeast(other: ProjectRole): Boolean = rank >= other.rank
+
+    companion object {
+        /** The rung with this [key], or null — an unknown key grants nothing rather than failing a read. */
+        fun byKey(key: String): ProjectRole? = entries.firstOrNull { it.key == key }
+    }
 }
 
 /**
- * Reads and writes `roles` and `project_roles`.
+ * Where somebody stands on the *instance*: five rungs, ascending.
+ *
+ * The lowest three are the [Audience]s a project grants to, which is the point of
+ * having one ladder rather than two — "member" means the same thing when a project
+ * admits members as it does when an administrator looks at an account.
+ *
+ * @property key the stored/wire name where one is stored at all. Note that only
+ *   [STAFF] and [MEMBER] are ever written down (as `users.kind`) and only [ADMIN]
+ *   is ever written down as `users.instance_role`: [GUEST] is the *absence* of a
+ *   user row, and [OWNER] is `instance_settings.owner_user_id` — a single-valued
+ *   setting rather than a third value on the column, so "exactly one owner, always"
+ *   is structural on a document backend too and not an invariant enforced by a
+ *   partial unique index Firestore does not have.
+ */
+enum class InstanceRole(val key: String) {
+    /** Not signed in, and no account. The absence of a row, never a stored value. */
+    GUEST("guest"),
+
+    /** Signed in, from outside the deployment's own domain. */
+    MEMBER("member"),
+
+    /** Signed in, from the deployment's own domain — see [UserKind]. */
+    STAFF("staff"),
+
+    /** Runs the instance: `users.instance_role = 'admin'`. */
+    ADMIN("admin"),
+
+    /** Owns the instance. Exactly one, held as a setting; see the class doc. */
+    OWNER("owner"),
+    ;
+
+    /** Where this rung sits, 0 lowest. */
+    val rank: Int get() = ordinal
+
+    /** Is this rung [other], or senior to it? */
+    fun atLeast(other: InstanceRole): Boolean = rank >= other.rank
+}
+
+/**
+ * Who a project grants a rung to wholesale: the bottom three [InstanceRole]s.
+ *
+ * At most three rows per project in `project_audience_roles`, and they replace
+ * `projects.is_public` and `projects.visible_to_all_signed_in` outright. Where
+ * those two booleans could only say "readable by strangers" and "readable by
+ * accounts", an audience row says *which rung* an audience arrives at — so
+ * "everybody on the instance may file bugs here" is one row rather than a grant
+ * per person, and "the world may read this" is the same mechanism rather than a
+ * special case beside it.
+ *
+ * @property instanceRole the rung on the instance ladder a person must reach to
+ *   match this audience. Because the ladder ascends, a `guest` row matches
+ *   everybody, a `member` row matches members and staff, and a `staff` row matches
+ *   staff alone.
+ */
+enum class Audience(val key: String, val instanceRole: InstanceRole) {
+    /** Everybody, including a caller with no session at all. */
+    GUEST("guest", InstanceRole.GUEST),
+
+    /** Everybody with an account. */
+    MEMBER("member", InstanceRole.MEMBER),
+
+    /** Accounts from the deployment's own domain. */
+    STAFF("staff", InstanceRole.STAFF),
+    ;
+
+    companion object {
+        /** The audience with this [key], or null — an unknown key grants nothing. */
+        fun byKey(key: String): Audience? = entries.firstOrNull { it.key == key }
+    }
+}
+
+/**
+ * Whether an account belongs to the deployment's own domain.
+ *
+ * Stored as `users.kind` and **never written by hand**: it is derived at sign-in
+ * by matching the address against the deployment's domain, and re-derived by the
+ * startup stamp, so the two agree by construction and an interrupted backfill has
+ * nothing to reconcile — running the same rule again is a no-op.
+ */
+enum class UserKind(val key: String, val instanceRole: InstanceRole) {
+    MEMBER("member", InstanceRole.MEMBER),
+    STAFF("staff", InstanceRole.STAFF),
+    ;
+
+    companion object {
+        /** The kind with this [key]; anything unrecognised reads as [MEMBER], the lesser answer. */
+        fun byKey(key: String?): UserKind = entries.firstOrNull { it.key == key } ?: MEMBER
+
+        /**
+         * The kind an address earns on a deployment whose own domain is [domain].
+         *
+         * The one place the rule lives, called by sign-in and by the startup stamp
+         * alike — which is what makes stamping idempotent rather than a second
+         * opinion. A deployment with no domain configured has no way to tell its own
+         * people apart from anybody else's, so everybody is a [MEMBER]; the `staff`
+         * audience is simply unusable there, which is honest rather than broken.
+         *
+         * TODO(LNL-192): `domain` is derived from the brand manifest's
+         *  `googleHostedDomain` today, which is the Google sign-in restriction and
+         *  only accidentally the same string. LNL-192 adds a `domain` config field of
+         *  its own; this function is what it should be wired to.
+         */
+        fun forEmail(email: String?, domain: String?): UserKind {
+            if (domain.isNullOrBlank() || email.isNullOrBlank()) return MEMBER
+            val at = email.lastIndexOf('@')
+            if (at < 0) return MEMBER
+            return if (email.substring(at + 1).equals(domain.trim(), ignoreCase = true)) STAFF else MEMBER
+        }
+    }
+}
+
+/**
+ * Where this account stands on the instance ladder, **as far as its own row knows**.
+ *
+ * Never [InstanceRole.OWNER], and that is the whole caveat: ownership is
+ * `instance_settings.owner_user_id`, which no [UserRecord] carries. Ask
+ * [AccessControl.instanceRole] for the answer that can see it. This property
+ * exists because everything that only needs to tell guest from member from staff
+ * from administrator — which is every audience match — can be answered without a
+ * read, and paying for one on every permission check to learn a fact that changes
+ * once a year would be the wrong trade.
+ */
+val UserRecord?.storedInstanceRole: InstanceRole
+    get() = when {
+        this == null -> InstanceRole.GUEST
+        isInstanceAdmin -> InstanceRole.ADMIN
+        else -> kind.instanceRole
+    }
+
+/**
+ * Reads and writes `project_roles` and `project_audience_roles`.
  *
  * @param database the open database.
  */
 class RoleStore(
     private val database: LunicleDatabase,
 ) : se.soderbjorn.lunicle.store.RoleStore {
-    /**
-     * Write the [Role] rows, if they aren't there already.
-     *
-     * Called unconditionally at startup by `Application.module`, which is a
-     * deliberate departure from the schema doc: it put this seed in
-     * `1.sqm` *and* in `createOrMigrateSchema()`'s create branch, so that a
-     * fresh volume and a purged one both ended up with the rows.
-     *
-     * That is two places that have to agree forever, and the failure when they
-     * drift is silent — an instance where nobody can hold a role, because
-     * [hasRole] joins against a table that is simply empty. `INSERT OR IGNORE`
-     * (see Roles.sq) makes one unconditional call cover the fresh volume, the
-     * purged one, and the one that has been serving for a month. No branch, and
-     * nothing to keep in step.
-     *
-     * @return how many roles the instance now has, for the startup log.
-     */
-    override suspend fun seed(): Int = withContext(DatabaseDispatcher) {
-        database.transaction {
-            Role.entries.forEach { database.rolesQueries.seed(it.key, it.description) }
-        }
-        Role.entries.size
-    }
-
-    /**
-     * Does [userId] hold [role] in [projectId]?
-     *
-     * The only question [AccessControl] asks of this table.
-     */
-    override suspend fun hasRole(userId: Long, projectId: Long, role: Role): Boolean =
+    override suspend fun roleFor(userId: Long, projectId: Long): ProjectRole? =
         withContext(DatabaseDispatcher) {
-            database.rolesQueries.hasRole(userId, projectId, role.key).executeAsOne()
+            database.rolesQueries.roleFor(userId, projectId).executeAsOneOrNull()
+                ?.let { ProjectRole.byKey(it) }
         }
 
-    /**
-     * Does [userId] hold anything at all in [projectId]?
-     *
-     * Membership, which is what [AccessControl.canReadProject] asks once
-     * `is_public` has said no. Phrased as "holds something" rather than "holds
-     * [Role.VIEW_PROJECT]" on purpose — see that role's doc for why the weaker
-     * question is the right one.
-     *
-     * Its own query rather than `rolesFor(...).isNotEmpty()`, because this one
-     * runs on every read of every project: listing projects asks it once per
-     * project, and `EXISTS` stops at the first row where `rolesFor` builds a set
-     * that the caller then discards.
-     */
-    override suspend fun isMember(userId: Long, projectId: Long): Boolean =
+    override suspend fun rolesForUser(userId: Long): Map<Long, ProjectRole> =
         withContext(DatabaseDispatcher) {
-            database.rolesQueries.isMember(userId, projectId).executeAsOne()
+            database.rolesQueries.rolesForUser(userId).executeAsList()
+                .mapNotNull { row -> ProjectRole.byKey(row.role)?.let { row.project_id to it } }
+                .toMap()
         }
 
-    /**
-     * Everyone who holds anything at all in [projectId] — [isMember] turned
-     * around, answered as a set.
-     *
-     * The question [ProjectAudience] asks once `is_public` has said no, and the
-     * only thing here that answers about a *project* rather than about a person.
-     * It exists because "every user who can see project X" is a set, and there was
-     * no way to ask for one: [isMember] answers one pair at a time, and a filter
-     * over every account calling it per row is a query per user on the instance to
-     * answer something one select knows.
-     *
-     * Phrased as "holds a row" rather than joined to `roles`, so it agrees exactly
-     * with [isMember] — and therefore with [AccessControl.canReadProject]. A
-     * definition of membership that narrowed here and not there would be an
-     * autocomplete that omits somebody who can read every word of the thread.
-     */
+    override suspend fun rolesForProject(projectId: Long): Map<Long, ProjectRole> =
+        withContext(DatabaseDispatcher) {
+            database.rolesQueries.rolesForProject(projectId).executeAsList()
+                .mapNotNull { row -> ProjectRole.byKey(row.role)?.let { row.user_id to it } }
+                .toMap()
+        }
+
     override suspend fun memberIds(projectId: Long): Set<Long> =
         withContext(DatabaseDispatcher) {
             database.rolesQueries.memberIds(projectId).executeAsList().toSet()
         }
 
-    /**
-     * Every role [userId] holds in [projectId].
-     *
-     * For the client's affordances only — one query instead of one per role, so
-     * rendering a project's controls costs a single round-trip. Unknown keys
-     * are dropped rather than failing the read: a row naming a role this build
-     * has never heard of grants nothing, which is the safe reading.
-     */
-    override suspend fun rolesFor(userId: Long, projectId: Long): Set<Role> =
+    override suspend fun setRole(userId: Long, projectId: Long, role: ProjectRole?): Unit =
         withContext(DatabaseDispatcher) {
-            database.rolesQueries.rolesFor(userId, projectId).executeAsList()
-                .mapNotNull { key -> Role.entries.firstOrNull { it.key == key } }
-                .toSet()
+            if (role == null) {
+                database.rolesQueries.clearRole(userId, projectId)
+            } else {
+                database.rolesQueries.setRole(userId, projectId, role.key)
+            }
         }
 
-    /**
-     * Every grant in [projectId], as user id → the roles they hold.
-     *
-     * For the settings dialog's privileges table, and *only* for it: this is the
-     * administrative question "who holds what here", never the permission question
-     * "may this caller do that". Those are different questions with different
-     * audiences, and the day this map is used to decide a write is the day
-     * permissions live in two places. [hasRole] is the one that answers a
-     * permission, from the session, one user at a time — see AccessControl.
-     *
-     * Unknown keys are dropped for [rolesFor]'s reason: a row naming a role this
-     * build has never heard of grants nothing, so it is nothing to render either.
-     */
-    override suspend fun grantsForProject(projectId: Long): Map<Long, Set<Role>> =
+    override suspend fun audienceRoles(projectId: Long): Map<Audience, ProjectRole> =
         withContext(DatabaseDispatcher) {
-            database.rolesQueries.grantsForProject(projectId).executeAsList()
+            database.rolesQueries.audienceRoles(projectId).executeAsList()
                 .mapNotNull { row ->
-                    Role.entries.firstOrNull { it.key == row.role_key }?.let { row.user_id to it }
+                    val audience = Audience.byKey(row.audience) ?: return@mapNotNull null
+                    ProjectRole.byKey(row.role)?.let { audience to it }
                 }
-                .groupBy({ it.first }, { it.second })
-                .mapValues { (_, roles) -> roles.toSet() }
+                .toMap()
         }
 
-    /** Grant [role] to [userId] in [projectId]. Idempotent. */
-    override suspend fun grant(userId: Long, projectId: Long, role: Role): Unit =
+    override suspend fun setAudienceRole(projectId: Long, audience: Audience, role: ProjectRole?): Unit =
         withContext(DatabaseDispatcher) {
-            database.rolesQueries.grant(userId, projectId, role.key)
-        }
-
-    /** Take [role] away. Idempotent — revoking what nobody holds is not an error. */
-    override suspend fun revoke(userId: Long, projectId: Long, role: Role): Unit =
-        withContext(DatabaseDispatcher) {
-            database.rolesQueries.revoke(userId, projectId, role.key)
+            if (role == null) {
+                database.rolesQueries.clearAudienceRole(projectId, audience.key)
+            } else {
+                database.rolesQueries.setAudienceRole(projectId, audience.key, role.key)
+            }
         }
 }

@@ -28,7 +28,7 @@
  * reason: a test against [AccessControl] alone would pass on a route that never
  * called it, and the gates that moved here are gates in routes.
  *
- * @see Role.PROJECT_ADMIN
+ * @see ProjectRole.ADMIN
  * @see AccessControl.canAdministerProject
  * @see AccessControl.canGrant
  */
@@ -94,7 +94,8 @@ class ProjectAdminTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -148,7 +149,7 @@ class ProjectAdminTest {
         val f = seed()
         val admin = users.findById(f.projectAdminId)!!
         assertFalse(
-            roles.rolesFor(f.projectAdminId, f.projectId).contains(Role.CREATE_ISSUE),
+            setOfNotNull(roles.roleFor(f.projectAdminId, f.projectId)).contains(ProjectRole.CONTRIBUTOR),
             "The fixture granted create_issue outright, so this proves nothing.",
         )
         assertTrue(access.canCreateIssue(admin, f.projectId), "The bundle does not reach create_issue.")
@@ -171,11 +172,11 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.CREATE_ISSUE.key, isGranted = true))
+                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.CONTRIBUTOR.key, isGranted = true))
             }
             assertEquals(HttpStatusCode.OK, response.status, "A project administrator could not grant a role.")
         }
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.CREATE_ISSUE))
+        assertTrue((roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.CONTRIBUTOR))
     }
 
     // ── Where it stops ───────────────────────────────────────────────────────
@@ -195,7 +196,7 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.PROJECT_ADMIN.key, isGranted = true))
+                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key, isGranted = true))
             }
             assertEquals(
                 HttpStatusCode.Forbidden,
@@ -205,7 +206,7 @@ class ProjectAdminTest {
             )
         }
         assertFalse(
-            roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN),
+            (roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.ADMIN),
             "The grant landed despite the refusal.",
         )
     }
@@ -218,11 +219,11 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.sysAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.PROJECT_ADMIN.key, isGranted = true))
+                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key, isGranted = true))
             }
             assertEquals(HttpStatusCode.OK, response.status)
         }
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN))
+        assertTrue((roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.ADMIN))
     }
 
     /**
@@ -481,29 +482,34 @@ class ProjectAdminTest {
     )
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isSysAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(projectAdmin.isSysAdmin, "The fixture's project administrator is a system one.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the system administrator.")
+        assertFalse(projectAdmin.isInstanceAdmin, "The fixture's project administrator is a system one.")
 
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        val other = projectRepository.create("Elsewhere", "ELS", isPublic = false)
+        val project = projectRepository.create("Lunamux", "LMX")
+        val other = projectRepository.create("Elsewhere", "ELS")
         // The ONLY grant of substance. No create_issue, no comment_on_issue —
         // the bundle has to supply those, or the tests above prove nothing.
-        roles.grant(projectAdmin.id, project.id, Role.PROJECT_ADMIN)
+        roles.setRole(projectAdmin.id, project.id, ProjectRole.ADMIN)
         // Bare visibility, and nothing else, for the two callers whose refusals
         // this file is about. Since LNL-57 a private project is invisible to
         // somebody holding nothing in it, and an invisible project answers 404
         // to everything — which would satisfy every "…is Forbidden" assertion
         // below without the admin gate existing at all. `view_project` grants
-        // no ability whatsoever (see Role.VIEW_PROJECT), so these two lines
+        // no ability whatsoever (see ProjectRole.VIEWER), so these two lines
         // move the refusals back to being about administering rather than about
         // seeing, which is what the tests claim to check.
-        roles.grant(outsider.id, project.id, Role.VIEW_PROJECT)
-        roles.grant(projectAdmin.id, other.id, Role.VIEW_PROJECT)
+        roles.setRole(outsider.id, project.id, ProjectRole.VIEWER)
+        roles.setRole(projectAdmin.id, other.id, ProjectRole.VIEWER)
 
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(
             sysAdminId = sysAdmin.id,
             sysAdminCookie = sessions.create(sysAdmin.id),
@@ -545,7 +551,7 @@ class ProjectAdminTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(

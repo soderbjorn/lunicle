@@ -73,7 +73,7 @@ class FirestoreUserStore(
      * lookup queries and the "is anyone here" query run first, the counter is read
      * and then bumped, and the document is written last.
      */
-    override suspend fun upsert(identity: ProviderIdentity): UserRecord {
+    override suspend fun upsert(identity: ProviderIdentity, kind: UserKind): UserRecord {
         // Normalised once, here, so the lookup and the write it may lead to are
         // looking at the same spelling — see the class preamble.
         val email = normalizeEmail(identity.email)
@@ -87,9 +87,18 @@ class FirestoreUserStore(
                     // Refresh exactly what refreshOnSignIn does: the provider's name,
                     // and the verified flag (arriving here proved the address again).
                     // provider/providerId keep the values the row was created with.
-                    txn.update(byEmail.reference, mapOf(PROVIDER_NAME to identity.providerName, EMAIL_VERIFIED to true))
+                    txn.update(
+                        byEmail.reference,
+                        mapOf(
+                            PROVIDER_NAME to identity.providerName,
+                            EMAIL_VERIFIED to true,
+                            // Follows, because it is derived rather than chosen — see
+                            // Users.sq's refreshOnSignIn.
+                            KIND to kind.key,
+                        ),
+                    )
                     return@runTransaction byEmail.toUser()!!
-                        .copy(providerName = identity.providerName, isEmailVerified = true)
+                        .copy(providerName = identity.providerName, isEmailVerified = true, kind = kind)
                 }
             }
 
@@ -108,10 +117,20 @@ class FirestoreUserStore(
                 val newVerified = if (email != null) true else (byPair.getBoolean(EMAIL_VERIFIED) ?: false)
                 txn.update(
                     byPair.reference,
-                    mapOf(PROVIDER_NAME to identity.providerName, EMAIL to newEmail, EMAIL_VERIFIED to newVerified),
+                    mapOf(
+                        PROVIDER_NAME to identity.providerName,
+                        EMAIL to newEmail,
+                        EMAIL_VERIFIED to newVerified,
+                        KIND to kind.key,
+                    ),
                 )
                 return@runTransaction byPair.toUser()!!
-                    .copy(providerName = identity.providerName, email = newEmail, isEmailVerified = newVerified)
+                    .copy(
+                        providerName = identity.providerName,
+                        email = newEmail,
+                        isEmailVerified = newVerified,
+                        kind = kind,
+                    )
             }
 
             // ── Or create — the first ever becomes the instance admin ─────────
@@ -134,9 +153,9 @@ class FirestoreUserStore(
                 // normalised address reaching here is one a provider confirmed or a
                 // code proved. See ProviderIdentity.email and Users.sq.
                 isEmailVerified = email != null,
-                isSysAdmin = instanceIsEmpty,
+                kind = kind,
+                isInstanceAdmin = instanceIsEmpty,
                 isMcpEnabled = false,
-                isMcpAllowed = false,
             )
             txn.set(
                 doc(id),
@@ -148,10 +167,12 @@ class FirestoreUserStore(
                     DISPLAY_NAME to null,
                     EMAIL to email,
                     EMAIL_VERIFIED to (email != null),
-                    IS_SYS_ADMIN to instanceIsEmpty,
+                    KIND to kind.key,
+                    // The document form of the same 'admin'-or-null the column holds:
+                    // ownership is a setting, not a value here. See Users.sq.
+                    INSTANCE_ROLE to InstanceRole.ADMIN.key.takeIf { instanceIsEmpty },
                     MCP_ENABLED to false,
-                    MCP_ALLOWED to false,
-                    CREATED_AT to createdAt,
+                    ADDED_AT to createdAt,
                 ),
             )
             record
@@ -193,8 +214,12 @@ class FirestoreUserStore(
         doc(id).update(MCP_ENABLED, isEnabled).await()
     }
 
-    override suspend fun setMcpAllowed(id: Long, isAllowed: Boolean) {
-        doc(id).update(MCP_ALLOWED, isAllowed).await()
+    override suspend fun setKind(id: Long, kind: UserKind) {
+        doc(id).update(KIND, kind.key).await()
+    }
+
+    override suspend fun setInstanceAdmin(id: Long, isAdmin: Boolean) {
+        doc(id).update(INSTANCE_ROLE, InstanceRole.ADMIN.key.takeIf { isAdmin }).await()
     }
 
     private companion object {
@@ -208,10 +233,16 @@ class FirestoreUserStore(
         const val DISPLAY_NAME = "displayName"
         const val EMAIL = "email"
         const val EMAIL_VERIFIED = "emailVerified"
-        const val IS_SYS_ADMIN = "isSysAdmin"
+        const val KIND = "kind"
+        const val INSTANCE_ROLE = "instanceRole"
         const val MCP_ENABLED = "mcpEnabled"
-        const val MCP_ALLOWED = "mcpAllowed"
-        const val CREATED_AT = "createdAt"
+
+        /**
+         * When the row appeared — renamed from `createdAt` in LNL-191, because a row
+         * need no longer be the residue of a sign-in. The Firestore backfill rewrites
+         * the field name; see FirestorePermissionModelMigration.
+         */
+        const val ADDED_AT = "addedAt"
     }
 }
 
@@ -230,8 +261,12 @@ private fun DocumentSnapshot.toUser(): UserRecord? {
         displayNameOverride = getString("displayName"),
         email = getString("email"),
         isEmailVerified = getBoolean("emailVerified") ?: false,
-        isSysAdmin = getBoolean("isSysAdmin") ?: false,
+        // Absent on a document the backfill has not reached — reads as `member`, the
+        // lesser answer, which is the safe direction while a backfill is in flight.
+        kind = UserKind.byKey(getString("kind")),
+        // Any value but 'admin' — including a rung a newer build invented — reads as
+        // "not an administrator". Ownership is never here; it is a setting.
+        isInstanceAdmin = getString("instanceRole") == InstanceRole.ADMIN.key,
         isMcpEnabled = getBoolean("mcpEnabled") ?: false,
-        isMcpAllowed = getBoolean("mcpAllowed") ?: false,
     )
 }

@@ -57,8 +57,6 @@ class FirestoreProjectRepository(
     override suspend fun create(
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
     ): ProjectRecord {
         val cleanName = name.trim()
         val cleanPrefix = namePrefix.trim().uppercase()
@@ -96,7 +94,7 @@ class FirestoreProjectRepository(
             txn.set(projectCounter, mapOf(FirestoreCounters.VALUE to projectId))
             txn.set(vocabCounter, mapOf(FirestoreCounters.VALUE to vocabBase + seed.size))
             val project = projects.writeInTransaction(
-                txn, projectId, cleanName, cleanPrefix, isPublic, visibleToAllSignedIn, position, createdAt,
+                txn, projectId, cleanName, cleanPrefix, position, createdAt,
             )
             seed.forEachIndexed { index, row ->
                 seedVocabularyRow(
@@ -112,13 +110,11 @@ class FirestoreProjectRepository(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
     ): ProjectRecord {
         val cleanName = name.trim()
         val cleanPrefix = namePrefix.trim().uppercase()
         validate(cleanName, cleanPrefix, existingId = id)
-        projects.update(id, cleanName, cleanPrefix, isPublic, visibleToAllSignedIn)
+        projects.update(id, cleanName, cleanPrefix)
         return projects.findById(id) ?: throw ProjectConflict("That project no longer exists.")
     }
 

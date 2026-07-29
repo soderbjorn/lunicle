@@ -1,125 +1,108 @@
--- The permission vocabulary, and who holds what where.
+-- Who stands where: a person's rung in a project, and the rungs a project hands
+-- to whole audiences (LNL-191).
 --
--- Hardcoded and not user-editable: rows are seeded when the database is created
--- and there is no route that writes to `roles`. Which roles exist is a fact about
--- this build — AccessControl branches on each one by name — so a role invented at
--- runtime would grant nothing at all. See the Role enum.
+-- Two tables, and between them they are the entire access model's storage.
 --
--- `project_roles` is a different matter and always has been: it ASSOCIATES users
--- with the roles above, and the settings dialog writes it through grant/revoke
--- below. That is the line this file draws — you may say who holds what, never
--- what a role means.
+-- `project_roles` holds ONE row per person per project — the primary key is
+-- (user_id, project_id), not (user_id, project_id, role). A person has one rung,
+-- because the rungs are cumulative: Maintainer answers every question Contributor
+-- answers, so holding both would be holding the same thing twice. The rung *name*
+-- is the only thing stored. There is no per-privilege column, and no `roles` table
+-- defining what a rung means, because what a rung permits is a function in
+-- AccessControl — which is what makes widening a rung a deploy rather than a
+-- migration of every holder.
 --
--- Only AccessControl reads these to answer a *permission*, one user and one role
--- at a time, from the session. `grantsForProject` reads them to answer the
--- administrative question "who holds what here", which is a different question
--- with a different audience and never a way to decide a write.
+-- `project_audience_roles` holds AT MOST THREE rows per project, one per audience
+-- (`guest`, `member`, `staff`), each naming the rung everybody in that audience
+-- arrives at. These replace `projects.is_public` and
+-- `projects.visible_to_all_signed_in`, both dropped in 33.sqm: where those two
+-- booleans could only say "readable by strangers" and "readable by accounts", an
+-- audience row says *which rung* an audience reaches — so "everyone here may file
+-- bugs" is one row rather than a grant per person.
+--
+-- Only AccessControl combines the two, once, in `effectiveRole`:
+--
+--     effective = max(the audience rows the user matches, the user's own row)
+--
+-- An own row can raise somebody above their audience and never cuts them below it.
+-- Nothing in this file knows that rule; these are two tables of names.
+--
+-- Neither table's values are constrained to the enum by SQLite, deliberately, and
+-- it matches how role keys have always been read: an unrecognised name is dropped
+-- on the way out (see RoleStore), so a row written by a newer build grants nothing
+-- on an older one rather than failing its reads.
 
-CREATE TABLE roles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    -- `key` is a keyword in enough dialects to be worth dodging.
-    role_key TEXT NOT NULL UNIQUE,
-    description TEXT NOT NULL
-);
-
--- A user may hold many roles in one project, hence the composite primary key
--- rather than a single role column on some membership row.
 CREATE TABLE project_roles (
     user_id INTEGER NOT NULL,
     project_id INTEGER NOT NULL,
-    role_id INTEGER NOT NULL,
-    PRIMARY KEY (user_id, project_id, role_id),
+
+    -- A ProjectRole.key: viewer | contributor | maintainer | admin | owner.
+    role TEXT NOT NULL,
+
+    PRIMARY KEY (user_id, project_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
--- Seeding. INSERT OR IGNORE rather than a bare INSERT so RoleStore.seed() can
--- run on every startup without caring whether the database was just created,
--- just migrated, or has been serving for a month. One code path, no branch to
--- get wrong. See RoleStore.
-seed:
-INSERT OR IGNORE INTO roles (role_key, description) VALUES (?, ?);
+-- Everyone a project admits wholesale, by where they stand on the instance.
+CREATE TABLE project_audience_roles (
+    project_id INTEGER NOT NULL,
 
--- Does this user hold this role in this project? The question AccessControl
--- asks, phrased exactly as it asks it — a role_key rather than a role id,
--- because the caller has a constant and should not have to look one up first.
-hasRole:
-SELECT EXISTS(
-    SELECT 1 FROM project_roles
-    JOIN roles ON roles.id = project_roles.role_id
-    WHERE project_roles.user_id = ?
-      AND project_roles.project_id = ?
-      AND roles.role_key = ?
+    -- An Audience.key: guest | member | staff. The bottom three rungs of the
+    -- instance ladder, so a `guest` row matches everybody and a `staff` row matches
+    -- only accounts from the deployment's own domain.
+    audience TEXT NOT NULL,
+
+    -- A ProjectRole.key, as above.
+    role TEXT NOT NULL,
+
+    PRIMARY KEY (project_id, audience),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
--- Is this user a member of this project at all — do they hold ANY role here?
---
--- What `canReadProject` asks once `is_public` has said no. Deliberately not
--- "do they hold view_project": holding create_issue on a project you cannot see
--- was always incoherent, and phrasing membership as "holds something here"
--- retires that rather than adding a second thing to keep in step. view_project
--- exists so a read-only member has something to hold; it is not the only answer.
---
--- Separate from `rolesFor` even though that would answer it too, because this
--- runs on every read of every project — including the project list, once per
--- project — and EXISTS stops at the first row where the other builds a list to
--- throw away. See AccessControl.canReadProject.
-isMember:
-SELECT EXISTS(
-    SELECT 1 FROM project_roles
-    WHERE user_id = ? AND project_id = ?
-);
+-- One person's rung here. What AccessControl asks, one pair at a time, from the
+-- session — never the whole table.
+roleFor:
+SELECT role FROM project_roles WHERE user_id = ? AND project_id = ?;
 
--- Everyone who holds any role in this project — `isMember` turned around.
+-- One person's rungs everywhere, in one read. For the callers that would otherwise
+-- ask roleFor once per project.
+rolesForUser:
+SELECT project_id, role FROM project_roles WHERE user_id = ?;
+
+-- Every own-row grant in one project, for the settings dialog's privileges table.
 --
--- The set-shaped question, for the callers that need the whole membership rather
--- than a yes about one person: who may be @mentioned in a forum, and who may be
--- messaged privately. See ProjectAudience, which is the only reader.
---
--- DISTINCT because `project_roles` is keyed on (user, project, role), so somebody
--- holding three roles here is three rows. Not joined to `roles`, deliberately:
--- membership is "holds a row", exactly as `isMember` reads it, so a grant naming
--- a role_key this build has never heard of still counts as membership. The join
--- would silently narrow the set — and it would narrow it differently from the
--- function that decides whether the same person may READ the project, which is
--- the disagreement worth not having.
+-- Note the direction this is read in: it answers "who holds what here", which is an
+-- administrative question, never a permission one. See AccessControl's preamble.
+rolesForProject:
+SELECT user_id, role FROM project_roles WHERE project_id = ?;
+
+-- Everyone with an own row here. ProjectAudience's question, and the only reason it
+-- is separate from rolesForProject — that caller wants ids and nothing else.
 memberIds:
-SELECT DISTINCT user_id FROM project_roles WHERE project_id = ?;
+SELECT user_id FROM project_roles WHERE project_id = ?;
 
--- Every role this user holds in this project, for the client's affordances.
--- The client renders these; it never enforces them. See AccessControl.
-rolesFor:
-SELECT roles.role_key
-FROM project_roles
-JOIN roles ON roles.id = project_roles.role_id
-WHERE project_roles.user_id = ? AND project_roles.project_id = ?;
+-- Single-valued by construction: the conflict target is the whole primary key, so
+-- moving somebody up or down a rung rewrites the one row they have rather than
+-- adding a second.
+setRole:
+INSERT INTO project_roles (user_id, project_id, role)
+VALUES (?, ?, ?)
+ON CONFLICT (user_id, project_id) DO UPDATE SET role = excluded.role;
 
--- Every grant in one project, for the settings dialog's privileges table.
---
--- The whole table at once rather than `rolesFor` per user: that dialog renders a
--- row per account on the instance, so per-user queries would make opening it cost
--- a query per person who has ever signed in.
---
--- Note the direction this is read in. It answers "who holds what here", which is
--- an *administrative* question — never a permission one. AccessControl asks
--- `hasRole` about one user and one role, from the session, and nothing here is a
--- shortcut around that. See AccessControl's preamble.
-grantsForProject:
-SELECT project_roles.user_id, roles.role_key
-FROM project_roles
-JOIN roles ON roles.id = project_roles.role_id
-WHERE project_roles.project_id = ?;
+-- Removing somebody's own row. Idempotent — clearing what nobody holds is not an
+-- error. It does NOT necessarily remove their access: an audience row may still
+-- admit them, which is the whole point of the max rule.
+clearRole:
+DELETE FROM project_roles WHERE user_id = ? AND project_id = ?;
 
--- INSERT OR IGNORE, and the SELECT is what turns a role_key into a role_id: a
--- key naming a role this instance does not have inserts nothing rather than
--- failing, which is the same reading `rolesFor` takes of an unknown key —
--- an unknown role grants nothing.
-grant:
-INSERT OR IGNORE INTO project_roles (user_id, project_id, role_id)
-SELECT ?, ?, roles.id FROM roles WHERE roles.role_key = ?;
+audienceRoles:
+SELECT audience, role FROM project_audience_roles WHERE project_id = ?;
 
-revoke:
-DELETE FROM project_roles
-WHERE user_id = ? AND project_id = ?
-  AND role_id = (SELECT id FROM roles WHERE role_key = ?);
+setAudienceRole:
+INSERT INTO project_audience_roles (project_id, audience, role)
+VALUES (?, ?, ?)
+ON CONFLICT (project_id, audience) DO UPDATE SET role = excluded.role;
+
+clearAudienceRole:
+DELETE FROM project_audience_roles WHERE project_id = ? AND audience = ?;

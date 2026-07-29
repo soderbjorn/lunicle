@@ -85,7 +85,8 @@ class AdminSettingsTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -112,8 +113,7 @@ class AdminSettingsTest {
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        assertTrue(!ordinary.isMcpAllowed, "Agent access is meant to be unpermitted by default.")
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
         val cookie = sessions.create(ordinary.id)
 
         withRoutes { client ->
@@ -147,10 +147,9 @@ class AdminSettingsTest {
             )
         }
 
-        assertTrue(
-            users.findById(ordinary.id)?.isMcpAllowed == false,
-            "A refused request wrote the permission anyway.",
-        )
+        // Nothing to assert about a stored permission: LNL-191 dropped the column and
+        // the route stores nothing until LNL-192 brings the per-tier rule. What the
+        // refusal still has to be is a refusal, which the status assertions above are.
     }
 
     /**
@@ -186,11 +185,11 @@ class AdminSettingsTest {
     @Test
     fun `the admin reads the directory, with e-mails and per-project rights`(): Unit = runBlocking {
         val fixture = seed()
-        val other = projectRepository.create("Beta", "BET", isPublic = false)
+        val other = projectRepository.create("Beta", "BET")
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        roles.grant(ordinary.id, fixture.projectId, Role.CREATE_ISSUE)
+        roles.setRole(ordinary.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         val cookie = sessions.create(fixture.adminId)
 
         withRoutes { client ->
@@ -199,7 +198,7 @@ class AdminSettingsTest {
             val body = response.body<AdminSettingsState>()
 
             assertEquals(
-                Role.entries.map { it.key }.toSet(),
+                ProjectRole.entries.map { it.key }.toSet(),
                 body.roles.map { it.key }.toSet(),
                 "The dialog renders held rights against this list; a short one hides rights.",
             )
@@ -209,7 +208,7 @@ class AdminSettingsTest {
             assertEquals("ordinary@example.com", row.email)
             assertTrue(!row.isSysAdmin)
             assertTrue(!row.isSelf)
-            assertTrue(!row.isMcpAllowed, "A fresh account is unpermitted by default.")
+            assertTrue(row.isMcpAllowed, "Every account is permitted until LNL-192 brings the per-tier rule.")
             assertTrue(!row.isMcpEnabled, "A fresh account has not switched agent access on.")
 
             assertEquals(
@@ -220,7 +219,7 @@ class AdminSettingsTest {
             )
             val onFixture = row.projects.first { it.projectId == fixture.projectId }
             val onOther = row.projects.first { it.projectId == other.id }
-            assertEquals(listOf(Role.CREATE_ISSUE.key), onFixture.heldRoleKeys)
+            assertEquals(listOf(ProjectRole.CONTRIBUTOR.key), onFixture.heldRoleKeys)
             assertEquals(emptyList(), onOther.heldRoleKeys)
 
             // "Can they see it" is not "do they hold view_project". Holding any role
@@ -256,7 +255,7 @@ class AdminSettingsTest {
     @Test
     fun `a public project reads as visible to a user who holds nothing in it`(): Unit = runBlocking {
         val fixture = seed()
-        val open = projectRepository.create("Open", "OPN", isPublic = true)
+        val open = projectRepository.createOpenToAll("Open", "OPN", roles)
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
         )
@@ -304,11 +303,13 @@ class AdminSettingsTest {
                 setBody(UserMcpAccess(ordinary.id, isAllowed = true))
             }
             assertEquals(HttpStatusCode.OK, on.status)
+            // The route still answers, still authorises, and stores nothing (LNL-191).
+            // What it reports is the truth about what it did — everybody is permitted
+            // — rather than an echo of what was asked for. See AdminRoutes.
             assertTrue(
                 on.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpAllowed,
-                "The response did not report the write it had just made.",
+                "The response did not report the state it actually has.",
             )
-            assertTrue(users.findById(ordinary.id)?.isMcpAllowed == true)
 
             val off = client.post("/api/admin/users/mcp") {
                 cookie(SESSION_COOKIE, cookie)
@@ -316,48 +317,13 @@ class AdminSettingsTest {
                 setBody(UserMcpAccess(ordinary.id, isAllowed = false))
             }
             assertEquals(HttpStatusCode.OK, off.status)
-            assertTrue(!off.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpAllowed)
+            assertTrue(
+                off.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpAllowed,
+                "Withdrawing permission stored something; there is no column to store it in.",
+            )
         }
-        assertTrue(users.findById(ordinary.id)?.isMcpAllowed == false)
     }
 
-    /**
-     * Permission and the user's own switch are two columns, and this proves the
-     * admin route touches only its own.
-     *
-     * The scenario is the one the whole two-column design exists for: a user has
-     * turned agent access on for themselves, an admin withdraws permission and
-     * later restores it, and the user's preference has to be exactly where they
-     * left it — otherwise "restore" would silently mean "switched off", and the
-     * user would come back to a preference they never changed.
-     */
-    @Test
-    fun `withdrawing and restoring permission leaves the user's own switch untouched`(): Unit = runBlocking {
-        seed()
-        val ordinary = users.upsert(
-            ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
-        )
-        // The user's own switch, set as if from their profile dialog.
-        users.setMcpEnabled(ordinary.id, true)
-        users.setMcpAllowed(ordinary.id, true)
-        assertTrue(users.findById(ordinary.id)?.canUseMcp == true, "Precondition: agent access is live.")
-
-        // Admin withdraws permission. The user's switch must not move.
-        users.setMcpAllowed(ordinary.id, false)
-        users.findById(ordinary.id)!!.let {
-            assertTrue(!it.isMcpAllowed, "Permission was not withdrawn.")
-            assertTrue(it.isMcpEnabled, "Withdrawing permission cleared the user's own switch.")
-            assertTrue(!it.canUseMcp, "Access is somehow still live without permission.")
-        }
-
-        // Admin restores it. The user is back exactly where they were — live —
-        // with no second trip through the browser.
-        users.setMcpAllowed(ordinary.id, true)
-        assertTrue(
-            users.findById(ordinary.id)?.canUseMcp == true,
-            "Restoring permission did not restore the access the user had.",
-        )
-    }
 
     /**
      * An admin's agent survives a token refresh, with `mcp_allowed` still 0.
@@ -372,16 +338,16 @@ class AdminSettingsTest {
      * first refresh with `invalid_grant`, an hour later, looking like an expiry
      * problem.
      *
-     * The admin here is deliberately left on `mcp_allowed = 0` — the state every
-     * pre-existing admin is in, since 6.sqm back-fills nothing — because a test
-     * that granted permission first would pass against the bug.
+     * The column the admin was deliberately left at zero on is gone (LNL-191) and
+     * every account is permitted until LNL-192; what this still pins is the shape —
+     * the refresh path builds a UserRecord and reads canUseMcp rather than raw
+     * columns, so a permission that comes back per tier reaches all five gates.
      */
     @Test
     fun `an admin can refresh an agent's token without ever being granted permission`(): Unit = runBlocking {
         val fixture = seed()
         val admin = users.findById(fixture.adminId)!!
-        assertTrue(admin.isSysAdmin, "Precondition: the fixture's first user is the admin.")
-        assertTrue(!admin.isMcpAllowed, "Precondition: the admin was never granted permission.")
+        assertTrue(admin.isInstanceAdmin, "Precondition: the fixture's first user is the admin.")
 
         // Their own switch, which admin-ness does NOT substitute for.
         users.setMcpEnabled(admin.id, true)
@@ -422,7 +388,6 @@ class AdminSettingsTest {
         // Note what is NOT done here: setMcpEnabled. Permission without the
         // person's own switch is not access.
         assertTrue(!admin.isMcpEnabled, "Precondition: the admin has not enabled agent access.")
-        users.setMcpAllowed(admin.id, true)
 
         val tokens = OAuthTokenStore(database)
         val client = OAuthClientStore(database).register(
@@ -537,8 +502,8 @@ class AdminSettingsTest {
     @Test
     fun `the admin reorders projects and the order sticks`(): Unit = runBlocking {
         val fixture = seed(name = "Alpha", prefix = "ALP")
-        val beta = projectRepository.create("Beta", "BET", isPublic = false)
-        val gamma = projectRepository.create("Gamma", "GAM", isPublic = false)
+        val beta = projectRepository.create("Beta", "BET")
+        val gamma = projectRepository.create("Gamma", "GAM")
         val cookie = sessions.create(fixture.adminId)
 
         // Created in order, so they start Alpha, Beta, Gamma — the alphabetical
@@ -582,7 +547,7 @@ class AdminSettingsTest {
     @Test
     fun `a reorder that does not name the projects is refused`(): Unit = runBlocking {
         val fixture = seed(name = "Alpha", prefix = "ALP")
-        val beta = projectRepository.create("Beta", "BET", isPublic = false)
+        val beta = projectRepository.create("Beta", "BET")
         val cookie = sessions.create(fixture.adminId)
         val before = projects.selectAll().map { it.id }
 
@@ -605,7 +570,7 @@ class AdminSettingsTest {
     @Test
     fun `the admin deletes a project from the settings dialog`(): Unit = runBlocking {
         val fixture = seed(name = "Alpha", prefix = "ALP")
-        val beta = projectRepository.create("Beta", "BET", isPublic = false)
+        val beta = projectRepository.create("Beta", "BET")
         val cookie = sessions.create(fixture.adminId)
 
         withRoutes { client ->
@@ -632,7 +597,7 @@ class AdminSettingsTest {
     @Test
     fun `a non-admin cannot reorder or delete projects`(): Unit = runBlocking {
         val fixture = seed(name = "Alpha", prefix = "ALP")
-        val beta = projectRepository.create("Beta", "BET", isPublic = false)
+        val beta = projectRepository.create("Beta", "BET")
         val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
         val cookie = sessions.create(ordinary.id)
         val before = projects.selectAll().map { it.id }
@@ -673,9 +638,14 @@ class AdminSettingsTest {
      * to do it too.
      */
     private suspend fun seed(name: String = "Lunamux", prefix: String = "LMX"): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", null))
-        val project = projectRepository.create(name, prefix, isPublic = false)
+        val project = projectRepository.create(name, prefix)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -704,7 +674,7 @@ class AdminSettingsTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(

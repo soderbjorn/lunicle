@@ -87,7 +87,8 @@ class VocabularyTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -528,16 +529,15 @@ class VocabularyTest {
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
         val cookie = sessions.create(ordinary.id)
         // Since LNL-57 a private project is invisible to somebody holding
         // nothing in it, and an invisible project answers 404 to every route —
         // which would satisfy the refusals below whether or not the admin gates
         // still existed, and would defeat the "narrowed read" half outright.
-        // `view_project` grants no ability at all (see Role.VIEW_PROJECT), so a
+        // `view_project` grants no ability at all (see ProjectRole.VIEWER), so a
         // caller holding only it is still exactly the non-admin this test means.
-        roles.seed()
-        roles.grant(ordinary.id, fixture.projectId, Role.VIEW_PROJECT)
+        roles.setRole(ordinary.id, fixture.projectId, ProjectRole.VIEWER)
         val status = statuses.forProject(fixture.projectId).first()
         val label = labels.forProject(fixture.projectId).first()
 
@@ -600,7 +600,7 @@ class VocabularyTest {
         // self-grant of `create_issue` did not land. Spelled as the whole set
         // rather than "does not contain CREATE_ISSUE", so a write that smuggled
         // in some *other* role fails here too.
-        assertEquals(setOf(Role.VIEW_PROJECT), roles.rolesFor(ordinary.id, fixture.projectId))
+        assertEquals(setOf(ProjectRole.VIEWER), setOfNotNull(roles.roleFor(ordinary.id, fixture.projectId)))
     }
 
     /** No session at all is refused too, rather than falling through to a null user. */
@@ -680,7 +680,13 @@ class VocabularyTest {
      */
     private suspend fun seed(name: String = "Lunamux", prefix: String = "LMX"): Fixture {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", null))
-        val project = projectRepository.create(name, prefix, isPublic = false)
+        val project = projectRepository.create(name, prefix)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -740,7 +746,7 @@ class VocabularyTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(

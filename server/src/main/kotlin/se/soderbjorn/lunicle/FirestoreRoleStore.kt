@@ -1,43 +1,47 @@
 /**
- * The Firestore implementation of [se.soderbjorn.lunicle.store.RoleStore] — the
- * permission vocabulary, and who holds what where, over documents.
+ * The Firestore implementation of [se.soderbjorn.lunicle.store.RoleStore] — who
+ * stands where, over documents.
  *
- * ── Document model ──────────────────────────────────────────────────────────
+ * ── Two shapes, because there are two tables ────────────────────────────────
  *
- * A grant is a *document's presence*, exactly as `project_roles` is a *row's
- * presence* in SQLite — there is no "granted = 0". One document per (user, project,
- * role) grant in `projectRoles/{userId}_{projectId}_{roleKey}`, so [grant] is an
- * idempotent `set` on a deterministic key, [revoke] a delete of it (a delete of a
- * missing document is a no-op), and [hasRole] a single get by that key — no query
- * at all.
+ * **A person's rung in a project** is one document at
+ * `projectRoles/{userId}_{projectId}`, whose id is the pair it is about. That id is
+ * doing the work `PRIMARY KEY (user_id, project_id)` does on the SQLite side: there
+ * is nowhere to put a second rung for the same pair, so "one row per person per
+ * project" is structural here too rather than something the store remembers to
+ * enforce. [setRole] is an idempotent `set` on that key, clearing is a delete of it
+ * (a delete of a missing document is a no-op), and [roleFor] is a single get — no
+ * query, and no index.
  *
- * Every grant document carries four fields — `userId`, `projectId`, `roleKey`, and
- * the denormalised `userProjectId` (`"{userId}_{projectId}"`) — chosen so that
- * *all* the read queries are single-field equalities an automatic index serves, and
- * this store needs **no composite index**:
- *  - [isMember] and [rolesFor] filter on `userProjectId` (one field), not on the
- *    `userId AND projectId` pair that would have needed a composite index;
- *  - [memberIds] and [grantsForProject] filter on `projectId` (one field).
+ * The document also carries `userId` and `projectId` as fields, which looks
+ * redundant against the id and is not: it is what makes both directions a
+ * **single-field equality** an automatic index already serves. [rolesForUser]
+ * filters on `userId`, [rolesForProject] and [memberIds] on `projectId`, so this
+ * store needs **no composite index** and no scan of another collection.
  *
- * The [se.soderbjorn.lunicle.Role] vocabulary is a fact about this build, not data:
- * a grant stores the role's *key* and [rolesFor]/[grantsForProject] map it back
- * through [Role.entries], dropping a key this build has never heard of — the same
- * reading the SQLite store's `mapNotNull` takes of an unknown `role_key`.
+ * That is a deliberate reading of "a person's rungs must be readable in one go":
+ * what matters is that answering it is one round trip rather than a get per
+ * project, and a single-field query is one round trip. The alternative shape — a
+ * `{projectId: rung}` map on the user document — is also one read *in that
+ * direction*, and turns every project-scoped question ("who is on this board?",
+ * which the settings dialog and [ProjectAudience] both ask) into a scan of every
+ * account on the instance, because Firestore cannot query a map by a key it does
+ * not know in advance. One collection, indexed both ways, is one go in both
+ * directions.
  *
- * ── seed() ──────────────────────────────────────────────────────────────────
- *
- * The SQLite `seed` writes the `roles` table so `grant`'s `role_key → role_id`
- * join has something to hit. This backend needs no such join — a grant stores the
- * key directly — so [seed] here is near-vestigial, but it stays faithful to the
- * seam: it idempotently writes a `roles/{roleKey}` document per role (a batch
- * `set`, so re-running it changes nothing) and returns the vocabulary size, for the
- * startup log, exactly as the reference does.
+ * **A project's audience rows** live on the project document itself, in an
+ * `audienceRoles` map of audience key → rung key. There are at most three, they are
+ * read whenever the project's own row is being decided about, and a collection of
+ * their own would be a join on every permission check. This store reaches into
+ * `projects/{id}` to read and write that one field, which is the one place it
+ * touches a document it does not own — stated here because it is exactly the kind
+ * of reach that is invisible from the other side. See [FirestoreProjectStore] and
+ * its `AUDIENCE_ROLES` constant, which names the same field.
  *
  * ── There are no numeric ids to allocate ────────────────────────────────────
  *
- * Unlike most Firestore stores this one uses no [FirestoreCounters]: a grant is
- * addressed by its natural (user, project, role) key and a role by its enum key, so
- * nothing here mints a `Long`.
+ * Unlike most Firestore stores this one uses no [FirestoreCounters]: a rung is
+ * addressed by its natural (user, project) key, so nothing here mints a `Long`.
  *
  * @see FirestoreProvider
  * @see se.soderbjorn.lunicle.store.RoleStoreContract
@@ -45,89 +49,106 @@
 package se.soderbjorn.lunicle
 
 import com.google.cloud.firestore.Firestore
+import com.google.cloud.firestore.SetOptions
 import se.soderbjorn.lunicle.store.RoleStore
 
 class FirestoreRoleStore(
     private val firestore: Firestore,
 ) : RoleStore {
     private fun grants() = firestore.collection(GRANTS)
-    private fun roles() = firestore.collection(ROLES)
 
-    private fun grantKey(userId: Long, projectId: Long, role: Role) = "${userId}_${projectId}_${role.key}"
-    private fun userProjectKey(userId: Long, projectId: Long) = "${userId}_$projectId"
+    private fun projectDoc(projectId: Long) =
+        firestore.collection(FirestoreProjectStore.COLLECTION).document(projectId.toString())
+
+    private fun grantKey(userId: Long, projectId: Long) = "${userId}_$projectId"
+
+    /** One get by the pair's natural key — no query. An unknown rung reads as null. */
+    override suspend fun roleFor(userId: Long, projectId: Long): ProjectRole? =
+        grants().document(grantKey(userId, projectId)).get().await()
+            .getString(ROLE)?.let { ProjectRole.byKey(it) }
+
+    /** One single-field query on `userId`. See the class preamble on why this is one go. */
+    override suspend fun rolesForUser(userId: Long): Map<Long, ProjectRole> =
+        grants().whereEqualTo(USER_ID, userId).get().await()
+            .documents.mapNotNull { doc ->
+                val projectId = doc.getLong(PROJECT_ID) ?: return@mapNotNull null
+                val role = doc.getString(ROLE)?.let { ProjectRole.byKey(it) } ?: return@mapNotNull null
+                projectId to role
+            }
+            .toMap()
+
+    /** One single-field query on `projectId`. */
+    override suspend fun rolesForProject(projectId: Long): Map<Long, ProjectRole> =
+        grants().whereEqualTo(PROJECT_ID, projectId).get().await()
+            .documents.mapNotNull { doc ->
+                val userId = doc.getLong(USER_ID) ?: return@mapNotNull null
+                val role = doc.getString(ROLE)?.let { ProjectRole.byKey(it) } ?: return@mapNotNull null
+                userId to role
+            }
+            .toMap()
 
     /**
-     * Idempotently write the role vocabulary and report its size.
+     * Everyone with an own row here.
      *
-     * A batch `set` of one `roles/{roleKey}` document per [Role], so running it on
-     * every startup — fresh datastore or one that has served for a month — writes
-     * the same documents and changes nothing, the document form of the reference's
-     * `INSERT OR IGNORE`.
+     * Deliberately **not** `rolesForProject(projectId).keys`: a document naming a
+     * rung this build has never heard of is still somebody with a row, and dropping
+     * them from the membership set would make this disagree with SQLite's
+     * `SELECT user_id FROM project_roles`, which joins nothing and drops nobody.
      */
-    override suspend fun seed(): Int {
-        val batch = firestore.batch()
-        Role.entries.forEach { batch.set(roles().document(it.key), mapOf(ROLE_KEY to it.key, DESCRIPTION to it.description)) }
-        batch.commit().await()
-        return Role.entries.size
-    }
-
-    /** Does [userId] hold [role] in [projectId]? One get by the grant's natural key — no query. */
-    override suspend fun hasRole(userId: Long, projectId: Long, role: Role): Boolean =
-        grants().document(grantKey(userId, projectId, role)).get().await().exists()
-
-    /** Does [userId] hold anything at all in [projectId]? A single-field equality on the denormalised pair key. */
-    override suspend fun isMember(userId: Long, projectId: Long): Boolean =
-        grants().whereEqualTo(USER_PROJECT_ID, userProjectKey(userId, projectId)).limit(1)
-            .get().await().documents.isNotEmpty()
-
-    /** Everyone holding anything in [projectId], deduplicated across the roles a person may hold. */
     override suspend fun memberIds(projectId: Long): Set<Long> =
         grants().whereEqualTo(PROJECT_ID, projectId).get().await()
             .documents.mapNotNull { it.getLong(USER_ID) }.toSet()
 
-    /** Every role [userId] holds in [projectId], unknown keys dropped. One single-field query. */
-    override suspend fun rolesFor(userId: Long, projectId: Long): Set<Role> =
-        grants().whereEqualTo(USER_PROJECT_ID, userProjectKey(userId, projectId)).get().await()
-            .documents.mapNotNull { doc -> doc.getString(ROLE_KEY)?.let { key -> Role.entries.firstOrNull { it.key == key } } }
-            .toSet()
-
-    /** Every grant in [projectId], as user id → their roles, unknown keys dropped. */
-    override suspend fun grantsForProject(projectId: Long): Map<Long, Set<Role>> =
-        grants().whereEqualTo(PROJECT_ID, projectId).get().await()
-            .documents.mapNotNull { doc ->
-                val userId = doc.getLong(USER_ID) ?: return@mapNotNull null
-                val role = doc.getString(ROLE_KEY)?.let { key -> Role.entries.firstOrNull { it.key == key } }
-                    ?: return@mapNotNull null
-                userId to role
-            }
-            .groupBy({ it.first }, { it.second })
-            .mapValues { (_, roles) -> roles.toSet() }
-
-    /** Grant [role] to [userId] in [projectId]. Idempotent — same key, same document. */
-    override suspend fun grant(userId: Long, projectId: Long, role: Role) {
-        grants().document(grantKey(userId, projectId, role)).set(
-            mapOf(
-                USER_ID to userId,
-                PROJECT_ID to projectId,
-                ROLE_KEY to role.key,
-                USER_PROJECT_ID to userProjectKey(userId, projectId),
-            ),
-        ).await()
+    /** Idempotent: same key, same document. Null deletes it, which is not an error if it is absent. */
+    override suspend fun setRole(userId: Long, projectId: Long, role: ProjectRole?) {
+        val doc = grants().document(grantKey(userId, projectId))
+        if (role == null) {
+            doc.delete().await()
+        } else {
+            doc.set(mapOf(USER_ID to userId, PROJECT_ID to projectId, ROLE to role.key)).await()
+        }
     }
 
-    /** Take [role] away. Idempotent — a delete of a missing document is a no-op. */
-    override suspend fun revoke(userId: Long, projectId: Long, role: Role) {
-        grants().document(grantKey(userId, projectId, role)).delete().await()
+    /**
+     * The rungs [projectId] hands to whole audiences, off the project document.
+     *
+     * A missing document, a missing field, an unrecognised audience key and an
+     * unrecognised rung key all read as "not admitted", which is the safe direction
+     * for every one of them: the failure mode of guessing here is letting somebody
+     * in, and there is no guess that keeps somebody out by mistake that is worse.
+     */
+    override suspend fun audienceRoles(projectId: Long): Map<Audience, ProjectRole> {
+        val snapshot = projectDoc(projectId).get().await()
+        @Suppress("UNCHECKED_CAST")
+        val values = (snapshot.get(FirestoreProjectStore.AUDIENCE_ROLES) as? Map<String, Any?>).orEmpty()
+        return values.mapNotNull { (key, value) ->
+            val audience = Audience.byKey(key) ?: return@mapNotNull null
+            val role = (value as? String)?.let { ProjectRole.byKey(it) } ?: return@mapNotNull null
+            audience to role
+        }.toMap()
+    }
+
+    /**
+     * Set (or clear) one audience row, leaving the other two alone.
+     *
+     * A merge that writes a single map entry, exactly as [FirestoreUiSettingsStore]
+     * and [FirestoreInstanceSettingsStore] do — the document-model equivalent of a
+     * single-row `ON CONFLICT`. Clearing writes a null rather than removing the key,
+     * which reads back identically through the `as? String` above; one write path
+     * instead of a delete branch only this backend would have.
+     */
+    override suspend fun setAudienceRole(projectId: Long, audience: Audience, role: ProjectRole?) {
+        projectDoc(projectId).set(
+            mapOf(FirestoreProjectStore.AUDIENCE_ROLES to mapOf(audience.key to role?.key)),
+            SetOptions.merge(),
+        ).await()
     }
 
     internal companion object {
         const val GRANTS = "projectRoles"
-        const val ROLES = "roles"
 
         const val USER_ID = "userId"
         const val PROJECT_ID = "projectId"
-        const val ROLE_KEY = "roleKey"
-        const val USER_PROJECT_ID = "userProjectId"
-        const val DESCRIPTION = "description"
+        const val ROLE = "role"
     }
 }

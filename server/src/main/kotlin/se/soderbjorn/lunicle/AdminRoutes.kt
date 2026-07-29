@@ -67,20 +67,20 @@ fun Route.adminRoutes(deps: BoardDependencies) {
     /**
      * Permit one user to have agent access, or withdraw it.
      *
-     * Writes `mcp_allowed` and never `mcp_enabled`. An admin decides whether the
-     * user *may* connect an agent; whether they *have* is the user's own answer,
-     * given from their profile dialog, and this route cannot reach it. Granting
-     * permission therefore does not switch anybody on — it makes their own switch
-     * appear, which is the behaviour a permission should have.
+     * ── Currently a no-op, and answering honestly is the point ───────────────
      *
-     * An admin may do this to themselves, and it is allowed rather than special
-     * cased: their own row is in the list like everyone else's and the flag means
-     * the same thing on it. An admin *can* therefore withdraw their own access —
-     * which is recoverable in two clicks from this same dialog, since this is not
-     * the permission that governs opening it.
+     * This wrote `users.mcp_allowed`, an administrator's per-account permission,
+     * and LNL-191 dropped that column: every account is permitted, and only the
+     * user's own `mcp_enabled` decides. The route stays, still authorised, still
+     * returning the fresh state — so the dialog does not 404 and the client needs
+     * no change before tickets 3–5 rebuild it — and it stores nothing, which is
+     * why the response comes back with the switch unchanged rather than where the
+     * caller put it. A switch that reports the truth about what it did is a better
+     * intermediate state than one that pretends.
      *
-     * What it does *not* touch is admin-ness. There is no route anywhere that sets
-     * `is_admin`, and this is not the place to introduce one.
+     * TODO(LNL-192): per-tier MCP permission. When it lands, this route either
+     *  becomes a write against the instance ladder or goes away; it should not
+     *  quietly become a per-account column again.
      */
     post(ApiRoutes.ADMIN_USER_MCP) {
         val admin = call.adminCaller(deps, "change agent access") ?: return@post
@@ -92,10 +92,10 @@ fun Route.adminRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.NotFound, "No such user.")
             return@post
         }
-        deps.users.setMcpAllowed(target.id, body.isAllowed)
         logger.info(
-            "MCP: admin ${admin.id} ${if (body.isAllowed) "permitted" else "withdrew"} agent access " +
-                "for user ${target.id}",
+            "MCP: admin ${admin.id} asked to ${if (body.isAllowed) "permit" else "withdraw"} agent access " +
+                "for user ${target.id}, and nothing was stored — per-account MCP permission is gone " +
+                "(LNL-191) and returns per tier in LNL-192.",
         )
         call.respond(deps.buildAdminSettings(admin))
     }
@@ -229,7 +229,11 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
     // Read once per project rather than once per (user, project): the grants query
     // answers for a whole project at a time, and a directory of twenty accounts
     // across five projects is five queries this way and a hundred the other.
-    val grantsByProject = allProjects.associate { it.id to roles.grantsForProject(it.id) }
+    val rungsByProject = allProjects.associate { it.id to roles.rolesForProject(it.id) }
+    // The audience rows too, once per project: whether a person can see a board is
+    // now "an audience admits them, or they have an own row", and the first half is
+    // a fact about the project rather than about the pair.
+    val audiencesByProject = allProjects.associate { it.id to roles.audienceRoles(it.id) }
 
     // The General tab's switches (LNL-115), read together in one query. The write
     // returns this whole state, so a toggle re-renders the tab from the server's
@@ -243,7 +247,7 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
         // The enum, not a table read. `roles` associates users with these; it does
         // not define them, and a row naming a role this build has never heard of
         // grants nothing. Same as buildSettings. See RoleStore.seed.
-        roles = Role.entries.map { RoleDescription(it.key, it.description) },
+        roles = ProjectRole.entries.map { RoleDescription(it.key, it.description) },
         // The instance's projects, in the arranged order `selectAll` now returns —
         // the same list `allProjects` above already holds, mapped to the wire type
         // the Projects tab reorders and deletes from. See AdminSettingsState.projects.
@@ -252,8 +256,9 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                 id = it.id,
                 name = it.name,
                 namePrefix = it.namePrefix,
-                isPublic = it.isPublic,
-                visibleToAllSignedIn = it.visibleToAllSignedIn,
+                // Retired on the wire pending tickets 3–5; see ProjectSummary.
+                isPublic = false,
+                visibleToAllSignedIn = false,
                 discussionsEnabled = it.discussionsEnabled,
                 messagesEnabled = it.messagesEnabled,
             )
@@ -265,7 +270,7 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
         // this is the one screen that wants it: the impersonation menu reads the
         // same `selectAll` and is a flat list of people, where hoisting admins
         // would be a hierarchy nobody asked that menu to express.
-        users = users.selectAll().sortedWith(compareByDescending { it.isSysAdmin }).map { user ->
+        users = users.selectAll().sortedWith(compareByDescending { it.isInstanceAdmin }).map { user ->
             AdminUser(
                 userId = user.id,
                 name = user.resolvedName,
@@ -274,28 +279,36 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                 // admins only, and telling two same-named accounts apart is the
                 // screen's job.
                 email = user.email,
-                isSysAdmin = user.isSysAdmin,
+                isSysAdmin = user.isInstanceAdmin,
                 isSelf = user.id == caller.id,
-                isMcpAllowed = user.isMcpAllowed,
+                // Everybody, until LNL-192 — see UserRecord.isMcpPermitted and the
+                // MCP route above, which no longer stores anything.
+                isMcpAllowed = user.isMcpPermitted,
                 // Read-only on this screen — the user's own answer, reported so an
                 // admin can see why a freshly-permitted account still has no agent
                 // running. See AdminUser.
                 isMcpEnabled = user.isMcpEnabled,
                 projects = allProjects.map { project ->
-                    val held = grantsByProject[project.id]?.get(user.id).orEmpty()
+                    val own = rungsByProject[project.id]?.get(user.id)
                     AdminProjectRights(
                         projectId = project.id,
                         projectName = project.name,
-                        heldRoleKeys = held.map { it.key },
-                        // The effective read right, not the view_project grant.
-                        // Mirrors AccessControl.canReadProject — public to everyone,
-                        // or any role held here — minus its admin term, which does
-                        // not arise: an admin's row is a sentence, not a table (see
-                        // AdminSettingsBackingViewModel), so this flag is only ever
-                        // read for a non-admin. Computed off the grants already in
-                        // hand rather than a per-user canReadProject call, which
-                        // would be a second query per (user, project).
-                        canSeeProject = project.isPublic || held.isNotEmpty(),
+                        // At most one now — a person has one rung per project. The
+                        // wire field stays a list because tickets 3–5 rebuild this
+                        // table; a list of one renders as the row it is.
+                        heldRoleKeys = listOfNotNull(own?.key),
+                        // The effective read right, mirroring
+                        // AccessControl.effectiveRole: an audience row this account
+                        // matches, or their own row. Its administrator term does not
+                        // arise here — an admin's row is a sentence, not a table (see
+                        // AdminSettingsBackingViewModel) — so this is only ever read
+                        // for a non-admin. Computed off the two maps already in hand
+                        // rather than a per-user effectiveRole call, which would be
+                        // two queries per (user, project).
+                        canSeeProject = own != null ||
+                            audiencesByProject[project.id].orEmpty().keys.any {
+                                user.storedInstanceRole.atLeast(it.instanceRole)
+                            },
                     )
                 },
             )

@@ -32,6 +32,22 @@ data class InstanceSettings(
     val requireSignIn: Boolean = false,
     val anyoneCanCreateProject: Boolean = false,
     val hideDisplayName: Boolean = false,
+    /**
+     * Who owns this deployment — the top of the instance ladder — or null if nobody
+     * does yet (LNL-191).
+     *
+     * **The one setting here that is not a switch**, and it is here rather than as a
+     * third value on `users.instance_role` on purpose: as a column value, "exactly
+     * one owner, always" needs a partial unique index to enforce, and Firestore has
+     * no equivalent — so the two backends would disagree about the invariant the
+     * whole permission model rests on. As a single-valued setting it is structural
+     * in both: there is one field, so there is one owner.
+     *
+     * Null on a volume that has never had an owner seated, which the startup pass
+     * repairs by seating the first administrator. See stampUserKinds' neighbour,
+     * seatInstanceOwner.
+     */
+    val ownerUserId: Long? = null,
 )
 
 /** Reads and writes the deployment-wide switches. */
@@ -52,4 +68,14 @@ interface InstanceSettingsStore {
      * conflict worth reporting — last write wins.
      */
     suspend fun set(key: InstanceSettingKey, isEnabled: Boolean)
+
+    /**
+     * Hand the deployment to [userId], or to nobody.
+     *
+     * Not part of [set], because that takes an [InstanceSettingKey] and a boolean —
+     * a closed enum of switches, which this is not one of. Same last-write-wins
+     * semantics: transferring ownership has no history worth keeping here (the
+     * *audit* of who did it belongs to the route that did it, not to the setting).
+     */
+    suspend fun setOwnerUserId(userId: Long?)
 }

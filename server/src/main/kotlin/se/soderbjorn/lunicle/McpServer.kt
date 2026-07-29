@@ -259,6 +259,14 @@ private suspend fun processMessage(
     // Notifications need no response, whatever they say.
     if (method.startsWith("notifications/")) return null
 
+    // Hoisted out of the two builders below because both are permission questions
+    // and permission questions read stores (LNL-191) — a `buildJsonObject` lambda is
+    // not a suspend context, so the answer has to arrive before the builder starts.
+    // Computed unconditionally rather than per branch: two small reads on the two
+    // handshake methods is not a cost worth a lazy.
+    val instructions = tools.instructionsFor(user)
+    val offeredTools = tools.toolsFor(user)
+
     val result: JsonObject = when (method) {
         "initialize" -> buildJsonObject {
             // Echo the client's version rather than asserting ours. The protocol
@@ -281,14 +289,14 @@ private suspend fun processMessage(
             }
             // Lands in the agent's system prompt. See MCP_INSTRUCTIONS, and
             // instructionsFor for why the text depends on who is asking.
-            put("instructions", tools.instructionsFor(user))
+            put("instructions", instructions)
         }
 
         "ping" -> JsonObject(emptyMap())
 
         "tools/list" -> buildJsonObject {
             putJsonArray("tools") {
-                tools.toolsFor(user).forEach { tool ->
+                offeredTools.forEach { tool ->
                     add(
                         buildJsonObject {
                             put("name", tool.name)

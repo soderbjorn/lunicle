@@ -298,7 +298,7 @@ fun Application.module() {
     // rather than built inline at BoardDependencies because two things hold it,
     // and two of these would be two objects answering one question. See
     // ProjectAudience.
-    val projectAudience = ProjectAudience(users, roles)
+    val projectAudience = ProjectAudience(users, roles, instanceSettings)
     // The Discussion tab's two notifications. A third service rather than a wider
     // one, for the reason EmailNotifier's preamble gives — and the only one of the
     // three that takes a `ProjectAudience`, because a forum watcher's visibility
@@ -325,7 +325,7 @@ fun Application.module() {
         issues, comments, statuses, priorities, attachmentRepository, attachments, notifications, subscriptions,
         issueHistory,
     )
-    val access = AccessControl(roles)
+    val access = AccessControl(roles, instanceSettings)
     // The discussion and Messages repositories — backend-agnostic rules over the
     // graph's forum/post/comment and conversation/message stores (rebound above), the
     // same on either backend.
@@ -422,10 +422,15 @@ fun Application.module() {
         // openDatabase is fatal on a bad schema: a server behind its build must not serve.
         stores.migrate()
 
-        // Unconditional and idempotent (INSERT OR IGNORE), which is what lets a
-        // fresh volume, a purged one, and one that has been serving for a month
-        // all take the same code path. See RoleStore.seed.
-        log.info("Roles available: ${roles.seed()}")
+        // Both unconditional and both idempotent, which is what lets a fresh volume,
+        // a purged one, and one that has been serving for a month all take the same
+        // code path — and what makes an interrupted run a non-event. See
+        // stampUserKinds and seatInstanceOwner.
+        val stamped = stampUserKinds(users, brandInfo?.googleHostedDomain)
+        if (stamped > 0) log.info("Instance: re-derived the staff/member kind of $stamped account(s)")
+        seatInstanceOwner(users, instanceSettings)?.let {
+            log.info("Instance: seated user $it as the instance owner — nobody held it")
+        }
 
         val removed = sessions.deleteExpired()
         if (removed > 0) log.info("Removed $removed expired session(s)")

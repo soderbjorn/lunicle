@@ -37,7 +37,7 @@ import se.soderbjorn.lunicle.UserStore
 import se.soderbjorn.lunicle.VocabularyRecord
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
-import se.soderbjorn.lunicle.Role
+import se.soderbjorn.lunicle.ProjectRole
 
 class SqlDelightProjectProvisioningContractTest : ProjectProvisioningContract() {
     private val fixture = SqlDelightContractFixture()
@@ -59,7 +59,7 @@ class SqlDelightProjectProvisioningContractTest : ProjectProvisioningContract() 
     private val comments = CommentStore(db)
     private val events = IssueEventStore(db)
     private val subscriptions = SubscriptionStore(db)
-    private val roles = RoleStore(db).also { runBlocking { it.seed() } }
+    private val roles = RoleStore(db)
     private val forums = ForumStore(db)
     private val posts = ForumPostStore(db)
 
@@ -103,7 +103,7 @@ class SqlDelightProjectProvisioningContractTest : ProjectProvisioningContract() 
         )
         subscriptions.setIssueUpdateSubscription(user, issueId, true)
         subscriptions.setProjectNewIssueSubscription(user, projectId, true)
-        roles.grant(user, projectId, Role.CREATE_ISSUE)
+        roles.setRole(user, projectId, ProjectRole.CONTRIBUTOR)
         attachmentStore.insertForIssue(
             issueId = issueId, filename = "shot-$n.png", mimeType = "image/png", byteSize = 1,
             storageKey = "cascade-key-$n", publicId = "cascade-pub-$n", author = Author.Nobody,
@@ -123,7 +123,7 @@ class SqlDelightProjectProvisioningContractTest : ProjectProvisioningContract() 
     override suspend fun forumExists(id: Long): Boolean = forums.findById(id) != null
     override suspend fun postCountOf(forumId: Long): Int = posts.forForum(forumId).size
     override suspend fun attachmentCountOf(projectId: Long): Int = attachmentStore.keysForProject(projectId).size
-    override suspend fun roleGrantCountOf(projectId: Long): Int = roles.grantsForProject(projectId).size
+    override suspend fun roleGrantCountOf(projectId: Long): Int = roles.rolesForProject(projectId).size
 
     override suspend fun projectWatcherCountOf(projectId: Long): Int =
         subscriptions.audienceForProjectNewIssue(projectId, actorId = null).size

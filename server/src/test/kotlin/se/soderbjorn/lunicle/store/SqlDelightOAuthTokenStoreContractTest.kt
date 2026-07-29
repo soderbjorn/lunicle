@@ -41,7 +41,6 @@ class SqlDelightOAuthTokenStoreContractTest : OAuthTokenStoreContract() {
     override suspend fun mcpUserId(): Long {
         val n = seq++
         val id = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "mcp-$n", "User $n", null)).id
-        users.setMcpAllowed(id, true)
         users.setMcpEnabled(id, true)
         return id
     }

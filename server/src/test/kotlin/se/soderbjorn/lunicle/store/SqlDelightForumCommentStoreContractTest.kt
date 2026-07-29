@@ -36,7 +36,7 @@ class SqlDelightForumCommentStoreContractTest : ForumCommentStoreContract() {
 
     override suspend fun newPost(): Long {
         val n = seq++
-        val project = projectRepository.create("Project ${n}", "FC${n}", isPublic = false).id
+        val project = projectRepository.create("Project ${n}", "FC${n}").id
         val forum = forums.insert(project, "Forum ${n}", null).id
         val post = posts.insertDraft(forum, Author.Nobody, createdAt = 1_000)
         posts.publish(post, "Post ${n}", "Body ${n}")

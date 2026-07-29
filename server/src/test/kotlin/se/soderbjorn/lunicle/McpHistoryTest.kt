@@ -88,7 +88,8 @@ class McpHistoryTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -311,7 +312,7 @@ class McpHistoryTest {
     fun `an edit is recorded under the caller, not the issue's author`(): Unit = runBlocking {
         val fixture = seed()
         val reporter = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-otto", "Otto", "otto@example.com"))
-        roles.grant(reporter.id, fixture.projectId, Role.CREATE_ISSUE)
+        roles.setRole(reporter.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         val reporterToken = tokenFor(reporter.id)
         val adminToken = tokenFor(fixture.adminId)
         val target = statuses.forProject(fixture.projectId)[1]
@@ -506,8 +507,8 @@ class McpHistoryTest {
         val fixture = seed()
         val adminToken = tokenFor(fixture.adminId)
         val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"))
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        roles.grant(ordinary.id, fixture.projectId, Role.CREATE_ISSUE)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        roles.setRole(ordinary.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         val ordinaryToken = tokenFor(ordinary.id)
 
         withMcp { client ->
@@ -632,7 +633,7 @@ class McpHistoryTest {
     fun `an ordinary user watches only themselves`(): Unit = runBlocking {
         val fixture = seed()
         val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ord", "Ordinary", "ordinary@example.com"))
-        roles.grant(ordinary.id, fixture.projectId, Role.CREATE_ISSUE)
+        roles.setRole(ordinary.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         val otto = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-otto", "Otto", "otto@example.com"))
         val adminToken = tokenFor(fixture.adminId)
         val ordinaryToken = tokenFor(ordinary.id)
@@ -661,9 +662,14 @@ class McpHistoryTest {
 
     /** The instance admin — who can do everything a history test needs — and a project. */
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
+        val project = projectRepository.create("Lunamux", "LMX")
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -678,7 +684,6 @@ class McpHistoryTest {
 
     /** A real access token for [userId], with MCP enabled — see McpAgentNameTest.tokenFor. */
     private suspend fun tokenFor(userId: Long): String {
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client = clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
         return tokens.issueTokens(userId, client.clientId, "mcp", "http://localhost/mcp").accessToken
@@ -736,7 +741,7 @@ class McpHistoryTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(

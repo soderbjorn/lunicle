@@ -143,5 +143,5 @@ data class Caller(
     val isImpersonating: Boolean = false,
 ) {
     /** Whether the *real* user may impersonate. The menu's gate, and the routes'. */
-    val canImpersonate: Boolean get() = real?.isSysAdmin == true
+    val canImpersonate: Boolean get() = real?.isInstanceAdmin == true
 }

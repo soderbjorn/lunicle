@@ -92,7 +92,8 @@ class McpDeleteTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -215,7 +216,7 @@ class McpDeleteTest {
     fun `a private project the caller holds nothing in is invisible, so the refusal hides it`(): Unit =
         runBlocking {
             val f = seed()
-            val other = projectRepository.create("Secret", "SEC", isPublic = false)
+            val other = projectRepository.create("Secret", "SEC")
             val created = issueRepository.createDraft(other.id, Author.Account(f.adminId))
 
             withMcp { client ->
@@ -243,9 +244,9 @@ class McpDeleteTest {
     fun `a member of a private project gets the permission refusal, not the invisible one`(): Unit =
         runBlocking {
             val f = seed()
-            val other = projectRepository.create("Secret", "SEC", isPublic = false)
+            val other = projectRepository.create("Secret", "SEC")
             val created = issueRepository.createDraft(other.id, Author.Account(f.adminId))
-            roles.grant(f.ordinaryId, other.id, Role.VIEW_PROJECT)
+            roles.setRole(f.ordinaryId, other.id, ProjectRole.VIEWER)
 
             withMcp { client ->
                 val result =
@@ -291,19 +292,33 @@ class McpDeleteTest {
     // ── The roles diverge ────────────────────────────────────────────────────
 
     /**
-     * `change_unowned_issues` reaches an issue…
+     * A maintainer edits anyone's issue and does **not** delete one; an administrator
+     * does.
      *
-     * Half a claim on its own; it exists to be read against the test below it.
+     * This test used to read "change_unowned_issues lets you delete someone else's
+     * issue", because deleting was the same rule as editing on the argument that
+     * anyone who can open the modal can already empty the issue of everything it
+     * said. LNL-191 draws the line one rung higher instead: emptying an issue leaves
+     * a row somebody can still find and argue with, and deleting it does not. So the
+     * claim is inverted rather than dropped, and the administrator half is asserted
+     * in the same test so the pair cannot drift into "nobody can delete".
      */
     @Test
-    fun `change_unowned_issues lets you delete someone elses issue`(): Unit = runBlocking {
+    fun `a maintainer does not delete someone elses issue, and an administrator does`(): Unit = runBlocking {
         val f = seed()
-        roles.grant(f.ordinaryId, f.projectId, Role.CHANGE_UNOWNED_ISSUES)
+        roles.setRole(f.ordinaryId, f.projectId, ProjectRole.MAINTAINER)
         val issueId = published(f, author = Author.Account(f.adminId))
 
         withMcp { client ->
-            val result = client.callTool(tokenFor(f.ordinaryId), "delete_issue", """{"issue_id":$issueId}""")
-            assertTrue(!result.isError, "change_unowned_issues did not reach deletion: ${result.text}")
+            val refused = client.callTool(tokenFor(f.ordinaryId), "delete_issue", """{"issue_id":$issueId}""")
+            assertTrue(refused.isError, "A maintainer deleted somebody else's issue.")
+        }
+        assertNotNull(issues.findById(issueId), "A refused delete removed the issue anyway.")
+
+        roles.setRole(f.ordinaryId, f.projectId, ProjectRole.ADMIN)
+        withMcp { client ->
+            val allowed = client.callTool(tokenFor(f.ordinaryId), "delete_issue", """{"issue_id":$issueId}""")
+            assertTrue(!allowed.isError, "An administrator could not delete an issue: ${allowed.text}")
         }
         assertNull(issues.findById(issueId))
     }
@@ -318,9 +333,9 @@ class McpDeleteTest {
      * erase other people's words in projects that granted it long ago.
      */
     @Test
-    fun `change_unowned_issues does NOT let you delete someone elses comment`(): Unit = runBlocking {
+    fun `a maintainer does NOT delete someone elses comment`(): Unit = runBlocking {
         val f = seed()
-        roles.grant(f.ordinaryId, f.projectId, Role.CHANGE_UNOWNED_ISSUES)
+        roles.setRole(f.ordinaryId, f.projectId, ProjectRole.MAINTAINER)
         val issueId = published(f, author = Author.Account(f.adminId))
         val commentId = commentBy(issueId, Author.Account(f.adminId), body = "words that are not yours")
 
@@ -345,15 +360,20 @@ class McpDeleteTest {
     private class Fixture(val adminId: Long, val ordinaryId: Long, val projectId: Long)
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        roles.grant(ordinary.id, project.id, Role.CREATE_ISSUE)
-        roles.grant(ordinary.id, project.id, Role.COMMENT_ON_ISSUE)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        val project = projectRepository.create("Lunamux", "LMX")
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, ordinary.id, project.id)
     }
 
@@ -386,7 +406,6 @@ class McpDeleteTest {
 
     /** A real access token for [userId], with MCP enabled — see McpCommentEditTest.tokenFor. */
     private suspend fun tokenFor(userId: Long): String {
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client =
             clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
@@ -443,7 +462,7 @@ class McpDeleteTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(

@@ -33,8 +33,8 @@ abstract class UserStoreContract {
     fun `the first account created is the instance admin, later ones are not`() = runBlocking {
         val first = store.upsert(identity("gh-1", null))
         val second = store.upsert(identity("gh-2", null))
-        assertTrue(first.isSysAdmin, "the first user to sign in is the instance admin")
-        assertFalse(second.isSysAdmin)
+        assertTrue(first.isInstanceAdmin, "the first user to sign in is the instance admin")
+        assertFalse(second.isInstanceAdmin)
     }
 
     @Test
@@ -81,14 +81,12 @@ abstract class UserStoreContract {
         store.setDisplayName(user.id, "Ada")
         store.setEmail(user.id, "ada@example.com", isVerified = true)
         store.setMcpEnabled(user.id, true)
-        store.setMcpAllowed(user.id, true)
 
         val reread = store.findById(user.id)!!
         assertEquals("Ada", reread.displayNameOverride)
         assertEquals("ada@example.com", reread.email)
         assertTrue(reread.isEmailVerified)
         assertTrue(reread.isMcpEnabled)
-        assertTrue(reread.isMcpAllowed)
 
         store.setDisplayName(user.id, "   ")
         assertEquals(null, store.findById(user.id)?.displayNameOverride, "a blank override clears it")

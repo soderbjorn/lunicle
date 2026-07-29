@@ -18,7 +18,9 @@
  */
 package se.soderbjorn.lunicle.store
 
+import se.soderbjorn.lunicle.InstanceRole
 import se.soderbjorn.lunicle.ProviderIdentity
+import se.soderbjorn.lunicle.UserKind
 import se.soderbjorn.lunicle.UserRecord
 
 interface UserStore {
@@ -26,8 +28,15 @@ interface UserStore {
      * Find the user behind a provider identity — by verified e-mail first, then by
      * the provider pair — creating them on first sign-in (the first ever becomes
      * the instance admin) and refreshing their provider name on every later one.
+     *
+     * @param kind the staff/member answer this sign-in earns, from
+     *   [UserKind.forEmail]. Passed in rather than derived here because the rule
+     *   needs the deployment's domain, which is configuration and not a fact a store
+     *   should be holding. It defaults to the lesser value, so a caller that has no
+     *   domain to match against — and every test fixture — lands on `member` and is
+     *   corrected by the startup stamp rather than being over-privileged.
      */
-    suspend fun upsert(identity: ProviderIdentity): UserRecord
+    suspend fun upsert(identity: ProviderIdentity, kind: UserKind = UserKind.MEMBER): UserRecord
 
     /** The user with [id], or null. */
     suspend fun findById(id: Long): UserRecord?
@@ -44,6 +53,16 @@ interface UserStore {
     /** The account's own agent-access switch. */
     suspend fun setMcpEnabled(id: Long, isEnabled: Boolean)
 
-    /** Whether an admin has granted this account permission to hold agent access. */
-    suspend fun setMcpAllowed(id: Long, isAllowed: Boolean)
+    /**
+     * The derived staff/member kind. Written by sign-in and by the startup stamp,
+     * both from [UserKind.forEmail], and by nothing else.
+     */
+    suspend fun setKind(id: Long, kind: UserKind)
+
+    /**
+     * Put this account on the instance ladder at [InstanceRole.ADMIN], or take it
+     * off. Ownership is a setting and does not come through here — see
+     * [InstanceSettingsStore.setOwnerUserId].
+     */
+    suspend fun setInstanceAdmin(id: Long, isAdmin: Boolean)
 }

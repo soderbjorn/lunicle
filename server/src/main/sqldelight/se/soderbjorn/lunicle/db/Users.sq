@@ -94,8 +94,46 @@ CREATE TABLE users (
     -- nothing to have verified, so 0 is also the only sensible value there.
     email_verified INTEGER NOT NULL DEFAULT 0,
 
-    is_sys_admin INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
+    -- Where this account stands on the *instance* ladder, or NULL for "nowhere in
+    -- particular" — which is where all but a handful of accounts stand.
+    --
+    -- Only ever `'admin'` today. It replaces `is_sys_admin`, dropped in 33.sqm, and
+    -- the change of shape is the point: a boolean could say one thing, and the
+    -- ladder has five rungs (guest, member, staff, admin, owner). Two of those are
+    -- deliberately NOT values here:
+    --
+    --  - **guest** is the *absence of a row in this table*. There is nothing to
+    --    store about somebody who has no account.
+    --  - **owner** is `instance_settings.owner_user_id`, a single-valued setting.
+    --    That is not tidiness: as a third enum value, "exactly one owner, always"
+    --    would need a partial unique index to enforce — which Firestore has no
+    --    equivalent of, so the two backends would disagree about an invariant the
+    --    whole permission model rests on. As a setting it is structural in both.
+    --
+    -- So the honest reading of this column is "is this account an instance
+    -- administrator", and UserRecord.isInstanceAdmin is what it becomes.
+    instance_role TEXT,
+
+    -- Whether this account belongs to the deployment's own domain: `staff`, or
+    -- `member` for everybody else. The middle two rungs of the instance ladder, and
+    -- exactly the audiences a project can hand a rung to — one vocabulary, not two.
+    --
+    -- **Never written by hand.** It is derived by matching the address against the
+    -- deployment's domain, at sign-in and by the startup stamp, from one function
+    -- (UserKind.forEmail) that both call. That is what makes an interrupted backfill
+    -- a non-event: re-deriving is the same answer, so there is nothing to reconcile.
+    -- Default `member`, the lesser answer, which is also what every account on a
+    -- deployment with no domain configured stays.
+    kind TEXT NOT NULL DEFAULT 'member',
+
+    -- When this row came into existence. Renamed from `created_at` in 33.sqm, and
+    -- the rename is a change of meaning rather than a tidy-up: a row no longer has
+    -- to be the residue of a sign-in. An administrator can name somebody who has
+    -- never been here, and that placeholder can already hold a project rung, so the
+    -- date this table can honestly report is when the person was *added* — not when
+    -- they first arrived. Guest needs no column beside it, for instance_role's
+    -- reason: guest is the absence of a row.
+    added_at INTEGER NOT NULL,
 
     -- Whether this user HAS TURNED ON agent access. Their own choice, made from
     -- the MCP tab of their profile dialog.
@@ -109,45 +147,24 @@ CREATE TABLE users (
     -- off does NOT delete grants; turning it back on restores them. Deleting is
     -- what Revoke is for, and conflating the two would surprise people.
     --
-    -- ── Not the same thing as mcp_allowed, and the pair is the point ─────────
+    -- ── The user's half of a pair whose other half is currently absent ───────
     --
-    -- This one answers "did the user switch it on". The next one answers "is the
-    -- user permitted to have the switch at all". Those are two different people's
-    -- decisions and they must not share a column: an admin revoking permission
-    -- would otherwise erase the user's own preference, so restoring permission
-    -- would leave them switched off with nothing to say whether they had ever
-    -- turned it on. Every gate reads BOTH — see UserRecord.canUseMcp.
+    -- This answers "did the user switch it on", and it sat beside `mcp_allowed`,
+    -- which answered "is the user permitted to have the switch at all". Two
+    -- different people's decisions, which is why they were never one column: an
+    -- admin revoking permission would otherwise erase the user's own preference.
+    -- That reasoning survives; the column does not — see below. Every gate still
+    -- reads the pair through UserRecord.canUseMcp rather than reading this
+    -- directly, so restoring the other half stays a one-line change.
     mcp_enabled INTEGER NOT NULL DEFAULT 0,
 
-    -- Whether an admin PERMITS this user to have agent access at all. Not theirs
-    -- to set; see the instance settings dialog and AdminRoutes.
-    --
-    -- Off by default, and 6.sqm adds it with DEFAULT 0 and no back-fill — so
-    -- every account that existed before this shipped lands on "not permitted",
-    -- deliberately. Permission is granted, never assumed, and a migration that
-    -- silently carried everyone forward as permitted would defeat the feature on
-    -- exactly the deployment where it matters. The consequence is real and was
-    -- accepted: agents stop at the next deploy until an admin grants access.
-    --
-    -- Admin-ness DOES short-circuit this, as it does every rule in AccessControl:
-    -- an admin is permitted whether or not this column says so. So this column is
-    -- the grant an admin makes to somebody else, and reading it alone is not the
-    -- permission question — see UserRecord.isMcpPermitted, which is the answer,
-    -- and canUseMcp, which is the only thing an MCP gate may read.
-    --
-    -- It follows that this column is never worth back-filling when an account
-    -- becomes an admin, and that an admin's own row sitting at 0 is not a state
-    -- anybody needs to repair.
-    --
-    -- (This paragraph used to say the opposite, and the code agreed with it. The
-    -- reversal is deliberate: a permission with a silent exception is hard to
-    -- reason about, but an admin who cannot administer is worse, and every other
-    -- rule in this codebase already lets an admin past.)
-    --
-    -- A column here rather than a row in `roles` for the same reason `is_sys_admin`
-    -- is: it is global to the account, not scoped to a project, and there is no
-    -- project it could hang off.
-    mcp_allowed INTEGER NOT NULL DEFAULT 0,
+    -- `mcp_allowed` was here, and 33.sqm dropped it (LNL-191). It was an admin's
+    -- per-account permission to hold agent access at all, paired with mcp_enabled
+    -- above — the user's own switch. The pairing survives in spirit and returns in
+    -- LNL-192 as a per-tier permission on the instance ladder rather than a column
+    -- somebody ticks per person; until then every account is permitted and only
+    -- mcp_enabled decides. See UserRecord.isMcpPermitted, which is where the TODO is.
+
 
     -- How this row was created, and — for a row with no verified address — still
     -- the only way to find it again. Scoped by provider, not global: nothing stops
@@ -191,7 +208,7 @@ CREATE UNIQUE INDEX users_email_unique ON users(email) WHERE email IS NOT NULL;
 -- RETURNING avoids a second round-trip for the id, and works because the
 -- 3.38 dialect is declared in server/build.gradle.kts.
 upsert:
-INSERT INTO users (provider, provider_id, provider_name, email, email_verified, is_sys_admin, created_at)
+INSERT INTO users (provider, provider_id, provider_name, email, email_verified, kind, instance_role, added_at)
 VALUES (
     :provider, :providerId, :providerName, :email,
     -- Derived from the address rather than passed beside it, so the two cannot be
@@ -199,9 +216,13 @@ VALUES (
     -- one a provider confirmed or a mailed code proved — see ProviderIdentity.email,
     -- which drops an unconfirmed address rather than carrying it with a caveat.
     CASE WHEN :email IS NOT NULL THEN 1 ELSE 0 END,
-    -- The first user to sign in becomes the instance admin.
+    -- Derived from the address against the deployment's domain, by the caller,
+    -- through UserKind.forEmail — the same function the startup stamp runs, so a
+    -- row written here and a row re-stamped later agree by construction.
+    :kind,
+    -- The first user to sign in becomes the instance administrator.
     --
-    -- Evaluated before this row lands, so it is 1 only on a genuinely empty
+    -- Evaluated before this row lands, so it is 'admin' only on a genuinely empty
     -- table. EXISTS rather than count(*) — it stops at the first row.
     --
     -- Inside the INSERT rather than a separate `SELECT count(*)` then insert,
@@ -210,8 +231,12 @@ VALUES (
     -- serializes every query to one thread so this cannot bite today; this is
     -- belt to that brace, and it costs one subquery on a statement that runs
     -- once per sign-in.
-    (SELECT CASE WHEN EXISTS(SELECT 1 FROM users) THEN 0 ELSE 1 END),
-    :createdAt
+    --
+    -- Note it does NOT make them the instance *owner*. On a fresh volume that is
+    -- seated separately, by the same startup pass that stamps kinds — ownership is
+    -- a setting, and a setting is not something an INSERT can claim atomically.
+    (SELECT CASE WHEN EXISTS(SELECT 1 FROM users) THEN NULL ELSE 'admin' END),
+    :addedAt
 )
 ON CONFLICT (provider, provider_id) DO UPDATE SET
     provider_name = excluded.provider_name,
@@ -224,22 +249,21 @@ ON CONFLICT (provider, provider_id) DO UPDATE SET
     -- that was proved last week; a sign-in carrying one has, by construction,
     -- proved it. The alternative — a flat `= 1` — would mark an address verified
     -- on the strength of a sign-in that said nothing about it.
-    email_verified = CASE WHEN excluded.email IS NOT NULL THEN 1 ELSE users.email_verified END
-    -- is_sys_admin, display_name, mcp_enabled and mcp_allowed are deliberately
-    -- absent. Recomputing admin on every sign-in would be a bug with teeth;
+    email_verified = CASE WHEN excluded.email IS NOT NULL THEN 1 ELSE users.email_verified END,
+    -- `kind` follows, because it is derived rather than chosen: an account that
+    -- has moved onto (or off) the deployment's domain is staff (or not) from this
+    -- sign-in on, and re-deriving it is the same rule the startup stamp applies.
+    kind = :kind
+    -- instance_role, display_name and mcp_enabled are deliberately absent.
+    -- Recomputing instance_role on every sign-in would be a bug with teeth;
     -- display_name is the user's — the provider has no business overwriting it —
     -- and mcp_enabled is a setting the user chose, which signing in again is not
     -- a request to revisit. Resetting it here would silently disconnect every
     -- agent the moment its owner opened the web app.
-    --
-    -- mcp_allowed is absent for a sharper reason than any of those: it is an
-    -- admin's decision, and this statement runs on behalf of whoever is signing
-    -- in. A user who could reset their own permission by signing out and back in
-    -- would not have a permission.
-RETURNING id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed;
+RETURNING id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled;
 
 findById:
-SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
 FROM users
 WHERE id = ?;
 
@@ -259,7 +283,7 @@ WHERE id = ?;
 -- exactly those people in a second account, which is the failure this ticket
 -- exists to prevent.
 findByEmail:
-SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
 FROM users
 WHERE email = ?;
 
@@ -270,14 +294,14 @@ WHERE email = ?;
 -- theirs to change, and the verified flag, because arriving here at all means the
 -- address was just proved again.
 --
--- What it pointedly does not touch is the same list: `is_sys_admin`,
--- `display_name`, `mcp_enabled`, `mcp_allowed` — and now also `provider` and
+-- What it pointedly does not touch is the same list: `instance_role`,
+-- `display_name`, `mcp_enabled` — and now also `provider` and
 -- `provider_id`, which record how the row was *created* and would otherwise be
 -- rewritten every time somebody signed in by a different method than they
 -- registered with. `email` itself is not touched either: it is what was matched
 -- on, so writing it would be writing the value back over itself.
 refreshOnSignIn:
-UPDATE users SET provider_name = ?, email_verified = 1 WHERE id = ?;
+UPDATE users SET provider_name = ?, kind = ?, email_verified = 1 WHERE id = ?;
 
 -- Every account, for the admin's impersonation menu — and for nothing else.
 --
@@ -290,7 +314,7 @@ UPDATE users SET provider_name = ?, email_verified = 1 WHERE id = ?;
 -- Ordered by the name the menu shows, not by id: the menu is a list a human
 -- scans, and insertion order is meaningless to them.
 selectAll:
-SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, is_sys_admin, mcp_enabled, mcp_allowed
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
 FROM users
 ORDER BY COALESCE(display_name, provider_name) COLLATE NOCASE;
 
@@ -317,8 +341,12 @@ UPDATE users SET email = ?, email_verified = ? WHERE id = ?;
 setMcpEnabled:
 UPDATE users SET mcp_enabled = ? WHERE id = ?;
 
--- The admin's MCP permission. A separate statement from setMcpEnabled rather
--- than one that writes both, because they are two different people's decisions
--- and the whole point of the pair is that neither overwrites the other.
-setMcpAllowed:
-UPDATE users SET mcp_allowed = ? WHERE id = ?;
+-- The derived staff/member kind. Written by sign-in and by the startup stamp, both
+-- from UserKind.forEmail, and by nothing else — this is not a switch anybody sets.
+setKind:
+UPDATE users SET kind = ? WHERE id = ?;
+
+-- Where this account stands on the instance ladder: 'admin', or NULL for nowhere in
+-- particular. Ownership does not come through here; it is a setting. See the column.
+setInstanceRole:
+UPDATE users SET instance_role = ? WHERE id = ?;

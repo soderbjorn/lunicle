@@ -116,10 +116,9 @@ class MentionRenameTest {
     private data class Fixture(val userId: Long, val graceId: Long, val projectId: Long)
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val user = users.upsert(ProviderIdentity(AuthProvider.GOOGLE, "g-1", "Robert", "robert@example.com"))
         val grace = users.upsert(ProviderIdentity(AuthProvider.GOOGLE, "g-2", "Grace", "grace@example.com"))
-        val project = projectRepository.create("Lunicle", "LNL", isPublic = false)
+        val project = projectRepository.create("Lunicle", "LNL")
         return Fixture(userId = user.id, graceId = grace.id, projectId = project.id)
     }
 

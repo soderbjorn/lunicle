@@ -179,23 +179,24 @@ data class VocabularyEntry(
 )
 
 /**
- * The one role key both halves of the wire have to know by name.
+ * The one rung key both halves of the wire have to know by name.
  *
- * The rest of the role vocabulary the client renders blindly — a key it does not
- * recognise is just a checkbox it draws from [RoleDescription.description] without
- * knowing what it means, which is the point of sending descriptions at all. This
- * one is the exception: `view_project` does not mean what "holds this role" means.
- * [se.soderbjorn.lunicle.AccessControl.canReadProject] says a public project is
- * visible to everyone, and holding *any* role implies it — so the admin dialog's
- * "see this project" row is driven off an effective flag, not the raw grant, and
- * both sides need the same string to agree on which row that is.
+ * The rest of the ladder the client renders blindly — a key it does not recognise
+ * is just a row it draws from [RoleDescription.description] without knowing what it
+ * means, which is the point of sending descriptions at all. This one is the
+ * exception: `viewer` does not mean what "holds this rung" means.
+ * [se.soderbjorn.lunicle.AccessControl.effectiveRole] says an audience row can put
+ * somebody on a rung without their holding one, and every rung above viewer
+ * contains it — so the admin dialog's "see this project" row is driven off an
+ * effective flag, not the raw grant, and both sides need the same string to agree
+ * on which row that is.
  *
- * Hoisted here, and referenced by the server's [se.soderbjorn.lunicle.Role] enum
- * rather than restated, so the two literally cannot drift: the enum's key and this
- * constant are the same symbol.
+ * Hoisted here, and referenced by the server's
+ * [se.soderbjorn.lunicle.ProjectRole] enum rather than restated, so the two
+ * literally cannot drift.
  */
 object RoleKeys {
-    const val VIEW_PROJECT: String = "view_project"
+    const val VIEWER: String = "viewer"
 }
 
 /**

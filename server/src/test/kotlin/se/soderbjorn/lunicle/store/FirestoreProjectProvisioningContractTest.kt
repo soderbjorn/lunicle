@@ -39,7 +39,7 @@ import se.soderbjorn.lunicle.FirestoreStatusStore
 import se.soderbjorn.lunicle.FirestoreSubscriptionStore
 import se.soderbjorn.lunicle.NewIssueEvent
 import se.soderbjorn.lunicle.ProjectRecord
-import se.soderbjorn.lunicle.Role
+import se.soderbjorn.lunicle.ProjectRole
 import se.soderbjorn.lunicle.StatusRecord
 import se.soderbjorn.lunicle.VocabularyRecord
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
@@ -139,7 +139,7 @@ class FirestoreProjectProvisioningContractTest : ProjectProvisioningContract() {
         )
         subscriptions.setIssueUpdateSubscription(user, issueId, true)
         subscriptions.setProjectNewIssueSubscription(user, projectId, true)
-        roles.grant(user, projectId, Role.CREATE_ISSUE)
+        roles.setRole(user, projectId, ProjectRole.CONTRIBUTOR)
         // The scope resolver above answers forIssue with issueId only, so this row
         // would carry no scopeProjectId — and the project cascade reads exactly that
         // field. Resolving the real scope here is what makes the attachment assertion
@@ -164,7 +164,7 @@ class FirestoreProjectProvisioningContractTest : ProjectProvisioningContract() {
     override suspend fun forumExists(id: Long): Boolean = forums.findById(id) != null
     override suspend fun postCountOf(forumId: Long): Int = posts.forForum(forumId).size
     override suspend fun attachmentCountOf(projectId: Long): Int = attachmentStore.keysForProject(projectId).size
-    override suspend fun roleGrantCountOf(projectId: Long): Int = roles.grantsForProject(projectId).size
+    override suspend fun roleGrantCountOf(projectId: Long): Int = roles.rolesForProject(projectId).size
 
     override suspend fun projectWatcherCountOf(projectId: Long): Int =
         subscriptions.audienceForProjectNewIssue(projectId, actorId = null).size

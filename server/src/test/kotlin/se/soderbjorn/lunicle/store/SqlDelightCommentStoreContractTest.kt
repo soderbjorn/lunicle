@@ -44,7 +44,7 @@ class SqlDelightCommentStoreContractTest : CommentStoreContract() {
     override val store: CommentStore = commentStore
 
     override suspend fun newIssue(): Long {
-        val projectId = projectRepository.create("Project $seq", "CS${seq++}", isPublic = false).id
+        val projectId = projectRepository.create("Project $seq", "CS${seq++}").id
         val (id, _) = issueRepository.createDraft(projectId, Author.Nobody)
         val issue = issues.findById(id)!!
         issueRepository.save(
