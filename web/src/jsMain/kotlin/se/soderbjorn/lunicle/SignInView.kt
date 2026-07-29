@@ -5,7 +5,9 @@
  * Signed out it is one "Sign in…" button. Where that leads depends on what the
  * deployment can do: with two methods configured it opens [SignInPickerDialog],
  * with only Google it goes straight to the popup. Signed in it is the user's name
- * and the profile mark, which open a menu holding sign-out.
+ * and the profile mark: pressing them opens the settings pane at its You tab
+ * (LNL-193 — this used to be a profile modal that this file built), and hovering
+ * them opens a menu holding sign-out.
  *
  * ── The one privilege this view has, and what is *not* covered by it ────────
  *
@@ -33,14 +35,8 @@ package se.soderbjorn.lunicle
 
 import kotlinx.browser.document
 import kotlinx.browser.window
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.lunicle.client.StorageRepository
-import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
 
 /**
@@ -55,17 +51,16 @@ class SignInView(
     private val viewModel: SessionBackingViewModel,
     private val dialogHost: HTMLElement,
     /**
-     * Handed to the profile modal's view model, which this view builds fresh on
-     * every opening — see [renderProfileDialog]. The same shared instance the rest
-     * of the app uses, so there is still exactly one HTTP client.
+     * The account corner was pressed: open the settings pane at You (LNL-193).
+     *
+     * A callback rather than a dialog this view builds. It used to build the
+     * profile modal itself, which meant it also had to hold a storage repository, a
+     * Connections view model, a scope for it, and the workspace's "restore default
+     * layout" — four collaborators a sign-in corner has no business with. Settings
+     * is a pane in the workspace now, so this view's whole share of it is reporting
+     * the press.
      */
-    private val storage: StorageRepository,
-    /**
-     * Passed through to the profile modal's "Restore default layout" (LNL-160).
-     * This view builds that dialog, so the bootstrap's workspace view model has to
-     * reach it from here; nothing in the sign-in flow itself uses it.
-     */
-    private val onRestoreDefaultLayout: () -> Unit = {},
+    private val onOpenProfile: () -> Unit = {},
 ) {
     private lateinit var root: HTMLElement
     private lateinit var signInButton: HTMLButtonElement
@@ -81,10 +76,6 @@ class SignInView(
     /** The failure alert while it is up, and the message it is showing. */
     private var alert: AlertDialog? = null
     private var alertMessage: String? = null
-
-    /** The profile modal while it is up, and the scope collecting its view model. */
-    private var profileDialog: ProfileDialog? = null
-    private var profileScope: CoroutineScope? = null
 
     /** The sign-in method picker while it is up. */
     private var signInPicker: SignInPickerDialog? = null
@@ -154,7 +145,7 @@ class SignInView(
         accountButton = (document.createElement("button") as HTMLButtonElement).apply {
             className = "account-btn"
             type = "button"
-            onclick = { viewModel.onAccountTapped() }
+            onclick = { onOpenProfile() }
         }
         accountButton.children(nameElement, profileIcon())
         accountButton.setAttribute("aria-haspopup", "menu")
@@ -268,7 +259,6 @@ class SignInView(
         signInButton.visible(!showAccount && state.isSignInAvailable, displayValue = "inline-flex")
         signInButton.disabled = state.isBusy
 
-        renderProfileDialog(state)
         renderSignInGate(state)
         renderSignInPicker(state)
         renderAlert(state)
@@ -419,35 +409,6 @@ class SignInView(
         }
     }
 
-    /**
-     * Open or close the profile modal to match the state.
-     *
-     * A fresh [ConnectionsBackingViewModel] per opening, deliberately: connections
-     * are changed by things outside this browser — an agent authorizing, a token
-     * expiring — so a view model held across openings would show a list that was
-     * true the first time the dialog was opened and stale every time after. Each
-     * open re-fetches, and the scope dies with the dialog so a response arriving
-     * after it closed has nothing to render into.
-     */
-    private fun renderProfileDialog(state: SessionBackingViewModel.State) {
-        if (state.isProfileDialogOpen && profileDialog == null) {
-            val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-            profileScope = dialogScope
-            profileDialog = ProfileDialog(
-                viewModel = ConnectionsBackingViewModel(storage, dialogScope),
-                sessionViewModel = viewModel,
-                scope = dialogScope,
-                onDismiss = { viewModel.onProfileDialogDismissed() },
-                onRestoreDefaultLayout = onRestoreDefaultLayout,
-            ).also { it.mount(dialogHost) }
-        } else if (!state.isProfileDialogOpen && profileDialog != null) {
-            profileDialog?.dismiss()
-            profileDialog = null
-            profileScope?.cancel()
-            profileScope = null
-        }
-        profileDialog?.render(state)
-    }
 
     /**
      * Put a sign-in failure up as a modal, or take it down.

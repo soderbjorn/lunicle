@@ -808,6 +808,10 @@ body > .dt-pane-menu {
    an svg with no width attribute, and an unsized one draws its strokes at
    whatever the layout gives it. */
 .icon-chart { width: 20px; height: 20px; }
+/* The two figures on "Manage access" (LNL-193), sized to the gear and the chart
+   it shares a board toolbar with. Same argument as the note above: three entries
+   on one row, and any one of them drawn at a different size reads as a mistake. */
+.icon-people { width: 20px; height: 20px; }
 /* 16, matching the size .dt-topbar-icon-button forces on every svg it wraps:
    this one sits in the topbar's trailing slot with that whole row of toolkit
    icons, and an icon there is read against its neighbours, not against the
@@ -3236,6 +3240,39 @@ body > .dt-pane-menu {
    the same three-band arrangement the issue window uses, with two bands. */
 
 .admin-body { gap: 4px; }
+
+/* ── The one settings pane (LNL-193) ────────────────────────────────────────
+   Five tabs on the `.admin-tabs` strip above, and one of these under it. Each
+   scrolls itself rather than the body, so switching tabs does not carry the strip
+   off the top — the same three-band argument the block above makes, with the strip
+   as the fixed band. */
+.settings-tab-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The two facts a person cannot change about themselves, above everything on the
+   You tab that they can. Muted and tight together so they read as one preamble
+   rather than as two settings that have lost their controls. */
+.settings-standing-line {
+  font-size: 12px;
+  color: var(--body);
+  opacity: .75;
+  margin: 0 0 2px;
+}
+.settings-standing-line + .settings-standing-line { margin-bottom: 12px; }
+
+/* What replaced a tab strip.
+   The profile dialog had its own User/MCP tabs inside a dialog that already had
+   tabs, which is the thing LNL-193 removes: the outer strip is the only navigation
+   in this pane. The two halves of You are one screen now, and a rule is what says
+   "a new subject starts here" without offering a second place to be. */
+.settings-section-rule {
+  height: 1px;
+  background: var(--border);
+  margin: 26px 0 18px;
+}
 
 /* Underline tabs, not boxed segmented buttons: these are the two top-level
    sections of the dialog, and a labelled underline is the plainest thing that

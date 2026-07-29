@@ -109,6 +109,11 @@ data class UserRecord(
         hasDisplayNameOverride = displayNameOverride != null,
         email = email,
         isEmailVerified = isEmailVerified,
+        // The tier, as a fact the caller may read about themselves (LNL-193). Not a
+        // grant and not an affordance either: nothing on the client is gated on it.
+        // The settings pane states it, and words the greyed agent-access switch with
+        // it. See SignedInUser.isStaff.
+        isStaff = kind == UserKind.STAFF,
     )
 }
 

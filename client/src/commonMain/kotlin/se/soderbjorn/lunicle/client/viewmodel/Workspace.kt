@@ -48,13 +48,22 @@ sealed interface PaneRef {
     val paneId: String
 
     /**
-     * The project this pane belongs to — the board's own, or the issue's.
+     * The project this pane belongs to — the board's own, or the issue's — and
+     * **null when it belongs to none**.
      *
      * On the interface rather than on each case because it is the one question
      * asked of a pane without caring which kind it is: which boards does this
-     * workspace need loaded.
+     * workspace need loaded, and what does an account losing a project take with
+     * it.
+     *
+     * Nullable since LNL-193, for [Settings] alone. The settings pane stopped
+     * being a project's settings when the three settings dialogs converged onto
+     * one surface: it spans the instance, the account and every project, and the
+     * project it carries is which one its Projects tab has selected — a *view*
+     * inside the pane rather than the pane's subject. Every other case is still a
+     * plain `Long`, which a covariant override says without ceremony.
      */
-    val projectId: Long
+    val projectId: Long?
 
     /**
      * A project's board.
@@ -88,18 +97,32 @@ sealed interface PaneRef {
     }
 
     /**
-     * A project's settings.
+     * Settings — all of them.
      *
      * The dialog this replaced covered the board it was opened from, which is
      * the wrong shape for a surface people move back and forth to — renaming a
      * column and then looking at what it did to the board meant closing the
      * thing, looking, and opening it again. As a pane it sits beside the board
      * and both are on screen at once.
+     *
+     * ── Why there is exactly one of these (LNL-193) ─────────────────────────
+     *
+     * It used to be one pane per project, with the instance settings in a modal
+     * beside it and the profile in a third. They are one pane now, and the id
+     * says so: it is the constant [SETTINGS_PANE_ID] rather than a function of a
+     * project, so the "one pane per thing per tab" rule from this file's header
+     * makes "one settings pane" structural. Opening settings for a second project
+     * re-points the pane that is already there instead of adding another — see
+     * `WorkspaceBackingViewModel.onProjectPaneOpened`.
+     *
+     * @property projectId which project the Projects tab is showing, or null when
+     *   the pane was opened at a tab that is about nobody's project. A view inside
+     *   the pane rather than the pane's subject; see [PaneRef.projectId].
      */
     @Serializable
     @SerialName("settings")
-    data class Settings(override val projectId: Long) : PaneRef {
-        override val paneId: String get() = "$SETTINGS_PANE_PREFIX$projectId"
+    data class Settings(override val projectId: Long? = null) : PaneRef {
+        override val paneId: String get() = SETTINGS_PANE_ID
     }
 
     /** A project's analytics — [Settings]' argument, for the same surface. */
@@ -112,8 +135,17 @@ sealed interface PaneRef {
     companion object {
         const val BOARD_PANE_PREFIX: String = "board-"
         const val ISSUE_PANE_PREFIX: String = "issue-"
-        const val SETTINGS_PANE_PREFIX: String = "settings-"
         const val ANALYTICS_PANE_PREFIX: String = "analytics-"
+
+        /**
+         * The settings pane's id — a constant rather than a prefix, because there
+         * is one settings pane and not one per project (LNL-193).
+         *
+         * It is deliberately not the old `settings-<id>`: the toolkit persists pane
+         * geometry by id, and a pane that is now a different size and shape should
+         * not inherit the rectangle the per-project one was last dragged to.
+         */
+        const val SETTINGS_PANE_ID: String = "settings"
     }
 }
 
@@ -138,11 +170,15 @@ fun boardProjectIdOfPane(paneId: String): Long? =
         .takeIf { it != paneId }
         ?.toLongOrNull()
 
-/** The project whose settings a pane shows, or null when it is not a settings pane. */
-fun settingsProjectIdOfPane(paneId: String): Long? =
-    paneId.removePrefix(PaneRef.SETTINGS_PANE_PREFIX)
-        .takeIf { it != paneId }
-        ?.toLongOrNull()
+/**
+ * Whether a pane is the settings pane.
+ *
+ * A predicate rather than the `settingsProjectIdOfPane` it replaced: settings is
+ * one pane spanning the instance, the account and every project since LNL-193, so
+ * there is no project to read back out of its id. Which project it is *showing*
+ * is on the ref ([PaneRef.Settings.projectId]), where a view belongs.
+ */
+fun isSettingsPane(paneId: String): Boolean = paneId == PaneRef.SETTINGS_PANE_ID
 
 /** The project whose analytics a pane shows, or null when it is not an analytics pane. */
 fun analyticsProjectIdOfPane(paneId: String): Long? =
@@ -198,9 +234,14 @@ data class Workspace(
     /** The showing tab, or null. */
     val activeTab: WorkspaceTab? get() = tabs.firstOrNull { it.id == activeTabId }
 
-    /** Every project any pane refers to — the boards that have to be loaded. */
+    /**
+     * Every project any pane refers to — the boards that have to be loaded.
+     *
+     * `mapNotNull` since LNL-193: the settings pane may name no project at all
+     * (opened at You, at Instance), and "no project" is not a board to fetch.
+     */
     val referencedProjectIds: Set<Long>
-        get() = tabs.flatMapTo(mutableSetOf()) { tab -> tab.panes.map { it.projectId } }
+        get() = tabs.flatMapTo(mutableSetOf()) { tab -> tab.panes.mapNotNull { it.projectId } }
 
     /** Every issue with a pane somewhere, paired with its project. */
     val openIssuePanes: List<PaneRef.Issue>

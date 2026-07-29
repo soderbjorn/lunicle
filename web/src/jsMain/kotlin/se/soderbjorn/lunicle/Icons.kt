@@ -75,6 +75,24 @@ private const val PROFILE_SVG = """
 """
 
 /**
+ * Two figures — [PROFILE_SVG] with a second, smaller one behind its shoulder.
+ *
+ * Drawn from the same circle-and-shoulders parts at the same stroke weight, so the
+ * pair reads as the singular one pluralised rather than as a different family of
+ * icon sitting next to it in the same toolbar.
+ */
+private const val PEOPLE_SVG = """
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="9.5" cy="9" r="3.25"/>
+  <path d="M3 20 a6.5 6.5 0 0 1 13 0"/>
+  <path d="M16 6.4 a2.75 2.75 0 0 1 0 5.2"/>
+  <path d="M17.5 14.2 a6 6 0 0 1 3.5 5.3"/>
+</svg>
+"""
+
+/**
  * The Lunicle mark — the board itself, in miniature.
  *
  * Three columns of cards stacking to different heights, in a frame. It is the
@@ -321,6 +339,15 @@ fun crossIcon(): HTMLElement = icon(CROSS_SVG, "icon-cross")
 
 /** The cogwheel, for the project-settings button. */
 fun gearIcon(): HTMLElement = icon(GEAR_SVG, "icon-gear")
+
+/**
+ * Two figures, for the board's "Manage access" entry (LNL-193).
+ *
+ * Deliberately not the single-figure [profileIcon], which the account corner owns:
+ * that one means *you*, and this one means *everybody who can reach this project* —
+ * one glyph apart, and the difference is the whole of what the two controls do.
+ */
+fun peopleIcon(): HTMLElement = icon(PEOPLE_SVG, "icon-people")
 
 /** The eye, for the watch button on an issue and on a project. */
 fun eyeIcon(): HTMLElement = icon(EYE_SVG, "icon-eye")

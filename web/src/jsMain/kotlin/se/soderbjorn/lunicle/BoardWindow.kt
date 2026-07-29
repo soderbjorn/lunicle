@@ -70,6 +70,15 @@ class BoardWindow(
     private val onOpenAnalytics: () -> Unit = {},
     /** ...and its settings. Same reason. */
     private val onOpenSettings: () -> Unit = {},
+    /**
+     * ...and its access — who may see this project and who may change it (LNL-193).
+     *
+     * Its own entry rather than a click inside settings, because it is the question a
+     * board raises: somebody is looking at work and wonders who else can. Settings is
+     * one pane with five tabs now, so this names a section of it instead of opening a
+     * second dialog — see main.kt's SettingsRoute.
+     */
+    private val onManageAccess: () -> Unit = {},
 ) {
     /** The pane content element the shell mounts. Built eagerly, filled by [render]. */
     val root: HTMLElement = element("div", "board-pane")
@@ -199,6 +208,7 @@ class BoardWindow(
      */
     private val analyticsButton = toolButton("Analytics", chartIcon(), onOpenAnalytics)
     private val settingsButton = toolButton("Project settings", gearIcon(), onOpenSettings)
+    private val accessButton = toolButton("Manage access", peopleIcon(), onManageAccess)
 
     init {
         filterField.classList.add("board-filter")
@@ -215,7 +225,7 @@ class BoardWindow(
         // sit at the trailing edge (they open something new).
         val toolbar = element("div", "board-toolbar")
         val projectEntries = element("div", "board-toolbar-project")
-        projectEntries.children(analyticsButton, settingsButton)
+        projectEntries.children(analyticsButton, accessButton, settingsButton)
         toolbar.children(filterBox, scopePicker.element, projectEntries)
 
         boardElement = element("div", "board")
@@ -283,6 +293,9 @@ class BoardWindow(
         // do anything reads as broken rather than as forbidden.
         analyticsButton.visible(state.canOpenStatistics, displayValue = "inline-flex")
         settingsButton.visible(state.canOpenProjectSettings, displayValue = "inline-flex")
+        // Gated exactly as the gear is: both land in the same pane, one tab apart, so
+        // a reader who may open one may open the other.
+        accessButton.visible(state.canOpenProjectSettings, displayValue = "inline-flex")
 
         emptyElement.setTextIfChanged(state.emptyMessage ?: "")
         emptyElement.visible(state.emptyMessage != null)

@@ -59,9 +59,6 @@ class SessionBackingViewModel(
      * @property errorMessage a human-readable failure, or null.
      * @property googleClientId the public client id the view needs to open
      *   Google's popup; null when Google isn't configured here.
-     * @property isProfileDialogOpen whether the profile modal is up. Opened by
-     *   clicking the account corner; the menu is a hover away and needs no state
-     *   here, because it is drawn by CSS. See the client's SignInView.
      * @property isImpersonating whether [user] is somebody other than whoever
      *   signed in. Straight from the server — the client cannot work this out,
      *   and must not try.
@@ -102,7 +99,6 @@ class SessionBackingViewModel(
         val errorMessage: String? = null,
         val isGoogleAvailable: Boolean = false,
         val googleClientId: String? = null,
-        val isProfileDialogOpen: Boolean = false,
         val isImpersonating: Boolean = false,
         val canImpersonate: Boolean = false,
         val impersonatableUsers: List<UserOption> = emptyList(),
@@ -241,6 +237,46 @@ class SessionBackingViewModel(
          * cannot tell you, since an override may match the provider's exactly.
          */
         val hasDisplayNameOverride: Boolean get() = user?.hasDisplayNameOverride == true
+
+        /**
+         * Which rung of the instance this account stands on, as a sentence, or
+         * null when nobody is signed in.
+         *
+         * The first of the two facts the settings pane's You tab states and that
+         * nobody can change about themselves (LNL-193). Derived from the address
+         * at sign-in and never chosen — see the server's `UserKind.forEmail` — so
+         * it is stated rather than offered, and stated *because* everything else
+         * on that tab is editable: a screen of switches with no fixed point on it
+         * leaves "why can I not do X?" unanswerable.
+         */
+        val standingLine: String? get() = user?.let {
+            if (it.isStaff) "Staff on this instance." else "A member of this instance."
+        }
+
+        /**
+         * Whether this account administers the instance, as a sentence, or null
+         * when nobody is signed in. [standingLine]'s other half.
+         *
+         * Both answers are written out. "Nothing here says I am an administrator"
+         * and "this says I am not one" are the same screen only to somebody who
+         * already knows which tabs an administrator has.
+         */
+        val administrationLine: String? get() = user?.let {
+            if (it.isSysAdmin) "You administer this instance." else "You do not administer this instance."
+        }
+
+        /**
+         * Why the agent-access switch is dead, when it is (LNL-192, LNL-193).
+         *
+         * Agent access is permitted per **tier** now, so a refusal is only
+         * actionable if it names which tier was refused: this sentence says which
+         * of the two switches on the Instance tab an administrator would have to
+         * flip. The switch is greyed and this sits beside it rather than the whole
+         * section vanishing — a missing control reads as a bug, and a greyed one
+         * with a reason tells you who to ask.
+         */
+        val agentsNotPermittedReason: String
+            get() = "Not permitted for ${if (user?.isStaff == true) "staff" else "members"} on this instance."
     }
 
     /**
@@ -414,17 +450,12 @@ class SessionBackingViewModel(
         _stateFlow.value = _stateFlow.value.copy(isBusy = false, errorMessage = null)
     }
 
-    /** The account corner was clicked. Put the profile modal up. */
-    fun onAccountTapped() {
-        val state = _stateFlow.value
-        if (state.user == null) return
-        _stateFlow.value = state.copy(isProfileDialogOpen = true)
-    }
-
-    /** The profile modal was dismissed. */
-    fun onProfileDialogDismissed() {
-        _stateFlow.value = _stateFlow.value.copy(isProfileDialogOpen = false)
-    }
+    // The account corner used to open a profile MODAL, and this view model held a
+    // flag saying whether it was up. It opens the settings pane at its You tab now
+    // (LNL-193), which is a pane in the workspace rather than a dialog over the
+    // board — so "is it open" is the workspace's answer and not a second copy kept
+    // here. The corner reports the press straight to the shell; see SignInView's
+    // onOpenProfile.
 
     /**
      * The User tab's display-name field was committed (blur or Enter).

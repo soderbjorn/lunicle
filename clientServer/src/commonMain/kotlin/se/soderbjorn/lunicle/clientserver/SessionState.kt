@@ -101,6 +101,18 @@ enum class AuthProvider {
  *   unverified address may be used for — and it exists so the profile dialog can
  *   say which of the two it is showing. Before LNL-71 there was no difference to
  *   report, because nothing was ever checked.
+ * @property isStaff whether this account belongs to the deployment's own domain —
+ *   the upper of the two signed-in rungs on the instance ladder (LNL-192's
+ *   `UserKind`). It crosses the wire since LNL-193 for the settings pane's You
+ *   tab, which states the two facts a person cannot change about themselves:
+ *   which tier they stand on, and whether they administer the instance
+ *   ([isSysAdmin]).
+ *
+ *   It is also what words the greyed agent-access switch. Agent access is per
+ *   tier now, so "you may not connect an agent" is only actionable when it says
+ *   *which* tier was refused — "Not permitted for members on this instance" names
+ *   the switch an admin would have to flip. Derived server-side and never chosen;
+ *   see the server's `UserKind.forEmail`.
  */
 @Serializable
 data class SignedInUser(
@@ -111,6 +123,7 @@ data class SignedInUser(
     val hasDisplayNameOverride: Boolean = false,
     val email: String? = null,
     val isEmailVerified: Boolean = false,
+    val isStaff: Boolean = false,
 )
 
 /**

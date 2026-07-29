@@ -233,9 +233,24 @@ class WorkspaceBackingViewModel(
         val pruned = ensureNotEmpty(
             previous.copy(
                 tabs = previous.tabs.mapNotNull { tab ->
-                    val kept = tab.panes.filter { it.projectId in allowed }
+                    // A pane naming no project at all — the settings pane opened at
+                    // You or at Instance (LNL-193) — names nothing that can be lost,
+                    // so no list of projects has anything to say about it. One that
+                    // names a project the account cannot reach goes, as it always did:
+                    // the settings pane is then re-pointed rather than kept pointing
+                    // at a project that has gone.
+                    val kept = tab.panes.mapNotNull { pane ->
+                        when {
+                            pane.projectId == null -> pane
+                            pane.projectId in allowed -> pane
+                            pane is PaneRef.Settings -> PaneRef.Settings(null)
+                            else -> null
+                        }
+                    }
                     when {
-                        kept.size == tab.panes.size -> tab
+                        // Equality rather than a count: a settings pane re-pointed
+                        // above keeps the tab's length and is still a change.
+                        kept == tab.panes -> tab
                         // Every pane in it named something that has gone, so the tab
                         // is not a working set any more — it is a label for work
                         // the reader cannot reach, and a tab strip still carrying
@@ -481,15 +496,22 @@ class WorkspaceBackingViewModel(
      * structural rather than something this has to remember.
      *
      * Deliberately NOT [onBoardAdded]'s always-here rule: a settings pane is one
-     * surface per project, not something you would want two of in two tabs, so
-     * finding the open one beats making another.
+     * surface, not something you would want two of in two tabs, so finding the
+     * open one beats making another.
+     *
+     * An already-open pane is **re-pointed** rather than merely focused, which is
+     * what makes the one settings pane (LNL-193) answer a second request: pressing
+     * a different project's gear while settings is open has to move it to that
+     * project, and the ref carries which one. For every other pane kind the ref is
+     * a function of its id, so replacing it is a no-op and this reads as the plain
+     * "focus it" it always was.
      */
     fun onProjectPaneOpened(pane: PaneRef) {
         val ws = _stateFlow.value.workspace
         val already = ws.tabs.firstOrNull { it.pane(pane.paneId) != null }
         if (already != null) {
             commit(
-                ws.mapTab(already.id) { it.copy(activePaneId = pane.paneId) }
+                ws.mapTab(already.id) { it.withPane(pane) }
                     .copy(activeTabId = already.id),
             )
             return
@@ -647,7 +669,14 @@ class WorkspaceBackingViewModel(
 
     private fun freshTabId(): String = "$TAB_ID_PREFIX${nextTabId++}"
 
-    private fun projectName(projectId: Long): String =
+    /**
+     * What to call a tab opened for a pane, when the pane names a project.
+     *
+     * Nullable since LNL-193 — the settings pane may name none — and the fallback
+     * is the same "New tab" an unknown id already got, because a tab holding only
+     * settings has no project to be named after.
+     */
+    private fun projectName(projectId: Long?): String =
         projects.firstOrNull { it.id == projectId }?.name ?: "New tab"
 
     /**
@@ -716,15 +745,25 @@ class WorkspaceBackingViewModel(
 }
 
 /**
- * This tab with [pane] in it and focused — or, if it is already there, just
- * focused.
+ * This tab with [pane] in it and focused — or, if a pane with that id is already
+ * there, that one replaced by [pane] and focused.
  *
  * The "one pane per thing per tab" rule from [PaneRef]'s header, in the one
  * place that could break it.
+ *
+ * The replacement matters for exactly one pane kind. Board, issue and analytics
+ * refs are functions of their ids, so putting a fresh one in place of an equal
+ * one changes nothing. The settings pane's id is a constant and its ref carries
+ * which project it is showing (LNL-193) — so "open settings at project 9" while
+ * settings sits at project 7 has to be the pane moving, and keeping the old ref
+ * would be the gesture silently doing nothing.
  */
 private fun WorkspaceTab.withPane(pane: PaneRef): WorkspaceTab =
     if (this.pane(pane.paneId) != null) {
-        copy(activePaneId = pane.paneId)
+        copy(
+            panes = panes.map { if (it.paneId == pane.paneId) pane else it },
+            activePaneId = pane.paneId,
+        )
     } else {
         copy(panes = panes + pane, activePaneId = pane.paneId)
     }

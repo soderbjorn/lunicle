@@ -73,6 +73,7 @@ import se.soderbjorn.lunicle.client.parseTicket
 import se.soderbjorn.lunicle.client.viewmodel.ActiveDialog
 import se.soderbjorn.lunicle.client.viewmodel.AdminSettingsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.CommentBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.EditProjectBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.EditorDirtyRegistry
 import se.soderbjorn.lunicle.client.viewmodel.IssueBackingViewModel
@@ -82,11 +83,15 @@ import se.soderbjorn.lunicle.client.viewmodel.OpenIssueWindow
 import se.soderbjorn.lunicle.client.viewmodel.PaneRef
 import se.soderbjorn.lunicle.client.viewmodel.StatisticsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.SETTINGS_SECTION_ACCESS
+import se.soderbjorn.lunicle.client.viewmodel.SETTINGS_SECTION_GENERAL
+import se.soderbjorn.lunicle.client.viewmodel.SettingsRoute
+import se.soderbjorn.lunicle.client.viewmodel.SettingsTab
 import se.soderbjorn.lunicle.client.viewmodel.Workspace
 import se.soderbjorn.lunicle.client.viewmodel.WorkspaceBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.analyticsProjectIdOfPane
 import se.soderbjorn.lunicle.client.viewmodel.boardProjectIdOfPane
-import se.soderbjorn.lunicle.client.viewmodel.settingsProjectIdOfPane
+import se.soderbjorn.lunicle.client.viewmodel.isSettingsPane
 import se.soderbjorn.lunicle.client.viewmodel.issueIdOfPane
 import se.soderbjorn.lunicle.client.viewmodel.issuePaneId
 import se.soderbjorn.lunicle.clientserver.NotificationKind
@@ -129,6 +134,29 @@ private fun preferredTicket(): Ticket? =
  */
 private fun preferredProjectId(): Long? =
     URLSearchParams(window.location.search).get("projectId")?.toLongOrNull()?.takeIf { it > 0 }
+
+/**
+ * The settings pane the page was opened at, or null for "not open": `?settings=you`,
+ * `?settings=projects&projectId=7&section=access` (LNL-193).
+ *
+ * A parameter rather than the design's `settings/<tab>/<project>/<section>` path.
+ * Lunicle has no path of its own to spend — embedded it is an `<iframe src>` on
+ * somebody else's page — so every piece of state it addresses is a query
+ * parameter, and this one joins them. The project rides the existing
+ * `?projectId=`; see nextSearch.
+ *
+ * An unrecognised tab reads as null, which is the honest answer for a link from a
+ * build that had a tab this one does not: nothing opens, rather than something
+ * arbitrary.
+ */
+private fun preferredSettingsRoute(): SettingsRoute? =
+    SettingsTab.byKey(queryValue(window.location.search, "settings"))?.let { tab ->
+        SettingsRoute(
+            tab = tab,
+            projectId = preferredProjectId(),
+            section = queryValue(window.location.search, "section")?.takeIf { it.isNotBlank() },
+        )
+    }
 
 /**
  * Whether the browser-side demo runs instead of the real app: `?demo=1` (LNL-146).
@@ -203,11 +231,15 @@ private fun preferredLightTheme(): String? =
  * anyone wants to send. What travels is what a reader would paste at somebody —
  * the issue they are looking at, or the board.
  */
-private fun syncUrl(ticket: String?, projectId: Long?) {
+private fun syncUrl(ticket: String?, projectId: Long?, settings: SettingsRoute?) {
     val query = nextSearch(
         search = window.location.search,
         ticket = ticket,
-        projectId = projectId,
+        // The settings pane's own project wins while it has focus: `?projectId=` is
+        // "which project is being looked at", and on that pane it is whichever one
+        // the Projects tab is showing. Null leaves whatever is there alone, which is
+        // what a pane opened at You or at Instance wants.
+        projectId = settings?.projectId ?: projectId,
         // The parameters of features this shell no longer has. Null leaves `?tab=`
         // alone (it is somebody else's parameter now) and clears the three the
         // forum used to write, so a URL from before LNL-160 stops carrying them.
@@ -215,6 +247,11 @@ private fun syncUrl(ticket: String?, projectId: Long?) {
         conversation = null,
         forum = null,
         post = null,
+        // Which settings tab is showing, and which section of it — cleared when the
+        // pane does not have focus, so a link copied off a board never reopens
+        // somebody else's settings (LNL-193).
+        settings = settings?.tab?.key,
+        section = settings?.section,
     ) ?: return
     val url = window.location.pathname + (if (query.isEmpty()) "" else "?$query") + window.location.hash
     window.history.replaceState(null, "", url)
@@ -311,6 +348,7 @@ private fun start() {
     val bootProjectId = preferredProjectId()
     val bootProjectName = preferredProjectName()
     val bootTicket = preferredTicket()
+    val bootSettingsRoute = preferredSettingsRoute()
 
     // One repository, shared. The view models each get the same instance rather
     // than building their own, so there is exactly one HTTP client and one place
@@ -443,10 +481,19 @@ private fun start() {
     // honest answer for chrome that changes before there is a top bar to paint it.
     var refreshShell: () -> Unit = {}
 
+    // Opening settings, and telling the address bar where it went (LNL-193). Vars for
+    // `refreshShell`'s reason: the board panes, the top bar's gear and the deep links
+    // all reach for them, and they are all built before the settings pane they need.
+    // No-ops until it exists, which is the honest answer for an entry point pressed
+    // before there is anything to enter.
+    var openSettingsAt: (SettingsRoute) -> Unit = {}
+    var syncSettingsAddress: () -> Unit = {}
+
     val boardWindows = BoardWindows(
         mainViewModel = mainViewModel,
         titleFor = ticketSource.titleFor,
         onOpenProjectPane = { workspaceViewModel.onProjectPaneOpened(it) },
+        onOpenSettingsAt = { route -> openSettingsAt(route) },
         onPaneMousedown = { paneId ->
             lastUserFocusedPane = paneId
             workspaceViewModel.onPaneFocused(paneId)
@@ -457,19 +504,6 @@ private fun start() {
         },
     )
 
-    // The two project surfaces, each a pane rather than a modal since LNL-160.
-    // Their own registries for BoardWindows' reason: a pane per project, built on
-    // demand and disposed with the pane, each with a view model and a scope whose
-    // `collect` must not outlive the window it renders into.
-    val settingsPanes = SettingsPanes(
-        storage = storage,
-        mainViewModel = mainViewModel,
-        onPaneMousedown = { paneId ->
-            lastUserFocusedPane = paneId
-            workspaceViewModel.onPaneFocused(paneId)
-        },
-        onFinished = { projectId -> workspaceViewModel.onPaneClosedEverywhere(PaneRef.Settings(projectId).paneId) },
-    )
     val analyticsPanes = AnalyticsPanes(
         storage = storage,
         onPaneMousedown = { paneId ->
@@ -495,24 +529,60 @@ private fun start() {
         ticketSource = ticketSource,
     )
 
-    // The sign-in/profile corner, mounted into the toolkit's trailing top-bar slot.
-    // It also builds the profile modal, which is where "Restore default layout"
-    // lives (LNL-160) — hence the workspace lambda threaded through it.
-    val accountHost = element("div", "topbar-account")
-    val signInView = SignInView(
-        viewModel = sessionViewModel,
-        dialogHost = dialogHost,
+    // Settings — one pane for all of them since LNL-193, where there used to be a
+    // pane per project plus two modals. Built after the issue windows because its
+    // You tab carries "Restore default layout", which has to be able to close them.
+    val settingsPanes = SettingsPanes(
         storage = storage,
-        // The default layout is one tab per project holding that project's board
-        // — so the issue windows go too, or "restore" would leave the thing it was
+        mainViewModel = mainViewModel,
+        sessionViewModel = sessionViewModel,
+        onPaneMousedown = { paneId ->
+            lastUserFocusedPane = paneId
+            workspaceViewModel.onPaneFocused(paneId)
+        },
+        dialogHost = dialogHost,
+        onFinished = { workspaceViewModel.onPaneClosedEverywhere(PaneRef.SETTINGS_PANE_ID) },
+        // The default layout is one tab per project holding that project's board —
+        // so the issue windows go too, or "restore" would leave the thing it was
         // reached for still on screen. Asked to close rather than dropped: a window
-        // with unsaved work stops to ask, exactly as its × does, and one that
-        // refuses simply keeps its pane (the reconcile puts it back). The layout is
-        // restored either way.
+        // with unsaved work stops to ask, exactly as its × does, and one that refuses
+        // simply keeps its pane (the reconcile puts it back). The layout is restored
+        // either way.
         onRestoreDefaultLayout = {
             issueWindows.closeAll()
             workspaceViewModel.onRestoreDefaultLayout()
         },
+        // Pressing a tab changes nothing either flow would report, so the address bar
+        // has to be told directly.
+        onRouteChanged = { syncSettingsAddress() },
+    )
+
+    // Every entry point's one path: the board's gear, its "Manage access", the
+    // account corner, the top bar's app-settings gear, a deep link. The route is set
+    // on the view BEFORE the workspace is told, so the pane is already at the right
+    // tab on the tick that puts it on screen — the other order paints You for a frame
+    // and then jumps.
+    openSettingsAt = { route ->
+        settingsPanes.show(route)
+        workspaceViewModel.onProjectPaneOpened(PaneRef.Settings(route.projectId))
+    }
+    syncSettingsAddress = {
+        val ws = workspaceState.workspace
+        syncUrl(
+            mainViewModel.stateFlow.value.openIssueTicket,
+            focusedBoardProjectId(ws),
+            focusedSettingsRoute(ws) { settingsPanes.currentRoute() },
+        )
+    }
+
+    // The sign-in/profile corner, mounted into the toolkit's trailing top-bar slot.
+    // Pressing it opens settings at You (LNL-193); it used to build a profile modal
+    // of its own.
+    val accountHost = element("div", "topbar-account")
+    val signInView = SignInView(
+        viewModel = sessionViewModel,
+        dialogHost = dialogHost,
+        onOpenProfile = { openSettingsAt(SettingsRoute(SettingsTab.YOU)) },
     )
     signInView.mount(accountHost)
 
@@ -846,6 +916,16 @@ private fun start() {
             deepLinkOwnsFocus = true
             navigateToTicket(it)
         }
+        // ...and `?settings=` (LNL-193), last, so it lands on top of whatever board
+        // the link also asked for — a link naming both means "this project's settings,
+        // with its board behind them", which is the order that reads that way. The
+        // project is validated the same way the board's is: a link naming one this
+        // account cannot reach opens the tab with nothing selected rather than a rail
+        // pointing at a project that is not there.
+        bootSettingsRoute?.let { route ->
+            val settingsProject = route.projectId?.takeIf { id -> state.projects.any { it.id == id } }
+            openSettingsAt(route.copy(projectId = settingsProject))
+        }
     }
 
     // ── The toolkit snapshot ─────────────────────────────────────────────────
@@ -969,7 +1049,7 @@ private fun start() {
         // re-render re-parents what is already there rather than rebuilding it.
         paneContent = { paneId ->
             boardProjectIdOfPane(paneId)?.let { boardWindows.contentFor(it) }
-                ?: settingsProjectIdOfPane(paneId)?.let { settingsPanes.contentFor(it) }
+                ?: settingsPanes.contentFor().takeIf { isSettingsPane(paneId) }
                 ?: analyticsProjectIdOfPane(paneId)?.let { analyticsPanes.contentFor(it) }
                 ?: issueIdOfPane(paneId)?.let { issueWindows.contentFor(paneId) }
                 // A pane the registries do not know cannot happen while the
@@ -1000,7 +1080,7 @@ private fun start() {
             onPaneClose = { tabId, paneId ->
                 // A settings pane may be mid-edit; ask it first, exactly as an
                 // issue window is asked. Everything else just goes.
-                if (settingsProjectIdOfPane(paneId) != null) {
+                if (isSettingsPane(paneId)) {
                     settingsPanes.onCloseClicked(paneId)
                 } else if (issueIdOfPane(paneId) != null) {
                     // Routed to the issue's own view model, which decides whether
@@ -1135,7 +1215,10 @@ private fun start() {
                 return if (name == null) kind else "$kind · $name"
             }
             boardProjectIdOfPane(paneId)?.let { named("Board", it) }
-                ?: settingsProjectIdOfPane(paneId)?.let { named("Settings", it) }
+                // "Settings" alone: it is one pane for the instance, the account and
+                // every project (LNL-193), so naming a project in its title would be a
+                // claim about the other four tabs that is not true.
+                ?: "Settings".takeIf { isSettingsPane(paneId) }
                 ?: analyticsProjectIdOfPane(paneId)?.let { named("Analytics", it) }
                 ?: issueIdOfPane(paneId)?.let { mainViewModel.stateFlow.value.issueWindowTitle(it) }
                 ?: "Lunicle"
@@ -1143,7 +1226,7 @@ private fun start() {
         paneIcon = { _, paneId ->
             when {
                 boardProjectIdOfPane(paneId) != null -> ICON_BOARD_PANE
-                settingsProjectIdOfPane(paneId) != null -> ICON_SETTINGS_PANE
+                isSettingsPane(paneId) -> ICON_SETTINGS_PANE
                 analyticsProjectIdOfPane(paneId) != null -> ICON_ANALYTICS_PANE
                 else -> ICON_ISSUE_PANE
             }
@@ -1239,7 +1322,7 @@ private fun start() {
                     InitialPaneGeometry(widthPct = 1.0, heightPct = 1.0, xPct = 0.0, yPct = 0.0)
                 issueIdOfPane(paneId) != null ->
                     InitialPaneGeometry(widthPct = 0.55, heightPct = 0.85)
-                settingsProjectIdOfPane(paneId) != null ->
+                isSettingsPane(paneId) ->
                     InitialPaneGeometry(widthPct = 0.65, heightPct = 0.95)
                 else -> null
             }
@@ -1258,17 +1341,28 @@ private fun start() {
         // panels; Lunicle fills the body with the list. Invoked each time the panel
         // opens, so it renders against a freshly-fetched list. See NotificationsPanel.
         notificationsContent = { notificationsPanel.body() },
-        // Instance settings — the account directory, agent-access permission and
-        // the per-project rights. App chrome rather than board chrome: it is about
-        // the deployment, not about any one project, so it hangs off the toolkit's
-        // own app-settings gear rather than sitting in a board pane's header next
-        // to that project's gear, where it would read as a second, wider-scoped
-        // project setting.
-        onAppSettingsActivate = { mainViewModel.onAdminSettingsTapped() },
-        // Re-read on every topbar rebuild. An affordance only; AdminRoutes
-        // refuses everyone else regardless. See the refresh trigger below, which
-        // is what makes a sign-in reach this.
-        isAppSettingsAvailable = { mainViewModel.stateFlow.value.canOpenAdminSettings },
+        // Settings — all of them (LNL-193). App chrome rather than board chrome: the
+        // pane is about the deployment, the account and every project, so it hangs off
+        // the toolkit's own app-settings gear rather than sitting in a board pane's
+        // header next to that project's gear, where it would read as a second,
+        // wider-scoped project setting.
+        //
+        // An administrator lands on Instance, which is what this gear has always
+        // opened; everybody else lands on You, which is what they have. The pane's own
+        // strip then decides which other tabs they see — see SettingsPane.renderTabs.
+        onAppSettingsActivate = {
+            val tab = if (mainViewModel.stateFlow.value.canOpenAdminSettings) {
+                SettingsTab.INSTANCE
+            } else {
+                SettingsTab.YOU
+            }
+            openSettingsAt(SettingsRoute(tab))
+        },
+        // Everybody now: the gear used to be admin-only because the dialog behind it
+        // was, and the pane behind it has a You tab for every reader. The instance
+        // tabs inside it are still gated, and AdminRoutes still refuses everyone else
+        // regardless — this is an affordance, as it always was.
+        isAppSettingsAvailable = { true },
         // Every shell re-render rebuilds the pane subtrees, which detaches and
         // re-appends each board pane's content — and a detach silently resets the
         // columns' scrollTop to 0. Opening an issue adds a pane, so it is such a
@@ -1401,7 +1495,7 @@ private fun start() {
                 // content the moment a pane appears in the snapshot, and the
                 // registry must already hold it.
                 boardWindows.sync(state, workspaceState.workspace)
-                settingsPanes.sync(state, workspaceState.workspace)
+                settingsPanes.sync(workspaceState.workspace)
                 analyticsPanes.sync(workspaceState.workspace)
                 issueWindows.sync(state)
                 dialogs.render(state)
@@ -1421,7 +1515,11 @@ private fun start() {
                 }
                 // The address bar follows the focused pane, so the URL is always a
                 // link to what is being looked at and a reload lands back on it.
-                syncUrl(state.openIssueTicket, focusedBoardProjectId(workspaceState.workspace))
+                syncUrl(
+                    state.openIssueTicket,
+                    focusedBoardProjectId(workspaceState.workspace),
+                    focusedSettingsRoute(workspaceState.workspace) { settingsPanes.currentRoute() },
+                )
             }
         }
         launch {
@@ -1437,7 +1535,7 @@ private fun start() {
                 // The board registry follows the panes: a board pane that has just
                 // appeared needs its view before the toolkit asks for its content.
                 boardWindows.sync(boardState, ws.workspace)
-                settingsPanes.sync(boardState, ws.workspace)
+                settingsPanes.sync(ws.workspace)
                 analyticsPanes.sync(ws.workspace)
                 // The half of the pair the board collector cannot see: signed in,
                 // the stored layout lands here, and this is the tick the deep link
@@ -1468,7 +1566,11 @@ private fun start() {
                     handle.bringPaneToFront(active)
                 }
                 raisedPane = active
-                syncUrl(mainViewModel.stateFlow.value.openIssueTicket, focusedBoardProjectId(ws.workspace))
+                syncUrl(
+                    mainViewModel.stateFlow.value.openIssueTicket,
+                    focusedBoardProjectId(ws.workspace),
+                    focusedSettingsRoute(ws.workspace) { settingsPanes.currentRoute() },
+                )
             }
         }
         launch {
@@ -1585,10 +1687,31 @@ private fun focusedBoardProjectId(workspace: Workspace): Long? {
         // one. A "New issue" fired while reading an issue then files it in the
         // same project, which is the only reading that is not a surprise.
         is PaneRef.Issue -> boardFor(active.projectId)
-        is PaneRef.Settings -> boardFor(active.projectId)
+        // The settings pane may name no project at all (LNL-193) — opened at You, at
+        // Instance — and then there is no board of its to point at.
+        is PaneRef.Settings -> active.projectId?.let { boardFor(it) }
         is PaneRef.Analytics -> boardFor(active.projectId)
         null -> tab.panes.filterIsInstance<PaneRef.Board>().firstOrNull()?.projectId
     }
+}
+
+/**
+ * Where the settings pane is, when it is the pane with focus — and null otherwise.
+ *
+ * What the address bar writes (LNL-193). Focus rather than mere existence is the
+ * condition, for the reason `?issue=` follows: the URL names *what is being looked
+ * at*, so a settings pane sitting behind a board must not put its tab in a link
+ * copied off that board.
+ *
+ * The tab and the section come from the view rather than from the ref, because they
+ * are the pane's own view state and change without the workspace hearing about it;
+ * the workspace only stores which project it is on, which is the part a reload has
+ * to restore.
+ */
+private fun focusedSettingsRoute(workspace: Workspace, route: () -> SettingsRoute?): SettingsRoute? {
+    val tab = workspace.activeTab ?: return null
+    if (tab.activePaneId?.let { isSettingsPane(it) } != true) return null
+    return route()
 }
 
 /**
@@ -1614,6 +1737,15 @@ private class BoardWindows(
     private val onPaneMousedown: (paneId: String) -> Unit,
     /** Opens a project surface beside the board — see the toolbar's trailing entries. */
     private val onOpenProjectPane: (PaneRef) -> Unit,
+    /**
+     * Opens the settings pane somewhere (LNL-193) — the board's gear, and its
+     * "Manage access" beside it.
+     *
+     * Separate from [onOpenProjectPane] because settings stopped being a project
+     * surface: it is one pane spanning the instance, the account and every project,
+     * and the board's buttons name a *position* in it rather than a pane to open.
+     */
+    private val onOpenSettingsAt: (SettingsRoute) -> Unit,
 ) {
     private val views = mutableMapOf<Long, BoardWindow>()
 
@@ -1655,7 +1787,14 @@ private class BoardWindows(
             viewModel = mainViewModel,
             titleFor = titleFor,
             onOpenAnalytics = { onOpenProjectPane(PaneRef.Analytics(projectId)) },
-            onOpenSettings = { onOpenProjectPane(PaneRef.Settings(projectId)) },
+            // The gear lands on this project's General section, which is where the
+            // dialog it used to open started. It no longer OWNS a dialog — it names a
+            // place in the one settings pane (LNL-193).
+            onOpenSettings = { onOpenSettingsAt(SettingsRoute.project(projectId, SETTINGS_SECTION_GENERAL)) },
+            // ...and its neighbour goes straight to the section people actually come
+            // looking for. "Who can see this, and who can change it" was three clicks
+            // deep in a tab called Privileges; a board is where that question is asked.
+            onManageAccess = { onOpenSettingsAt(SettingsRoute.project(projectId, SETTINGS_SECTION_ACCESS)) },
         )
         // A mousedown anywhere in this pane is a focus report; the sidebar's active
         // row and the address bar both follow. Capture phase, so cards and controls
@@ -2179,110 +2318,116 @@ private fun registerBrandFonts(fonts: List<BrandFont>) {
 }
 
 /**
- * Owns the project-settings panes: one [ProjectDialog] per project with a
- * settings pane open.
+ * Owns **the** settings pane — one [SettingsPane], because there is one settings
+ * surface (LNL-193).
  *
- * [BoardWindows]' sibling, and the same shape for the same reasons. What is
- * different is what it is wrapping: [ProjectDialog] was written as a modal, and
- * is a modal still when it is creating a project ("New project…", which has no
- * project to hang a pane off). Here it is handed a [PaneShell] instead — a body
- * and a footer with no backdrop, no title bar and no Escape, because the pane
- * chrome around it already supplies all three.
+ * [BoardWindows]' sibling in shape and its opposite in cardinality. Boards, issues
+ * and analytics are one pane per project; this used to be too, wrapping a
+ * [ProjectDialog] per project with a [PaneShell]. The three settings dialogs
+ * converged onto one pane, so the registry collapsed to a single entry: the pane
+ * carries which project its Projects tab is showing rather than being that
+ * project's pane.
+ *
+ * The view is built once and kept for the app's life once it has been asked for.
+ * That is deliberate rather than incidental: the pane holds a half-typed e-mail
+ * address and a pending confirmation code, and rebuilding it on every open would
+ * lose both — which is the very case LNL-71 exists for, since going to read your
+ * mail means leaving this screen.
  */
 private class SettingsPanes(
     private val storage: StorageRepository,
     private val mainViewModel: MainScreenBackingViewModel,
+    /**
+     * Who is signed in — the You tab's subject, and the two fields on it a person
+     * may edit. The app's one instance, shared with the account corner: two copies
+     * would be two answers to "what is my address" the moment either of them wrote.
+     */
+    private val sessionViewModel: SessionBackingViewModel,
     /** Reports the raw press before the view-model intent — see [main]'s `lastUserFocusedPane`. */
     private val onPaneMousedown: (paneId: String) -> Unit,
-    /**
-     * The view model said it is done — Cancel, or a project deleted. Closes the
-     * pane, which is what "done" means when there is no modal to dismiss.
-     */
-    private val onFinished: (projectId: Long) -> Unit,
+    /** Where the pane's confirmations layer — the app's modal host, not this pane. */
+    private val dialogHost: HTMLElement,
+    /** Close was pressed. Closes the pane, which is what "done" means with no modal to dismiss. */
+    private val onFinished: () -> Unit,
+    /** Throw the tabs and panes away — the You tab's "Restore default layout" (LNL-160). */
+    private val onRestoreDefaultLayout: () -> Unit,
+    /** The reader moved within the pane. The address bar follows; see [main]'s syncUrl. */
+    private val onRouteChanged: () -> Unit,
 ) {
-    private class Entry(val view: ProjectDialog, val scope: CoroutineScope)
+    private var view: SettingsPane? = null
+    private var scope: CoroutineScope? = null
 
-    private val entries = mutableMapOf<Long, Entry>()
+    /** The host, stable for the pane's life — see [IssueWindows.hosts] for why. */
+    private var host: HTMLElement? = null
 
-    /** The host for each pane, stable for its life — see [IssueWindows.hosts] for why. */
-    private val hosts = mutableMapOf<Long, HTMLElement>()
-
-    /** Create and dispose views to match the panes. */
-    fun sync(state: MainScreenBackingViewModel.State, workspace: Workspace) {
-        val wanted = workspace.tabs
-            .flatMap { tab -> tab.panes.filterIsInstance<PaneRef.Settings>() }
-            .mapTo(mutableSetOf()) { it.projectId }
-        entries.keys.filterNot { it in wanted }.toList().forEach { dispose(it) }
-        wanted.forEach { projectId ->
-            if (projectId !in entries) create(projectId, state)
+    /**
+     * Follow the workspace: build the view when the pane appears, drop it when it
+     * goes.
+     *
+     * Nothing about a board is needed to build it, unlike the per-project dialog
+     * this replaced — the pane's own view models fetch what its tabs show — so this
+     * never has to wait for a load and can never cache an empty pane.
+     */
+    fun sync(workspace: Workspace) {
+        val wanted = workspace.tabs.any { tab -> tab.panes.any { it is PaneRef.Settings } }
+        if (wanted) {
+            if (view == null) create()
+        } else if (view != null) {
+            dispose()
         }
     }
 
-    fun contentFor(projectId: Long): HTMLElement {
-        val host = hostFor(projectId)
-        if (projectId !in entries) create(projectId, mainViewModel.stateFlow.value)
-        return host
+    fun contentFor(): HTMLElement {
+        val element = hostElement()
+        if (view == null) create()
+        return element
     }
 
-    /** The pane's × was pressed: let the form decide, exactly as an issue window does. */
+    /** Go to [route] — an entry point pressed, or a deep link resolved. */
+    fun show(route: SettingsRoute) {
+        if (view == null) create()
+        view?.show(route)
+    }
+
+    /** Where the pane is, or null when there is none. What the address bar writes. */
+    fun currentRoute(): SettingsRoute? = view?.currentRoute()
+
+    /** The pane's × was pressed. Nothing here is unsaved — every edit applied when it was made. */
     fun onCloseClicked(paneId: String) {
-        settingsProjectIdOfPane(paneId)?.let { entries[it]?.view?.requestClose() }
+        if (isSettingsPane(paneId)) onFinished()
     }
 
-    private fun hostFor(projectId: Long): HTMLElement = hosts.getOrPut(projectId) {
-        val host = element("div", "settings-pane-host")
-        host.addEventListener(
-            "mousedown",
-            { onPaneMousedown(PaneRef.Settings(projectId).paneId) },
-            true,
-        )
-        host
+    private fun hostElement(): HTMLElement = host ?: element("div", "settings-pane-host").also {
+        it.addEventListener("mousedown", { onPaneMousedown(PaneRef.SETTINGS_PANE_ID) }, true)
+        host = it
     }
 
-    /**
-     * Build the form, once this project's board has arrived.
-     *
-     * The board is what says whether this reader may configure anything — the
-     * same two permissions the modal was opened with. Absent while it is still
-     * loading, so `sync` runs again on the tick it lands and the pane fills in
-     * then; the host is already on screen, which is what keeps the pane from
-     * caching an empty div (see [IssueWindows.hosts]).
-     */
-    private fun create(projectId: Long, state: MainScreenBackingViewModel.State) {
-        val screen = state.screen(projectId)
-        val project = screen.board?.project ?: return
+    private fun create() {
         val paneScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-        val viewModel = EditProjectBackingViewModel(
-            existing = project,
-            otherProjects = state.projects,
-            canConfigure = screen.canEditProject,
-            canConfigureIdentity = screen.canRenameProject,
-            storage = storage,
+        val pane = SettingsPane(
+            viewModel = ConnectionsBackingViewModel(storage, paneScope),
+            sessionViewModel = sessionViewModel,
             scope = paneScope,
-            // `changed` refreshes the boards; `saved` is only ever this project.
-            // Closing the pane is the "finished" half — there is no modal to
-            // dismiss, so the pane is what goes away.
-            onFinished = { changed, _ ->
-                if (changed) mainViewModel.reload()
-                onFinished(projectId)
-            },
-            // The per-user hide-issue-numbers choice (LNL-105) is owned by the
-            // board view model: seed the switch from it, and write a change
-            // straight back through it so the board beside this pane updates at
-            // once — which is the whole argument for this being a pane.
-            hideIssueNumbers = mainViewModel.isHidingIssueNumbers(projectId),
-            persistHideIssueNumbers = { mainViewModel.setIssueNumbersHidden(projectId, it) },
+            shell = PaneShell(),
+            dialogHost = dialogHost,
+            onClose = { onFinished() },
+            onRestoreDefaultLayout = onRestoreDefaultLayout,
+            onRouteChanged = { onRouteChanged() },
+            // Read fresh: a caller with no project has no Projects tab, and a
+            // project arriving (or a sign-in) has to grow one.
+            hasProjects = { mainViewModel.stateFlow.value.projects.isNotEmpty() },
         )
-        val view = ProjectDialog(viewModel, paneScope, shell = PaneShell())
-        view.mount(hostFor(projectId))
-        entries[projectId] = Entry(view, paneScope)
+        pane.mount(hostElement())
+        view = pane
+        scope = paneScope
     }
 
-    private fun dispose(projectId: Long) {
-        val entry = entries.remove(projectId) ?: return
-        entry.view.dismiss()
-        entry.scope.cancel()
-        hosts.remove(projectId)
+    private fun dispose() {
+        view?.dismiss()
+        view = null
+        scope?.cancel()
+        scope = null
+        host = null
     }
 }
 
