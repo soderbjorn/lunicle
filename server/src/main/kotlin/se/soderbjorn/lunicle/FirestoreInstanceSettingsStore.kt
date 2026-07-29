@@ -30,6 +30,7 @@ import com.google.cloud.firestore.SetOptions
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.store.InstanceSettings
+import se.soderbjorn.lunicle.store.newProjectAudienceKey
 
 class FirestoreInstanceSettingsStore(
     private val firestore: Firestore,
@@ -61,6 +62,14 @@ class FirestoreInstanceSettingsStore(
             // absent case — reads as "nobody owns this instance", which withholds
             // authority rather than handing it to whoever has id 0.
             ownerUserId = (values[OWNER_USER_ID_KEY] as? Number)?.toLong(),
+            // Not switches either (LNL-195): one entry per audience, holding a rung key
+            // string. An unrecognised rung drops the row rather than defaulting to one
+            // — guessing would hand an audience a rung nobody chose on every project
+            // created afterwards. Matches the SQLite store.
+            newProjectAudiences = Audience.entries.mapNotNull { audience ->
+                val stored = values[newProjectAudienceKey(audience)] as? String
+                stored?.let { ProjectRole.byKey(it) }?.let { audience to it }
+            }.toMap(),
         )
     }
 
@@ -83,6 +92,20 @@ class FirestoreInstanceSettingsStore(
         // The same single-entry merge, storing the key string rather than the
         // constant's name so a Kotlin rename is not a migration of the document.
         doc.set(mapOf(VALUES to mapOf(ADMISSION_KEY to policy.key)), SetOptions.merge()).await()
+    }
+
+    /**
+     * One audience's row for future projects, or none.
+     *
+     * A null writes a null rather than deleting the entry, which reads back identically
+     * through the `as? String` above — one write path instead of a delete branch only
+     * this backend would have, exactly as [setOwnerUserId] does.
+     */
+    override suspend fun setNewProjectAudience(audience: Audience, role: ProjectRole?) {
+        doc.set(
+            mapOf(VALUES to mapOf(newProjectAudienceKey(audience) to role?.key)),
+            SetOptions.merge(),
+        ).await()
     }
 
     private companion object {

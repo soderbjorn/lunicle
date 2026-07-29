@@ -545,6 +545,47 @@ private fun UserRecord.effectiveRungAmong(
 }
 
 /**
+ * Give a brand-new project the two things it cannot be usable without: an owner, and
+ * whatever audience rows the instance says a new project starts with (LNL-195).
+ *
+ * ── Why this is here and not in ProjectRepository.create ────────────────────
+ *
+ * That method is one transaction over six vocabulary tables and knows nothing about
+ * accounts or instance settings; threading a caller and a settings store into it would
+ * make provisioning a board depend on who asked for it. This is the *policy* half, and
+ * it belongs beside the gate that decided the caller may create at all.
+ *
+ * ── The owner row is load-bearing, and used not to exist ────────────────────
+ *
+ * Nothing wrote it before this. That was survivable only because every account that
+ * could create a project was an instance administrator, who reaches
+ * [ProjectRole.OWNER] everywhere without a row — so the moment LNL-192's per-tier
+ * `staff_may_create_projects` let an ordinary member make a board, they would have made
+ * one they held nothing on. The create response has always *claimed* they were its
+ * owner; this is what makes the claim true.
+ *
+ * ── The guest row still answers to the veto ─────────────────────────────────
+ *
+ * A deployment with "allow projects to be public" off must not be able to publish
+ * boards through this setting, so the guest row is dropped rather than written when the
+ * veto is on — the same refusal [AccessControl.canSetAudience] makes for a hand-written
+ * write. The setting keeps its stored value, so lifting the veto starts honouring it
+ * again for projects created afterwards.
+ *
+ * @param creator the caller, or null. Null only for a route that let a signed-out
+ *   visitor create — which [AccessControl.canCreateProject] never does — so it is
+ *   handled by seating nobody rather than by an assertion nobody can reach.
+ */
+private suspend fun BoardDependencies.seatNewProject(project: ProjectRecord, creator: UserRecord?) {
+    if (creator != null) roles.setRole(creator.id, project.id, ProjectRole.OWNER)
+    val settings = instanceSettings.current()
+    settings.newProjectAudiences.forEach { (audience, rung) ->
+        if (audience == Audience.GUEST && !settings.allowPublicProjects) return@forEach
+        roles.setAudienceRole(project.id, audience, rung)
+    }
+}
+
+/**
  * The resolution rule, in one place: is [resolutionId] the right answer for
  * [statusId]?
  *
@@ -769,10 +810,11 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
         }
         try {
             val created = deps.projectRepository.create(body.name, body.namePrefix)
+            deps.seatNewProject(created, user)
             logger.info("Project created: ${created.name} (${created.namePrefix}) by user ${user?.id}")
-            // Re-asked rather than assumed to be OWNER: ProjectRepository.create is
-            // what seats the creator, and asking the access rule is what keeps this
-            // response honest if that ever stops being true.
+            // Re-asked rather than assumed to be OWNER: seatNewProject is what seats the
+            // creator, and asking the access rule is what keeps this response honest if
+            // that ever stops being true.
             call.respond(created.toSummary(deps.access.effectiveRole(user, created.id) ?: ProjectRole.OWNER))
         } catch (conflict: ProjectConflict) {
             // 409 with the repository's own sentence: it knows *which* project

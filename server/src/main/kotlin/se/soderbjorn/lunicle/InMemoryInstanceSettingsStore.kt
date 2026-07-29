@@ -43,4 +43,13 @@ class InMemoryInstanceSettingsStore(
     override suspend fun setAdmissionPolicy(policy: AdmissionPolicy) {
         settings = settings.copy(admission = policy)
     }
+
+    /** One audience's row for future projects; null removes it, as in both real stores. */
+    override suspend fun setNewProjectAudience(audience: Audience, role: ProjectRole?) {
+        settings = settings.copy(
+            newProjectAudiences = settings.newProjectAudiences.toMutableMap().apply {
+                if (role == null) remove(audience) else put(audience, role)
+            },
+        )
+    }
 }

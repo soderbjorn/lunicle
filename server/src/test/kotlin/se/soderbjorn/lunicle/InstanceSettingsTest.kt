@@ -353,6 +353,133 @@ class InstanceSettingsTest {
         }
     }
 
+    // ── What a new project starts with (LNL-195) ─────────────────────────────
+
+    /**
+     * A member who creates a project **owns** it — with a stored row, not a claim.
+     *
+     * Nothing wrote that row before LNL-195, which was survivable only while every
+     * account that could create was an instance administrator (who reaches Owner
+     * everywhere without one). The moment the per-tier switch let a member create, they
+     * made a board they held nothing on. Asserted against the store rather than the
+     * response, because the response has always claimed Owner regardless.
+     */
+    @Test
+    fun `a member who creates a project holds a stored Owner row on it`(): Unit = runBlocking {
+        seed()
+        val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
+        val cookie = sessions.create(ordinary.id)
+        instanceSettings.set(InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS, true)
+
+        withAuthAndBoard { client ->
+            client.post("/api/projects") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(ProjectUpdate("Ordinary's", "ORD"))
+            }
+        }
+
+        val created = projects.selectAll().first { it.namePrefix == "ORD" }
+        assertEquals(
+            ProjectRole.OWNER,
+            roles.roleFor(ordinary.id, created.id),
+            "The creator was not seated as the project's owner.",
+        )
+    }
+
+    /**
+     * The audience rows a new project starts with are the instance's, copied once.
+     *
+     * And they are a **copy**: changing the setting afterwards leaves the project that
+     * was already created exactly as it was, which is the whole reason this is a setting
+     * rather than a policy layered under every board.
+     */
+    @Test
+    fun `a new project is created with the instance's audience rows, and later edits do not reach it`(): Unit =
+        runBlocking {
+            val fixture = seed()
+            val cookie = sessions.create(fixture.adminId)
+            instanceSettings.setNewProjectAudience(Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+
+            withAuthAndBoard { client ->
+                client.post("/api/projects") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(ProjectUpdate("First", "FST"))
+                }
+            }
+            val first = projects.selectAll().first { it.namePrefix == "FST" }
+            assertEquals(mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR), roles.audienceRoles(first.id))
+
+            // The setting moves; the project that already exists does not.
+            instanceSettings.setNewProjectAudience(Audience.MEMBER, ProjectRole.MAINTAINER)
+            assertEquals(
+                mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR),
+                roles.audienceRoles(first.id),
+                "Editing the setting rewrote a project that already existed.",
+            )
+        }
+
+    /**
+     * With nothing named, a new project admits nobody — LNL-194's default, unchanged.
+     */
+    @Test
+    fun `by default a new project has no audience rows at all`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+
+        withAuthAndBoard { client ->
+            client.post("/api/projects") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(ProjectUpdate("Quiet", "QUI"))
+            }
+        }
+        val created = projects.selectAll().first { it.namePrefix == "QUI" }
+        assertTrue(roles.audienceRoles(created.id).isEmpty(), "A new project admitted somebody nobody named.")
+    }
+
+    /**
+     * The guest row answers to the publish veto even here.
+     *
+     * Otherwise this setting would be a way to publish boards on a deployment that has
+     * forbidden itself from publishing any — the veto is enforced on the project's own
+     * write, and it has to be enforced on the copy too.
+     */
+    @Test
+    fun `a guest row is not copied while the publish veto stands`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+        instanceSettings.setNewProjectAudience(Audience.GUEST, ProjectRole.VIEWER)
+        instanceSettings.setNewProjectAudience(Audience.MEMBER, ProjectRole.VIEWER)
+
+        withAuthAndBoard { client ->
+            client.post("/api/projects") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(ProjectUpdate("Vetoed", "VET"))
+            }
+        }
+        val vetoed = projects.selectAll().first { it.namePrefix == "VET" }
+        assertEquals(
+            mapOf(Audience.MEMBER to ProjectRole.VIEWER),
+            roles.audienceRoles(vetoed.id),
+            "A guest row was written on a deployment that forbids public projects.",
+        )
+
+        // Lifted, and the next project created honours it.
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        withAuthAndBoard { client ->
+            client.post("/api/projects") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(ProjectUpdate("Published", "PUB"))
+            }
+        }
+        val published = projects.selectAll().first { it.namePrefix == "PUB" }
+        assertEquals(ProjectRole.VIEWER, roles.audienceRoles(published.id)[Audience.GUEST])
+    }
+
     // ── Fixture ──────────────────────────────────────────────────────────────
 
     private class Fixture(val adminId: Long, val projectId: Long)

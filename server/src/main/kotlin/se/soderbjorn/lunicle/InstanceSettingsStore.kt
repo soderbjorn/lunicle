@@ -16,6 +16,7 @@ import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.db.LunicleDatabase
 import se.soderbjorn.lunicle.store.InstanceSettings
+import se.soderbjorn.lunicle.store.newProjectAudienceKey
 
 /**
  * Reads and writes `instance_settings`.
@@ -60,6 +61,14 @@ class InstanceSettingsStore(
             // this instance", which is the safe direction: it withholds authority
             // rather than handing it to whoever happens to have id 0.
             ownerUserId = rows[OWNER_USER_ID_KEY]?.toLongOrNull(),
+            // Not switches either (LNL-195): one row per audience, holding a rung key.
+            // An unrecognised rung — a hand-edited row, a build that knew a sixth rung
+            // — drops the row rather than defaulting to one, because guessing here
+            // would hand an audience a rung nobody chose on every project created
+            // afterwards.
+            newProjectAudiences = Audience.entries.mapNotNull { audience ->
+                ProjectRole.byKey(rows[newProjectAudienceKey(audience)] ?: "")?.let { audience to it }
+            }.toMap(),
         )
     }
 
@@ -85,6 +94,24 @@ class InstanceSettingsStore(
     override suspend fun setAdmissionPolicy(policy: AdmissionPolicy): Unit = withContext(DatabaseDispatcher) {
         database.instanceSettingsQueries.upsert(key = ADMISSION_KEY, value_ = policy.key)
     }
+
+    /**
+     * One audience's row for future projects, or none.
+     *
+     * Deletes rather than storing a sentinel for null, so "this audience gets nothing"
+     * is the absence of a row — the same thing a fresh instance has, which means a
+     * deployment that sets a row and clears it again is indistinguishable from one that
+     * never set it.
+     */
+    override suspend fun setNewProjectAudience(audience: Audience, role: ProjectRole?): Unit =
+        withContext(DatabaseDispatcher) {
+            val key = newProjectAudienceKey(audience)
+            if (role == null) {
+                database.instanceSettingsQueries.delete(key)
+            } else {
+                database.instanceSettingsQueries.upsert(key = key, value_ = role.key)
+            }
+        }
 
     /** "true" is on; everything else — including a null, an unknown, a typo — is off. */
     private fun String?.isTrue(): Boolean = this == "true"

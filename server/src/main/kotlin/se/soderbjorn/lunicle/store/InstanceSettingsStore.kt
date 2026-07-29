@@ -17,7 +17,9 @@
  */
 package se.soderbjorn.lunicle.store
 
+import se.soderbjorn.lunicle.Audience
 import se.soderbjorn.lunicle.InstanceRole
+import se.soderbjorn.lunicle.ProjectRole
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 
@@ -78,6 +80,29 @@ data class InstanceSettings(
      * seatInstanceOwner.
      */
     val ownerUserId: Long? = null,
+    /**
+     * The audience rows a **new** project is created with (LNL-195).
+     *
+     * ── Copied once, and never consulted again ──────────────────────────────
+     *
+     * Read at the moment a project is created and written into that project's own
+     * `project_audience_roles`; from then on the project's Access list is the only
+     * thing that decides who it admits. Changing this setting therefore changes
+     * nothing about any project that already exists, which is what makes it safe to
+     * be an ordinary setting rather than a live policy layered under every board.
+     *
+     * Empty by default, which is LNL-194's decision restated rather than softened: a
+     * project that admits nobody until somebody says otherwise is the closed answer,
+     * and this is the setting that lets a deployment choose a different one **on
+     * purpose**. The creator holds Owner either way — that is seated by the create
+     * route, not by this map.
+     *
+     * An audience absent from the map means no row for it. [Audience.GUEST] is
+     * additionally subject to the [allowPublicProjects] veto at creation time, so a
+     * deployment cannot use this setting to publish boards it has forbidden itself
+     * from publishing.
+     */
+    val newProjectAudiences: Map<Audience, ProjectRole> = emptyMap(),
 ) {
     /**
      * May somebody standing at [role] create a project?
@@ -150,4 +175,29 @@ interface InstanceSettingsStore {
      * wins, as everywhere here.
      */
     suspend fun setAdmissionPolicy(policy: AdmissionPolicy)
+
+    /**
+     * Say what rung [audience] arrives at in a **newly created** project, or hand it
+     * nothing at all (LNL-195).
+     *
+     * One audience per call rather than the whole map, so the screen's three rows are
+     * three independent writes and a concurrent edit of one cannot silently revert
+     * another. Null removes the row, which is different from writing
+     * [ProjectRole.VIEWER] and is the state a fresh instance is in.
+     *
+     * Not part of [set] for [setAdmissionPolicy]'s reason, twice over: this is neither
+     * a boolean nor a single value.
+     */
+    suspend fun setNewProjectAudience(audience: Audience, role: ProjectRole?)
 }
+
+/**
+ * The key one new-project audience row is stored under, spelled once (LNL-195).
+ *
+ * Here rather than in either store because **both** backends write it — a row in
+ * `instance_settings` on SQLite, an entry in the one `values` map on Firestore — and
+ * two copies of the string is exactly how the two would come to disagree about which
+ * setting a stored value belongs to. Derived from [Audience.key] so it moves with the
+ * wire name and not with the constant's.
+ */
+internal fun newProjectAudienceKey(audience: Audience): String = "new_project_audience_${audience.key}"

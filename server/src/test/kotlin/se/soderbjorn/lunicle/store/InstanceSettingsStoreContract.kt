@@ -19,6 +19,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import se.soderbjorn.lunicle.Audience
+import se.soderbjorn.lunicle.ProjectRole
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 
@@ -104,6 +106,78 @@ abstract class InstanceSettingsStoreContract {
         val settings = store.current()
         assertEquals(AdmissionPolicy.STAFF_DOMAIN_ONLY, settings.admission, "A switch write cost the policy.")
         assertTrue(settings.memberMayCreateProjects, "The policy write cost a switch.")
+    }
+
+    // ── What a new project starts with (LNL-195) ────────────────────────────
+
+    /**
+     * A fresh instance names no audience at all, so a new project admits nobody.
+     *
+     * The closed answer LNL-194 chose, restated here as the *stored* default rather
+     * than as a rule in the create path — which is what makes a deployment able to
+     * choose otherwise on purpose.
+     */
+    @Test
+    fun `no audience is named for a new project until somebody names one`() = runBlocking {
+        assertTrue(store.current().newProjectAudiences.isEmpty())
+    }
+
+    /** Every audience, every rung, one at a time, each reading back as itself. */
+    @Test
+    fun `every new-project audience row round-trips at every rung`() = runBlocking {
+        for (audience in Audience.entries) {
+            for (rung in ProjectRole.entries) {
+                store.setNewProjectAudience(audience, rung)
+                assertEquals(
+                    rung,
+                    store.current().newProjectAudiences[audience],
+                    "${audience.key} at ${rung.key} did not read back.",
+                )
+            }
+            store.setNewProjectAudience(audience, null)
+        }
+        assertTrue(store.current().newProjectAudiences.isEmpty(), "Clearing the rows left something behind.")
+    }
+
+    /**
+     * Null removes the row rather than storing a rung, and the three audiences are
+     * independent of each other.
+     *
+     * The failure this guards is a store that folds all three onto one key — invisible
+     * until an administrator set the members row and watched the staff row change with
+     * it.
+     */
+    @Test
+    fun `the new-project audience rows are independent, and null removes one`() = runBlocking {
+        store.setNewProjectAudience(Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        store.setNewProjectAudience(Audience.STAFF, ProjectRole.MAINTAINER)
+        assertEquals(
+            mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR, Audience.STAFF to ProjectRole.MAINTAINER),
+            store.current().newProjectAudiences,
+        )
+        store.setNewProjectAudience(Audience.MEMBER, null)
+        assertEquals(
+            mapOf(Audience.STAFF to ProjectRole.MAINTAINER),
+            store.current().newProjectAudiences,
+            "Clearing one audience disturbed another.",
+        )
+    }
+
+    /**
+     * These rows share the key-value space with the switches, admission and ownership
+     * on both backends, and must collide with none of them.
+     */
+    @Test
+    fun `the new-project rows disturb neither the switches nor admission nor ownership`() = runBlocking {
+        store.set(InstanceSettingKey.STAFF_MAY_USE_AGENTS, true)
+        store.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)
+        store.setOwnerUserId(7L)
+        store.setNewProjectAudience(Audience.GUEST, ProjectRole.VIEWER)
+        val settings = store.current()
+        assertTrue(settings.staffMayUseAgents, "The new-project row cost a switch.")
+        assertEquals(AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED, settings.admission, "It cost the admission policy.")
+        assertEquals(7L, settings.ownerUserId, "It cost the instance owner.")
+        assertEquals(mapOf(Audience.GUEST to ProjectRole.VIEWER), settings.newProjectAudiences)
     }
 }
 
