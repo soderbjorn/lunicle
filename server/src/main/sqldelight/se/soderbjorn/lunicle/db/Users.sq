@@ -287,6 +287,18 @@ SELECT id, provider, provider_id, provider_name, display_name, email, email_veri
 FROM users
 WHERE email = ?;
 
+-- The account behind a provider identity — the *fallback* half of the find, which
+-- `upsert` performs through its ON CONFLICT rather than as a SELECT.
+--
+-- Exposed as a query of its own for admission (LNL-192), which has to answer "would
+-- signing in create a row?" before deciding whether a policy applies. The pair still
+-- reaches an account whose address was never confirmed, which is exactly the case
+-- that must not be mistaken for a brand new sign-up and refused.
+findByProviderPair:
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
+FROM users
+WHERE provider = ? AND provider_id = ?;
+
 -- Refresh a row found by address on a repeat sign-in.
 --
 -- The e-mail-keyed twin of `upsert`'s ON CONFLICT branch, and it updates exactly

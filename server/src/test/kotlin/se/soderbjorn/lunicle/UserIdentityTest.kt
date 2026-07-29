@@ -121,7 +121,7 @@ class UserIdentityTest {
         assertEquals("sub-1", returning.providerId, "The provider id was rewritten by a later sign-in.")
         assertEquals("Ali", returning.resolvedName, "The user's own display-name override was overwritten.")
         assertTrue(returning.isInstanceAdmin, "The admin bit was recomputed on a repeat sign-in.")
-        assertTrue(returning.canUseMcp, "Signing in again reset the MCP switches.")
+        assertTrue(returning.isMcpEnabled, "Signing in again reset the user's own MCP switch.")
         // The provider's own name is refreshed, which is the one thing that should
         // follow — it is theirs to change.
         assertEquals("Alice Elsewhere", returning.providerName)

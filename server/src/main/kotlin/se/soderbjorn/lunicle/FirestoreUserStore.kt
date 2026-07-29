@@ -179,6 +179,25 @@ class FirestoreUserStore(
         }.await()
     }
 
+    /**
+     * The document [upsert] would find for this identity, or null when it would
+     * create one — the same two lookups in the same order, outside a transaction
+     * because nothing is written. See the interface for why admission needs it.
+     */
+    override suspend fun findExisting(identity: ProviderIdentity): UserRecord? {
+        val email = normalizeEmail(identity.email)
+        if (email != null) {
+            collection().whereEqualTo(EMAIL, email).limit(1).get().await()
+                .documents.firstOrNull()?.let { return it.toUser() }
+        }
+        return collection()
+            .whereEqualTo(PROVIDER, identity.provider.name)
+            .whereEqualTo(PROVIDER_ID, identity.providerId)
+            .limit(1)
+            .get().await()
+            .documents.firstOrNull()?.toUser()
+    }
+
     override suspend fun findById(id: Long): UserRecord? =
         doc(id).get().await().takeIf { it.exists() }?.toUser()
 

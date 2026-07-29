@@ -27,6 +27,7 @@ package se.soderbjorn.lunicle
 
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.SetOptions
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.store.InstanceSettings
 
@@ -44,9 +45,17 @@ class FirestoreInstanceSettingsStore(
             (snapshot.get(VALUES) as? Map<String, Any?>).orEmpty()
         }
         return InstanceSettings(
-            requireSignIn = values[InstanceSettingKey.REQUIRE_SIGN_IN.storageKey] == true,
-            anyoneCanCreateProject = values[InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT.storageKey] == true,
             hideDisplayName = values[InstanceSettingKey.HIDE_DISPLAY_NAME.storageKey] == true,
+            // Not a switch (LNL-192): three values, stored as the policy's key
+            // string. Anything unrecognised reads as the default rather than as
+            // "admit nobody" — a deployment must not lock every future account out
+            // on the strength of a hand-edited field. Matches the SQLite store.
+            admission = AdmissionPolicy.byKey(values[ADMISSION_KEY] as? String) ?: AdmissionPolicy.ANYONE,
+            allowPublicProjects = values[InstanceSettingKey.ALLOW_PUBLIC_PROJECTS.storageKey] == true,
+            staffMayCreateProjects = values[InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS.storageKey] == true,
+            memberMayCreateProjects = values[InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS.storageKey] == true,
+            staffMayUseAgents = values[InstanceSettingKey.STAFF_MAY_USE_AGENTS.storageKey] == true,
+            memberMayUseAgents = values[InstanceSettingKey.MEMBER_MAY_USE_AGENTS.storageKey] == true,
             // Not a switch (LNL-191): a user id, stored as a number beside the
             // booleans in the same map. Anything that is not a number — including the
             // absent case — reads as "nobody owns this instance", which withholds
@@ -70,10 +79,19 @@ class FirestoreInstanceSettingsStore(
         doc.set(mapOf(VALUES to mapOf(OWNER_USER_ID_KEY to userId)), SetOptions.merge()).await()
     }
 
+    override suspend fun setAdmissionPolicy(policy: AdmissionPolicy) {
+        // The same single-entry merge, storing the key string rather than the
+        // constant's name so a Kotlin rename is not a migration of the document.
+        doc.set(mapOf(VALUES to mapOf(ADMISSION_KEY to policy.key)), SetOptions.merge()).await()
+    }
+
     private companion object {
         const val COLLECTION = "instanceSettings"
         const val DOCUMENT = "singleton"
         const val VALUES = "values"
+
+        /** Admission's key in the map — the same string the SQLite store writes. */
+        const val ADMISSION_KEY = "admission"
 
         /** Ownership's key in the map — the same string 33.sqm writes on the SQLite side. */
         const val OWNER_USER_ID_KEY = "owner_user_id"

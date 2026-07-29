@@ -166,7 +166,6 @@ fun Application.module() {
     }
 
     val webDistPath = System.getProperty("lunicle.webDist")
-    val oauthConfig = resolveOAuthConfig()
 
     // Deploy-time branding (LNL-110). Read-only config, applied at load and never
     // written to the datastore — see BrandRoutes. Off ⇒ brandInfo is null, no
@@ -175,6 +174,20 @@ fun Application.module() {
     // malformed brand file degrades the look rather than stopping the boot.
     val brandInfo = resolveBrandDir()?.let { loadBrandInfo(it) }
     log.info("Branding: ${brandInfo?.describe() ?: "brand dir: (unset)"}")
+
+    // Sign-in, after branding, because the manifest has a say in it now (LNL-192):
+    // `allowEmailCodeSignIn` is a third term on isEmailAvailable beside a configured
+    // transport and LUNICLE_EMAIL_SIGN_IN, and it can only ever narrow. The
+    // deployment's own identity is then everything the manifest says about itself
+    // plus the one fact only this process knows — whether a mailed code actually
+    // works here. See InstanceIdentity.
+    val oauthConfig = resolveOAuthConfig(brandInfo?.allowEmailCodeSignIn ?: true)
+    val instanceIdentity = brandInfo.toInstanceIdentity(oauthConfig.isEmailAvailable)
+    log.info(
+        "Instance identity: domain=${instanceIdentity.domain ?: "(unset — no staff tier)"}; " +
+            "google-pin=${instanceIdentity.googleHostedDomainPin ?: "(none)"}; " +
+            "code-sign-in=${instanceIdentity.isCodeSignInAvailable}",
+    )
 
     // Which backend this process runs on, chosen once here — see DatabaseBackend.
     // Nothing GCP is touched unless FIRESTORE is selected: on the SQLite/Railway
@@ -379,6 +392,9 @@ fun Application.module() {
         users = users,
         impersonations = impersonations,
         instanceSettings = instanceSettings,
+        // Deploy-time configuration, for the admission options the settings dialog
+        // renders. See InstanceIdentity.
+        identity = instanceIdentity,
         subscriptions = subscriptions,
         reads = reads,
         notificationStore = notificationStore,
@@ -403,6 +419,10 @@ fun Application.module() {
         users = users,
         impersonations = impersonations,
         config = oauthConfig,
+        // The per-tier agent permission the five MCP gates read. The same object the
+        // board routes hold, so an administrator's switch reaches the token path
+        // within one request. See canUseMcp.
+        instanceSettings = instanceSettings,
     )
 
     // Startup housekeeping, all of it in one launch{} rather than blocking the
@@ -426,7 +446,7 @@ fun Application.module() {
         // a purged one, and one that has been serving for a month all take the same
         // code path — and what makes an interrupted run a non-event. See
         // stampUserKinds and seatInstanceOwner.
-        val stamped = stampUserKinds(users, brandInfo?.googleHostedDomain)
+        val stamped = stampUserKinds(users, instanceIdentity.domain)
         if (stamped > 0) log.info("Instance: re-derived the staff/member kind of $stamped account(s)")
         seatInstanceOwner(users, instanceSettings)?.let {
             log.info("Instance: seated user $it as the instance owner — nobody held it")
@@ -554,9 +574,11 @@ fun Application.module() {
             // So every session response carries the require-sign-in switch, read
             // by the shell's landing gate (LNL-115). See SessionState.isSignInRequired.
             instanceSettings = instanceSettings,
-            // Optional per-deployment Workspace-domain gate, from brand.json
-            // (LNL-125). Null when unbranded ⇒ Google sign-in behaves as before.
-            googleHostedDomain = brandInfo?.googleHostedDomain,
+            // What this deployment says about itself (LNL-192): the domain that
+            // decides staff from member, and — separately — whether the Google
+            // chooser is pinned to it. Unbranded ⇒ neither, and sign-in behaves
+            // exactly as it did.
+            identity = instanceIdentity,
         )
 
         // Not part of authRoutes despite sharing its three dependencies: what a

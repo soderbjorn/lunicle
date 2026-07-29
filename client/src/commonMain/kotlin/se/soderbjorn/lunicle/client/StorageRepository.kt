@@ -275,16 +275,15 @@ class StorageRepository(
 
     // ── Instance administration ──────────────────────────────────────────────
 
-    /**
-     * The account directory, and the one thing an admin may change about a row in
-     * it. Pass-throughs, like the project settings below.
-     */
+    /** The account directory. A pass-through, like the project settings below. */
     suspend fun adminSettings(): AdminSettingsState = api.adminSettings()
 
-    suspend fun setUserMcpAllowed(userId: Long, isAllowed: Boolean): AdminSettingsState =
-        api.setUserMcpAllowed(userId, isAllowed)
+    /** Set who may hold an account on this deployment (LNL-192). */
+    suspend fun setAdmissionPolicy(
+        policy: se.soderbjorn.lunicle.clientserver.AdmissionPolicy,
+    ): AdminSettingsState = api.setAdmissionPolicy(policy)
 
-    /** Set one instance-wide switch — require sign-in, or open project creation (LNL-115). */
+    /** Set one instance-wide switch — public projects, or a tier's permissions (LNL-192). */
     suspend fun setInstanceSetting(
         key: se.soderbjorn.lunicle.clientserver.InstanceSettingKey,
         isEnabled: Boolean,

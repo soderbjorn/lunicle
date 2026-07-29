@@ -1,5 +1,6 @@
 /**
- * The instance settings dialog's routes: the account directory, and agent access.
+ * The instance settings dialog's routes: the account directory, the deployment-wide
+ * switches, admission, and the project list.
  *
  * Same shape as the rest — **parse, AUTHORIZE, respond** — and the authorization
  * here is the simplest in the codebase, because it is the only place where the
@@ -8,22 +9,19 @@
  * their own notification toggle and nothing else); nothing in this file belongs to
  * a non-admin, so [adminCaller] refuses and there is no narrowed half to get wrong.
  *
- * ── Why the MCP toggle lives here and not in McpRoutes ──────────────────────
+ * ── The per-account MCP route that used to be here (LNL-192) ────────────────
  *
- * `POST /api/mcp/enabled` already sets this flag — for the caller themselves. The
- * obvious economy is to give it an optional `userId` and let an admin pass one,
- * and it is worth writing down why that is not what happened: it would make the
- * route's *authorization* depend on a field in the body. "Session required" and
- * "admin required" are different checks, and a handler that picks between them by
- * looking at what the caller sent is one refactor away from running the wrong one.
- * Two routes, two gates, no branch.
+ * `POST /api/admin/users/mcp` set one person's agent-access *permission*. It is
+ * gone, along with the wire type and the client call: the permission is per tier
+ * now — two switches on this same instance-settings write — and there is no
+ * per-person override anywhere in this design. LNL-191 dropped the column it wrote
+ * and left the route answering honestly that it stored nothing; leaving it standing
+ * any longer would have invited exactly the per-account column this rework removed.
  *
- * The two writes are otherwise identical, and deliberately so — both go through
- * [UserStore.setMcpEnabled], which does not touch tokens. Off is a gate, not a
- * purge: `/oauth/authorize` and `/mcp` re-read the flag per request, so an admin
- * switching somebody off stops their agents within one request and switching them
- * back on restores them with no second trip through a browser. An admin who
- * expected "revoke" and got "pause" has done less damage than the reverse.
+ * The *user's own* switch is untouched and still lives at `POST /api/mcp/enabled`,
+ * where it always did. An admin cannot set it, which is not an omission: it is the
+ * person's own answer, and a screen that let somebody else give it would record a
+ * preference the user never expressed.
  *
  * @see AccessControl
  * @see se.soderbjorn.lunicle.clientserver.AdminSettingsState
@@ -45,8 +43,8 @@ import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.ProjectOrder
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
 import se.soderbjorn.lunicle.clientserver.RoleDescription
+import se.soderbjorn.lunicle.clientserver.SetAdmissionPolicyRequest
 import se.soderbjorn.lunicle.clientserver.SetInstanceSettingRequest
-import se.soderbjorn.lunicle.clientserver.UserMcpAccess
 
 private val logger = LoggerFactory.getLogger("AdminRoutes")
 
@@ -65,49 +63,13 @@ fun Route.adminRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Permit one user to have agent access, or withdraw it.
-     *
-     * ── Currently a no-op, and answering honestly is the point ───────────────
-     *
-     * This wrote `users.mcp_allowed`, an administrator's per-account permission,
-     * and LNL-191 dropped that column: every account is permitted, and only the
-     * user's own `mcp_enabled` decides. The route stays, still authorised, still
-     * returning the fresh state — so the dialog does not 404 and the client needs
-     * no change before tickets 3–5 rebuild it — and it stores nothing, which is
-     * why the response comes back with the switch unchanged rather than where the
-     * caller put it. A switch that reports the truth about what it did is a better
-     * intermediate state than one that pretends.
-     *
-     * TODO(LNL-192): per-tier MCP permission. When it lands, this route either
-     *  becomes a write against the instance ladder or goes away; it should not
-     *  quietly become a per-account column again.
-     */
-    post(ApiRoutes.ADMIN_USER_MCP) {
-        val admin = call.adminCaller(deps, "change agent access") ?: return@post
-        val body = call.receiveOrNull<UserMcpAccess>() ?: run {
-            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
-            return@post
-        }
-        val target = deps.users.findById(body.userId) ?: run {
-            call.respond(HttpStatusCode.NotFound, "No such user.")
-            return@post
-        }
-        logger.info(
-            "MCP: admin ${admin.id} asked to ${if (body.isAllowed) "permit" else "withdraw"} agent access " +
-                "for user ${target.id}, and nothing was stored — per-account MCP permission is gone " +
-                "(LNL-191) and returns per tier in LNL-192.",
-        )
-        call.respond(deps.buildAdminSettings(admin))
-    }
-
-    /**
-     * Set one instance-wide switch (LNL-115): require sign-in, or open project
-     * creation. Admin only, like everything in this file.
+     * Set one instance-wide switch: whether projects may be published, and what
+     * each tier of signed-in person may do (LNL-192). Admin only, like everything
+     * in this file.
      *
      * Names the switch and its desired state in the body — a value, not an
      * authorization decision, because every switch here answers to this same one
-     * gate (unlike the MCP pair, whose two callers hold different permissions).
-     * Answers with the refreshed directory so the General tab never merges two
+     * gate. Answers with the refreshed directory so the General tab never merges two
      * objects, exactly as the other writes here do.
      */
     post(ApiRoutes.ADMIN_INSTANCE_SETTINGS) {
@@ -120,6 +82,36 @@ fun Route.adminRoutes(deps: BoardDependencies) {
         logger.info(
             "Instance setting ${body.key.storageKey} set to ${body.isEnabled} by admin ${admin.id}",
         )
+        call.respond(deps.buildAdminSettings(admin))
+    }
+
+    /**
+     * Set who may hold an account on this deployment (LNL-192). Admin only.
+     *
+     * Its own route rather than a sixth switch, because it is the one thing on this
+     * screen with a **refusal** to make. The deployment's configuration can leave a
+     * policy unhonourable — see [InstanceIdentity.admissionState] — and a greyed
+     * option that a hand-written POST could still set would make the greying an
+     * affordance rather than a rule. The refusal carries the same sentence the
+     * greying shows, so an administrator who somehow reaches it reads the same
+     * explanation twice rather than two different ones.
+     */
+    post(ApiRoutes.ADMIN_ADMISSION) {
+        val admin = call.adminCaller(deps, "change who may have an account") ?: return@post
+        val body = call.receiveOrNull<SetAdmissionPolicyRequest>() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        val option = deps.identity.admissionState(body.policy).options.first { it.policy == body.policy }
+        if (!option.isSelectable) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                "This deployment cannot admit people that way: ${option.unavailableReason}.",
+            )
+            return@post
+        }
+        deps.instanceSettings.setAdmissionPolicy(body.policy)
+        logger.info("Admission set to ${body.policy.key} by admin ${admin.id}")
         call.respond(deps.buildAdminSettings(admin))
     }
 
@@ -235,14 +227,23 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
     // a fact about the project rather than about the pair.
     val audiencesByProject = allProjects.associate { it.id to roles.audienceRoles(it.id) }
 
-    // The General tab's switches (LNL-115), read together in one query. The write
-    // returns this whole state, so a toggle re-renders the tab from the server's
-    // answer rather than patching its own copy — the rule every write here follows.
+    // The General tab's settings, read together in one query. The write returns this
+    // whole state, so a toggle re-renders the tab from the server's answer rather
+    // than patching its own copy — the rule every write here follows.
     val switches = instanceSettings.current()
 
     return AdminSettingsState(
-        requireSignIn = switches.requireSignIn,
-        anyoneCanCreateProject = switches.anyoneCanCreateProject,
+        // The stored policy AND this deployment's verdict on each of the three
+        // choices, computed here so the dialog renders what it is handed. A client
+        // that re-derived the greying would need to be shown the brand manifest and
+        // the mail configuration, and would be a second copy of the rule the write
+        // above enforces. See InstanceIdentity.admissionState.
+        admission = identity.admissionState(switches.admission),
+        allowPublicProjects = switches.allowPublicProjects,
+        staffMayCreateProjects = switches.staffMayCreateProjects,
+        memberMayCreateProjects = switches.memberMayCreateProjects,
+        staffMayUseAgents = switches.staffMayUseAgents,
+        memberMayUseAgents = switches.memberMayUseAgents,
         hideDisplayName = switches.hideDisplayName,
         // The enum, not a table read. `roles` associates users with these; it does
         // not define them, and a row naming a role this build has never heard of
@@ -281,9 +282,13 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                 email = user.email,
                 isSysAdmin = user.isInstanceAdmin,
                 isSelf = user.id == caller.id,
-                // Everybody, until LNL-192 — see UserRecord.isMcpPermitted and the
-                // MCP route above, which no longer stores anything.
-                isMcpAllowed = user.isMcpPermitted,
+                // Read-only now, and derived: the permission is per tier (LNL-192),
+                // so this reports which side of the two switches above this account
+                // falls on rather than a box an admin ticks for them. Answered off
+                // the snapshot already in hand rather than a read per account.
+                isMcpAllowed = switches.permitsAgents(
+                    if (switches.ownerUserId == user.id) InstanceRole.OWNER else user.storedInstanceRole,
+                ),
                 // Read-only on this screen — the user's own answer, reported so an
                 // admin can see why a freshly-permitted account still has no agent
                 // running. See AdminUser.

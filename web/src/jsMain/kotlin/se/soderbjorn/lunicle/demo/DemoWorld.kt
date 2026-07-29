@@ -26,6 +26,9 @@ package se.soderbjorn.lunicle.demo
 
 import kotlin.js.Date
 import se.soderbjorn.lunicle.clientserver.AdminProjectRights
+import se.soderbjorn.lunicle.clientserver.AdmissionOption
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
+import se.soderbjorn.lunicle.clientserver.AdmissionState
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AdminUser
 import se.soderbjorn.lunicle.clientserver.AuthProvider
@@ -244,8 +247,12 @@ internal class DemoWorld {
     /** Toolkit theme blobs, stored in-session so a theme change sticks until reload. */
     val uiSettings: MutableMap<String, String> = mutableMapOf()
 
-    var requireSignIn: Boolean = false
-    var anyoneCanCreateProject: Boolean = false
+    var allowPublicProjects: Boolean = false
+    var staffMayCreateProjects: Boolean = false
+    var memberMayCreateProjects: Boolean = false
+    var staffMayUseAgents: Boolean = false
+    var memberMayUseAgents: Boolean = false
+    var admission: AdmissionPolicy = AdmissionPolicy.ANYONE
     var hideDisplayName: Boolean = false
 
     var demoUserId: Long = 0
@@ -308,7 +315,7 @@ internal class DemoWorld {
             impersonatableUsers = emptyList(),
             pendingEmail = null,
             isEmailSignInAvailable = false,
-            isSignInRequired = requireSignIn,
+            isSignInRequired = false,
             isDisplayNameHidden = hideDisplayName,
         )
     }
@@ -569,8 +576,17 @@ internal class DemoWorld {
             )
         },
         projects = projects.map(::projectSummary),
-        requireSignIn = requireSignIn,
-        anyoneCanCreateProject = anyoneCanCreateProject,
+        allowPublicProjects = allowPublicProjects,
+        staffMayCreateProjects = staffMayCreateProjects,
+        memberMayCreateProjects = memberMayCreateProjects,
+        staffMayUseAgents = staffMayUseAgents,
+        memberMayUseAgents = memberMayUseAgents,
+        // Every option offered: the demo is an unbranded install with no domain,
+        // so nothing is greyed. See the server's InstanceIdentity.
+        admission = AdmissionState(
+            selected = admission,
+            options = AdmissionPolicy.entries.map { AdmissionOption(it) },
+        ),
         hideDisplayName = hideDisplayName,
     )
 

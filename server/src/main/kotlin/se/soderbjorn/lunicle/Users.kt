@@ -79,47 +79,6 @@ data class UserRecord(
     val isMcpEnabled: Boolean = false,
 ) {
     /**
-     * Does this account have permission to hold agent access at all?
-     *
-     * **Everybody, for now.** `users.mcp_allowed` — an administrator's per-account
-     * grant — was dropped in LNL-191 along with the rest of the old privilege
-     * columns, and what replaces it is a permission attached to a rung on the
-     * instance ladder rather than a box ticked per person.
-     *
-     * The property survives the column deliberately, and is still what every gate
-     * reads (see [canUseMcp]): the five MCP gates already go through here, so
-     * restoring the permission is an edit to this one line rather than five.
-     *
-     * TODO(LNL-192): make this a per-tier rule on [InstanceRole] — the ticket that
-     *  brings the deployment's `domain` field brings this with it.
-     */
-    val isMcpPermitted: Boolean get() = true
-
-    /**
-     * May an agent act as this user right now?
-     *
-     * **The only thing an MCP gate should read.** There are five of them — `/mcp`
-     * per request, `/oauth/authorize`, the consent POST, the token exchange and
-     * refresh rotation — and five hand-written `isMcpPermitted && isMcpEnabled`
-     * pairs would be five chances for one to be written as a single term. The
-     * failure mode of that typo is not a broken build, it is a gate that silently
-     * lets an unpermitted user through on one of five paths.
-     *
-     * Both terms, and the order is meaningless: the account has to be permitted
-     * ([isMcpPermitted] — an admin granted it, or it is the admin), and the account
-     * has to have switched it on. Neither implies the other, and neither
-     * substitutes for the other.
-     *
-     * Admin-ness reaches this property through [isMcpPermitted] and no further. It
-     * clears the *permission* an admin would otherwise have to grant; it does not
-     * clear [isMcpEnabled], the account's own server-checked switch. That switch
-     * has to stay real for an admin too — it is what cuts their agents off
-     * mid-conversation when they turn it off — so an admin who has never enabled
-     * their own agent access still, correctly, cannot use MCP until they do.
-     */
-    val canUseMcp: Boolean get() = isMcpPermitted && isMcpEnabled
-
-    /**
      * The name to render: the user's override if they set one, else what the
      * provider calls them.
      *
@@ -208,6 +167,57 @@ sealed interface Author {
  * is the point: an imported author is not a user and never becomes one.
  */
 fun UserRecord?.asAuthor(): Author = this?.let { Author.Account(it.id) } ?: Author.Nobody
+
+/**
+ * Is this account **permitted** to hold agent access — the tier's half of the question?
+ *
+ * Per tier, and per tier only (LNL-192). `users.mcp_allowed` — an administrator's
+ * per-account grant — went with the rest of the old privilege columns in LNL-191, and
+ * what replaces it is one switch per rung of the instance ladder. There is no
+ * per-person override anywhere in this design, deliberately: a rule an administrator
+ * can read off one screen is a thing they can be sure of, and a column of exceptions
+ * beside it is not.
+ *
+ * An instance administrator and the owner are permitted without a switch, being senior
+ * to both tiers — see [InstanceSettings.permitsAgents].
+ */
+suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.permitsAgentsFor(user: UserRecord?): Boolean {
+    if (user == null) return false
+    val settings = current()
+    // The owner is a setting rather than a column, so it is read here rather than
+    // taken off the record — see storedInstanceRole, which cannot see it.
+    val role = if (settings.ownerUserId == user.id) InstanceRole.OWNER else user.storedInstanceRole
+    return settings.permitsAgents(role)
+}
+
+/**
+ * May an agent act as this user right now?
+ *
+ * **The only thing an MCP gate should read.** There are five of them — `/mcp` per
+ * request, `/oauth/authorize`, the consent POST, the token exchange and refresh
+ * rotation — and five hand-written "permitted && enabled" pairs would be five chances
+ * for one to be written as a single term. The failure mode of that typo is not a broken
+ * build, it is a gate that silently lets an unpermitted user through on one of five
+ * paths.
+ *
+ * Both terms, and the order is meaningless: the account's tier has to be permitted
+ * ([permitsAgentsFor]), and the account has to have switched agent access on for itself
+ * ([UserRecord.isMcpEnabled]). Neither implies the other, and neither substitutes for
+ * the other.
+ *
+ * Admin-ness reaches this through the permission and no further. It clears the
+ * *permission* a switch would otherwise have to grant; it does not clear the account's
+ * own server-checked switch. That switch has to stay real for an admin too — it is what
+ * cuts their agents off mid-conversation when they turn it off — so an admin who has
+ * never enabled their own agent access still, correctly, cannot use MCP until they do.
+ *
+ * A suspending function over a store rather than a property on the record, because the
+ * permission moved from a column on the row to a setting on the instance. That is one
+ * small read on a path that already makes several, and it is what makes widening the
+ * permission a switch rather than a pass over every account.
+ */
+suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.canUseMcp(user: UserRecord?): Boolean =
+    user != null && user.isMcpEnabled && permitsAgentsFor(user)
 
 /** What goes in `created_by`. Null for both other cases; see [Author]. */
 val Author.accountId: Long? get() = (this as? Author.Account)?.id
@@ -381,6 +391,33 @@ class UserStore(
                 row.kind, row.instance_role, row.mcp_enabled,
             ) ?: error("Just wrote user ${row.id} with provider ${row.provider}, which cannot be parsed back.")
         }
+    }
+
+    /**
+     * The row [upsert] would find for this identity, or null when it would create
+     * one. The same two steps in the same order, as a read — see the interface.
+     */
+    override suspend fun findExisting(identity: ProviderIdentity): UserRecord? = withContext(DatabaseDispatcher) {
+        val email = normalizeEmail(identity.email)
+        // Mapped in each branch rather than after the elvis: the two queries have
+        // distinct generated row types, so a shared `row` would be typed as their
+        // nearest common supertype and lose every column.
+        val byEmail = email?.let { address ->
+            database.usersQueries.findByEmail(address).executeAsOneOrNull()?.let {
+                userRecordOf(
+                    it.id, it.provider, it.provider_id, it.provider_name,
+                    it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                )
+            }
+        }
+        byEmail ?: database.usersQueries
+            .findByProviderPair(identity.provider.name, identity.providerId)
+            .executeAsOneOrNull()?.let {
+                userRecordOf(
+                    it.id, it.provider, it.provider_id, it.provider_name,
+                    it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                )
+            }
     }
 
     /** The user with [id], or null. */

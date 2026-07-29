@@ -47,7 +47,7 @@ private val logger = LoggerFactory.getLogger("McpRoutes")
 private suspend fun ApplicationCall.mcpStateFor(user: UserRecord, deps: McpDependencies): McpState {
     val fresh = deps.users.findById(user.id) ?: user
     return McpState(
-        isAllowed = fresh.isMcpPermitted,
+        isAllowed = deps.instanceSettings.permitsAgentsFor(fresh),
         isEnabled = fresh.isMcpEnabled,
         // Computed here, from the origin the browser actually reached, and never
         // in the client. The one place this is rendered is inside an iframe on
@@ -113,7 +113,7 @@ fun Route.mcpApiRoutes(deps: McpDependencies) {
         // switch them live without either party having asked for it in that
         // moment. A permission that silently arms a preference set while it was
         // withheld is not what anybody means by "off by default".
-        if (!user.isMcpPermitted) {
+        if (!deps.instanceSettings.permitsAgentsFor(user)) {
             call.respond(
                 HttpStatusCode.Forbidden,
                 "An administrator has not given your account agent access.",

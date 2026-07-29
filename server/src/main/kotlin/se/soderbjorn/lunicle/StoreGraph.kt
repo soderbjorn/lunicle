@@ -146,7 +146,13 @@ internal fun sqliteStoreGraph(
     val oauthClients = OAuthClientStore(database)
     val oauthLoginStates = OAuthLoginStateStore(database)
     val oauthCodes = OAuthCodeStore(database)
-    val oauthTokens = OAuthTokenStore(database)
+    // The token store's MCP gate: the same `canUseMcp` every other gate reads.
+    // A seam rather than a read of the user row, because the permission is a
+    // per-tier instance setting now (LNL-192) and no longer lives on that row.
+    val oauthTokens = OAuthTokenStore(
+        database,
+        canUseMcp = { userId -> instanceSettings.canUseMcp(users.findById(userId)) },
+    )
     val forums = ForumStore(database)
     val forumPosts = ForumPostStore(database)
     val forumComments = ForumCommentStore(database)
@@ -312,10 +318,12 @@ internal fun firestoreStoreGraph(
         },
     )
 
-    // ── Seam 4: OAuth-token MCP gate → the user's canUseMcp ────────────────────
+    // ── Seam 4: OAuth-token MCP gate → canUseMcp ───────────────────────────────
+    // The account's own switch AND its tier's permission (LNL-192), which is an
+    // instance setting rather than a column on the user row.
     val oauthTokens = FirestoreOAuthTokenStore(
         firestore,
-        canUseMcp = { userId -> users.findById(userId)?.canUseMcp == true },
+        canUseMcp = { userId -> instanceSettings.canUseMcp(users.findById(userId)) },
     )
 
     // ── Seam 5: attachment scope resolver → ancestry across sibling stores ─────

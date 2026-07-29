@@ -354,33 +354,13 @@ class HttpLunicleApi(
         httpClient.get(baseUrl + ApiRoutes.ADMIN_SETTINGS).requireSuccess()
 
     /**
-     * Permit one user to have agent access, or withdraw it.
-     *
-     * A different flag from [setMcpEnabled], not merely a different caller:
-     * that one is the user turning their own switch on, this one is an admin
-     * deciding whether they have a switch. See [ApiRoutes.ADMIN_USER_MCP].
-     *
-     * @param isAllowed the state to move to, not "toggle". See [UserMcpAccess].
-     * @return the whole new [AdminSettingsState] rather than the row it touched,
-     *   for the reason the project-settings writes do it: the dialog re-renders
-     *   from the server's answer and never patches its own copy.
-     * @throws ApiFailure 403 for a non-admin, 404 if there is no such user.
-     */
-    override suspend fun setUserMcpAllowed(userId: Long, isAllowed: Boolean): AdminSettingsState =
-        httpClient.post(baseUrl + ApiRoutes.ADMIN_USER_MCP) {
-            contentType(ContentType.Application.Json)
-            setBody(UserMcpAccess(userId, isAllowed))
-        }.requireSuccess()
-
-    /**
-     * Set one instance-wide switch (LNL-115): require sign-in, or open project
-     * creation.
+     * Set one instance-wide switch: whether projects may be published, and what each
+     * tier of signed-in person may do (LNL-192).
      *
      * @param key which switch, @param isEnabled the state to move it to — named,
      *   not "toggle", see [SetInstanceSettingRequest].
-     * @return the whole refreshed [AdminSettingsState], like [setUserMcpAllowed]:
-     *   the General tab re-renders from the server's answer and never patches its
-     *   own copy.
+     * @return the whole refreshed [AdminSettingsState]: the General tab re-renders
+     *   from the server's answer and never patches its own copy.
      * @throws ApiFailure 403 for a non-admin.
      */
     override suspend fun setInstanceSetting(key: InstanceSettingKey, isEnabled: Boolean): AdminSettingsState =
@@ -390,11 +370,28 @@ class HttpLunicleApi(
         }.requireSuccess()
 
     /**
+     * Set who may hold an account on this deployment (LNL-192).
+     *
+     * Its own call rather than a sixth switch, because it is the one setting here
+     * with a refusal: the deployment's configuration can leave a policy
+     * unhonourable, and the server says so rather than storing it. See
+     * [AdmissionState].
+     *
+     * @throws ApiFailure 403 for a non-admin, 409 carrying the server's sentence
+     *   when this deployment cannot admit people that way.
+     */
+    override suspend fun setAdmissionPolicy(policy: AdmissionPolicy): AdminSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.ADMIN_ADMISSION) {
+            contentType(ContentType.Application.Json)
+            setBody(SetAdmissionPolicyRequest(policy))
+        }.requireSuccess()
+
+    /**
      * Put the instance's projects in a given order.
      *
      * The whole new order, not a delta — see [ProjectOrder]. Admin only.
      *
-     * @return the whole refreshed [AdminSettingsState], like [setUserMcpAllowed]:
+     * @return the whole refreshed [AdminSettingsState], like [setInstanceSetting]:
      *   the Projects tab re-renders from the server's answer and never patches its
      *   own copy, so the picker order and the tab's list cannot drift apart.
      * @throws ApiFailure 403 for a non-admin, 409 carrying the server's sentence if

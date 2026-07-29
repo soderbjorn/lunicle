@@ -54,19 +54,32 @@ const val ADMIN_SETTINGS_TITLE: String = "Settings"
  */
 const val ADMIN_GENERAL_TAB: String = "General"
 
-/** The label beside the require-sign-in switch (LNL-115). */
-const val ADMIN_REQUIRE_SIGN_IN_LABEL: String = "Require sign-in to use this workspace"
+/** The label beside the public-projects switch (LNL-192). */
+const val ADMIN_ALLOW_PUBLIC_LABEL: String = "Allow projects to be public"
 
-/** What the require-sign-in switch does, under it. */
-const val ADMIN_REQUIRE_SIGN_IN_HINT: String =
-    "When on, anyone who is not signed in is met by a sign-in screen and cannot use the app until they do."
+/** What the public-projects switch does, under it. */
+const val ADMIN_ALLOW_PUBLIC_HINT: String =
+    "When off, no project can admit people who are not signed in, whatever its owner sets."
 
-/** The label beside the open-project-creation switch (LNL-115). */
-const val ADMIN_ANYONE_CREATE_LABEL: String = "Let any signed-in user create projects"
+/** The label beside the staff project-creation switch (LNL-192). */
+const val ADMIN_STAFF_CREATE_LABEL: String = "Let staff create projects"
 
-/** What the open-project-creation switch does, under it. */
-const val ADMIN_ANYONE_CREATE_HINT: String =
-    "When off, only a system administrator can create a project. Deleting and reordering stay an administrator's either way."
+/** The label beside the member project-creation switch (LNL-192). */
+const val ADMIN_MEMBER_CREATE_LABEL: String = "Let members create projects"
+
+/** What the two project-creation switches do, under them. */
+const val ADMIN_CREATE_HINT: String =
+    "Deleting and reordering projects stay the instance owner's either way."
+
+/** The label beside the staff agent-access switch (LNL-192). */
+const val ADMIN_STAFF_AGENTS_LABEL: String = "Let staff use agent access (MCP)"
+
+/** The label beside the member agent-access switch (LNL-192). */
+const val ADMIN_MEMBER_AGENTS_LABEL: String = "Let members use agent access (MCP)"
+
+/** What the two agent-access switches do, under them. */
+const val ADMIN_AGENTS_HINT: String =
+    "Permission only — each person still switches it on themselves, in their own profile."
 
 /** The label beside the hide-display-name switch (LNL-137). */
 const val ADMIN_HIDE_DISPLAY_NAME_LABEL: String = "Hide the display name override in profile settings"
@@ -95,7 +108,7 @@ const val ADMIN_PROJECTS_HINT: String =
 const val ADMIN_PROJECTS_EMPTY: String = "No projects on this instance yet."
 
 /** The label beside the agent-access permission switch in the detail pane. */
-const val ADMIN_MCP_LABEL: String = "Allow agent access (MCP)"
+const val ADMIN_MCP_LABEL: String = "Permitted agent access (MCP), by tier"
 
 /**
  * What the switch actually does, under it.
@@ -110,7 +123,7 @@ const val ADMIN_MCP_LABEL: String = "Allow agent access (MCP)"
  * on. See LNL-53.
  */
 const val ADMIN_MCP_EXPLANATION: String =
-    "Permission only — they still switch it on themselves, in their own profile."
+    "Set per tier on the General tab, not per person. They still switch it on themselves."
 
 /**
  * The read-only line reporting the user's own half of the pair.
@@ -243,12 +256,12 @@ data class AdminUserDetail(
      */
     val isRightsSectionShown: Boolean,
     /**
-     * The admin's permission — the one thing the switch here sets.
+     * Whether this account's **tier** is permitted agent access (LNL-192).
      *
-     * Deliberately the raw grant and not the effective right: this is the position
-     * of a switch that writes `mcp_allowed`, so reporting the derived
-     * `isMcpPermitted` would make an admin's switch un-turn-off-able and the write
-     * non-idempotent. [mcpInherentNote] is what reconciles the two.
+     * Read-only here. The permission is per tier now — two switches on the General
+     * tab — and there is no per-person override anywhere in this design, so this
+     * pane reports which side of those switches an account falls on rather than
+     * offering one of its own.
      */
     val isMcpAllowed: Boolean,
     val isMcpToggleEnabled: Boolean,
@@ -386,7 +399,9 @@ class AdminSettingsBackingViewModel(
                     isMcpAllowed = user.isMcpAllowed,
                     // Disabled while a write is in flight, so a double click cannot
                     // queue two opposite intents against one row.
-                    isMcpToggleEnabled = !isBusy,
+                    // Never: the permission is per tier and is set on the General
+                    // tab, so this reports rather than offers. See isMcpAllowed.
+                    isMcpToggleEnabled = false,
                     // Only meaningful once they are permitted — their own switch
                     // does nothing while permission is withheld, so reporting it
                     // then would be noise beside the switch that actually matters.
@@ -476,11 +491,20 @@ class AdminSettingsBackingViewModel(
 
         // ── The General tab (LNL-115) ──
 
-        /** Whether the require-sign-in switch is on. Off until the first load lands. */
-        val requireSignIn: Boolean get() = settings?.requireSignIn == true
+        /** Whether projects may be published to the world. Off until the first load lands. */
+        val allowPublicProjects: Boolean get() = settings?.allowPublicProjects == true
 
-        /** Whether the open-project-creation switch is on. Off until the first load lands. */
-        val anyoneCanCreateProject: Boolean get() = settings?.anyoneCanCreateProject == true
+        /** Whether staff may create projects. Off until the first load lands. */
+        val staffMayCreateProjects: Boolean get() = settings?.staffMayCreateProjects == true
+
+        /** Whether members may create projects. Off until the first load lands. */
+        val memberMayCreateProjects: Boolean get() = settings?.memberMayCreateProjects == true
+
+        /** Whether staff are permitted agent access. Off until the first load lands. */
+        val staffMayUseAgents: Boolean get() = settings?.staffMayUseAgents == true
+
+        /** Whether members are permitted agent access. Off until the first load lands. */
+        val memberMayUseAgents: Boolean get() = settings?.memberMayUseAgents == true
 
         /** Whether the hide-display-name switch is on. Off until the first load lands. */
         val hideDisplayName: Boolean get() = settings?.hideDisplayName == true
@@ -588,24 +612,6 @@ class AdminSettingsBackingViewModel(
     /** A name in the master list was clicked. */
     fun onUserSelected(userId: Long) {
         _stateFlow.value = _stateFlow.value.copy(selectedUserId = userId)
-    }
-
-    /**
-     * The permission switch was flipped for the selected user.
-     *
-     * Sets the admin's permission, not the user's own switch — see
-     * [StorageRepository.setUserMcpAllowed].
-     *
-     * Takes the id explicitly rather than reading [State.selectedUserId], so that
-     * the request names the row the click was on. The two are the same today; they
-     * would stop being the same the moment this pane grew a switch per list row,
-     * and a write that silently retargeted itself is not a bug anybody finds by
-     * reading it.
-     */
-    fun onMcpAllowedToggled(userId: Long, isAllowed: Boolean) {
-        write("Could not change that user's agent access.") {
-            storage.setUserMcpAllowed(userId, isAllowed)
-        }
     }
 
     /**

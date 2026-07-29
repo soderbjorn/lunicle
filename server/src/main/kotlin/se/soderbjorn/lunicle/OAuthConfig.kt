@@ -162,10 +162,16 @@ internal fun resolveEmailSignInEnabled(): Boolean {
  * One Google client covers production and localhost, because Google permits
  * several JavaScript origins on a single client — so the same id serves every
  * environment, selected by which `.env` or Railway variables are in scope.
+ *
+ * @param allowEmailCodeSignIn the brand manifest's `allowEmailCodeSignIn` (LNL-192),
+ *   defaulting to on. It is a third term on [OAuthConfig.isEmailAvailable] and can only
+ *   ever **narrow** it: a deployment with no transport has no code sign-in whatever the
+ *   manifest claims, which is exactly why the three terms are ANDed in one place rather
+ *   than asked separately by each surface.
  */
-fun resolveOAuthConfig(): OAuthConfig {
+fun resolveOAuthConfig(allowEmailCodeSignIn: Boolean = true): OAuthConfig {
     val emailConfigured = isEmailConfigured()
-    val emailSignInEnabled = resolveEmailSignInEnabled()
+    val emailSignInEnabled = resolveEmailSignInEnabled() && allowEmailCodeSignIn
     // Mail can be on for notifications while e-mail sign-in is deliberately off;
     // say so once, because "I configured SMTP but the sign-in picker shows only
     // Google" is otherwise a puzzle rather than a setting. See isEmailAvailable.

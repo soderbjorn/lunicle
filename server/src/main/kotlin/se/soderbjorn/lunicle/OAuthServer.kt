@@ -101,6 +101,18 @@ class McpDependencies(
     val impersonations: Impersonations,
     /** Which providers the sign-in page may offer. See [signInPage]. */
     val config: OAuthConfig,
+    /**
+     * The deployment-wide settings, asked one question: is this account's **tier**
+     * permitted to hold agent access (LNL-192)?
+     *
+     * Here because the permission stopped being a column on the user row and became
+     * a switch on the instance — so the five MCP gates, which all read `canUseMcp`,
+     * need something to read it *from*. Defaulted to an in-memory store for tests,
+     * matching [BoardDependencies]; [Application.module] always passes the persistent
+     * one, and deliberately the same object the board routes hold, so an
+     * administrator's switch reaches the token path within one request.
+     */
+    val instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore = InMemoryInstanceSettingsStore(),
 )
 
 /**
@@ -407,7 +419,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
             return@get
         }
 
-        if (!user.canUseMcp) {
+        if (!deps.instanceSettings.canUseMcp(user)) {
             // Deliberately a page for the human, not `error=access_denied` to the
             // agent. The agent's error would be a one-liner in a terminal — "access
             // denied" — while the person who can actually fix this is looking at
@@ -424,7 +436,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
             // look for one would have them hunting a control that is not there.
             // "Permitted but off" is theirs to fix in two clicks. Telling somebody
             // to flip a switch they do not have is worse than telling them nothing.
-            val (title, message) = if (!user.isMcpPermitted) {
+            val (title, message) = if (!deps.instanceSettings.permitsAgentsFor(user)) {
                 "Agent access is not available for your account" to
                     "${client.clientName} asked to act on your behalf, but an administrator has not " +
                         "given your account agent access. Ask an administrator of this Lunicle to " +
@@ -510,7 +522,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
         // preferences. The window is exactly wide enough to matter now that an
         // *admin* can close it: the user consenting cannot revoke their own
         // permission mid-flow, but somebody else can.
-        if (!current.canUseMcp) {
+        if (!deps.instanceSettings.canUseMcp(current)) {
             deps.loginStates.delete(state.id)
             call.respondRedirect(redirectWith(state.redirectUri, "error=access_denied", state.clientState))
             return@post
@@ -606,7 +618,7 @@ private fun Route.tokenRoute(deps: McpDependencies) {
                 }
 
                 val user = deps.users.findById(record.userId)
-                if (user == null || !user.canUseMcp) {
+                if (user == null || !deps.instanceSettings.canUseMcp(user)) {
                     call.respondJson(HttpStatusCode.BadRequest, oauthError("access_denied"))
                     return@post
                 }

@@ -228,12 +228,14 @@ enum class UserKind(val key: String, val instanceRole: InstanceRole) {
          * alike — which is what makes stamping idempotent rather than a second
          * opinion. A deployment with no domain configured has no way to tell its own
          * people apart from anybody else's, so everybody is a [MEMBER]; the `staff`
-         * audience is simply unusable there, which is honest rather than broken.
+         * audience is simply unusable there, which is honest rather than broken —
+         * and it is the **default**, because [domain] is unset unless a deployment's
+         * `brand.json` names one.
          *
-         * TODO(LNL-192): `domain` is derived from the brand manifest's
-         *  `googleHostedDomain` today, which is the Google sign-in restriction and
-         *  only accidentally the same string. LNL-192 adds a `domain` config field of
-         *  its own; this function is what it should be wired to.
+         * [domain] is [InstanceIdentity.domain] and nothing else (LNL-192). It was
+         * briefly the brand manifest's `googleHostedDomain`, which is the Google
+         * chooser pin and only accidentally the same string; the two are separate
+         * fields now, and this one is the only thing the identity field feeds.
          */
         fun forEmail(email: String?, domain: String?): UserKind {
             if (domain.isNullOrBlank() || email.isNullOrBlank()) return MEMBER

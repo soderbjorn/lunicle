@@ -1,5 +1,5 @@
 /**
- * Who may read the account directory, and who may change somebody's agent access.
+ * Who may read the account directory, and who may change what the whole instance does.
  *
  * Every route in AdminRoutes is admin-only with no narrowed half, and that is a
  * stronger claim than the one VocabularyTest makes about project settings — so it
@@ -10,16 +10,19 @@
  *    wire carries. A handler that forgot [AccessControl] would not fail, throw or
  *    look wrong in a browser — the admin who wrote it sees exactly what they
  *    expect. It only shows up as a privacy failure for somebody else.
- *  - **A missing gate on the write.** `POST /api/admin/users/mcp` names its target
- *    in the body, so an ungated version is not "a user can change their own
- *    setting twice over", it is *any signed-in user permitting agent access for any
- *    account*, which is one half of the real credential gate rather than an
- *    affordance. See McpServer.resolveMcpUser and UserRecord.canUseMcp.
+ *  - **A missing gate on a write.** These writes decide who may hold an account and
+ *    which tier may connect an agent, so an ungated one is not "a user changes their
+ *    own setting twice over", it is any signed-in user opening the instance. See
+ *    McpServer.resolveMcpUser and canUseMcp.
  *
- * The flag this route writes is `mcp_allowed` — the admin's permission — never
- * `mcp_enabled`, which is the user's own switch and belongs to /api/mcp/enabled.
- * The two are asserted to stay separate here: withdrawing permission must not
- * touch the user's preference.
+ * ── The route that used to be here (LNL-192) ────────────────────────────────
+ *
+ * `POST /api/admin/users/mcp` set one person's agent-access permission and is gone,
+ * with its wire type and its client call. The permission is per tier now — two
+ * switches on the instance-settings write — and there is no per-person override in
+ * this design. What this file still pins is the separation the old route respected:
+ * the *permission* is never the user's own `mcp_enabled`, and neither substitutes
+ * for the other at the refresh gate.
  *
  * Through the real routes with real session cookies, for VocabularyTest's reason:
  * `canMutateProjects` returning false is not the property that matters, because a
@@ -46,8 +49,11 @@ import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.ProjectOrder
-import se.soderbjorn.lunicle.clientserver.UserMcpAccess
+import se.soderbjorn.lunicle.clientserver.SetAdmissionPolicyRequest
+import se.soderbjorn.lunicle.clientserver.SetInstanceSettingRequest
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -108,7 +114,7 @@ class AdminSettingsTest {
      * just refused.
      */
     @Test
-    fun `a non-admin is refused the directory and cannot grant agent access`(): Unit = runBlocking {
+    fun `a non-admin is refused the directory and cannot change the instance`(): Unit = runBlocking {
         val fixture = seed()
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
@@ -125,31 +131,33 @@ class AdminSettingsTest {
 
             // Themselves — the most sympathetic version of the request, and still
             // refused. A user cannot grant their own permission; that is the whole
-            // point of it being a permission. See ApiRoutes.ADMIN_USER_MCP.
+            // point of it being a permission. See ApiRoutes.ADMIN_SETTINGS.
             assertEquals(
                 HttpStatusCode.Forbidden,
-                client.post("/api/admin/users/mcp") {
+                client.post("/api/admin/instance-settings") {
                     cookie(SESSION_COOKIE, cookie)
                     contentType(ContentType.Application.Json)
-                    setBody(UserMcpAccess(ordinary.id, isAllowed = true))
+                    setBody(SetInstanceSettingRequest(InstanceSettingKey.MEMBER_MAY_USE_AGENTS, true))
                 }.status,
-                "A non-admin permitted their own agent access through the admin route.",
+                "A non-admin permitted their own tier's agent access.",
             )
 
             assertEquals(
                 HttpStatusCode.Forbidden,
-                client.post("/api/admin/users/mcp") {
+                client.post("/api/admin/admission") {
                     cookie(SESSION_COOKIE, cookie)
                     contentType(ContentType.Application.Json)
-                    setBody(UserMcpAccess(fixture.adminId, isAllowed = true))
+                    setBody(SetAdmissionPolicyRequest(AdmissionPolicy.STAFF_DOMAIN_ONLY))
                 }.status,
-                "A non-admin changed the admin's agent access.",
+                "A non-admin decided who may hold an account here.",
             )
         }
 
-        // Nothing to assert about a stored permission: LNL-191 dropped the column and
-        // the route stores nothing until LNL-192 brings the per-tier rule. What the
-        // refusal still has to be is a refusal, which the status assertions above are.
+        // Checked against the store, not only the status: a 403 that had already
+        // written would still read as a 403.
+        val stored = instanceSettings.current()
+        assertFalse(stored.memberMayUseAgents, "A refused write permitted a tier anyway.")
+        assertEquals(AdmissionPolicy.ANYONE, stored.admission, "A refused write changed admission anyway.")
     }
 
     /**
@@ -166,9 +174,9 @@ class AdminSettingsTest {
             assertEquals(HttpStatusCode.Forbidden, client.get("/api/admin/settings").status)
             assertEquals(
                 HttpStatusCode.Forbidden,
-                client.post("/api/admin/users/mcp") {
+                client.post("/api/admin/admission") {
                     contentType(ContentType.Application.Json)
-                    setBody(UserMcpAccess(1L, isAllowed = true))
+                    setBody(SetAdmissionPolicyRequest(AdmissionPolicy.STAFF_DOMAIN_ONLY))
                 }.status,
             )
         }
@@ -208,7 +216,10 @@ class AdminSettingsTest {
             assertEquals("ordinary@example.com", row.email)
             assertTrue(!row.isSysAdmin)
             assertTrue(!row.isSelf)
-            assertTrue(row.isMcpAllowed, "Every account is permitted until LNL-192 brings the per-tier rule.")
+            assertFalse(
+                row.isMcpAllowed,
+                "An ordinary account was permitted agent access with its tier's switch off (LNL-192).",
+            )
             assertTrue(!row.isMcpEnabled, "A fresh account has not switched agent access on.")
 
             assertEquals(
@@ -280,16 +291,16 @@ class AdminSettingsTest {
     }
 
     /**
-     * The write lands, and the response reports the row that landed rather than
-     * the one that was asked for.
+     * Permitting a tier reaches every account standing on it (LNL-192).
      *
-     * Every settings write here returns the whole new state, so the dialog never
-     * patches its own copy — and the assertion is made against that response
-     * rather than only against the store, because a route that wrote correctly and
-     * answered with a stale read would leave the toggle snapping back.
+     * The per-account switch is gone, so what the directory now reports for a row is
+     * which side of the instance's two switches that account falls on. Asserted
+     * through the write's own response, which is the whole fresh state — a route that
+     * wrote correctly and answered with a stale read would leave the dialog snapping
+     * back.
      */
     @Test
-    fun `the admin permits and withdraws another user's agent access`(): Unit = runBlocking {
+    fun `permitting the member tier reaches every member's row in the directory`(): Unit = runBlocking {
         val fixture = seed()
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
@@ -297,29 +308,30 @@ class AdminSettingsTest {
         val cookie = sessions.create(fixture.adminId)
 
         withRoutes { client ->
-            val on = client.post("/api/admin/users/mcp") {
+            val on = client.post("/api/admin/instance-settings") {
                 cookie(SESSION_COOKIE, cookie)
                 contentType(ContentType.Application.Json)
-                setBody(UserMcpAccess(ordinary.id, isAllowed = true))
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.MEMBER_MAY_USE_AGENTS, true))
             }
             assertEquals(HttpStatusCode.OK, on.status)
-            // The route still answers, still authorises, and stores nothing (LNL-191).
-            // What it reports is the truth about what it did — everybody is permitted
-            // — rather than an echo of what was asked for. See AdminRoutes.
             assertTrue(
                 on.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpAllowed,
-                "The response did not report the state it actually has.",
+                "Permitting the member tier did not reach a member's row.",
             )
 
-            val off = client.post("/api/admin/users/mcp") {
+            val off = client.post("/api/admin/instance-settings") {
                 cookie(SESSION_COOKIE, cookie)
                 contentType(ContentType.Application.Json)
-                setBody(UserMcpAccess(ordinary.id, isAllowed = false))
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.MEMBER_MAY_USE_AGENTS, false))
             }
             assertEquals(HttpStatusCode.OK, off.status)
-            assertTrue(
+            assertFalse(
                 off.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpAllowed,
-                "Withdrawing permission stored something; there is no column to store it in.",
+                "Withdrawing the tier's permission left the row permitted.",
+            )
+            assertFalse(
+                off.body<AdminSettingsState>().users.first { it.userId == ordinary.id }.isMcpEnabled,
+                "The tier's permission was written onto the user's own switch.",
             )
         }
     }
@@ -338,10 +350,11 @@ class AdminSettingsTest {
      * first refresh with `invalid_grant`, an hour later, looking like an expiry
      * problem.
      *
-     * The column the admin was deliberately left at zero on is gone (LNL-191) and
-     * every account is permitted until LNL-192; what this still pins is the shape —
-     * the refresh path builds a UserRecord and reads canUseMcp rather than raw
-     * columns, so a permission that comes back per tier reaches all five gates.
+     * The column the admin was deliberately left at zero on is gone (LNL-191) and the
+     * permission is per tier now (LNL-192) — with **both tiers off here**, which is
+     * the point: an administrator is senior to both and is permitted without a switch.
+     * What this still pins is the shape: the refresh path asks the same `canUseMcp`
+     * every other gate asks, so a permission that moves reaches all five.
      */
     @Test
     fun `an admin can refresh an agent's token without ever being granted permission`(): Unit = runBlocking {
@@ -352,7 +365,12 @@ class AdminSettingsTest {
         // Their own switch, which admin-ness does NOT substitute for.
         users.setMcpEnabled(admin.id, true)
 
-        val tokens = OAuthTokenStore(database)
+        // The gate is a seam now (LNL-192): the permission is a per-tier instance
+        // setting, so the store cannot answer it from the user row alone.
+        val tokens = OAuthTokenStore(
+            database,
+            canUseMcp = { id -> instanceSettings.canUseMcp(users.findById(id)) },
+        )
         val client = OAuthClientStore(database).register(
             clientName = "Claude Code",
             redirectUris = listOf("http://127.0.0.1:9999/callback"),
@@ -389,7 +407,12 @@ class AdminSettingsTest {
         // person's own switch is not access.
         assertTrue(!admin.isMcpEnabled, "Precondition: the admin has not enabled agent access.")
 
-        val tokens = OAuthTokenStore(database)
+        // The gate is a seam now (LNL-192): the permission is a per-tier instance
+        // setting, so the store cannot answer it from the user row alone.
+        val tokens = OAuthTokenStore(
+            database,
+            canUseMcp = { id -> instanceSettings.canUseMcp(users.findById(id)) },
+        )
         val client = OAuthClientStore(database).register(
             clientName = "Claude Code",
             redirectUris = listOf("http://127.0.0.1:9999/callback"),
@@ -406,24 +429,6 @@ class AdminSettingsTest {
             tokens.rotateRefresh(issued.refreshToken) is OAuthTokenStore.RefreshResult.Refused,
             "Admin-ness substituted for the user's own agent-access switch.",
         )
-    }
-
-    /** An id naming nobody is a 404, not a silent success. */
-    @Test
-    fun `setting agent access for a user who does not exist is a 404`(): Unit = runBlocking {
-        val fixture = seed()
-        val cookie = sessions.create(fixture.adminId)
-        withRoutes { client ->
-            assertEquals(
-                HttpStatusCode.NotFound,
-                client.post("/api/admin/users/mcp") {
-                    cookie(SESSION_COOKIE, cookie)
-                    contentType(ContentType.Application.Json)
-                    setBody(UserMcpAccess(9_999L, isAllowed = true))
-                }.status,
-            )
-        }
-        assertNull(users.findById(9_999L))
     }
 
     /**

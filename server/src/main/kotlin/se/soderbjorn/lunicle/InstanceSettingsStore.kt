@@ -12,6 +12,7 @@
 package se.soderbjorn.lunicle
 
 import kotlinx.coroutines.withContext
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.db.LunicleDatabase
 import se.soderbjorn.lunicle.store.InstanceSettings
@@ -40,9 +41,19 @@ class InstanceSettingsStore(
         val rows = database.instanceSettingsQueries.selectAll().executeAsList()
             .associate { it.key to it.value_ }
         InstanceSettings(
-            requireSignIn = rows[InstanceSettingKey.REQUIRE_SIGN_IN.storageKey].isTrue(),
-            anyoneCanCreateProject = rows[InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT.storageKey].isTrue(),
             hideDisplayName = rows[InstanceSettingKey.HIDE_DISPLAY_NAME.storageKey].isTrue(),
+            // Not a switch either: three values, stored as the policy's key. An
+            // unrecognised value — a hand-edited row, or one written by a build that
+            // knew a fourth policy — reads as the default rather than as "admit
+            // nobody", because a deployment that cannot parse its own admission
+            // setting must not lock every future account out on the strength of a
+            // typo. The stored value is left alone, so the row survives a rollback.
+            admission = AdmissionPolicy.byKey(rows[ADMISSION_KEY]) ?: AdmissionPolicy.ANYONE,
+            allowPublicProjects = rows[InstanceSettingKey.ALLOW_PUBLIC_PROJECTS.storageKey].isTrue(),
+            staffMayCreateProjects = rows[InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS.storageKey].isTrue(),
+            memberMayCreateProjects = rows[InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS.storageKey].isTrue(),
+            staffMayUseAgents = rows[InstanceSettingKey.STAFF_MAY_USE_AGENTS.storageKey].isTrue(),
+            memberMayUseAgents = rows[InstanceSettingKey.MEMBER_MAY_USE_AGENTS.storageKey].isTrue(),
             // Not a switch, so not read through isTrue(): the stored form is the id
             // as text. A value that is not a number — a hand-edited row, a row from
             // a build that meant something else by this key — reads as "nobody owns
@@ -71,10 +82,21 @@ class InstanceSettingsStore(
         }
     }
 
+    override suspend fun setAdmissionPolicy(policy: AdmissionPolicy): Unit = withContext(DatabaseDispatcher) {
+        database.instanceSettingsQueries.upsert(key = ADMISSION_KEY, value_ = policy.key)
+    }
+
     /** "true" is on; everything else — including a null, an unknown, a typo — is off. */
     private fun String?.isTrue(): Boolean = this == "true"
 
     private companion object {
+        /**
+         * The key admission is stored under. Not an [InstanceSettingKey] for
+         * [OWNER_USER_ID_KEY]'s reason: that enum is the closed set of *switches*
+         * the admin dialog toggles, and this has three values.
+         */
+        const val ADMISSION_KEY = "admission"
+
         /**
          * The key ownership is stored under. Not an [InstanceSettingKey], because that
          * enum is the closed set of *switches* the admin dialog toggles and this is a

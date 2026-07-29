@@ -58,8 +58,8 @@ interface LunicleApi {
     // ── Instance administration ──────────────────────────────────────────────
 
     suspend fun adminSettings(): AdminSettingsState
-    suspend fun setUserMcpAllowed(userId: Long, isAllowed: Boolean): AdminSettingsState
     suspend fun setInstanceSetting(key: InstanceSettingKey, isEnabled: Boolean): AdminSettingsState
+    suspend fun setAdmissionPolicy(policy: AdmissionPolicy): AdminSettingsState
     suspend fun reorderProjects(ids: List<Long>): AdminSettingsState
     suspend fun deleteProjectAsAdmin(id: Long): AdminSettingsState
 

@@ -188,10 +188,12 @@ private fun sessionStateFor(
         // the Google flag is: only the server knows which variables it was given,
         // and a picker must never render a method the server cannot perform.
         isEmailSignInAvailable = config.isEmailAvailable,
-        // The deployment-wide gate. Reaches every client including the signed-out
-        // one it is drawn for, which is why it rides here rather than only on the
-        // admin-only AdminSettingsState. See SessionState.isSignInRequired.
-        isSignInRequired = settings.requireSignIn,
+        // Retired on the wire (LNL-192): the require-sign-in switch is gone, and
+        // what it said is now a per-project guest audience row. Sent false rather
+        // than removed so a browser running the previous bundle keeps deserialising
+        // this state — the landing gate simply never appears, which is exactly what
+        // an instance with no blanket means. See InstanceSettingKey.
+        isSignInRequired = false,
         // The display-name switch. Reaches every client because the profile field it
         // hides is one every signed-in user has. See SessionState.isDisplayNameHidden.
         isDisplayNameHidden = settings.hideDisplayName,
@@ -334,10 +336,16 @@ fun Route.authRoutes(
     emailCodes: EmailCodeService? = null,
     notifications: NotificationDispatcher? = null,
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore? = null,
-    // Optional Workspace domain a branded deployment pins Google sign-in to
-    // (LNL-125). Null on a non-branded install ⇒ open chooser, no domain gate.
-    googleHostedDomain: String? = null,
+    // What this deployment says about itself (LNL-192): its own domain — the sole
+    // input to the staff/member kind — and whether the Google chooser is pinned to
+    // it. Defaulted to the unbranded shape: no domain, so no staff tier, and an
+    // open chooser. See InstanceIdentity.
+    identity: InstanceIdentity = InstanceIdentity(),
 ) {
+    // The Google chooser pin, which is a *different* question from the domain and
+    // is null unless the manifest asked for both. Named once here so the two
+    // exchange paths cannot reach for the identity's domain by mistake.
+    val googleHostedDomain = identity.googleHostedDomainPin
     /**
      * How often one account may ask for a confirmation code.
      *
@@ -858,20 +866,28 @@ fun Route.authRoutes(
         // address, so they name how the row came to exist. The address is its own
         // provider id: it is stable, it is unique, and there is no third party to
         // ask for anything better.
+        val provided = ProviderIdentity(
+            provider = AuthProvider.EMAIL,
+            providerId = redemption.address,
+            providerName = redemption.address.substringBefore('@'),
+            // Non-null means proved, which a redeemed code is — see
+            // ProviderIdentity.email. This is what sets `email_verified`.
+            email = redemption.address,
+        )
+        // Admission, before the row exists (LNL-192). After the code is spent, which
+        // is right: the code proves the address, and a deployment refusing an address
+        // it has not been shown would be refusing a claim rather than a person.
+        admissionRefusal(provided, users, instanceSettings, identity)?.let {
+            call.respond(HttpStatusCode.Forbidden, it)
+            return@post
+        }
         val user = users.upsert(
-            ProviderIdentity(
-                provider = AuthProvider.EMAIL,
-                providerId = redemption.address,
-                providerName = redemption.address.substringBefore('@'),
-                // Non-null means proved, which a redeemed code is — see
-                // ProviderIdentity.email. This is what sets `email_verified`.
-                email = redemption.address,
-            ),
+            provided,
             // Derived here rather than in the store, from the same function the
             // startup stamp uses — see UserKind.forEmail. A code sign-in proves the
             // address, so it is exactly as good a basis for the staff/member answer
             // as Google's is.
-            kind = UserKind.forEmail(redemption.address, googleHostedDomain),
+            kind = UserKind.forEmail(redemption.address, identity.domain),
         )
         call.setSessionCookie(sessions.create(user.id))
         logger.info("Signed in with an e-mail code: ${user.resolvedName} (user ${user.id})")
@@ -892,13 +908,17 @@ fun Route.authRoutes(
         try {
             // The origin, not a path — see exchangeGoogleCode's docs. The optional
             // hosted-domain gate rides along; null leaves the flow unchanged.
-            val identity = exchangeGoogleCode(
+            val googleIdentity = exchangeGoogleCode(
                 httpClient, credentials, request.code, call.serverOrigin(), googleHostedDomain,
             )
             // Find-or-create the account, then point a session at it. On a
             // returning user this finds the row written the first time — which
             // is what reunites them with their issues, and their admin bit.
-            val user = users.upsert(identity, UserKind.forEmail(identity.email, googleHostedDomain))
+            admissionRefusal(googleIdentity, users, instanceSettings, identity)?.let {
+                call.respond(HttpStatusCode.Forbidden, it)
+                return@post
+            }
+            val user = users.upsert(googleIdentity, UserKind.forEmail(googleIdentity.email, identity.domain))
             call.setSessionCookie(sessions.create(user.id))
             logger.info("Signed in via Google: ${user.resolvedName} (user ${user.id})")
             call.respond(freshSignInState(user, users, config, instanceSettings))
@@ -906,6 +926,43 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.BadGateway, failure.userMessage)
         }
     }
+}
+
+/**
+ * The admission gate: may this sign-in bring a **new** account into existence?
+ *
+ * ── Asked once, at creation, and it grants nothing ──────────────────────────
+ *
+ * Both sign-in paths go through here, immediately before their `upsert`, and both
+ * short-circuit on an account that already exists: admission is who may *hold* an
+ * account, so a policy tightened this morning does not lock out somebody who has had
+ * one since last year. Whether an account exists is [UserStore.findExisting]'s answer
+ * and not a second copy of upsert's two-step lookup, because a copy that drifted
+ * would refuse exactly the returning people this is careful not to.
+ *
+ * Somebody admitted here arrives as a member or a staff member with whatever the
+ * ladders give that tier, which on a fresh instance is nothing at all. The door is
+ * not the room.
+ *
+ * @return the refusal to send, or null when the sign-in may proceed.
+ */
+private suspend fun admissionRefusal(
+    provided: ProviderIdentity,
+    users: se.soderbjorn.lunicle.store.UserStore,
+    instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore?,
+    identity: InstanceIdentity,
+): String? {
+    // Already here: this is a sign-in, not a creation, and admission has nothing to
+    // say about it.
+    if (users.findExisting(provided) != null) return null
+    val policy = instanceSettingsOrDefault(instanceSettings).admission
+    if (policy.admitsNewAccount(provided.email, identity)) return null
+    // Named plainly. The caller is mid-sign-in with a proved address or a completed
+    // OAuth exchange, so there is no oracle to protect here — the alternative is
+    // somebody staring at a generic failure for a deployment that simply is not open
+    // to them, which is the one thing they cannot work out for themselves.
+    return "This Lunicle does not accept new accounts for that address. " +
+        "Ask an administrator of this instance to add you."
 }
 
 /**

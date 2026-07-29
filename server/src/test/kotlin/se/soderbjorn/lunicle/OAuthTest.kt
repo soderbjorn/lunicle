@@ -54,7 +54,18 @@ class OAuthTest {
     private val clients = OAuthClientStore(database) { now }
     private val loginStates = OAuthLoginStateStore(database) { now }
     private val codes = OAuthCodeStore(database) { now }
-    private val tokens = OAuthTokenStore(database) { now }
+    // `now` named, because the trailing-lambda slot is the MCP gate now (LNL-192).
+    // Permissive here: this file is about the token algebra — PKCE, expiry, replay —
+    // and not about who may hold an agent.
+    private val tokens = OAuthTokenStore(
+        database,
+        now = { now },
+        // The account's own switch. The *permission* half is a per-tier instance
+        // setting since LNL-192 and is not what this file is about; wiring the seam
+        // to `isMcpEnabled` keeps the reversible-toggle test below saying exactly
+        // what it always said.
+        canUseMcp = { id -> UserStore(database).findById(id)?.isMcpEnabled == true },
+    )
 
     @AfterTest
     fun tearDown() {

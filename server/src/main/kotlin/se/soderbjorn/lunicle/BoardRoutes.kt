@@ -187,19 +187,33 @@ class BoardDependencies(
     // See Impersonations.
     val impersonations: Impersonations,
     /**
-     * The deployment-wide switches (LNL-115): whether sign-in is required, and
-     * whether anyone may create a project. Read by the project routes to answer
-     * "may this caller create one" and by the admin routes to show and set both.
+     * The deployment-wide settings (LNL-115, reshaped by LNL-192): admission,
+     * whether projects may be published, and what each tier may do. Read by the
+     * project routes to answer "may this caller create one", by the MCP gates, and
+     * by the admin routes to show and set them all.
      *
      * Defaulted to an in-memory store for tests, which the notifiers' nullability
      * would suggest but is done with a real (if forgetful) object instead: a null
      * would make every reader guard, where an empty in-memory store simply answers
-     * the pre-LNL-115 defaults — the app usable signed out, creation an admin's.
+     * the defaults — every permission off, and anyone who can sign in admitted.
      * [Application.module] always passes the SQLite-backed one, because a switch
      * that forgot itself on redeploy is a switch nobody could trust. See
      * InMemoryInstanceSettingsStore.
      */
     val instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore = InMemoryInstanceSettingsStore(),
+    /**
+     * What this deployment says about itself: its own domain, whether the Google
+     * chooser is pinned to it, and whether a mailed code is a way in (LNL-192).
+     *
+     * Deploy-time configuration read from `brand.json` at boot, never a stored
+     * setting — which is why it is a value here and not a store. Read by the admin
+     * routes alone today, to compute which admission policies this deployment can
+     * honour; the sign-in path takes the same object by another route (see
+     * `authRoutes`). Defaulted to the unbranded shape, which is what every test and
+     * every default deployment is: no domain, no pin, and code sign-in available
+     * if a transport is.
+     */
+    val identity: InstanceIdentity = InstanceIdentity(),
     /** Who wants an e-mail about which project or issue. */
     val subscriptions: se.soderbjorn.lunicle.store.SubscriptionStore,
     /**
@@ -716,30 +730,28 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
     get(ApiRoutes.PROJECTS) {
         val user = call.caller(deps)
         val visible = deps.projects.selectAll().filter { deps.access.canReadProject(user, it) }
-        // The switch is read once and handed to the rule, which is where LNL-115
-        // widened who may create. The affordance and the POST gate below read it
-        // the same way, so the button and the route can never disagree.
-        val anyoneMayCreate = deps.instanceSettings.current().anyoneCanCreateProject
         call.respond(
             ProjectListState(
                 projects = visible.map { it.toSummary() },
-                canCreateProject = deps.access.canCreateProject(user, anyoneMayCreate),
+                // The affordance and the POST gate below ask the same function,
+                // which reads the per-tier setting itself (LNL-192) — so the button
+                // and the route cannot disagree about who may create a board.
+                canCreateProject = deps.access.canCreateProject(user),
             ),
         )
     }
 
     post(ApiRoutes.PROJECTS) {
         val user = call.caller(deps)
-        // Re-read the switch here rather than trusting the GET's affordance — the
-        // client cannot be believed about what it may do (see AccessControl's
-        // preamble), so the create gate re-derives from the instance setting and
-        // the session on every request.
-        val anyoneMayCreate = deps.instanceSettings.current().anyoneCanCreateProject
-        if (!deps.access.canCreateProject(user, anyoneMayCreate)) {
+        // Asked again here rather than trusting the GET's affordance — the client
+        // cannot be believed about what it may do (see AccessControl's preamble),
+        // so the create gate re-derives from the instance setting and the session
+        // on every request.
+        if (!deps.access.canCreateProject(user)) {
             call.respond(
                 HttpStatusCode.Forbidden,
                 if (user == null) "You must sign in to create a project."
-                else "Only a system administrator can create a project.",
+                else "Your account is not permitted to create a project here.",
             )
             return@post
         }

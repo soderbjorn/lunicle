@@ -46,15 +46,12 @@ import se.soderbjorn.lunicle.store.UserStore
  * is a marker on the row and not a cleverer rule here — the rule has to stay the
  * one sign-in uses.
  *
- * @param domain the deployment's own domain, or null if it has none. Null makes
- *   every account a member, which is what a deployment that cannot tell its own
- *   people apart should say.
- *
- *   TODO(LNL-192): the caller passes the brand manifest's `googleHostedDomain`,
- *    which is the Google sign-in restriction and only accidentally the same string
- *    — a deployment that does not use Google sign-in has no way to name its domain
- *    at all today. LNL-192 adds a `domain` config field; this parameter is what it
- *    should be wired to.
+ * @param domain [InstanceIdentity.domain] — the deployment's own domain, from
+ *   `brand.json`, or null if it has none. Null is the default and makes every account
+ *   a member, which is what a deployment that cannot tell its own people apart should
+ *   say. It is a field of its own since LNL-192; it briefly rode on the Google chooser
+ *   pin, which is a different question that happened to be spelled with the same
+ *   string.
  * @return how many rows were corrected, for the startup log.
  */
 suspend fun stampUserKinds(users: UserStore, domain: String?): Int {

@@ -8,6 +8,12 @@
  * `(provider, provider_id)` pair. Both are pinned here, plus the first-user-is-
  * admin rule and the round-trips of the mutable fields.
  *
+ * [UserStore.findExisting] is the same keying asked as a question (LNL-192), and it is
+ * pinned beside `upsert` rather than on its own, because the two disagreeing is the
+ * only way it can be wrong: admission consults it to learn whether a sign-in would
+ * create a row, and an answer that differed from what `upsert` then did would refuse
+ * exactly the returning people the keying exists to reunite.
+ *
  * No backend seeding hook is needed: [UserStore.upsert] is itself the way a user
  * comes to exist. Each test starts from an empty backend (a fresh fixture), so the
  * first upsert in each is the instance's first account.
@@ -73,6 +79,38 @@ abstract class UserStoreContract {
         val b = store.upsert(identity("gh-2", null))
         assertEquals(a.id, store.findById(a.id)?.id)
         assertEquals(setOf(a.id, b.id), store.selectAll().map { it.id }.toSet())
+    }
+
+    // ── findExisting: the same keying, asked rather than acted on (LNL-192) ──
+
+    @Test
+    fun `findExisting answers null for an identity that would create an account`() = runBlocking {
+        store.upsert(identity("gh-1", "alice@example.com"))
+        assertEquals(null, store.findExisting(identity("gh-2", "bob@example.com")))
+    }
+
+    /**
+     * Both keys, in `upsert`'s order — and the assertion is against what `upsert`
+     * itself then does, so the two cannot drift apart on either backend.
+     */
+    @Test
+    fun `findExisting reaches an account by verified e-mail and by the provider pair`() = runBlocking {
+        val keyed = store.upsert(identity("gh-1", "alice@example.com", AuthProvider.GITHUB))
+        val unkeyed = store.upsert(identity("gh-2", null))
+
+        val byEmail = identity("goog-9", "alice@example.com", AuthProvider.GOOGLE)
+        assertEquals(keyed.id, store.findExisting(byEmail)?.id, "a different provider proving the address")
+        assertEquals(store.upsert(byEmail).id, store.findExisting(byEmail)?.id, "findExisting disagreed with upsert")
+
+        val byPair = identity("gh-2", null)
+        assertEquals(unkeyed.id, store.findExisting(byPair)?.id, "an addressless account by its provider pair")
+        assertEquals(store.upsert(byPair).id, store.findExisting(byPair)?.id, "findExisting disagreed with upsert")
+    }
+
+    @Test
+    fun `findExisting folds case and whitespace like the keying does`() = runBlocking {
+        val user = store.upsert(identity("gh-1", "alice@example.com"))
+        assertEquals(user.id, store.findExisting(identity("gh-9", "  Alice@Example.COM  "))?.id)
     }
 
     @Test

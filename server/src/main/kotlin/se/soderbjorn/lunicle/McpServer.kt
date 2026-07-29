@@ -105,9 +105,9 @@ private suspend fun resolveMcpUser(call: ApplicationCall, deps: McpDependencies)
     // request, without any token being deleted — and either half coming back
     // restores them without a second trip through the browser.
     //
-    // canUseMcp, never one of its two terms: an admin must permit it AND the user
-    // must have switched it on. See UserRecord.canUseMcp.
-    if (!user.canUseMcp) return null
+    // canUseMcp, never one of its two terms: the account's tier must be permitted
+    // AND the user must have switched it on. See canUseMcp.
+    if (!deps.instanceSettings.canUseMcp(user)) return null
 
     // Note what is NOT checked: that record.resource names this server. It does
     // not need to be. The audience guarantee here is structural rather than a

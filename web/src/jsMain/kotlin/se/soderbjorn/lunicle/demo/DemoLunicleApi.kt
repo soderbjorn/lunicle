@@ -19,6 +19,7 @@
 package se.soderbjorn.lunicle.demo
 
 import io.ktor.http.HttpStatusCode
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.ApiFailure
 import se.soderbjorn.lunicle.clientserver.AttachmentRef
@@ -119,13 +120,18 @@ internal class DemoLunicleApi(
 
     override suspend fun adminSettings(): AdminSettingsState = world.adminSettingsState()
 
-    override suspend fun setUserMcpAllowed(userId: Long, isAllowed: Boolean): AdminSettingsState =
-        world.adminSettingsState()
+    override suspend fun setAdmissionPolicy(policy: AdmissionPolicy): AdminSettingsState {
+        world.admission = policy
+        return world.adminSettingsState()
+    }
 
     override suspend fun setInstanceSetting(key: InstanceSettingKey, isEnabled: Boolean): AdminSettingsState {
         when (key) {
-            InstanceSettingKey.REQUIRE_SIGN_IN -> world.requireSignIn = isEnabled
-            InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT -> world.anyoneCanCreateProject = isEnabled
+            InstanceSettingKey.ALLOW_PUBLIC_PROJECTS -> world.allowPublicProjects = isEnabled
+            InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS -> world.staffMayCreateProjects = isEnabled
+            InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS -> world.memberMayCreateProjects = isEnabled
+            InstanceSettingKey.STAFF_MAY_USE_AGENTS -> world.staffMayUseAgents = isEnabled
+            InstanceSettingKey.MEMBER_MAY_USE_AGENTS -> world.memberMayUseAgents = isEnabled
             InstanceSettingKey.HIDE_DISPLAY_NAME -> world.hideDisplayName = isEnabled
         }
         return world.adminSettingsState()

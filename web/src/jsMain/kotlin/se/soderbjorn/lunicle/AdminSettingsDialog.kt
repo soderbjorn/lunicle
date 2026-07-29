@@ -31,8 +31,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.lunicle.client.viewmodel.ADMIN_ANYONE_CREATE_HINT
-import se.soderbjorn.lunicle.client.viewmodel.ADMIN_ANYONE_CREATE_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_AGENTS_HINT
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_ALLOW_PUBLIC_HINT
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_ALLOW_PUBLIC_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_CREATE_HINT
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_MEMBER_AGENTS_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_MEMBER_CREATE_LABEL
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_GENERAL_TAB
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_HIDE_DISPLAY_NAME_HINT
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_HIDE_DISPLAY_NAME_LABEL
@@ -41,8 +45,8 @@ import se.soderbjorn.lunicle.client.viewmodel.ADMIN_MCP_LABEL
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_PROJECTS_EMPTY
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_PROJECTS_HINT
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_PROJECTS_TAB
-import se.soderbjorn.lunicle.client.viewmodel.ADMIN_REQUIRE_SIGN_IN_HINT
-import se.soderbjorn.lunicle.client.viewmodel.ADMIN_REQUIRE_SIGN_IN_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_STAFF_AGENTS_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.ADMIN_STAFF_CREATE_LABEL
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_RIGHTS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_SETTINGS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.ADMIN_USERS_TAB
@@ -80,10 +84,16 @@ class AdminSettingsDialog(
     private lateinit var projectsPane: HTMLElement
 
     // ── The General tab (LNL-115) ──
-    private lateinit var requireSignInToggle: Toggle
-    private lateinit var requireSignInRow: HTMLElement
-    private lateinit var anyoneCreateToggle: Toggle
-    private lateinit var anyoneCreateRow: HTMLElement
+    private lateinit var allowPublicToggle: Toggle
+    private lateinit var allowPublicRow: HTMLElement
+    private lateinit var staffCreateToggle: Toggle
+    private lateinit var staffCreateRow: HTMLElement
+    private lateinit var memberCreateToggle: Toggle
+    private lateinit var memberCreateRow: HTMLElement
+    private lateinit var staffAgentsToggle: Toggle
+    private lateinit var staffAgentsRow: HTMLElement
+    private lateinit var memberAgentsToggle: Toggle
+    private lateinit var memberAgentsRow: HTMLElement
     private lateinit var hideDisplayNameToggle: Toggle
     private lateinit var hideDisplayNameRow: HTMLElement
 
@@ -201,15 +211,30 @@ class AdminSettingsDialog(
      * checked and enabled state is set in [renderGeneral] from the loaded settings.
      */
     private fun buildGeneralTab(): HTMLElement {
-        requireSignInToggle = Toggle { isOn ->
-            viewModel.onInstanceSettingToggled(InstanceSettingKey.REQUIRE_SIGN_IN, isOn)
+        allowPublicToggle = Toggle { isOn ->
+            viewModel.onInstanceSettingToggled(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, isOn)
         }
-        requireSignInRow = toggleRow(requireSignInToggle, ADMIN_REQUIRE_SIGN_IN_LABEL)
+        allowPublicRow = toggleRow(allowPublicToggle, ADMIN_ALLOW_PUBLIC_LABEL)
 
-        anyoneCreateToggle = Toggle { isOn ->
-            viewModel.onInstanceSettingToggled(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, isOn)
+        staffCreateToggle = Toggle { isOn ->
+            viewModel.onInstanceSettingToggled(InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS, isOn)
         }
-        anyoneCreateRow = toggleRow(anyoneCreateToggle, ADMIN_ANYONE_CREATE_LABEL)
+        staffCreateRow = toggleRow(staffCreateToggle, ADMIN_STAFF_CREATE_LABEL)
+
+        memberCreateToggle = Toggle { isOn ->
+            viewModel.onInstanceSettingToggled(InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS, isOn)
+        }
+        memberCreateRow = toggleRow(memberCreateToggle, ADMIN_MEMBER_CREATE_LABEL)
+
+        staffAgentsToggle = Toggle { isOn ->
+            viewModel.onInstanceSettingToggled(InstanceSettingKey.STAFF_MAY_USE_AGENTS, isOn)
+        }
+        staffAgentsRow = toggleRow(staffAgentsToggle, ADMIN_STAFF_AGENTS_LABEL)
+
+        memberAgentsToggle = Toggle { isOn ->
+            viewModel.onInstanceSettingToggled(InstanceSettingKey.MEMBER_MAY_USE_AGENTS, isOn)
+        }
+        memberAgentsRow = toggleRow(memberAgentsToggle, ADMIN_MEMBER_AGENTS_LABEL)
 
         hideDisplayNameToggle = Toggle { isOn ->
             viewModel.onInstanceSettingToggled(InstanceSettingKey.HIDE_DISPLAY_NAME, isOn)
@@ -217,10 +242,14 @@ class AdminSettingsDialog(
         hideDisplayNameRow = toggleRow(hideDisplayNameToggle, ADMIN_HIDE_DISPLAY_NAME_LABEL)
 
         return element("div", "admin-general").children(
-            requireSignInRow,
-            element("p", "field-hint", ADMIN_REQUIRE_SIGN_IN_HINT),
-            anyoneCreateRow,
-            element("p", "field-hint", ADMIN_ANYONE_CREATE_HINT),
+            allowPublicRow,
+            element("p", "field-hint", ADMIN_ALLOW_PUBLIC_HINT),
+            staffCreateRow,
+            memberCreateRow,
+            element("p", "field-hint", ADMIN_CREATE_HINT),
+            staffAgentsRow,
+            memberAgentsRow,
+            element("p", "field-hint", ADMIN_AGENTS_HINT),
             hideDisplayNameRow,
             element("p", "field-hint", ADMIN_HIDE_DISPLAY_NAME_HINT),
         )
@@ -266,14 +295,10 @@ class AdminSettingsDialog(
         detailSubtitle = element("p", "admin-detail-subtitle")
         adminNote = element("p", "admin-note")
 
-        mcpToggle = Toggle { isAllowed ->
-            // The id comes from the state rather than from a field captured when
-            // this row was built, because this pane is built once and re-pointed
-            // at whichever account is selected. A captured id would send the write
-            // to whoever happened to be selected at mount.
-            val userId = viewModel.stateFlow.value.detail?.userId ?: return@Toggle
-            viewModel.onMcpAllowedToggled(userId, isAllowed)
-        }
+        // Read-only since LNL-192: the agent-access permission is per tier and is
+        // set on the General tab, so there is nothing per-person to write here.
+        // The toggle is rendered permanently disabled — see AdminUserDetail.
+        mcpToggle = Toggle { }
         mcpRow = toggleRow(mcpToggle, ADMIN_MCP_LABEL)
         mcpExplanation = element("p", "field-hint", ADMIN_MCP_EXPLANATION)
         // Directly under the switch and above the general explanation: it
@@ -328,10 +353,16 @@ class AdminSettingsDialog(
      * queue two intents against one switch — the same rule the MCP toggle follows.
      */
     private fun renderGeneral(state: AdminSettingsBackingViewModel.State) {
-        requireSignInToggle.checked = state.requireSignIn
-        requireSignInToggle.disabled = !state.areInstanceTogglesEnabled
-        anyoneCreateToggle.checked = state.anyoneCanCreateProject
-        anyoneCreateToggle.disabled = !state.areInstanceTogglesEnabled
+        allowPublicToggle.checked = state.allowPublicProjects
+        allowPublicToggle.disabled = !state.areInstanceTogglesEnabled
+        staffCreateToggle.checked = state.staffMayCreateProjects
+        staffCreateToggle.disabled = !state.areInstanceTogglesEnabled
+        memberCreateToggle.checked = state.memberMayCreateProjects
+        memberCreateToggle.disabled = !state.areInstanceTogglesEnabled
+        staffAgentsToggle.checked = state.staffMayUseAgents
+        staffAgentsToggle.disabled = !state.areInstanceTogglesEnabled
+        memberAgentsToggle.checked = state.memberMayUseAgents
+        memberAgentsToggle.disabled = !state.areInstanceTogglesEnabled
         hideDisplayNameToggle.checked = state.hideDisplayName
         hideDisplayNameToggle.disabled = !state.areInstanceTogglesEnabled
     }

@@ -12,11 +12,12 @@
  */
 package se.soderbjorn.lunicle
 
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.store.InstanceSettings
 import se.soderbjorn.lunicle.store.InstanceSettingsStore
 
-/** A store that keeps the two switches in a field. Not persistent; see the file preamble. */
+/** A store that keeps the settings in a field. Not persistent; see the file preamble. */
 class InMemoryInstanceSettingsStore(
     initial: InstanceSettings = InstanceSettings(),
 ) : InstanceSettingsStore {
@@ -26,13 +27,20 @@ class InMemoryInstanceSettingsStore(
 
     override suspend fun set(key: InstanceSettingKey, isEnabled: Boolean) {
         settings = when (key) {
-            InstanceSettingKey.REQUIRE_SIGN_IN -> settings.copy(requireSignIn = isEnabled)
-            InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT -> settings.copy(anyoneCanCreateProject = isEnabled)
+            InstanceSettingKey.ALLOW_PUBLIC_PROJECTS -> settings.copy(allowPublicProjects = isEnabled)
+            InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS -> settings.copy(staffMayCreateProjects = isEnabled)
+            InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS -> settings.copy(memberMayCreateProjects = isEnabled)
+            InstanceSettingKey.STAFF_MAY_USE_AGENTS -> settings.copy(staffMayUseAgents = isEnabled)
+            InstanceSettingKey.MEMBER_MAY_USE_AGENTS -> settings.copy(memberMayUseAgents = isEnabled)
             InstanceSettingKey.HIDE_DISPLAY_NAME -> settings.copy(hideDisplayName = isEnabled)
         }
     }
 
     override suspend fun setOwnerUserId(userId: Long?) {
         settings = settings.copy(ownerUserId = userId)
+    }
+
+    override suspend fun setAdmissionPolicy(policy: AdmissionPolicy) {
+        settings = settings.copy(admission = policy)
     }
 }

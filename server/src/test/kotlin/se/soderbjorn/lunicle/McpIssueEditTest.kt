@@ -53,6 +53,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class McpIssueEditTest {
     private val file: File = Files.createTempFile("lunicle-issue-edit", ".db").toFile().also { it.delete() }
@@ -80,7 +81,12 @@ class McpIssueEditTest {
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
         VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val instanceSettings = InMemoryInstanceSettingsStore()
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
     private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
@@ -634,6 +640,7 @@ class McpIssueEditTest {
         users = users,
         impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies() = BoardDependencies(

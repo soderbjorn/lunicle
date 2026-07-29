@@ -168,32 +168,31 @@ object ApiRoutes {
     const val ADMIN_SETTINGS: String = "/api/admin/settings"
 
     /**
-     * `POST` — turn one user's agent access on or off, from a [UserMcpAccess].
-     * Returns the whole refreshed [AdminSettingsState]. Admin only.
-     *
-     * The sibling of [MCP_ENABLED], which says the same thing about the caller
-     * themselves. Two routes rather than one that takes an optional user id: "set
-     * my own" and "set somebody else's" are different permissions — the first
-     * needs a session and the second needs to be an admin — and a single route
-     * would have to decide which check to run by inspecting the body. A route
-     * whose authorization depends on a field an attacker controls is the shape of
-     * this bug, every time.
-     */
-    const val ADMIN_USER_MCP: String = "/api/admin/users/mcp"
-
-    /**
      * `POST` — set one instance-wide switch, from a [SetInstanceSettingRequest].
      * Returns the whole refreshed [AdminSettingsState]. Admin only.
      *
-     * The home for the General tab's switches (LNL-115): require-sign-in, and
-     * whether anyone may create a project. One route naming the switch in its body
-     * rather than a route per switch, because unlike [ADMIN_USER_MCP] vs
-     * [MCP_ENABLED] there is no second caller with a different permission to keep
-     * apart — every switch here answers to the one admin gate — so the body naming
-     * which switch is a value, not an authorization decision. Answers with the same
-     * state the dialog loaded, so the write never merges two objects.
+     * The home for the General tab's switches: whether projects may be published,
+     * and what each tier of signed-in person may do (LNL-192). One route naming the
+     * switch in its body rather than a route per switch, because unlike
+     * [MCP_ENABLED] there is no second caller with a different
+     * permission to keep apart — every switch here answers to the one admin gate —
+     * so the body naming which switch is a value, not an authorization decision.
+     * Answers with the same state the dialog loaded, so the write never merges two
+     * objects.
      */
     const val ADMIN_INSTANCE_SETTINGS: String = "/api/admin/instance-settings"
+
+    /**
+     * `POST` — set who may hold an account here, from a [SetAdmissionPolicyRequest].
+     * Returns the whole refreshed [AdminSettingsState]. Admin only.
+     *
+     * Its own route rather than a sixth [InstanceSettingKey], because admission is
+     * not a switch: it has three values, and — alone among the things on this
+     * screen — the deployment's configuration can make one of them unhonourable, so
+     * the write has a refusal to make that no boolean setter has. See
+     * [AdmissionState].
+     */
+    const val ADMIN_ADMISSION: String = "/api/admin/admission"
 
     /**
      * `POST` — put the instance's projects in a given order, from a [ProjectOrder].
@@ -205,7 +204,7 @@ object ApiRoutes {
      * reorder is an instance-wide statement — "these are the projects, in this
      * order" — not a change to any one project, so a `/api/projects/{id}`-shaped
      * route would be the wrong shape. It answers with the same state the dialog
-     * loaded, so the write never merges two objects. See ADMIN_USER_MCP.
+     * loaded, so the write never merges two objects. See ADMIN_SETTINGS.
      *
      * The base path a [DELETE] on one project hangs off too — [adminProject].
      */

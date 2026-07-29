@@ -1,23 +1,22 @@
 /**
- * The instance-wide switches (LNL-115, LNL-137), through the real routes with real
- * session cookies — the standard here (see AdminSettingsTest), because the property
- * that matters is that a route *asks* [AccessControl], not that the rule returns the
- * right boolean in isolation.
+ * The instance-wide switches (LNL-115, LNL-137, reshaped by LNL-192), through the real
+ * routes with real session cookies — the standard here (see AdminSettingsTest), because
+ * the property that matters is that a route *asks* [AccessControl], not that the rule
+ * returns the right boolean in isolation.
  *
- * Three switches, their surfaces:
+ * Their surfaces:
  *
- *  - **require-sign-in** rides on `GET /api/session`, so it must reach a signed-out
- *    caller — that is the whole point, and the test proves the flag flips there.
- *  - **anyone-can-create-project** widens the create gate on `POST /api/projects`
- *    and the affordance on `GET /api/projects`. The gate is the load-bearing half:
- *    a signed-in non-admin is refused with the switch off and admitted with it on,
- *    while a signed-out caller is refused either way — creating still needs a
- *    session.
- *  - **hide-display-name** rides on `GET /api/session` too (LNL-137), so every
- *    signed-in client knows to omit the profile override; the test proves the flag
- *    flips there.
- *  - all are set through `POST /api/admin/instance-settings`, which is admin-only
- *    with no narrowed half, exactly like the rest of AdminRoutes.
+ *  - **member/staff-may-create-projects** gates `POST /api/projects` and the affordance
+ *    on `GET /api/projects`. The gate is the load-bearing half: a signed-in member is
+ *    refused with their tier's switch off and admitted with it on, while a signed-out
+ *    caller is refused either way — creating still needs a session.
+ *  - **hide-display-name** rides on `GET /api/session` (LNL-137), so every signed-in
+ *    client knows to omit the profile override; the test proves the flag flips there.
+ *  - **require-sign-in is gone** (LNL-192), and one test here pins that the session no
+ *    longer claims a sign-in gate however the instance is configured. What it used to
+ *    say is a per-project guest audience row now.
+ *  - all are set through `POST /api/admin/instance-settings`, which is admin-only with
+ *    no narrowed half, exactly like the rest of AdminRoutes.
  *
  * @see AccessControl.canCreateProject
  * @see se.soderbjorn.lunicle.clientserver.InstanceSettingKey
@@ -95,39 +94,26 @@ class InstanceSettingsTest {
         File("${file.absolutePath}-shm").delete()
     }
 
-    // ── require-sign-in reaches the session ───────────────────────────────────
+    // ── the retired require-sign-in blanket ───────────────────────────────────
 
     /**
-     * The switch is off by default, and flipping it through the admin route makes
-     * `GET /api/session` report it — to a signed-out caller, which is the one the
-     * gate is drawn for.
+     * The retired blanket, pinned as retired (LNL-192).
+     *
+     * `isSignInRequired` still crosses the wire so a browser on the previous bundle
+     * keeps deserialising the session, and it is now always false: there is no switch
+     * left to raise it, and what it used to say is a per-project guest audience row.
+     * Asserted after flipping every switch there is, because "no combination of
+     * settings brings the landing gate back" is the actual claim.
      */
     @Test
-    fun `require sign-in defaults off and reaches the signed-out session once set`(): Unit = runBlocking {
-        val fixture = seed()
-        val adminCookie = sessions.create(fixture.adminId)
+    fun `no instance switch can make the session claim a sign-in gate any more`(): Unit = runBlocking {
+        seed()
+        for (key in InstanceSettingKey.entries) instanceSettings.set(key, true)
 
         withAuthAndBoard { client ->
             assertFalse(
                 client.get("/api/session").body<SessionState>().isSignInRequired,
-                "A fresh instance already required sign-in.",
-            )
-
-            val set = client.post("/api/admin/instance-settings") {
-                cookie(SESSION_COOKIE, adminCookie)
-                contentType(ContentType.Application.Json)
-                setBody(SetInstanceSettingRequest(InstanceSettingKey.REQUIRE_SIGN_IN, true))
-            }
-            assertEquals(HttpStatusCode.OK, set.status)
-            assertTrue(
-                set.body<AdminSettingsState>().requireSignIn,
-                "The write did not report the switch it had just set.",
-            )
-
-            // The signed-out session — no cookie — now carries the gate flag.
-            assertTrue(
-                client.get("/api/session").body<SessionState>().isSignInRequired,
-                "The require-sign-in switch did not reach the signed-out session.",
+                "The signed-out session still claims a deployment-wide sign-in gate.",
             )
         }
     }
@@ -190,13 +176,13 @@ class InstanceSettingsTest {
                 client.post("/api/admin/instance-settings") {
                     cookie(SESSION_COOKIE, cookie)
                     contentType(ContentType.Application.Json)
-                    setBody(SetInstanceSettingRequest(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true))
+                    setBody(SetInstanceSettingRequest(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true))
                 }.status,
                 "A non-admin flipped an instance switch.",
             )
         }
         assertFalse(
-            instanceSettings.current().anyoneCanCreateProject,
+            instanceSettings.current().allowPublicProjects,
             "A refused write set the switch anyway.",
         )
     }
@@ -210,7 +196,7 @@ class InstanceSettingsTest {
                 HttpStatusCode.Forbidden,
                 client.post("/api/admin/instance-settings") {
                     contentType(ContentType.Application.Json)
-                    setBody(SetInstanceSettingRequest(InstanceSettingKey.REQUIRE_SIGN_IN, true))
+                    setBody(SetInstanceSettingRequest(InstanceSettingKey.STAFF_MAY_USE_AGENTS, true))
                 }.status,
             )
         }
@@ -234,25 +220,29 @@ class InstanceSettingsTest {
             client.post("/api/admin/instance-settings") {
                 cookie(SESSION_COOKIE, cookie)
                 contentType(ContentType.Application.Json)
-                setBody(SetInstanceSettingRequest(InstanceSettingKey.REQUIRE_SIGN_IN, true))
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true))
             }
             val after = client.post("/api/admin/instance-settings") {
                 cookie(SESSION_COOKIE, cookie)
                 contentType(ContentType.Application.Json)
-                setBody(SetInstanceSettingRequest(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true))
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS, true))
             }.body<AdminSettingsState>()
 
-            assertTrue(after.requireSignIn, "The first switch did not survive the second write.")
-            assertTrue(after.anyoneCanCreateProject, "The second switch was not reported.")
+            assertTrue(after.allowPublicProjects, "The first switch did not survive the second write.")
+            assertTrue(after.memberMayCreateProjects, "The second switch was not reported.")
         }
         val stored = instanceSettings.current()
         assertEquals(
-            InstanceSettings(requireSignIn = true, anyoneCanCreateProject = true, ownerUserId = stored.ownerUserId),
+            InstanceSettings(
+                allowPublicProjects = true,
+                memberMayCreateProjects = true,
+                ownerUserId = stored.ownerUserId,
+            ),
             stored,
         )
     }
 
-    // ── anyone-can-create-project gates POST /api/projects ────────────────────
+    // ── the per-tier create permission gates POST /api/projects ──────────────
 
     /**
      * With creation closed (the default), a signed-in non-admin is refused and a
@@ -306,7 +296,7 @@ class InstanceSettingsTest {
         seed()
         val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null))
         val ordinaryCookie = sessions.create(ordinary.id)
-        instanceSettings.set(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true)
+        instanceSettings.set(InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS, true)
 
         withAuthAndBoard { client ->
             assertEquals(
@@ -352,7 +342,7 @@ class InstanceSettingsTest {
             )
         }
 
-        instanceSettings.set(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true)
+        instanceSettings.set(InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS, true)
 
         withAuthAndBoard { client ->
             assertTrue(

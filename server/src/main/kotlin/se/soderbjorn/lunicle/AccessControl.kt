@@ -207,18 +207,24 @@ class AccessControl(
     /**
      * May [user] bring a *new* project into existence?
      *
-     * Signed in, and either the instance owner or the instance's "anyone can create
-     * a project" switch is on. The switch is passed in rather than read here because
-     * the *rule* belongs in this file while the *setting* belongs to the route that
-     * already loaded it; threading the settings store through every construction
-     * site of this class to answer one question would be the wrong trade — see the
-     * constructor doc for the one fact that did earn a second collaborator.
+     * **Per tier** (LNL-192): signed in, and standing on a rung of the instance
+     * ladder this deployment permits. Staff and member have a switch each; an
+     * administrator and the owner may regardless, being senior to both. It replaces
+     * the single `anyone_can_create_project` boolean, which could only say
+     * "everybody or nobody" and so had no way to express the ordinary arrangement —
+     * a company whose own people make boards while outside collaborators do not.
+     *
+     * The setting is read here rather than passed in, unlike the boolean it
+     * replaces. Two switches threaded through every caller would be two chances to
+     * read the wrong one, and this class already holds the settings store for
+     * [instanceRole] — so this is one more question asked of a collaborator it has,
+     * not a new one.
      *
      * Note the deliberate asymmetry with [canMutateProjects]: this widens *creating*
      * only. "Make a board" and "remove somebody's board" are not the same trust.
      */
-    suspend fun canCreateProject(user: UserRecord?, anyoneMayCreate: Boolean): Boolean =
-        user != null && (anyoneMayCreate || ownsInstance(user))
+    suspend fun canCreateProject(user: UserRecord?): Boolean =
+        user != null && instanceSettings.current().permitsProjectCreation(instanceRole(user))
 
     /**
      * May [user] own [projectId] — rename it, re-prefix it, change who it admits,
@@ -283,15 +289,35 @@ class AccessControl(
         }
 
     /**
-     * May [user] decide which audiences [projectId] admits, and at what rung?
+     * May [user] decide whether [projectId] admits [audience], and at what rung?
      *
      * An owner's, with visibility: this is the row that can hand the entire internet
      * a rung on the board, so it sits with the same person who may delete it. It was
      * `is_public`, which was an owner's too (LNL-107) — the power did not move, only
      * its spelling.
+     *
+     * ── The one thing an owner cannot decide alone (LNL-192) ────────────────
+     *
+     * [Audience.GUEST] is refused outright while the instance's
+     * "allow projects to be public" switch is off, whoever asks — an owner, an
+     * instance administrator, the owner of the deployment. It is the veto that
+     * replaces the blanket the retired require-sign-in switch provided, and it is
+     * enforced here rather than only greyed in the Access list for the obvious
+     * reason: a rule that lives in a screen is a rule a POST goes around.
+     *
+     * The other two audiences are unaffected. "Nothing may be published" is a
+     * statement about strangers, not about whether a board may admit the people who
+     * already have accounts on the instance.
+     *
+     * @param audience which audience the write names. It is a parameter rather than
+     *   a separate "may publish" question so that a caller cannot ask the general
+     *   version and then write the guest row — the gate and the write name the same
+     *   thing.
      */
-    suspend fun canSetAudience(user: UserRecord?, projectId: Long): Boolean =
-        canOwnProject(user, projectId)
+    suspend fun canSetAudience(user: UserRecord?, projectId: Long, audience: Audience): Boolean {
+        if (audience == Audience.GUEST && !instanceSettings.current().allowPublicProjects) return false
+        return canOwnProject(user, projectId)
+    }
 
     // ── Issues ───────────────────────────────────────────────────────────────
 

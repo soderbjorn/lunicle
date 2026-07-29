@@ -38,6 +38,24 @@ interface UserStore {
      */
     suspend fun upsert(identity: ProviderIdentity, kind: UserKind = UserKind.MEMBER): UserRecord
 
+    /**
+     * The account [upsert] would *find* for this identity, or null when it would
+     * create one — the find half of find-or-create, on its own.
+     *
+     * Exists so admission (LNL-192) can ask the one question it needs: would signing
+     * in here bring a new account into existence? Admission is checked at creation
+     * and never again, so a policy that would refuse an address must still let the
+     * person who already holds that account in — and the only way to know which case
+     * this is, without reimplementing the two-step lookup and getting it subtly
+     * different, is to ask the store that owns it.
+     *
+     * Both steps, in [upsert]'s order: verified e-mail first, then the
+     * `(provider, provider_id)` pair. The second step is what keeps a returning
+     * Google account whose address Google would not confirm from reading as a brand
+     * new one and being refused at a door it already came through.
+     */
+    suspend fun findExisting(identity: ProviderIdentity): UserRecord?
+
     /** The user with [id], or null. */
     suspend fun findById(id: Long): UserRecord?
 
