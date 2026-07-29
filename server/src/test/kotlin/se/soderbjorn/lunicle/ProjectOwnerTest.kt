@@ -106,7 +106,7 @@ class ProjectOwnerTest {
             val response = client.put("/api/projects/${f.projectId}") {
                 cookie(SESSION_COOKIE, f.ownerCookie)
                 contentType(ContentType.Application.Json)
-                setBody(ProjectUpdate(name = "Renamed", namePrefix = "LMX", isPublic = true))
+                setBody(ProjectUpdate(name = "Renamed", namePrefix = "LMX"))
             }
             assertEquals(HttpStatusCode.OK, response.status, "An owner could not rename their project.")
         }
@@ -136,7 +136,7 @@ class ProjectOwnerTest {
                 client.put("/api/projects/${f.projectId}") {
                     cookie(SESSION_COOKIE, f.projectAdminCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(ProjectUpdate(name = "Nope", namePrefix = "LMX", isPublic = false))
+                    setBody(ProjectUpdate(name = "Nope", namePrefix = "LMX"))
                 }.status,
                 "A project administrator renamed the project.",
             )
@@ -263,7 +263,6 @@ class ProjectOwnerTest {
                     ProjectUpdate(
                         name = "Lunamux",
                         namePrefix = "LMX",
-                        isPublic = false,
                         repositoryUrl = "soderbjorn/lunicle",
                         githubTokenMode = TokenModes.LITERAL,
                         githubTokenLiteral = "ghp_secretvalue",
@@ -300,7 +299,6 @@ class ProjectOwnerTest {
                     ProjectUpdate(
                         name = "Lunamux",
                         namePrefix = "LMX",
-                        isPublic = false,
                         repositoryUrl = "soderbjorn/other",
                         githubTokenMode = TokenModes.LITERAL,
                         githubTokenLiteral = "",

@@ -92,6 +92,23 @@ CREATE TABLE projects (
     -- for a DEFAULT that reproduces the prior state applies verbatim.
     show_issue_author INTEGER NOT NULL DEFAULT 0,
 
+    -- Whether this project's board and issue windows hide the issue number — the
+    -- FOO-123 key, prefix and all (LNL-194). The second board-display setting
+    -- beside show_issue_author, and set by the same administrator gesture.
+    --
+    -- It was a per-USER preference until LNL-194, living inside each account's
+    -- `ui_settings` PROJECT_PREFS blob, and moving it here is a change of who it is
+    -- for: a project's board reads one way for everybody looking at it, so the
+    -- choice belongs to the project. See 34.sqm.
+    --
+    -- NULLABLE, alone among the display and requirement flags, and the NULL is not
+    -- laziness: it means "nobody has decided this project's answer yet", which is
+    -- what every migrated row starts as and what the startup copy consumes. Once a
+    -- value is written the column is never NULL again. Readers treat NULL as 0 —
+    -- see ProjectRecord.hideIssueNumbers, which is the only shape the wire ever
+    -- sees. See copyBoardDisplayFromOwners.
+    hide_issue_numbers INTEGER,
+
     created_at INTEGER NOT NULL,
 
     -- Where this project sits in the instance-wide list, 0 first — the same
@@ -182,10 +199,14 @@ CREATE TABLE projects (
     FOREIGN KEY (active_sprint_id) REFERENCES sprints(id) ON DELETE SET NULL
 );
 
+-- A fresh project. `hide_issue_numbers` is named explicitly, and 0 rather than left
+-- to the column's NULL: the null means "not yet decided" and is the startup copy's
+-- marker (see copyBoardDisplayFromOwners), and a board nobody has ever looked at has
+-- no old per-user preference to copy — so it decides here, now, that numbers show.
 insert:
-INSERT INTO projects (name, name_prefix, position, created_at)
-VALUES (?, ?, ?, ?)
-RETURNING id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at;
+INSERT INTO projects (name, name_prefix, position, created_at, hide_issue_numbers)
+VALUES (?, ?, ?, ?, 0)
+RETURNING id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at;
 
 update:
 UPDATE projects SET name = ?, name_prefix = ? WHERE id = ?;
@@ -207,13 +228,19 @@ UPDATE projects SET discussions_enabled = ?, messages_enabled = ? WHERE id = ?;
 setRequirements:
 UPDATE projects SET require_label = ?, require_component = ?, require_fixed_version_on_resolve = ? WHERE id = ?;
 
--- The one board-display flag, project-administrator only (LNL-157). Its own query
--- rather than folded into setRequirements, because that one is a "requirement" set
--- (what a ticket must carry) and this is a display choice (what the card shows) —
--- keeping them apart keeps the two concerns from having to travel together, and a
--- display setting is cleanly not a requirement. See ProjectStore.setShowIssueAuthor.
-setShowIssueAuthor:
-UPDATE projects SET show_issue_author = ? WHERE id = ?;
+-- Both board-display flags, project-administrator only (LNL-157, LNL-194). Its own
+-- query rather than folded into setRequirements, because that one is a "requirement"
+-- set (what a ticket must carry) and these are display choices (how the board reads)
+-- — keeping them apart keeps the two concerns from having to travel together, and a
+-- display setting is cleanly not a requirement.
+--
+-- The pair together, never one at a time, for setRequirements' reason: the Board
+-- display group renders two switches and sends both, so a stale client cannot
+-- resurrect the other by omitting it. Writing hide_issue_numbers here is also what
+-- takes the row out of the "not yet decided" state 34.sqm left it in. See
+-- ProjectStore.setBoardDisplay.
+setBoardDisplay:
+UPDATE projects SET show_issue_author = ?, hide_issue_numbers = ? WHERE id = ?;
 
 -- One row at a time, inside the transaction that rewrites the whole instance's
 -- order. See ProjectRepository.reorder and Labels.sq's setPosition.
@@ -230,14 +257,14 @@ delete:
 DELETE FROM projects WHERE id = ?;
 
 findById:
-SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at
 FROM projects WHERE id = ?;
 
 -- Name lookup for the embed's ?project= parameter. NOCASE on the column makes
 -- this case-insensitive without a function on either side, so the UNIQUE index
 -- is still usable.
 findByName:
-SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at
 FROM projects WHERE name = ?;
 
 -- Every project, for the picker and for the Unicode-fold uniqueness check.
@@ -252,7 +279,7 @@ FROM projects WHERE name = ?;
 -- needs the whole list to do it. A store makes no decisions. See §2 — the route
 -- is what must never ship a private project's name to a signed-out visitor.
 selectAll:
-SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at
 FROM projects ORDER BY position, id;
 
 -- Which sprint this project is working on. Its own query rather than a column on

@@ -1396,12 +1396,13 @@ class McpTools(private val deps: BoardDependencies) {
                             put("id", project.id)
                             put("name", project.name)
                             put("keyPrefix", project.namePrefix)
-                            // Retired pending tickets 3–5, which give the tool the
-                            // project's audience rows instead. Kept on the output,
-                            // reading false, so a running agent's parsing does not
-                            // break mid-epic. See ProjectSummary.
-                            put("isPublic", false)
-                            put("visibleToAllSignedIn", false)
+                            // What this agent's user holds here, as the rung key
+                            // (LNL-194). It replaces `isPublic`/`visibleToAllSignedIn`,
+                            // which were two booleans about the project that had read
+                            // false since LNL-191 — an agent is better told what it may
+                            // do than what the world may see. Never null: the filter
+                            // above is what proved a rung exists.
+                            put("yourRole", deps.access.effectiveRole(user, project.id)?.key ?: "")
                         },
                     )
                 }

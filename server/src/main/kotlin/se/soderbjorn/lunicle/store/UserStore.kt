@@ -56,6 +56,38 @@ interface UserStore {
      */
     suspend fun findExisting(identity: ProviderIdentity): UserRecord?
 
+    /**
+     * Bring an account into existence for [email] without anybody signing in, or
+     * return the one that already holds the address (LNL-194).
+     *
+     * The persistence half of "Add a person…" in a project's Access section: an
+     * administrator names an address, it gets a row, and that row can hold a project
+     * rung immediately. Whoever owns the address picks the row up on their first
+     * sign-in, because [upsert] finds it by address and adopts it — so the rung they
+     * were granted is already theirs when they arrive rather than sitting on a second
+     * account beside the one they made.
+     *
+     * The row it writes has **never been signed into**
+     * ([UserRecord.signedInAt] null) and an unverified address, and both matter: the
+     * first is what the Access list badges and what
+     * [se.soderbjorn.lunicle.AdmissionPolicy.admitsNewAccount] keys its
+     * plus-added policy on, and the second is honest — an administrator typing an
+     * address is not proof of anything.
+     *
+     * **Nothing is sent.** No mail, no token, no link, no expiry: this is a grant
+     * waiting to be claimed, not an invitation. See the Access section's advice line,
+     * which says out loud that on a deployment which cannot send mail only an address
+     * that can sign in with Google will ever arrive.
+     *
+     * Idempotent, and returns the existing row rather than refusing: "add somebody who
+     * is already here" has an obvious right answer, and the caller's next move is the
+     * same either way.
+     *
+     * @param kind the staff/member answer, from [UserKind.forEmail] — passed rather
+     *   than derived for [upsert]'s reason.
+     */
+    suspend fun addByEmail(email: String, kind: UserKind = UserKind.MEMBER): UserRecord
+
     /** The user with [id], or null. */
     suspend fun findById(id: Long): UserRecord?
 

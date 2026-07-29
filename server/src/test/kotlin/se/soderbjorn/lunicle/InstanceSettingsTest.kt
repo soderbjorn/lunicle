@@ -261,7 +261,7 @@ class InstanceSettingsTest {
                 client.post("/api/projects") {
                     cookie(SESSION_COOKIE, ordinaryCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(ProjectUpdate("Ordinary's", "ORD", isPublic = false))
+                    setBody(ProjectUpdate("Ordinary's", "ORD"))
                 }.status,
                 "A non-admin created a project with the switch off.",
             )
@@ -269,7 +269,7 @@ class InstanceSettingsTest {
                 HttpStatusCode.Forbidden,
                 client.post("/api/projects") {
                     contentType(ContentType.Application.Json)
-                    setBody(ProjectUpdate("Nobody's", "NOB", isPublic = false))
+                    setBody(ProjectUpdate("Nobody's", "NOB"))
                 }.status,
                 "A signed-out caller created a project.",
             )
@@ -278,7 +278,7 @@ class InstanceSettingsTest {
                 client.post("/api/projects") {
                     cookie(SESSION_COOKIE, adminCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(ProjectUpdate("Admin's", "ADM", isPublic = false))
+                    setBody(ProjectUpdate("Admin's", "ADM"))
                 }.status,
                 "The admin was refused their own create route.",
             )
@@ -304,7 +304,7 @@ class InstanceSettingsTest {
                 client.post("/api/projects") {
                     cookie(SESSION_COOKIE, ordinaryCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(ProjectUpdate("Ordinary's", "ORD", isPublic = false))
+                    setBody(ProjectUpdate("Ordinary's", "ORD"))
                 }.status,
                 "A signed-in user was refused with open creation on.",
             )
@@ -312,7 +312,7 @@ class InstanceSettingsTest {
                 HttpStatusCode.Forbidden,
                 client.post("/api/projects") {
                     contentType(ContentType.Application.Json)
-                    setBody(ProjectUpdate("Nobody's", "NOB", isPublic = false))
+                    setBody(ProjectUpdate("Nobody's", "NOB"))
                 }.status,
                 "A signed-out caller created a project even though creating needs a session.",
             )

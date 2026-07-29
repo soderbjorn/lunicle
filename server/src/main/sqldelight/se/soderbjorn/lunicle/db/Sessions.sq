@@ -25,7 +25,7 @@ CREATE TABLE sessions (
 findUser:
 SELECT users.id, users.provider, users.provider_id, users.provider_name,
        users.display_name, users.email, users.email_verified,
-       users.kind, users.instance_role, users.mcp_enabled
+       users.kind, users.instance_role, users.mcp_enabled, users.signed_in_at
 FROM sessions
 JOIN users ON users.id = sessions.user_id
 WHERE sessions.id = ?;

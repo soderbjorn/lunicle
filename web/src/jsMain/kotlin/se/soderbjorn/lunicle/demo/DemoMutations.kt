@@ -20,15 +20,11 @@ internal fun provisionProject(
     world: DemoWorld,
     name: String,
     prefix: String,
-    isPublic: Boolean,
-    visibleToAllSignedIn: Boolean,
 ): DemoProject {
     val p = DemoProject(
         id = world.allocId(),
         name = name.trim(),
         prefix = prefix.trim().uppercase(),
-        isPublic = isPublic,
-        visibleToAllSignedIn = visibleToAllSignedIn,
         discussionsEnabled = false,
         messagesEnabled = false,
     )

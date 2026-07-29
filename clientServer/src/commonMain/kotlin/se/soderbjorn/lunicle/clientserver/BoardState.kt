@@ -19,13 +19,22 @@ import kotlinx.serialization.Serializable
  * A project, as the picker and the top bar need it.
  *
  * @property namePrefix the "FOO" in FOO-123.
- * @property isPublic and [visibleToAllSignedIn] — **retired, and sent false**
- *   (LNL-191). Who may see a project is no longer two booleans on the project: it
- *   is the project's audience rows, which say at what *rung* each audience arrives
- *   rather than merely that it may look. The fields stay on the wire, unused, until
- *   tickets 3–5 rebuild the dialog around audiences — a client that still reads
- *   them keeps deserialising, and both read false, which is what a dialog with no
- *   audience UI should show rather than a stale yes.
+ * @property roleKey what the caller holds here, as
+ *   [se.soderbjorn.lunicle.ProjectRole.key] — and [roleLabel] the same rung as a
+ *   word. Never absent in practice: the server computed this rung to decide whether
+ *   to put the project in the list at all, so sending it costs nothing and saves the
+ *   settings rail a request per project.
+ *
+ *   **An affordance, like every other flag here.** It is what lets the Projects rail
+ *   say "Maintainer" under a board's name and decide which sections to offer without
+ *   fetching each project's settings; every write re-derives the rung from the
+ *   session. The defaults are the least it could be, so a client talking to a server
+ *   that omits them offers the narrowest surface rather than the widest.
+ *
+ *   `isPublic` and `visibleToAllSignedIn` were here and are **gone** (LNL-194, after
+ *   LNL-191 stopped filling them). Who may see a project is its audience rows, which
+ *   the Access section reads through `ProjectSettingsState.access`; two booleans that
+ *   were always false were worse than nothing, because they read as an answer.
  * @property discussionsEnabled whether this project offers a discussion forum,
  *   and [messagesEnabled] whether it offers private messages (LNL-96). The tab
  *   shell reads these off the board it already loads and hides the Discussion or
@@ -43,8 +52,8 @@ data class ProjectSummary(
     val id: Long,
     val name: String,
     val namePrefix: String,
-    val isPublic: Boolean = false,
-    val visibleToAllSignedIn: Boolean = false,
+    val roleKey: String = RoleKeys.VIEWER,
+    val roleLabel: String = "Viewer",
     val discussionsEnabled: Boolean = false,
     val messagesEnabled: Boolean = false,
     /**
@@ -75,6 +84,18 @@ data class ProjectSummary(
      * before the column existed, hides the author — the opt-in default.
      */
     val showIssueAuthor: Boolean = false,
+    /**
+     * Whether the board and its issue windows hide the issue number — the FOO-123
+     * key, prefix and all (LNL-194).
+     *
+     * The second board-display setting beside [showIssueAuthor], and it rides here
+     * for the same reason: the board reads it off what it already loads. It was a
+     * **per-user** preference until LNL-194, kept in each account's stored view
+     * choices; it describes how a shared board reads, so it belongs to the project
+     * and is an administrator's switch. Default off — numbers shown, the state every
+     * board had before anybody chose.
+     */
+    val hideIssueNumbers: Boolean = false,
 )
 
 /**
@@ -975,18 +996,6 @@ data class CommentUpdate(
 data class ProjectUpdate(
     val name: String,
     val namePrefix: String,
-    /**
-     * **Accepted and ignored** (LNL-191), together with [visibleToAllSignedIn].
-     *
-     * Who may see a project is its audience rows now, set through their own gesture
-     * rather than riding along on a rename — see the server's
-     * `AccessControl.canSetAudience`. Both fields stay here, defaulted, so the
-     * existing dialog's body still deserialises until tickets 3–5 rebuild it; the
-     * server reads neither. They are not silently *applied*, which is the failure
-     * worth avoiding: a stale client cannot un-publish a board by saving its name.
-     */
-    val isPublic: Boolean = false,
-    val visibleToAllSignedIn: Boolean = false,
     /**
      * The GitHub repository, however the admin cared to write it — a browser URL,
      * an ssh remote, or a bare `owner/name`. Empty unlinks it.

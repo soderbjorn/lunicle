@@ -551,6 +551,7 @@ class AccessControl(
     suspend fun permissionsFor(user: UserRecord?, projectId: Long): ProjectPermissions {
         val rung = effectiveRole(user, projectId) ?: return ProjectPermissions()
         return ProjectPermissions(
+            rung = rung,
             canCreateIssue = rung.atLeast(ProjectRole.CONTRIBUTOR),
             canComment = rung.atLeast(ProjectRole.CONTRIBUTOR),
             canBeAssigned = rung.atLeast(ProjectRole.CONTRIBUTOR),
@@ -597,6 +598,17 @@ internal val se.soderbjorn.lunicle.clientserver.VocabularyKind.minimumRole: Proj
  * in produce the same, safe, UI.
  */
 data class ProjectPermissions(
+    /**
+     * The rung itself, beside the flags derived from it.
+     *
+     * Carried so a caller that has already asked for the affordances does not ask for
+     * the rung a second time — the board response names it on
+     * [se.soderbjorn.lunicle.clientserver.ProjectSummary.roleKey], which is what lets
+     * the settings rail say what somebody holds. Defaults to the bottom rung, matching
+     * every flag below defaulting false: a caller who reached no rung at all gets a
+     * record that claims nothing.
+     */
+    val rung: ProjectRole = ProjectRole.VIEWER,
     val canCreateIssue: Boolean = false,
     val canComment: Boolean = false,
     /** Whether the caller may edit issues they did not write — [ProjectRole.MAINTAINER]. */

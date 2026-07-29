@@ -215,13 +215,12 @@ class StorageRepository(
 
     // ── Projects ─────────────────────────────────────────────────────────────
 
-    suspend fun createProject(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
-    ): ProjectSummary =
-        api.createProject(ProjectUpdate(name, namePrefix, isPublic, visibleToAllSignedIn))
+    /**
+     * Make a project. A name and a prefix, and nothing about who may see it: a new
+     * board admits nobody until its owner says otherwise in Access (LNL-194).
+     */
+    suspend fun createProject(name: String, namePrefix: String): ProjectSummary =
+        api.createProject(ProjectUpdate(name, namePrefix))
 
     /**
      * Save the project dialog's form.
@@ -236,8 +235,6 @@ class StorageRepository(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
         repositoryUrl: String = "",
         githubTokenEnv: String = "",
         githubTokenMode: String = TokenModes.ENV,
@@ -248,8 +245,6 @@ class StorageRepository(
             ProjectUpdate(
                 name,
                 namePrefix,
-                isPublic,
-                visibleToAllSignedIn,
                 repositoryUrl,
                 githubTokenEnv,
                 githubTokenMode,
@@ -326,7 +321,8 @@ class StorageRepository(
     suspend fun setProjectDisplaySettings(
         projectId: Long,
         showIssueAuthor: Boolean,
-    ): ProjectSettingsState = api.setProjectDisplaySettings(projectId, showIssueAuthor)
+        hideIssueNumbers: Boolean,
+    ): ProjectSettingsState = api.setProjectDisplaySettings(projectId, showIssueAuthor, hideIssueNumbers)
 
     /**
      * The Discussion tab's forums.

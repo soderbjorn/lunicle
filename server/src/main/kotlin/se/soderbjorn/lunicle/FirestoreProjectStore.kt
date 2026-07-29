@@ -103,6 +103,12 @@ class FirestoreProjectStore(
                 REQUIRE_COMPONENT to false,
                 REQUIRE_FIXED_VERSION to false,
                 SHOW_ISSUE_AUTHOR to false,
+                // Written explicitly on a fresh project, so a board made after LNL-194
+                // is never in the "not yet decided" state the migration leaves migrated
+                // rows in — there is no old per-user preference to copy for a project
+                // nobody has ever looked at. See toRecord, where absence is the
+                // migration's marker.
+                HIDE_ISSUE_NUMBERS to false,
                 POSITION to position,
                 CREATED_AT to createdAt,
                 ACTIVE_SPRINT to null,
@@ -123,6 +129,7 @@ class FirestoreProjectStore(
             requireFixedVersionOnResolve = false,
             showIssueAuthor = false,
             createdAt = createdAt,
+            hideIssueNumbersStored = false,
         )
     }
 
@@ -155,8 +162,13 @@ class FirestoreProjectStore(
         ).await()
     }
 
-    override suspend fun setShowIssueAuthor(id: Long, showIssueAuthor: Boolean) {
-        doc(id).update(mapOf(SHOW_ISSUE_AUTHOR to showIssueAuthor)).await()
+    override suspend fun setBoardDisplay(id: Long, showIssueAuthor: Boolean, hideIssueNumbers: Boolean) {
+        doc(id).update(
+            mapOf(
+                SHOW_ISSUE_AUTHOR to showIssueAuthor,
+                HIDE_ISSUE_NUMBERS to hideIssueNumbers,
+            ),
+        ).await()
     }
 
     override suspend fun delete(id: Long) {
@@ -264,6 +276,19 @@ class FirestoreProjectStore(
         const val REQUIRE_COMPONENT = "requireComponent"
         const val REQUIRE_FIXED_VERSION = "requireFixedVersionOnResolve"
         const val SHOW_ISSUE_AUTHOR = "showIssueAuthor"
+
+        /**
+         * Whether the board hides issue numbers (LNL-194).
+         *
+         * **Absent is not false.** It means "nobody has decided this project's
+         * answer yet", which is the state every document written before LNL-194 is in
+         * and what the startup copy of the owner's old per-user preference consumes.
+         * That is why [DocumentSnapshot.toRecord] reads it into a nullable rather than
+         * defaulting it like the flags above — see
+         * [ProjectRecord.hideIssueNumbersStored] and copyBoardDisplayFromOwners. It
+         * mirrors the SQLite column being nullable with no DEFAULT.
+         */
+        const val HIDE_ISSUE_NUMBERS = "hideIssueNumbers"
         const val POSITION = "position"
         const val CREATED_AT = "createdAt"
         const val ACTIVE_SPRINT = "activeSprintId"
@@ -289,4 +314,7 @@ private fun DocumentSnapshot.toRecord(): ProjectRecord = ProjectRecord(
     // hidden-author behaviour it had then, exactly like the SQLite column's DEFAULT 0.
     showIssueAuthor = getBoolean("showIssueAuthor") ?: false,
     createdAt = getLong("createdAt") ?: 0L,
+    // NOT defaulted, unlike every flag above: absent means "not yet decided", which is
+    // what the startup copy looks for. See HIDE_ISSUE_NUMBERS.
+    hideIssueNumbersStored = getBoolean("hideIssueNumbers"),
 )

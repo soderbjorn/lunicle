@@ -107,6 +107,7 @@ interface LunicleApi {
     suspend fun setProjectDisplaySettings(
         projectId: Long,
         showIssueAuthor: Boolean,
+        hideIssueNumbers: Boolean,
     ): ProjectSettingsState
 
     // ── Forums ───────────────────────────────────────────────────────────────

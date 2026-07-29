@@ -312,27 +312,14 @@ class EditProjectBackingViewModel(
     private val storage: StorageRepository = StorageRepository(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onFinished: (changed: Boolean, saved: ProjectSummary?) -> Unit,
-    /**
-     * The caller's current hide-issue-numbers choice for this project (LNL-105),
-     * and the sink for a change to it. A per-user view preference owned by the board
-     * view model, not a project setting the server keeps — so it is seeded in and
-     * written back through [onHideIssueNumbersChanged] rather than through [storage]
-     * here. The dialog is where the ticket asks the toggle to live; the board is
-     * where the preference lives.
-     */
-    private val hideIssueNumbers: Boolean = false,
-    private val persistHideIssueNumbers: (Boolean) -> Unit = {},
 ) {
     private val _stateFlow = MutableStateFlow(
         State(
             name = existing?.name.orEmpty(),
             namePrefix = existing?.namePrefix.orEmpty(),
-            isPublic = existing?.isPublic ?: false,
-            visibleToAllSignedIn = existing?.visibleToAllSignedIn ?: false,
             isNew = existing == null,
             canConfigure = canConfigure,
             canConfigureIdentity = canConfigureIdentity,
-            hideIssueNumbers = hideIssueNumbers,
         ),
     )
 
@@ -375,16 +362,11 @@ class EditProjectBackingViewModel(
     data class State(
         val name: String = "",
         val namePrefix: String = "",
-        val isPublic: Boolean = false,
-        /**
-         * Whether any signed-in account may read this project — the middle read
-         * tier, staged into the form and written on OK beside [isPublic] (LNL-138).
-         * A read-only grant: the server admits these callers to browse but no write
-         * gate widens for them. Independent of [isPublic] in the model, but the
-         * dialog reads [signedInVisibilityImpliedByPublic] to show that turning
-         * "public" on already covers it.
-         */
-        val visibleToAllSignedIn: Boolean = false,
+        // `isPublic` and `visibleToAllSignedIn` were staged here and written on OK
+        // (LNL-138). They are gone: who may see a project is its audience rows, which
+        // the Access section sets one row at a time and immediately, so there is
+        // nothing about visibility left to stage into this form. See
+        // ProjectAccessState.
         /**
          * The linked GitHub repository, as typed. Admin only, and empty for
          * everyone else because the server does not send it to them.
@@ -455,14 +437,6 @@ class EditProjectBackingViewModel(
          */
         val canConfigureIdentity: Boolean = true,
         /**
-         * Whether THIS user hides issue numbers on this project (LNL-105) — a
-         * per-user view choice, shown to any signed-in caller who opens an existing
-         * project's settings, alongside the notification toggle. Held here only to
-         * drive the switch; the value of record lives on the board view model, which
-         * [onHideIssueNumbersChanged] writes through.
-         */
-        val hideIssueNumbers: Boolean = false,
-        /**
          * The name or prefix already being another project's, phrased — or null.
          *
          * Recomputed on every keystroke by [onNameChanged] and [onPrefixChanged],
@@ -484,19 +458,6 @@ class EditProjectBackingViewModel(
         val pendingProjectDelete: ProjectDeletePrompt? = null,
     ) {
         val title: String get() = if (isNew) "New project" else "Project settings"
-
-        /**
-         * Whether the signed-in-visibility toggle is made redundant by [isPublic]
-         * (LNL-138).
-         *
-         * A public project is readable by everyone including signed-out visitors, so
-         * the server's read rule ORs the two — a public project already admits every
-         * signed-in account. The dialog reads this to render the second toggle as
-         * checked-and-disabled with a caption while public is on, rather than
-         * offering a switch that changes nothing. It stays a real, independent stored
-         * value underneath, so unticking "public" reveals whatever was chosen here.
-         */
-        val signedInVisibilityImpliedByPublic: Boolean get() = isPublic
 
         /**
          * Whether to offer the Delete button in the form's footer.
@@ -609,6 +570,49 @@ class EditProjectBackingViewModel(
 
         /** Whether the board shows each card's author on a muted footer line (LNL-157). */
         val showIssueAuthor: Boolean get() = settings?.showIssueAuthor ?: false
+
+        /**
+         * Whether the board and its issue windows hide the issue number (LNL-194).
+         *
+         * Read off the settings like [showIssueAuthor], and that is the change: until
+         * LNL-194 this was a per-user view choice seeded into this view model and
+         * written back to the board's preference blob. It is the project's now, so it
+         * arrives and departs the same way every other project setting does.
+         */
+        val hideIssueNumbers: Boolean get() = settings?.hideIssueNumbers ?: false
+
+        /**
+         * Whether the Board display switches are this caller's to change — Admin and
+         * above (LNL-194).
+         *
+         * Not the same question as whether the group is *shown*: it always is, to
+         * everybody who can see the project. Hiding the switch that explains why the
+         * board looks the way it does only prompts "where did the issue numbers go", so
+         * a Maintainer and below see both switches, set as the project has them, and
+         * dead. [boardDisplayReadOnlyReason] is the sentence beside them.
+         */
+        val canSetBoardDisplay: Boolean get() = settings?.canMutateProject == true
+
+        /**
+         * Why the Board display switches are dead, or null because they are not.
+         *
+         * Names the rung rather than saying "you cannot": somebody reading this needs
+         * to know who to ask, and "an administrator of this project" is that answer.
+         */
+        val boardDisplayReadOnlyReason: String? get() =
+            if (canSetBoardDisplay || settings == null) null
+            else "How this board reads is set by an administrator of this project."
+
+        /**
+         * Why the name and the prefix are dead, or null because they are not.
+         *
+         * The owner's, one rung above the switches above — a rename changes every
+         * ticket reference in every commit message that ever named this project, which
+         * is not a decision about the board so much as about the project's identity.
+         */
+        val identityReadOnlyReason: String? get() =
+            if (canConfigureIdentity) null
+            else "The project's name and prefix are its owner's to change."
 
         /**
          * Whether the project has any versions to pick, and any resolution marked
@@ -909,28 +913,10 @@ class EditProjectBackingViewModel(
         )
     }
 
-    fun onPublicChanged(value: Boolean) {
-        _stateFlow.value = _stateFlow.value.copy(isPublic = value)
-    }
-
-    /**
-     * The signed-in-visibility toggle was flipped (LNL-138).
-     *
-     * Staged into the form and written on OK beside [onPublicChanged], because it is
-     * the same owner identity write — not a project-administrator setting like the
-     * feature toggles, which write immediately. Stored independently of [isPublic]
-     * even while public makes it redundant, so unticking public later restores what
-     * was chosen here rather than silently clearing it.
-     */
-    fun onVisibleToAllSignedInChanged(value: Boolean) {
-        _stateFlow.value = _stateFlow.value.copy(visibleToAllSignedIn = value)
-    }
-
     /**
      * A Features toggle was flipped (LNL-96).
      *
-     * Unlike [onPublicChanged], which stages into the form and writes on OK, these
-     * write at once — they are project-administrator settings like the vocabularies
+     * These write at once — they are project-administrator settings like the vocabularies
      * and grants, and go through the same [write] helper, so a flip reloads the
      * board on close and the tab appears or disappears. The pair is always sent
      * whole: the flag not being changed is read from the current [State] so the
@@ -1013,25 +999,36 @@ class EditProjectBackingViewModel(
      * it goes through its own storage call rather than the requirements one.
      */
     fun onShowIssueAuthorChanged(value: Boolean) {
-        val project = existing ?: return
-        write("Could not change this project's display settings.") {
-            storage.setProjectDisplaySettings(project.id, showIssueAuthor = value)
-        }
+        setBoardDisplay(showIssueAuthor = value, hideIssueNumbers = _stateFlow.value.hideIssueNumbers)
     }
 
     /**
-     * Hide or show issue numbers for this project, for THIS user (LNL-105).
+     * Hide or show issue numbers on this project's board and issue windows (LNL-194).
      *
-     * Unlike the toggles above this writes no project setting: it updates local
-     * state so the switch reflects the click, and hands the choice to the board view
-     * model through [persistHideIssueNumbers], which owns the per-user preference
-     * blob and persists it. Fire-and-forget, like the board's own column-hide — a
-     * view choice whose honest failure is not surviving a reload, not an alert.
+     * A **project** setting since LNL-194, and this method is where that shows: it
+     * used to update local state and hand the choice to the board view model's
+     * per-user preference blob, fire-and-forget, because it changed nothing for
+     * anybody else. It now writes through [setBoardDisplay] like its sibling above,
+     * with an error an administrator can see, because it changes the board for
+     * everybody looking at it.
      */
     fun onHideIssueNumbersChanged(value: Boolean) {
-        if (_stateFlow.value.hideIssueNumbers == value) return
-        _stateFlow.value = _stateFlow.value.copy(hideIssueNumbers = value)
-        persistHideIssueNumbers(value)
+        setBoardDisplay(showIssueAuthor = _stateFlow.value.showIssueAuthor, hideIssueNumbers = value)
+    }
+
+    /**
+     * Write both board-display switches.
+     *
+     * The pair, because the route takes the pair — see ProjectDisplaySettings. Each
+     * handler passes its own new value and the other's current one, read from the
+     * state rather than remembered, so two flips in quick succession cannot send a
+     * stale partner.
+     */
+    private fun setBoardDisplay(showIssueAuthor: Boolean, hideIssueNumbers: Boolean) {
+        val project = existing ?: return
+        write("Could not change how this board reads.") {
+            storage.setProjectDisplaySettings(project.id, showIssueAuthor, hideIssueNumbers)
+        }
     }
 
     fun onRepositoryUrlChanged(value: String) {
@@ -1092,19 +1089,12 @@ class EditProjectBackingViewModel(
         scope.launch {
             val result = runCatching {
                 if (existing == null) {
-                    storage.createProject(
-                        current.name,
-                        current.namePrefix,
-                        current.isPublic,
-                        current.visibleToAllSignedIn,
-                    )
+                    storage.createProject(current.name, current.namePrefix)
                 } else {
                     storage.updateProject(
                         existing.id,
                         current.name,
                         current.namePrefix,
-                        current.isPublic,
-                        current.visibleToAllSignedIn,
                         current.repositoryUrl,
                         current.githubTokenEnv,
                         current.githubTokenMode,

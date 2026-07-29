@@ -61,7 +61,7 @@ private fun boardWith(priorityCount: Int): MainScreenBackingViewModel.BoardScree
     return MainScreenBackingViewModel.State(
         boards = mapOf(
             PROJECT_ID to BoardState(
-                project = ProjectSummary(PROJECT_ID, "Test", "TST", isPublic = true),
+                project = ProjectSummary(PROJECT_ID, "Test", "TST"),
                 statuses = listOf(
                     StatusItem(OPEN_STATUS, "Open", 0),
                     StatusItem(CLOSED_STATUS, "Closed", 1, requiresResolution = true),

@@ -89,14 +89,36 @@ abstract class ProjectStoreContract {
     }
 
     @Test
-    fun `the show-issue-author display flag flips and defaults off`() = runBlocking {
+    fun `the two board-display flags flip together and default off`() = runBlocking {
         val p = insertProject()
-        // Default off — the board hid the author before this flag existed (LNL-157).
+        // Default off — the board hid the author and showed the number before either
+        // flag existed (LNL-157, LNL-194).
         assertEquals(false, store.findById(p.id)!!.showIssueAuthor)
-        store.setShowIssueAuthor(p.id, true)
+        assertEquals(false, store.findById(p.id)!!.hideIssueNumbers)
+        store.setBoardDisplay(p.id, showIssueAuthor = true, hideIssueNumbers = true)
         assertEquals(true, store.findById(p.id)!!.showIssueAuthor)
-        store.setShowIssueAuthor(p.id, false)
+        assertEquals(true, store.findById(p.id)!!.hideIssueNumbers)
+        // Independently, so a write of the pair cannot be passing one value twice.
+        store.setBoardDisplay(p.id, showIssueAuthor = false, hideIssueNumbers = true)
         assertEquals(false, store.findById(p.id)!!.showIssueAuthor)
+        assertEquals(true, store.findById(p.id)!!.hideIssueNumbers)
+    }
+
+    /**
+     * A **fresh** project has already decided its board display; only a migrated one
+     * has not.
+     *
+     * The three-valued column is the startup copy's marker — see
+     * copyBoardDisplayFromOwners — and a new board has no old per-user preference to
+     * copy, so `insert` must settle it rather than leaving a row the copy would visit.
+     * Pinned in the contract because the two backends express "not yet decided"
+     * differently: a NULL column and an absent document field.
+     */
+    @Test
+    fun `a freshly inserted project has already decided its board display`() = runBlocking {
+        val p = insertProject()
+        assertEquals(false, store.findById(p.id)!!.hideIssueNumbersStored)
+        assertEquals(false, p.hideIssueNumbersStored, "the record `insert` returns must agree with the row")
     }
 
     @Test

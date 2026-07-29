@@ -607,18 +607,22 @@ class HttpLunicleApi(
         }.requireSuccess()
 
     /**
-     * Set this project's board-display settings — whether cards show the author
-     * (LNL-157). Returns the refreshed [ProjectSettingsState].
+     * Set how this project's board reads — whether cards show the author (LNL-157)
+     * and whether issue numbers are hidden (LNL-194). Returns the refreshed
+     * [ProjectSettingsState].
+     *
+     * Both together, because the route takes the pair: see [ProjectDisplaySettings].
      *
      * @throws ApiFailure 403 for a caller who does not administer this project.
      */
     override suspend fun setProjectDisplaySettings(
         projectId: Long,
         showIssueAuthor: Boolean,
+        hideIssueNumbers: Boolean,
     ): ProjectSettingsState =
         httpClient.post(baseUrl + ApiRoutes.projectDisplay(projectId)) {
             contentType(ContentType.Application.Json)
-            setBody(ProjectDisplaySettings(showIssueAuthor))
+            setBody(ProjectDisplaySettings(showIssueAuthor, hideIssueNumbers))
         }.requireSuccess()
 
     // ── Forums ───────────────────────────────────────────────────────────────

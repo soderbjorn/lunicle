@@ -202,14 +202,15 @@ internal class DemoProject(
     val id: Long,
     var name: String,
     var prefix: String,
-    var isPublic: Boolean = true,
-    var visibleToAllSignedIn: Boolean = false,
+    // isPublic / visibleToAllSignedIn were here and are gone (LNL-194) — visibility is
+    // audience rows now, and the demo grants the visitor Owner on everything anyway.
     var discussionsEnabled: Boolean = false,
     var messagesEnabled: Boolean = false,
     var requireLabel: Boolean = false,
     var requireComponent: Boolean = false,
     var requireFixedVersionOnResolve: Boolean = false,
     var showIssueAuthor: Boolean = false,
+    var hideIssueNumbers: Boolean = false,
     var notifyOnNewIssue: Boolean = false,
     val statuses: MutableList<DemoStatus> = mutableListOf(),
     val priorities: MutableList<DemoStatus> = mutableListOf(),
@@ -326,14 +327,17 @@ internal class DemoWorld {
         id = p.id,
         name = p.name,
         namePrefix = p.prefix,
-        isPublic = p.isPublic,
-        visibleToAllSignedIn = p.visibleToAllSignedIn,
+        // The demo visitor owns every board here — there is nobody else in the world to
+        // hold a lesser rung, and the point of the demo is to show the whole app.
+        roleKey = "owner",
+        roleLabel = "Owner",
         discussionsEnabled = p.discussionsEnabled,
         messagesEnabled = p.messagesEnabled,
         requireLabel = p.requireLabel,
         requireComponent = p.requireComponent,
         requireFixedVersionOnResolve = p.requireFixedVersionOnResolve,
         showIssueAuthor = p.showIssueAuthor,
+        hideIssueNumbers = p.hideIssueNumbers,
     )
 
     private fun statusItem(s: DemoStatus): StatusItem =

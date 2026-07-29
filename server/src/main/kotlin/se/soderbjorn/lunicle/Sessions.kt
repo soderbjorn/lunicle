@@ -85,6 +85,7 @@ class SessionStore(
                 userRecordOf(
                     it.id, it.provider, it.provider_id, it.provider_name,
                     it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                    it.signed_in_at,
                 )
             }
         }

@@ -91,7 +91,33 @@ data class ProjectRecord(
      */
     val showIssueAuthor: Boolean,
     val createdAt: Long,
-)
+    /**
+     * Whether this project's board and issue windows hide the issue number, or null
+     * because nobody has decided yet (LNL-194).
+     *
+     * The second board-display setting beside [showIssueAuthor], and the only field
+     * on this record that is *three*-valued. Null is not "off": it means the column
+     * has never been written, which is the state every project is in the moment
+     * 34.sqm runs and the state [copyBoardDisplayFromOwners] consumes to decide
+     * whether it may still copy the owner's old per-user preference in. Once
+     * anything writes it, it is never null again.
+     *
+     * Last in the record, with a default, so the dozen positional constructions in
+     * this file and in the Firestore store did not all have to be rewritten to add
+     * it. Read [hideIssueNumbers] rather than this: the three-valued shape is a fact
+     * about the migration and stops at this class.
+     */
+    val hideIssueNumbersStored: Boolean? = null,
+) {
+    /**
+     * Whether the board hides issue numbers — the answer every reader wants.
+     *
+     * Null reads as off, which is what the board did for anybody who had not set the
+     * old per-user preference, and is therefore the right answer for the window
+     * between the migration and the startup copy. See [hideIssueNumbersStored].
+     */
+    val hideIssueNumbers: Boolean get() = hideIssueNumbersStored == true
+}
 
 /** A label or a component: an id, a project, a name, and where it sits. */
 data class VocabularyRecord(
@@ -199,6 +225,7 @@ class ProjectStore(
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
             ) }
         }
 
@@ -250,14 +277,21 @@ class ProjectStore(
         }
 
     /**
-     * Set this project's board-display flag (LNL-157).
+     * Set this project's two board-display flags together (LNL-157, LNL-194).
      *
      * Its own writer, not folded into [setRequirements] — a display choice is not a
-     * requirement, so the two travel separately. See Projects.sq's setShowIssueAuthor.
+     * requirement, so the two travel separately. Both at once, like [setFeatures]:
+     * the Board display group sends the pair. Writing `hide_issue_numbers` is also
+     * what takes the row out of the "not yet decided" state 34.sqm leaves it in. See
+     * Projects.sq's setBoardDisplay.
      */
-    override suspend fun setShowIssueAuthor(id: Long, showIssueAuthor: Boolean): Unit =
+    override suspend fun setBoardDisplay(id: Long, showIssueAuthor: Boolean, hideIssueNumbers: Boolean): Unit =
         withContext(DatabaseDispatcher) {
-            database.projectsQueries.setShowIssueAuthor(if (showIssueAuthor) 1L else 0L, id)
+            database.projectsQueries.setBoardDisplay(
+                if (showIssueAuthor) 1L else 0L,
+                if (hideIssueNumbers) 1L else 0L,
+                id,
+            )
         }
 
     /** Delete the project. Every row that hangs off it cascades; the files do not — see [IssueRepository.deleteProject]. */
@@ -296,6 +330,7 @@ class ProjectStore(
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
             ) }
     }
 
@@ -314,6 +349,7 @@ class ProjectStore(
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
             ) }
     }
 
@@ -338,6 +374,7 @@ class ProjectStore(
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
             ) }
     }
 

@@ -83,7 +83,6 @@ internal fun seedKlinikProject(w: DemoWorld) {
         id = w.allocId(),
         name = "Kilobyte Klinik",
         prefix = "FIX",
-        isPublic = true,
         // Same as the Amiga board: forums and private messages stay off in the demo.
         discussionsEnabled = false,
         messagesEnabled = false,

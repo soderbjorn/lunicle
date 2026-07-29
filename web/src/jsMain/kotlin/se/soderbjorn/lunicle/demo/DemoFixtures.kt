@@ -79,7 +79,6 @@ internal fun seedDemoWorld(): DemoWorld {
         id = w.allocId(),
         name = "Star Trek game",
         prefix = "AST",
-        isPublic = true,
         // Forums and private messages are intentionally off in the demo — belt and
         // suspenders with never passing ?forums=1, so both tabs are gone.
         discussionsEnabled = false,

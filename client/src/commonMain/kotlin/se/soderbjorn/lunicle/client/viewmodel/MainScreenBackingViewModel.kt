@@ -1061,12 +1061,16 @@ class MainScreenBackingViewModel(
             "${project?.namePrefix ?: "?"}-${issue.number}: ${issue.title}"
 
         /**
-         * Whether this user has hidden the issue number on this project's board and
-         * issue detail (LNL-105). A per-user, per-project view choice, read from the
-         * same [State.projectPrefs] blob the hidden columns live in.
+         * Whether this project's board and issue windows hide the issue number
+         * (LNL-105, LNL-194).
+         *
+         * A **project** setting since LNL-194 — read off the board's own summary, the
+         * way `showIssueAuthor` beside it is. It was a per-user, per-project view
+         * choice in the [State.projectPrefs] blob the hidden columns still live in;
+         * moving it means every reader of one board sees the same thing, which is what
+         * a shared board should mean.
          */
-        val hideIssueNumbers: Boolean get() =
-            state.projectPrefs[projectId]?.hideIssueNumbers ?: false
+        val hideIssueNumbers: Boolean get() = project?.hideIssueNumbers == true
     }
 
     /**
@@ -1393,9 +1397,11 @@ class MainScreenBackingViewModel(
             !hidden && statusId in current -> current - statusId
             else -> return
         }
-        // copy() rather than a fresh record, so a sibling preference on the same
-        // project — the hide-issue-numbers choice (LNL-105) — is carried across a
-        // column hide/show rather than reset to its default.
+        // copy() rather than a fresh record, so a sibling preference on the same project
+        // would be carried across a column hide/show rather than reset. There is none
+        // today — hide-issue-numbers was the other one and became the project's in
+        // LNL-194 — and this stays a copy because the record is the shape a future
+        // per-user-per-project choice grows on. See UserProjectPrefs.
         val record = (state.projectPrefs[projectId] ?: UserProjectPrefs()).copy(hiddenColumnIds = next)
         val nextPrefs = state.projectPrefs.toMutableMap().apply {
             if (record == UserProjectPrefs()) remove(projectId) else put(projectId, record)
@@ -1404,29 +1410,11 @@ class MainScreenBackingViewModel(
         persistProjectPrefs(nextPrefs)
     }
 
-    /** Whether this user is hiding issue numbers on [projectId]'s board (LNL-105). */
-    fun isHidingIssueNumbers(projectId: Long): Boolean =
-        _stateFlow.value.projectPrefs[projectId]?.hideIssueNumbers ?: false
-
-    /**
-     * Turn the issue number off (or back on) for one project, per user (LNL-105).
-     *
-     * The sibling of [setColumnHidden], through the same [projectPrefs] blob and the
-     * same prune-to-absence rule, but keyed on the [projectId] the settings dialog
-     * names rather than the board's current project — the dialog can be open on a
-     * project the board is not currently showing. A no-op change touches nothing.
-     */
-    fun setIssueNumbersHidden(projectId: Long, hidden: Boolean) {
-        val state = _stateFlow.value
-        val existing = state.projectPrefs[projectId] ?: UserProjectPrefs()
-        if (existing.hideIssueNumbers == hidden) return
-        val record = existing.copy(hideIssueNumbers = hidden)
-        val nextPrefs = state.projectPrefs.toMutableMap().apply {
-            if (record == UserProjectPrefs()) remove(projectId) else put(projectId, record)
-        }
-        _stateFlow.value = state.copy(projectPrefs = nextPrefs)
-        persistProjectPrefs(nextPrefs)
-    }
+    // `isHidingIssueNumbers` and `setIssueNumbersHidden` were here (LNL-105) and are
+    // gone (LNL-194). The switch is the project's now, so the settings pane writes it
+    // through the project-display route like every other project setting, and the
+    // board reads the answer off ProjectSummary rather than off this view model's
+    // preference blob. See BoardScreen.hideIssueNumbers.
 
     /**
      * Write the whole preferences blob back to the account, in the background.

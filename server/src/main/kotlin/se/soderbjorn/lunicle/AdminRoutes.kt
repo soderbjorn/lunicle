@@ -257,9 +257,11 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                 id = it.id,
                 name = it.name,
                 namePrefix = it.namePrefix,
-                // Retired on the wire pending tickets 3–5; see ProjectSummary.
-                isPublic = false,
-                visibleToAllSignedIn = false,
+                // OWNER for every row: this list is only ever built for a caller who
+                // holds the instance, and AccessControl.effectiveRole gives an instance
+                // administrator or owner that rung on every project. See ProjectSummary.
+                roleKey = ProjectRole.OWNER.key,
+                roleLabel = ProjectRole.OWNER.label,
                 discussionsEnabled = it.discussionsEnabled,
                 messagesEnabled = it.messagesEnabled,
             )

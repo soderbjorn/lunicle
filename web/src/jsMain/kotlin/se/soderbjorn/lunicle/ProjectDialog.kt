@@ -118,11 +118,10 @@ class ProjectDialog(
     private lateinit var nameField: HTMLInputElement
     private lateinit var prefixField: HTMLInputElement
     private lateinit var prefixHint: HTMLElement
-    private lateinit var publicBox: Toggle
-
-    /** The signed-in-visibility toggle and the note shown when "public" makes it redundant (LNL-138). */
-    private lateinit var signedInBox: Toggle
-    private lateinit var signedInHint: HTMLElement
+    // The `public` and `visible to all signed-in` toggles were here (LNL-138) and are
+    // gone (LNL-194): who may see a project is its audience rows, set one at a time in
+    // the settings pane's Access section rather than staged into this form. A brand new
+    // project admits nobody until its owner says otherwise.
     private lateinit var repositoryField: HTMLInputElement
     private lateinit var tokenEnvField: HTMLInputElement
     private lateinit var repositorySection: HTMLElement
@@ -152,7 +151,7 @@ class ProjectDialog(
     // here until LNL-190 retired both features. Nothing replaced it: the General tab
     // goes straight from the identity form to Notifications.
 
-    // The per-user display section (LNL-105) — on the General tab beside notifications.
+    // The board-display section (LNL-105, LNL-194) — on the General tab beside notifications.
     private lateinit var displayElement: HTMLElement
     private lateinit var hideNumbersToggle: Toggle
 
@@ -234,24 +233,9 @@ class ProjectDialog(
         nameField = textField { viewModel.onNameChanged(it) }
         prefixField = textField { viewModel.onPrefixChanged(it) }
         prefixHint = element("p", "field-hint")
-        publicBox = Toggle { viewModel.onPublicChanged(it) }
-        signedInBox = Toggle { viewModel.onVisibleToAllSignedInChanged(it) }
-        signedInHint = element("p", "field-hint")
-
         validationElement = element("p", "field-validation")
         errorElement = element("p", "modal-error")
         errorElement.setAttribute("role", "status")
-
-        val publicRow = toggleRow(publicBox, "Public — anyone can read this project's issues without signing in")
-        // The middle read tier (LNL-138): read-only for every signed-in account. Its
-        // caption says "read" and "not change", because the whole point of the tier
-        // is a grant that carries no write — the server admits these callers to
-        // browse and no write gate widens for them.
-        val signedInRow = toggleRow(
-            signedInBox,
-            "Visible to all signed-in users — anyone with an account can read this project, " +
-                "but not change anything",
-        )
 
         repositoryField = textField(REPOSITORY_URL_PLACEHOLDER) { viewModel.onRepositoryUrlChanged(it) }
         tokenEnvField = textField(GITHUB_TOKEN_ENV_PREFIX_EXAMPLE) { viewModel.onGithubTokenEnvChanged(it) }
@@ -312,9 +296,6 @@ class ProjectDialog(
             element("label", "field-label", "Issue prefix"),
             prefixField,
             prefixHint,
-            publicRow,
-            signedInRow,
-            signedInHint,
             validationElement,
             errorElement,
         )
@@ -466,11 +447,12 @@ class ProjectDialog(
     private fun buildDisplaySection(): HTMLElement {
         hideNumbersToggle = Toggle { viewModel.onHideIssueNumbersChanged(it) }
         return element("div", "project-display").children(
-            element("h3", "section-title", "Display"),
+            element("h3", "section-title", "Board display"),
             element(
                 "p",
                 "field-hint",
-                "A choice for you alone, saved per project — it changes nothing for anyone else.",
+                "How this board reads for everybody looking at it. Set by an administrator of " +
+                    "this project.",
             ),
             toggleRow(hideNumbersToggle, "Hide issue numbers on the board and in issue windows"),
         )
@@ -548,19 +530,6 @@ class ProjectDialog(
             state.prefixExample?.let { "Issues in this project will be numbered $it" } ?: "",
         )
         prefixHint.visible(state.prefixExample != null)
-        publicBox.checked = state.isPublic
-        // The signed-in-visibility tier (LNL-138). When "public" is on it is already
-        // implied — a public project is readable by everyone signed in — so the
-        // toggle shows checked-and-disabled with a note, rather than offering a
-        // switch that would change nothing. Its stored value is untouched underneath,
-        // so unticking public reveals whatever was chosen here.
-        val impliedByPublic = state.signedInVisibilityImpliedByPublic
-        signedInBox.checked = state.visibleToAllSignedIn || impliedByPublic
-        signedInBox.disabled = impliedByPublic
-        signedInHint.setTextIfChanged(
-            if (impliedByPublic) "A public project is already readable by everyone signed in." else "",
-        )
-        signedInHint.visible(impliedByPublic)
         // Kept up to date even while the Github tab is hidden — the fields cost
         // nothing to fill, and doing it here rather than on tab-switch keeps this
         // method the one place state reaches the DOM. Whether the tab is offered at
@@ -656,13 +625,14 @@ class ProjectDialog(
         watchButton.render(watching = state.notifyOnNewIssue, isEnabled = !state.isBusy)
     }
 
-    /** The per-user hide-issue-numbers toggle (LNL-105). */
+    /** The board's hide-issue-numbers switch (LNL-105, LNL-194). */
     private fun renderDisplay(state: EditProjectBackingViewModel.State) {
         displayElement.visible(state.showDisplaySection)
         if (!state.showDisplaySection) return
-        // Not gated on isBusy: this is a fire-and-forget board preference, not a
-        // settings write with an in-flight state — the switch stays live.
         hideNumbersToggle.checked = state.hideIssueNumbers
+        // Gated now, where the per-user version was not: it is a project write with an
+        // in-flight state, and a rung below Admin may not make it at all.
+        hideNumbersToggle.disabled = state.isBusy || !state.canSetBoardDisplay
     }
 
     /** The new-ticket requirement toggles (LNL-106), project administrator only. */

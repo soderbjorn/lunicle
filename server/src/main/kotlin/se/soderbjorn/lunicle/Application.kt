@@ -451,6 +451,15 @@ fun Application.module() {
         seatInstanceOwner(users, instanceSettings)?.let {
             log.info("Instance: seated user $it as the instance owner — nobody held it")
         }
+        // After the owner is seated, and that ordering is load-bearing: a project with
+        // no owner rung falls back to the instance owner's old preference, and on a
+        // freshly migrated volume the seat above is what puts somebody there. Same
+        // idempotence property as the two lines above, reached differently — see
+        // copyBoardDisplayFromOwners.
+        val settled = copyBoardDisplayFromOwners(projects, roles, users, uiSettings, instanceSettings)
+        if (settled > 0) {
+            log.info("Instance: settled the board display of $settled project(s) from their owners")
+        }
 
         val removed = sessions.deleteExpired()
         if (removed > 0) log.info("Removed $removed expired session(s)")

@@ -84,7 +84,6 @@ internal fun seedMeridianProject(w: DemoWorld) {
         id = w.allocId(),
         name = "Meridian KMP",
         prefix = "MRD",
-        isPublic = true,
         discussionsEnabled = false,
         messagesEnabled = false,
         // An open tracker makes people categorise what they are filing.

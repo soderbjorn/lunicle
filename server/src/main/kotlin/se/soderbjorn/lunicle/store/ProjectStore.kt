@@ -49,10 +49,18 @@ interface ProjectStore {
     )
 
     /**
-     * Toggle whether the board shows each card's author on a muted footer line
-     * (LNL-157) — a per-project display setting, not a requirement.
+     * Set both board-display settings: whether the board shows each card's author on
+     * a muted footer line (LNL-157), and whether it hides the issue number (LNL-194).
+     *
+     * Per-project display settings, not requirements — how a shared board reads,
+     * which is a decision about the project rather than about the person looking. The
+     * second was a per-user preference until LNL-194.
+     *
+     * The pair together, never one at a time: the Board display group sends both.
+     * Writing [hideIssueNumbers] is also what settles a project whose column is still
+     * null — see [se.soderbjorn.lunicle.ProjectRecord.hideIssueNumbersStored].
      */
-    suspend fun setShowIssueAuthor(id: Long, showIssueAuthor: Boolean)
+    suspend fun setBoardDisplay(id: Long, showIssueAuthor: Boolean, hideIssueNumbers: Boolean)
 
     suspend fun delete(id: Long)
 

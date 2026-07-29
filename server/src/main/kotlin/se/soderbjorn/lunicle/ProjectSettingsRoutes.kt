@@ -251,12 +251,16 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Switch this project's board-display settings — whether cards show the author
-     * (LNL-157). Project administrator, exactly as `/requirements`: a display choice
-     * is the same project administrator's, not only the instance owner's. Its own
-     * route because a display setting is not a requirement. Written, then the project
-     * re-read so [buildSettings] reflects the new flag rather than the record the
-     * gate captured.
+     * Set how this project's board reads — whether cards show the author (LNL-157) and
+     * whether the board hides issue numbers (LNL-194).
+     *
+     * Project administrator, exactly as `/requirements`: how a shared board reads is
+     * the same project administrator's, not only the instance owner's. That is the
+     * gate the second switch *arrived* at rather than the one it had — it was a
+     * per-user preference and needed no gate at all, because it changed nothing for
+     * anybody else. Its own route because a display setting is not a requirement.
+     * Written, then the project re-read so [buildSettings] reflects the new flags
+     * rather than the record the gate captured.
      */
     post("${ApiRoutes.PROJECTS}/{id}/display") {
         val scope = call.adminProject(deps, "change this project's display settings") ?: return@post
@@ -264,8 +268,11 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
         }
-        deps.projects.setShowIssueAuthor(scope.project.id, body.showIssueAuthor)
-        logger.info("Project ${scope.project.id} display: showIssueAuthor=${body.showIssueAuthor}")
+        deps.projects.setBoardDisplay(scope.project.id, body.showIssueAuthor, body.hideIssueNumbers)
+        logger.info(
+            "Project ${scope.project.id} display: showIssueAuthor=${body.showIssueAuthor}, " +
+                "hideIssueNumbers=${body.hideIssueNumbers}",
+        )
         val updated = deps.projects.findById(scope.project.id) ?: scope.project
         call.respond(deps.buildSettings(updated, scope.user))
     }
@@ -544,6 +551,7 @@ private suspend fun BoardDependencies.buildSettings(
             // sent honestly even though this caller's dialog renders no section to
             // edit it. See ProjectSettingsState.showIssueAuthor.
             showIssueAuthor = project.showIssueAuthor,
+            hideIssueNumbers = project.hideIssueNumbers,
         )
     }
 
@@ -628,6 +636,7 @@ private suspend fun BoardDependencies.buildSettings(
         requireComponent = project.requireComponent,
         requireFixedVersionOnResolve = project.requireFixedVersionOnResolve,
         showIssueAuthor = project.showIssueAuthor,
+        hideIssueNumbers = project.hideIssueNumbers,
     )
 }
 

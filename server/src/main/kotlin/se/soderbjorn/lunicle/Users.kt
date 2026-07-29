@@ -77,7 +77,26 @@ data class UserRecord(
     val kind: UserKind = UserKind.MEMBER,
     val isInstanceAdmin: Boolean = false,
     val isMcpEnabled: Boolean = false,
+    /**
+     * When somebody last signed into this account, or null because nobody ever has
+     * (LNL-194).
+     *
+     * Null is the account an administrator **added** and whose owner has not turned
+     * up: it holds rungs, it appears in the Access list badged NOT SIGNED IN, and it
+     * is the case that makes the `staff domain plus already added` admission policy
+     * differ from `staff domain only`. Read [hasSignedIn] rather than comparing to
+     * null — the timestamp itself is only interesting to the People tab.
+     *
+     * Defaulted, and last, so the fixtures and tests that build a record positionally
+     * did not all have to change. Note the default is the *pending* answer, which is
+     * the conservative direction: a caller that forgets to carry it through reports an
+     * account as not-yet-arrived rather than claiming an arrival that never happened.
+     */
+    val signedInAt: Long? = null,
 ) {
+    /** Has anybody ever signed into this account? See [signedInAt]. */
+    val hasSignedIn: Boolean get() = signedInAt != null
+
     /**
      * The name to render: the user's override if they set one, else what the
      * provider calls them.
@@ -298,6 +317,7 @@ internal fun userRecordOf(
     kind: String,
     instanceRole: String?,
     mcpEnabled: Long,
+    signedInAt: Long? = null,
 ): UserRecord? = parseProvider(provider)?.let {
     UserRecord(
         id = id,
@@ -312,6 +332,7 @@ internal fun userRecordOf(
         // "not an administrator", which is the safe direction for an unknown rung.
         isInstanceAdmin = instanceRole == InstanceRole.ADMIN.key,
         isMcpEnabled = mcpEnabled != 0L,
+        signedInAt = signedInAt,
     )
 }
 
@@ -345,6 +366,10 @@ class UserStore(
         // differently from its write would miss the row and create a second
         // account, which is the failure this whole ticket exists to prevent.
         val email = normalizeEmail(identity.email)
+        // Read once, before the branch, so the row's arrival stamp and the record
+        // handed back describe the same instant on both paths — and so a pinned clock
+        // in a test sees one value rather than two.
+        val signedInAt = now()
 
         database.transactionWithResult {
             // ── Find, by the account key ──────────────────────────────────
@@ -356,7 +381,7 @@ class UserStore(
             if (email != null) {
                 val existing = database.usersQueries.findByEmail(email).executeAsOneOrNull()
                 if (existing != null) {
-                    database.usersQueries.refreshOnSignIn(identity.providerName, kind.key, existing.id)
+                    database.usersQueries.refreshOnSignIn(identity.providerName, kind.key, signedInAt, existing.id)
                     // Built from the row we already have plus the two values the
                     // update just wrote, rather than re-reading. A second SELECT
                     // would be a round-trip to learn what this statement was told
@@ -366,7 +391,7 @@ class UserStore(
                     return@transactionWithResult userRecordOf(
                         existing.id, existing.provider, existing.provider_id, identity.providerName,
                         existing.display_name, existing.email, 1L,
-                        kind.key, existing.instance_role, existing.mcp_enabled,
+                        kind.key, existing.instance_role, existing.mcp_enabled, signedInAt,
                     ) ?: error("User ${existing.id} has provider ${existing.provider}, which cannot be parsed.")
                 }
             }
@@ -387,13 +412,13 @@ class UserStore(
                 providerName = identity.providerName,
                 email = email,
                 kind = kind.key,
-                addedAt = now(),
+                addedAt = signedInAt,
             ).executeAsOne()
 
             userRecordOf(
                 row.id, row.provider, row.provider_id, row.provider_name,
                 row.display_name, row.email, row.email_verified,
-                row.kind, row.instance_role, row.mcp_enabled,
+                row.kind, row.instance_role, row.mcp_enabled, signedInAt,
             ) ?: error("Just wrote user ${row.id} with provider ${row.provider}, which cannot be parsed back.")
         }
     }
@@ -412,6 +437,7 @@ class UserStore(
                 userRecordOf(
                     it.id, it.provider, it.provider_id, it.provider_name,
                     it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                    it.signed_in_at,
                 )
             }
         }
@@ -421,9 +447,55 @@ class UserStore(
                 userRecordOf(
                     it.id, it.provider, it.provider_id, it.provider_name,
                     it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                    it.signed_in_at,
                 )
             }
     }
+
+    /**
+     * Add an account for [email] without anybody signing in, or return the one that
+     * already holds the address (LNL-194).
+     *
+     * The persistence half of "Add a person…". Idempotent, because the honest answer
+     * to "add somebody who is already here" is the row they already have — the
+     * caller's next move either way is to write a rung against the id this returns.
+     *
+     * @param kind derived by the caller through [UserKind.forEmail], from the same
+     *   function sign-in uses, so a row added ahead of time and the same row after its
+     *   owner arrives agree about whether they are staff. Passed rather than derived
+     *   here for [upsert]'s reason: the deployment's domain is configuration, and a
+     *   store does not read configuration.
+     * @return the row, never null — the insert is `OR IGNORE` and the read that
+     *   follows it cannot miss, both being inside one transaction on a single-threaded
+     *   dispatcher.
+     * @throws IllegalStateException if the row cannot be read back, matching [upsert].
+     */
+    override suspend fun addByEmail(email: String, kind: UserKind): UserRecord =
+        withContext(DatabaseDispatcher) {
+            // Normalized by the same function every lookup uses, so the row this
+            // writes is the row a sign-in will find. A different spelling here would
+            // hand somebody a rung they never pick up.
+            val address = normalizeEmail(email)
+                ?: error("addByEmail was given an address that normalizes to nothing: \"$email\"")
+            database.transactionWithResult {
+                database.usersQueries.addPending(
+                    email = address,
+                    // The local part, matching what a code sign-in seeds a row with —
+                    // so the Access list can name the person before they arrive
+                    // without the row claiming a display name they never chose.
+                    providerName = address.substringBefore('@'),
+                    kind = kind.key,
+                    addedAt = now(),
+                )
+                database.usersQueries.findByEmail(address).executeAsOneOrNull()?.let {
+                    userRecordOf(
+                        it.id, it.provider, it.provider_id, it.provider_name,
+                        it.display_name, it.email, it.email_verified, it.kind, it.instance_role,
+                        it.mcp_enabled, it.signed_in_at,
+                    )
+                } ?: error("Added \"$address\" and could not read the row back.")
+            }
+        }
 
     /** The user with [id], or null. */
     override suspend fun findById(id: Long): UserRecord? = withContext(DatabaseDispatcher) {
@@ -431,6 +503,7 @@ class UserStore(
             userRecordOf(
                 it.id, it.provider, it.provider_id, it.provider_name,
                 it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                it.signed_in_at,
             )
         }
     }
@@ -453,6 +526,7 @@ class UserStore(
             userRecordOf(
                 it.id, it.provider, it.provider_id, it.provider_name,
                 it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                it.signed_in_at,
             )
         }
     }

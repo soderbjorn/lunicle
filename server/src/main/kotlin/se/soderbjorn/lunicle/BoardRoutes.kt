@@ -729,10 +729,18 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
      */
     get(ApiRoutes.PROJECTS) {
         val user = call.caller(deps)
-        val visible = deps.projects.selectAll().filter { deps.access.canReadProject(user, it) }
+        // The rung is kept rather than thrown away after the filter: it is what
+        // decided visibility, and it is what the settings rail needs to say
+        // "Maintainer" under a board's name. Re-deriving it per project on the client
+        // is impossible and re-deriving it here would be two passes over the same
+        // rows. `mapNotNull` rather than `filter`, so "can read" and "reached a rung"
+        // stay the one question they are.
+        val visible = deps.projects.selectAll().mapNotNull { project ->
+            deps.access.effectiveRole(user, project.id)?.let { project to it }
+        }
         call.respond(
             ProjectListState(
-                projects = visible.map { it.toSummary() },
+                projects = visible.map { (project, rung) -> project.toSummary(rung) },
                 // The affordance and the POST gate below ask the same function,
                 // which reads the per-tier setting itself (LNL-192) — so the button
                 // and the route cannot disagree about who may create a board.
@@ -762,7 +770,10 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
         try {
             val created = deps.projectRepository.create(body.name, body.namePrefix)
             logger.info("Project created: ${created.name} (${created.namePrefix}) by user ${user?.id}")
-            call.respond(created.toSummary())
+            // Re-asked rather than assumed to be OWNER: ProjectRepository.create is
+            // what seats the creator, and asking the access rule is what keeps this
+            // response honest if that ever stops being true.
+            call.respond(created.toSummary(deps.access.effectiveRole(user, created.id) ?: ProjectRole.OWNER))
         } catch (conflict: ProjectConflict) {
             // 409 with the repository's own sentence: it knows *which* project
             // holds the name, and the dialog shows this verbatim.
@@ -801,7 +812,8 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
         try {
             val updated = deps.projectRepository.update(id, body.name, body.namePrefix)
             deps.projects.setRepositoryConfig(id, repositoryConfig)
-            call.respond(updated.toSummary())
+            // OWNER, and known to be: the gate above is canOwnProject.
+            call.respond(updated.toSummary(ProjectRole.OWNER))
         } catch (conflict: ProjectConflict) {
             call.respond(HttpStatusCode.Conflict, conflict.userMessage)
         }
@@ -897,7 +909,9 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
     val numberById: Map<Long, Long> = issueRows.associate { it.id to it.number }
 
     return BoardState(
-        project = project.toSummary(),
+        // The rung is in hand: `permissionsFor` above derived it, and the board is
+        // only built for a caller who reached one.
+        project = project.toSummary(permissions.rung),
         statuses = statuses.forProject(project.id)
             .map { StatusItem(it.id, it.name, it.position.toInt(), it.requiresResolution) },
         priorities = priorities.forProject(project.id).map { StatusItem(it.id, it.name, it.position.toInt()) },
@@ -2396,22 +2410,28 @@ private suspend fun ApplicationCall.receiveUpload(knownFilename: String? = null)
 internal suspend inline fun <reified T : Any> ApplicationCall.receiveOrNull(): T? =
     runCatching { receive<T>() }.getOrNull()
 
-private fun ProjectRecord.toSummary(): ProjectSummary =
+/**
+ * Narrow a project to the wire, with what the caller holds in it.
+ *
+ * [rung] is required rather than defaulted, and that is on purpose: every caller has
+ * already computed it — it is what decided whether this project is in the response
+ * at all — and a default would let a route send a summary claiming Viewer for
+ * somebody who owns the board. See ProjectSummary.roleKey.
+ */
+private fun ProjectRecord.toSummary(rung: ProjectRole): ProjectSummary =
     ProjectSummary(
         id = id,
         name = name,
         namePrefix = namePrefix,
-        // Retired on the wire pending tickets 3–5, which rebuild the dialog around
-        // audience rows. Sent false rather than removed so a client that still reads
-        // the fields keeps deserialising. See ProjectSummary.
-        isPublic = false,
-        visibleToAllSignedIn = false,
+        roleKey = rung.key,
+        roleLabel = rung.label,
         discussionsEnabled = discussionsEnabled,
         messagesEnabled = messagesEnabled,
         requireLabel = requireLabel,
         requireComponent = requireComponent,
         requireFixedVersionOnResolve = requireFixedVersionOnResolve,
         showIssueAuthor = showIssueAuthor,
+        hideIssueNumbers = hideIssueNumbers,
     )
 
 private fun ProjectPermissions.toView(): ProjectPermissionsView = ProjectPermissionsView(

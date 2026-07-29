@@ -1931,9 +1931,10 @@ private class IssueWindows(
         val viewModel = IssueBackingViewModel(
             issueId = id,
             board = board,
-            // The per-user hide-issue-numbers choice for this project (LNL-105),
-            // read once at open from the board view model that owns it.
-            hideIssueNumbers = mainViewModel.isHidingIssueNumbers(board.project.id),
+            // Whether this project hides the issue number (LNL-105, LNL-194) — the
+            // project's own setting now, read off the board this window is built from
+            // rather than out of the reader's own preferences.
+            hideIssueNumbers = board.project.hideIssueNumbers,
             // The column a board "Create issue…" was fired from, so the draft opens
             // filed there (LNL-124); null for the ordinary "+" / hotkey.
             initialStatusId = open.initialStatusId,

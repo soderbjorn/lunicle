@@ -362,6 +362,13 @@ data class ProjectSettingsState(
      */
     val showIssueAuthor: Boolean = false,
     /**
+     * Whether the board and its issue windows hide the issue number (LNL-194) — the
+     * second board-display switch beside [showIssueAuthor], and sent to every caller
+     * who reaches this state for its reason exactly: it is not a secret, the board
+     * reads it to draw a card, and only Admin and above renders it as editable.
+     */
+    val hideIssueNumbers: Boolean = false,
+    /**
      * The linked GitHub repository as `owner/name`, or empty because none is.
      *
      * **Admin only, and omitted rather than flagged.** The server sends this
@@ -475,18 +482,35 @@ data class ProjectRequirements(
 )
 
 /**
- * "Switch this project's board-display settings on or off" (LNL-157).
+ * "This is how this project's board reads" (LNL-157, LNL-194).
  *
  * A parallel to [ProjectRequirements], its own request type because a display
  * choice is not a requirement — the two are set through different routes so a
  * stale client toggling one cannot resurrect the other. Names the desired state
- * rather than "toggle", for [ProjectRequirements]' reason. Project administrator
- * only, enforced at the route.
+ * rather than "toggle", for [ProjectRequirements]' reason.
+ *
+ * Both switches together, like [ProjectRequirements] and for its reason: the Board
+ * display group renders the pair and sends the pair, so a stale client cannot
+ * resurrect the other by omitting it.
+ *
+ * **Admin and above**, enforced at the route — they go up with the vocabulary, not
+ * with the sprints. Everyone below sees them and cannot change them, which is
+ * deliberate: hiding a switch that explains why the board looks the way it does only
+ * prompts "where did the issue numbers go".
  */
 @Serializable
 data class ProjectDisplaySettings(
     /** Whether the board shows each card's author on a muted footer line. */
     val showIssueAuthor: Boolean = false,
+    /**
+     * Whether the board and its issue windows hide the issue number (LNL-194).
+     *
+     * A per-user preference until LNL-194 — "a choice for you alone" — and now the
+     * project's, because a shared board reads one way for everybody looking at it.
+     * The old per-user values were copied onto each project from its owner's; see the
+     * server's copyBoardDisplayFromOwners.
+     */
+    val hideIssueNumbers: Boolean = false,
 )
 
 /**

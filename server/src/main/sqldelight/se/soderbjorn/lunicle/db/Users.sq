@@ -135,6 +135,24 @@ CREATE TABLE users (
     -- reason: guest is the absence of a row.
     added_at INTEGER NOT NULL,
 
+    -- When somebody last signed into this account, or NULL because nobody ever has
+    -- (LNL-194).
+    --
+    -- The column that makes `added_at`'s promise checkable. Adding a person to a
+    -- project writes a row for an address nobody has arrived at yet — so the row can
+    -- hold a rung immediately and whoever owns the address picks it up on first
+    -- sign-in — and NULL here is what tells that row apart from an account somebody
+    -- uses. Two readers care: the Access list, which badges such a row NOT SIGNED
+    -- IN, and admission, where `staff domain plus already added` admits exactly the
+    -- address that has a row and no arrival. See AdmissionPolicy.admitsNewAccount.
+    --
+    -- Written by every sign-in, on both paths — the create branch of `upsert` and
+    -- `refreshOnSignIn` — so it is also "last seen", which is the more useful of the
+    -- two readings and costs nothing extra. Unlike `provider`/`provider_id`, which
+    -- record how the row was created and are deliberately never rewritten, this is a
+    -- fact about the present.
+    signed_in_at INTEGER,
+
     -- Whether this user HAS TURNED ON agent access. Their own choice, made from
     -- the MCP tab of their profile dialog.
     --
@@ -208,7 +226,7 @@ CREATE UNIQUE INDEX users_email_unique ON users(email) WHERE email IS NOT NULL;
 -- RETURNING avoids a second round-trip for the id, and works because the
 -- 3.38 dialect is declared in server/build.gradle.kts.
 upsert:
-INSERT INTO users (provider, provider_id, provider_name, email, email_verified, kind, instance_role, added_at)
+INSERT INTO users (provider, provider_id, provider_name, email, email_verified, kind, instance_role, added_at, signed_in_at)
 VALUES (
     :provider, :providerId, :providerName, :email,
     -- Derived from the address rather than passed beside it, so the two cannot be
@@ -236,6 +254,10 @@ VALUES (
     -- seated separately, by the same startup pass that stamps kinds — ownership is
     -- a setting, and a setting is not something an INSERT can claim atomically.
     (SELECT CASE WHEN EXISTS(SELECT 1 FROM users) THEN NULL ELSE 'admin' END),
+    :addedAt,
+    -- Reaching this statement is a sign-in, so the arrival stamp is the same instant
+    -- as the added stamp for every row created this way. The two only ever differ on
+    -- a row an administrator added ahead of time, which `addPending` writes instead.
     :addedAt
 )
 ON CONFLICT (provider, provider_id) DO UPDATE SET
@@ -253,17 +275,45 @@ ON CONFLICT (provider, provider_id) DO UPDATE SET
     -- `kind` follows, because it is derived rather than chosen: an account that
     -- has moved onto (or off) the deployment's domain is staff (or not) from this
     -- sign-in on, and re-deriving it is the same rule the startup stamp applies.
-    kind = :kind
+    kind = :kind,
+    -- The arrival stamp, on the repeat-sign-in branch too: this is a sign-in, and a
+    -- row that had none — one an administrator added ahead of time and whose owner
+    -- has just turned up — stops being pending here.
+    signed_in_at = :addedAt
     -- instance_role, display_name and mcp_enabled are deliberately absent.
     -- Recomputing instance_role on every sign-in would be a bug with teeth;
     -- display_name is the user's — the provider has no business overwriting it —
     -- and mcp_enabled is a setting the user chose, which signing in again is not
     -- a request to revisit. Resetting it here would silently disconnect every
     -- agent the moment its owner opened the web app.
-RETURNING id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled;
+RETURNING id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled, signed_in_at;
+
+-- Add an account for an address nobody has signed in with yet (LNL-194).
+--
+-- The persistence half of "Add a person…": an administrator names an address, it
+-- gets a row, and the row can hold a project rung immediately. Whoever owns the
+-- address picks the row up on their first sign-in — `upsert` finds it by address
+-- and adopts it, which is what makes the rung they were granted already theirs when
+-- they arrive rather than a second account beside it.
+--
+-- `signed_in_at` is left NULL, which is the whole point: it is what tells this row
+-- apart from an account in use, and what `staff domain plus already added` keys on.
+-- `email_verified` is 0 — nobody has proved this address, an administrator typed
+-- it — and the provider pair is (EMAIL, the address), which is exactly what a code
+-- sign-in would have created, so the two paths converge on one row instead of
+-- racing for the UNIQUE index.
+--
+-- OR IGNORE, so adding somebody who is already here is a no-op rather than a 500:
+-- both the email index and the provider pair can already be held, and the caller
+-- re-reads by address afterwards either way. It also deliberately cannot make the
+-- first account an administrator — no `instance_role` subquery — because being
+-- added by somebody is the opposite of being the first person through the door.
+addPending:
+INSERT OR IGNORE INTO users (provider, provider_id, provider_name, email, email_verified, kind, added_at)
+VALUES ('EMAIL', :email, :providerName, :email, 0, :kind, :addedAt);
 
 findById:
-SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled, signed_in_at
 FROM users
 WHERE id = ?;
 
@@ -283,7 +333,7 @@ WHERE id = ?;
 -- exactly those people in a second account, which is the failure this ticket
 -- exists to prevent.
 findByEmail:
-SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled, signed_in_at
 FROM users
 WHERE email = ?;
 
@@ -295,7 +345,7 @@ WHERE email = ?;
 -- reaches an account whose address was never confirmed, which is exactly the case
 -- that must not be mistaken for a brand new sign-up and refused.
 findByProviderPair:
-SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled, signed_in_at
 FROM users
 WHERE provider = ? AND provider_id = ?;
 
@@ -313,7 +363,7 @@ WHERE provider = ? AND provider_id = ?;
 -- registered with. `email` itself is not touched either: it is what was matched
 -- on, so writing it would be writing the value back over itself.
 refreshOnSignIn:
-UPDATE users SET provider_name = ?, kind = ?, email_verified = 1 WHERE id = ?;
+UPDATE users SET provider_name = ?, kind = ?, email_verified = 1, signed_in_at = ? WHERE id = ?;
 
 -- Every account, for the admin's impersonation menu — and for nothing else.
 --
@@ -326,7 +376,7 @@ UPDATE users SET provider_name = ?, kind = ?, email_verified = 1 WHERE id = ?;
 -- Ordered by the name the menu shows, not by id: the menu is a list a human
 -- scans, and insertion order is meaningless to them.
 selectAll:
-SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled
+SELECT id, provider, provider_id, provider_name, display_name, email, email_verified, kind, instance_role, mcp_enabled, signed_in_at
 FROM users
 ORDER BY COALESCE(display_name, provider_name) COLLATE NOCASE;
 

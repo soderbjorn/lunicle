@@ -270,7 +270,7 @@ class ProjectAdminTest {
             val created = client.post("/api/projects") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(ProjectUpdate("Theirs", "THR", isPublic = false))
+                setBody(ProjectUpdate("Theirs", "THR"))
             }
             assertEquals(HttpStatusCode.Forbidden, created.status, "A project administrator created a project.")
         }

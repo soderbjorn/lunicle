@@ -50,13 +50,17 @@ import se.soderbjorn.lunicle.db.LunicleDatabase
  * @property key what is stored and what crosses the wire. Explicit rather than
  *   `name.lowercase()` so a rename of the constant is not silently a migration of
  *   every row in `project_roles`.
+ * @property label what a rung is called on screen — one capitalised word, so the
+ *   rail can say "Maintainer" beside a project name without a lookup table in the
+ *   client. Beside [description] rather than derived from [key], for [key]'s reason
+ *   turned around: the key is wire format and must not move when the wording does.
  * @property description the sentence the settings dialog shows under the rung.
  *   Written once, here, so the dialog cannot describe a rung differently from the
  *   thing granting it.
  */
-enum class ProjectRole(val key: String, val description: String) {
+enum class ProjectRole(val key: String, val label: String, val description: String) {
     /** Read, and nothing else. */
-    VIEWER("viewer", "Read this project, without being able to change anything in it."),
+    VIEWER("viewer", "Viewer", "Read this project, without being able to change anything in it."),
 
     /**
      * File issues, comment on them, and be assignable.
@@ -66,7 +70,7 @@ enum class ProjectRole(val key: String, val description: String) {
      * [MAINTAINER] — but it does carry editing your own, which is authorship
      * rather than a rung; see [AccessControl.canEditIssue].
      */
-    CONTRIBUTOR("contributor", "File issues, comment on them, and be assigned them."),
+    CONTRIBUTOR("contributor", "Contributor", "File issues, comment on them, and be assigned them."),
 
     /**
      * Edit anyone's issue, and run the timeboxes: sprints and versions.
@@ -81,7 +85,7 @@ enum class ProjectRole(val key: String, val description: String) {
      * issue on, where the vocabulary — the set of statuses a project *has* — is a
      * decision about the board's shape.
      */
-    MAINTAINER("maintainer", "Edit anyone's issue here, and manage the sprints and versions."),
+    MAINTAINER("maintainer", "Maintainer", "Edit anyone's issue here, and manage the sprints and versions."),
 
     /**
      * Run the board: its vocabulary, its display settings, its project settings,
@@ -99,6 +103,7 @@ enum class ProjectRole(val key: String, val description: String) {
      */
     ADMIN(
         "admin",
+        "Admin",
         "Administer this project: its vocabulary, its settings, deleting issues, " +
             "and granting roles up to maintainer.",
     ),
@@ -115,6 +120,7 @@ enum class ProjectRole(val key: String, val description: String) {
      */
     OWNER(
         "owner",
+        "Owner",
         "Own this project: everything an administrator can do, plus its name, its prefix, " +
             "its repository, its visibility, its deletion, and promoting administrators and owners.",
     ),

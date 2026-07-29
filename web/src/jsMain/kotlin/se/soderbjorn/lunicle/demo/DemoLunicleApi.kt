@@ -153,7 +153,7 @@ internal class DemoLunicleApi(
         ProjectListState(projects = world.projects.map(world::projectSummary), canCreateProject = true)
 
     override suspend fun createProject(update: ProjectUpdate): ProjectSummary {
-        val project = provisionProject(world, update.name, update.namePrefix, update.isPublic, update.visibleToAllSignedIn)
+        val project = provisionProject(world, update.name, update.namePrefix)
         world.projects.add(project)
         return world.projectSummary(project)
     }
@@ -162,8 +162,6 @@ internal class DemoLunicleApi(
         val p = requireProject(id)
         p.name = update.name
         p.prefix = update.namePrefix
-        p.isPublic = update.isPublic
-        p.visibleToAllSignedIn = update.visibleToAllSignedIn
         return world.projectSummary(p)
     }
 
@@ -252,9 +250,11 @@ internal class DemoLunicleApi(
     override suspend fun setProjectDisplaySettings(
         projectId: Long,
         showIssueAuthor: Boolean,
+        hideIssueNumbers: Boolean,
     ): ProjectSettingsState {
         val p = requireProject(projectId)
         p.showIssueAuthor = showIssueAuthor
+        p.hideIssueNumbers = hideIssueNumbers
         return world.projectSettingsState(p)
     }
 
