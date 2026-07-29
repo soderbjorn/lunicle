@@ -141,15 +141,22 @@ class AdmissionRoutesTest {
         val cookie = sessions.create(fixture.adminId)
         instanceSettings.setAdmissionPolicy(AdmissionPolicy.ANYONE)
 
-        // The configuration changes underneath it: the chooser is now pinned.
-        withRoutes(InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true)) { client ->
+        // The configuration changes underneath it: the chooser is now pinned AND the
+        // mailed code is gone. Both, because either alone leaves `anyone` perfectly
+        // honourable — see InstanceIdentity.outsiderCanArrive (LNL-195).
+        withRoutes(
+            InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true, isCodeSignInAvailable = false),
+        ) { client ->
             val admission = client.get(ApiRoutes.ADMIN_SETTINGS) { cookie(SESSION_COOKIE, cookie) }
                 .body<AdminSettingsState>().admission
 
             assertEquals(AdmissionPolicy.ANYONE, admission.selected, "The stranded selection was replaced.")
             val option = admission.options.first { it.policy == AdmissionPolicy.ANYONE }
             assertFalse(option.isSelectable)
-            assertEquals("Google sign-in is locked to acme.com", option.unavailableReason)
+            assertEquals(
+                "Google sign-in is locked to acme.com, and this deployment cannot mail a sign-in code",
+                option.unavailableReason,
+            )
         }
     }
 
@@ -190,7 +197,11 @@ class AdmissionRoutesTest {
         val fixture = seed()
         val cookie = sessions.create(fixture.adminId)
 
-        withRoutes(InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true)) { client ->
+        // The branded shape — pinned chooser, no mailed code — which is the one that
+        // genuinely cannot admit an outsider. See LNL-195.
+        withRoutes(
+            InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true, isCodeSignInAvailable = false),
+        ) { client ->
             val response = client.post(ApiRoutes.ADMIN_ADMISSION) {
                 cookie(SESSION_COOKIE, cookie)
                 contentType(ContentType.Application.Json)

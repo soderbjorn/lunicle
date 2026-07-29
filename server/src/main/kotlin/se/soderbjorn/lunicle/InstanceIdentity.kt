@@ -63,11 +63,20 @@ import se.soderbjorn.lunicle.clientserver.AdmissionState
  *   claim: the branded deployment has SMTP deliberately off, so its answer stays "no"
  *   whatever the manifest says. See [OAuthConfig.isEmailAvailable], which is where the
  *   three terms meet.
+ * @property isGoogleAvailable whether Google sign-in is configured **on this process**
+ *   — `OAuthConfig.google != null`, which is two environment variables and not
+ *   anything the manifest says (LNL-195). It is here because the admission rule below
+ *   cannot be asked without it: a deployment with no Google credentials and no mail
+ *   transport has no door at all, and every rule written before this field existed
+ *   quietly assumed Google was one. Defaults to true, which is the shape of every
+ *   deployment that has ever run and keeps a test fixture saying nothing about
+ *   providers from accidentally describing a deployment nobody can reach.
  */
 data class InstanceIdentity(
     val domain: String? = null,
     val onlyHostedGoogleAccounts: Boolean = false,
     val isCodeSignInAvailable: Boolean = true,
+    val isGoogleAvailable: Boolean = true,
 ) {
     /** Does this deployment have a staff tier at all? False unless a [domain] is configured. */
     val hasStaffTier: Boolean get() = !domain.isNullOrBlank()
@@ -84,16 +93,66 @@ data class InstanceIdentity(
     val googleHostedDomainPin: String? get() = domain?.takeIf { it.isNotBlank() && onlyHostedGoogleAccounts }
 
     /**
+     * Can anybody sign in here at all?
+     *
+     * False only for a deployment with no Google credentials *and* no working mailed
+     * code — which is a real configuration (it is what a container missing its
+     * variables looks like) and a different problem from a restriction. Every
+     * admission choice is unreachable there, and saying so in the language of domains
+     * would send an administrator to `brand.json` to fix an environment variable.
+     */
+    val hasAnyWayIn: Boolean get() = isGoogleAvailable || isCodeSignInAvailable
+
+    /**
+     * The ways in, named for a screen: "Google · mailed code", or the absence of both.
+     *
+     * Written here rather than in a view because it is the same two facts the rules
+     * below are computed from, and a screen that assembled its own list could describe
+     * a door the greying does not believe in.
+     */
+    val waysIn: List<String>
+        get() = listOfNotNull(
+            "Google".takeIf { isGoogleAvailable },
+            "mailed code".takeIf { isCodeSignInAvailable },
+        )
+
+    /**
+     * Can somebody from outside [domain] reach a sign-in at all?
+     *
+     * ── One question of the whole configuration, and why it has to be (LNL-195) ──
+     *
+     * LNL-192 asked two independent questions instead — the chooser being pinned greyed
+     * `anyone`, code sign-in being off greyed `staff domain plus added` — and each was
+     * written as though the other door did not exist. Both were wrong in the case that
+     * matters. Chooser pinned *and* codes on: `anyone` is perfectly reachable, because
+     * a stranger gets a mailed code. Chooser open *and* codes off: an added outside
+     * address still arrives under its own Google account, so "plus added" is honourable.
+     * And neither rule covered Google being unconfigured, where the pin is irrelevant
+     * because there is no chooser.
+     *
+     * So it is one predicate over both doors, and both choices that exist in order to
+     * admit somebody outside the domain live and die with it:
+     *
+     *     outsiderCanArrive = (googleAvailable && !googlePinned) || codesAvailable
+     *
+     * The Google term is a **real gate** and not a hint: `exchangeGoogleCode` refuses
+     * an account whose `hd` claim does not match the pin, so a pinned chooser is a
+     * closed door and not merely a pre-filled one.
+     */
+    val outsiderCanArrive: Boolean
+        get() = (isGoogleAvailable && googleHostedDomainPin == null) || isCodeSignInAvailable
+
+    /**
      * Every admission choice, with the ones this deployment cannot honour greyed and
      * the reason spelled out.
      *
      * ── Computed here, and sent, and never re-derived by a screen ────────────
      *
-     * The inputs are a manifest file and a mail transport. A client that decided this
-     * for itself would have to be handed both, and would be a second copy of a rule
-     * that has to agree with the one the *write* enforces — so the greying and the
-     * refusal would drift the first time either was touched. The screen renders what
-     * it is handed.
+     * The inputs are a manifest file, a mail transport and two environment variables.
+     * A client that decided this for itself would have to be handed all of them, and
+     * would be a second copy of a rule that has to agree with the one the *write*
+     * enforces — so the greying and the refusal would drift the first time either was
+     * touched. The screen renders what it is handed.
      *
      * @param selected the stored policy, reported back as the selection **even when it
      *   is no longer selectable**. A configuration change can strand a choice somebody
@@ -101,6 +160,7 @@ data class InstanceIdentity(
      *   needs in order to fix it, and the effective behaviour is the deployment's
      *   restriction either way.
      */
+
     fun admissionState(selected: AdmissionPolicy): AdmissionState = AdmissionState(
         selected = selected,
         options = AdmissionPolicy.entries.map { policy ->
@@ -114,37 +174,59 @@ data class InstanceIdentity(
     /**
      * Why this deployment cannot honour [policy], or null when it can.
      *
-     * Three reasons, each traceable to one configuration field:
+     * Three reasons, in the order a fix would have to be applied in:
      *
+     *  - **No way in at all.** Nothing is honourable, because nobody can arrive. Its
+     *    own reason and deliberately not worded as a restriction: the fix is two
+     *    environment variables or a mail transport, not a line in `brand.json`, and
+     *    borrowing the domain wording would send an administrator to the wrong file.
      *  - **No domain.** Both staff policies name a domain the deployment does not have,
      *    so they would admit *nobody*. An option that admits nobody is not a stricter
-     *    setting, it is a locked door with no key.
-     *  - **The Google chooser is pinned.** [AdmissionPolicy.ANYONE] promises to take
-     *    all comers, and a pinned chooser has already refused most of them.
-     *  - **No code sign-in.** [AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED] exists so an
-     *    outside address can be added and then arrive. With no mailed code there is no
-     *    way for it to arrive, so the "plus added" half is a promise the deployment
-     *    cannot keep.
-     *
-     * The no-domain reason is checked first where two apply, because it is the one that
-     * would still be true if the other were fixed.
+     *    setting, it is a locked door with no key. Checked before the outsider rule
+     *    because it is the one that would still be true if that were fixed.
+     *  - **No outsider can arrive.** [AdmissionPolicy.ANYONE] promises to take all
+     *    comers and [AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED] exists so an added
+     *    outside address can then arrive; both are promises this deployment cannot keep
+     *    when every door it has is closed to somebody outside the domain. **The two
+     *    live and die together** — see [outsiderCanArrive], which is where LNL-192's
+     *    two independent half-rules became one question of the whole configuration.
      */
-    private fun unavailableReason(policy: AdmissionPolicy): String? = when (policy) {
-        AdmissionPolicy.ANYONE ->
-            googleHostedDomainPin?.let { "Google sign-in is locked to $it" }
+    private fun unavailableReason(policy: AdmissionPolicy): String? {
+        if (!hasAnyWayIn) return NO_WAY_IN_REASON
+        return when (policy) {
+            AdmissionPolicy.ANYONE -> outsiderReason.takeIf { !outsiderCanArrive }
 
-        AdmissionPolicy.STAFF_DOMAIN_ONLY ->
-            NO_DOMAIN_REASON.takeIf { !hasStaffTier }
+            AdmissionPolicy.STAFF_DOMAIN_ONLY -> NO_DOMAIN_REASON.takeIf { !hasStaffTier }
 
-        AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED -> when {
-            !hasStaffTier -> NO_DOMAIN_REASON
-            !isCodeSignInAvailable -> "code sign-in is off"
-            else -> null
+            AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED -> when {
+                !hasStaffTier -> NO_DOMAIN_REASON
+                !outsiderCanArrive -> outsiderReason
+                else -> null
+            }
         }
     }
 
+    /**
+     * Why nobody outside the domain can arrive, named field by field.
+     *
+     * Reached only when [hasAnyWayIn] holds and [outsiderCanArrive] does not, which
+     * pins the configuration down to exactly one shape: Google configured, the chooser
+     * pinned, and no mailed code. It is still assembled from the live fields rather
+     * than written as that one sentence, so a future third door cannot leave this
+     * describing a deployment that no longer exists.
+     */
+    private val outsiderReason: String
+        get() = listOfNotNull(
+            googleHostedDomainPin?.let { "Google sign-in is locked to $it" },
+            "Google sign-in is not configured here".takeIf { !isGoogleAvailable },
+            "this deployment cannot mail a sign-in code".takeIf { !isCodeSignInAvailable },
+        ).joinToString(", and ")
+
     private companion object {
         const val NO_DOMAIN_REASON = "this deployment has no domain of its own configured"
+
+        /** The no-door reason. Never borrows the domain wording; see [unavailableReason]. */
+        const val NO_WAY_IN_REASON = "this deployment has no way to sign in"
     }
 }
 
@@ -161,12 +243,21 @@ data class InstanceIdentity(
  *   — the manifest's `allowEmailCodeSignIn` already ANDed with a configured transport
  *   and with `LUNICLE_EMAIL_SIGN_IN`. Passed in rather than read from the manifest so
  *   this type can never claim a door that is not there.
+ * @param isGoogleAvailable whether Google credentials reached this process
+ *   (`OAuthConfig.google != null`). Defaulted to true for the callers that only want
+ *   [InstanceIdentity.googleHostedDomainPin] — a term Google's availability does not
+ *   enter into — and passed honestly by [Application.module], which is the one place
+ *   the answer is used to decide whether anybody can sign in at all.
  */
-internal fun BrandInfo?.toInstanceIdentity(isCodeSignInAvailable: Boolean): InstanceIdentity =
+internal fun BrandInfo?.toInstanceIdentity(
+    isCodeSignInAvailable: Boolean,
+    isGoogleAvailable: Boolean = true,
+): InstanceIdentity =
     InstanceIdentity(
         domain = this?.domain,
         onlyHostedGoogleAccounts = this?.onlyHostedGoogleAccounts ?: false,
         isCodeSignInAvailable = isCodeSignInAvailable,
+        isGoogleAvailable = isGoogleAvailable,
     )
 
 /**

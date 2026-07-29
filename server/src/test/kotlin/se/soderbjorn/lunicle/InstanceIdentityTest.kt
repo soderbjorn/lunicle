@@ -180,52 +180,204 @@ class InstanceIdentityTest {
     }
 
     /**
-     * A pinned Google chooser makes "anyone" unreachable, and says so by name.
+     * A pinned chooser alone greys nothing while a mailed code is still a door.
      *
-     * The reason names the domain, because "you cannot pick this" without saying what
-     * is stopping you teaches an administrator nothing they can act on.
+     * The first of LNL-192's two wrong rules, corrected (LNL-195): it greyed `anyone` on
+     * the pin alone, as though Google were the only way in. It is not — a stranger with
+     * no Google account at all gets a mailed code and arrives — so `anyone` is exactly
+     * what this deployment can honour. See [InstanceIdentity.outsiderCanArrive].
      */
     @Test
-    fun `a pinned chooser greys anyone, with the domain in the reason`() {
-        val identity = InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true)
-        val option = identity.admissionState(AdmissionPolicy.STAFF_DOMAIN_ONLY).options
-            .first { it.policy == AdmissionPolicy.ANYONE }
-        assertFalse(option.isSelectable)
-        assertEquals("Google sign-in is locked to acme.com", option.unavailableReason)
-    }
-
-    /**
-     * With no code sign-in, an invited outside address could never arrive, so
-     * "plus added" is greyed.
-     */
-    @Test
-    fun `no code sign-in greys the plus-added policy`() {
-        val identity = InstanceIdentity(domain = "acme.com", isCodeSignInAvailable = false)
-        val options = identity.admissionState(AdmissionPolicy.STAFF_DOMAIN_ONLY).options
-        val plusAdded = options.first { it.policy == AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED }
-        assertFalse(plusAdded.isSelectable)
-        assertEquals("code sign-in is off", plusAdded.unavailableReason)
-        assertTrue(
-            options.first { it.policy == AdmissionPolicy.STAFF_DOMAIN_ONLY }.isSelectable,
-            "Losing code sign-in also took away the policy that needs no second door.",
+    fun `a pinned chooser does not grey anyone while codes are available`() {
+        val identity = InstanceIdentity(
+            domain = "acme.com",
+            onlyHostedGoogleAccounts = true,
+            isCodeSignInAvailable = true,
         )
+        assertTrue(identity.outsiderCanArrive)
+        val options = identity.admissionState(AdmissionPolicy.STAFF_DOMAIN_ONLY).options
+        assertTrue(
+            options.first { it.policy == AdmissionPolicy.ANYONE }.isSelectable,
+            "A pinned chooser greyed `anyone` on a deployment that mails codes to anybody.",
+        )
+        assertTrue(options.first { it.policy == AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED }.isSelectable)
     }
 
     /**
-     * The branded shape: a domain, a pinned chooser, no mail. Exactly one choice is
-     * honourable, and the other two say why not.
+     * Codes off alone greys nothing while the chooser is open.
+     *
+     * The second wrong rule, corrected: it greyed `staff domain plus added` on the
+     * absence of a mailed code, as though a code were the only way an added address
+     * could arrive. An added outside address signs in under its own Google account,
+     * which an open chooser accepts.
      */
     @Test
-    fun `the branded shape leaves exactly one honourable choice`() {
+    fun `no code sign-in does not grey plus-added while the chooser is open`() {
+        val identity = InstanceIdentity(domain = "acme.com", isCodeSignInAvailable = false)
+        assertTrue(identity.outsiderCanArrive)
+        val options = identity.admissionState(AdmissionPolicy.STAFF_DOMAIN_ONLY).options
+        assertTrue(
+            options.first { it.policy == AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED }.isSelectable,
+            "Losing the mailed code greyed a policy an open Google chooser can honour.",
+        )
+        assertTrue(options.first { it.policy == AdmissionPolicy.ANYONE }.isSelectable)
+    }
+
+    /**
+     * Both doors shut to an outsider greys **both** outward-facing choices, together.
+     *
+     * They exist for the same purpose — admitting somebody outside the domain — so
+     * there is no configuration in which one is honourable and the other is not. This
+     * is also the branded shape: a domain, a pinned chooser, no mail.
+     */
+    @Test
+    fun `a pinned chooser with no codes greys both outward choices, with both facts named`() {
         val identity = InstanceIdentity(
             domain = "acme.com",
             onlyHostedGoogleAccounts = true,
             isCodeSignInAvailable = false,
         )
-        val selectable = identity.admissionState(AdmissionPolicy.STAFF_DOMAIN_ONLY).options
-            .filter { it.isSelectable }
-            .map { it.policy }
-        assertEquals(listOf(AdmissionPolicy.STAFF_DOMAIN_ONLY), selectable)
+        assertFalse(identity.outsiderCanArrive)
+        val options = identity.admissionState(AdmissionPolicy.STAFF_DOMAIN_ONLY).options
+        val expected = "Google sign-in is locked to acme.com, and this deployment cannot mail a sign-in code"
+        for (policy in listOf(AdmissionPolicy.ANYONE, AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)) {
+            val option = options.first { it.policy == policy }
+            assertFalse(option.isSelectable, "$policy was offered where no outsider can arrive.")
+            assertEquals(expected, option.unavailableReason)
+        }
+        assertEquals(
+            listOf(AdmissionPolicy.STAFF_DOMAIN_ONLY),
+            options.filter { it.isSelectable }.map { it.policy },
+            "The branded shape offered something other than the one policy it can honour.",
+        )
+    }
+
+    /**
+     * Google unconfigured but a mailed code available: the pin is irrelevant, and
+     * everything a domain allows is honourable.
+     *
+     * Neither of LNL-192's rules could see this case at all — both were written about a
+     * chooser that is not there.
+     */
+    @Test
+    fun `with no Google at all a mailed code still admits everybody`() {
+        val identity = InstanceIdentity(
+            domain = "acme.com",
+            onlyHostedGoogleAccounts = true,
+            isCodeSignInAvailable = true,
+            isGoogleAvailable = false,
+        )
+        assertTrue(identity.hasAnyWayIn)
+        assertTrue(identity.outsiderCanArrive)
+        assertEquals(listOf("mailed code"), identity.waysIn)
+        assertTrue(identity.admissionState(AdmissionPolicy.ANYONE).options.all { it.isSelectable })
+    }
+
+    /**
+     * Google unconfigured **and** no mailed code: nothing is honourable, and the reason
+     * is the missing door rather than a domain restriction.
+     *
+     * A deployment in this state is usually a container that did not receive its
+     * variables, and telling its administrator that "this deployment has no domain of
+     * its own configured" would send them to edit the wrong file.
+     */
+    @Test
+    fun `with no way in at all every choice is unreachable, and says so`() {
+        for (identity in listOf(
+            InstanceIdentity(isCodeSignInAvailable = false, isGoogleAvailable = false),
+            InstanceIdentity(domain = "acme.com", isCodeSignInAvailable = false, isGoogleAvailable = false),
+            InstanceIdentity(
+                domain = "acme.com",
+                onlyHostedGoogleAccounts = true,
+                isCodeSignInAvailable = false,
+                isGoogleAvailable = false,
+            ),
+        )) {
+            assertFalse(identity.hasAnyWayIn, "A deployment with no provider claimed a door.")
+            assertTrue(identity.waysIn.isEmpty())
+            for (option in identity.admissionState(AdmissionPolicy.ANYONE).options) {
+                assertFalse(option.isSelectable, "${option.policy} was offered on a deployment nobody can reach.")
+                assertEquals(
+                    "this deployment has no way to sign in",
+                    option.unavailableReason,
+                    "${option.policy} borrowed a restriction's wording for a missing door.",
+                )
+            }
+        }
+    }
+
+    /**
+     * The staff-only policy needs a domain and nothing else — no door reaches it.
+     *
+     * It admits the deployment's own people, who arrive through whichever door exists,
+     * so a closed outward door is not its problem. That is what makes the outsider rule
+     * a rule about the *other two*.
+     */
+    @Test
+    fun `staff-domain-only turns only on the domain`() {
+        assertNull(
+            InstanceIdentity(
+                domain = "acme.com",
+                onlyHostedGoogleAccounts = true,
+                isCodeSignInAvailable = false,
+            ).admissionState(AdmissionPolicy.ANYONE).options
+                .first { it.policy == AdmissionPolicy.STAFF_DOMAIN_ONLY }
+                .unavailableReason,
+            "The strictest policy was greyed by a door it does not need.",
+        )
+        assertEquals(
+            "this deployment has no domain of its own configured",
+            InstanceIdentity(isCodeSignInAvailable = true)
+                .admissionState(AdmissionPolicy.ANYONE).options
+                .first { it.policy == AdmissionPolicy.STAFF_DOMAIN_ONLY }
+                .unavailableReason,
+        )
+    }
+
+    /**
+     * Every combination of the four configuration facts, swept.
+     *
+     * The point of the sweep is the invariants rather than any one row: the list is
+     * always three long, a greyed option always carries a reason and a live one never
+     * does, and the two outward choices never disagree about whether an outsider can
+     * arrive. LNL-192's two independent rules broke the last of those on four of these
+     * sixteen rows, which is precisely how they shipped.
+     */
+    @Test
+    fun `every configuration combination is internally consistent`() {
+        for (domain in listOf(null, "acme.com")) {
+            for (pinned in listOf(false, true)) {
+                for (codes in listOf(false, true)) {
+                    for (google in listOf(false, true)) {
+                        val identity = InstanceIdentity(domain, pinned, codes, google)
+                        val options = identity.admissionState(AdmissionPolicy.ANYONE).options
+                        assertEquals(
+                            AdmissionPolicy.entries,
+                            options.map { it.policy },
+                            "An option went missing under $identity.",
+                        )
+                        options.forEach { option ->
+                            assertEquals(
+                                option.isSelectable,
+                                option.unavailableReason == null,
+                                "${option.policy} was greyed without a reason, or live with one, under $identity.",
+                            )
+                        }
+                        val anyone = options.first { it.policy == AdmissionPolicy.ANYONE }
+                        val plusAdded = options.first { it.policy == AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED }
+                        // "Plus added" additionally needs a domain, so it can be greyed where
+                        // `anyone` is live — but never the other way round: both exist to admit
+                        // an outsider, so nothing that closes one can leave the other open.
+                        if (!anyone.isSelectable) {
+                            assertFalse(
+                                plusAdded.isSelectable,
+                                "`anyone` was unreachable while `plus added` was offered under $identity.",
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -238,31 +390,15 @@ class InstanceIdentityTest {
      */
     @Test
     fun `a stored policy that became unreachable is still the reported selection`() {
-        val state = InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true)
-            .admissionState(AdmissionPolicy.ANYONE)
+        val state = InstanceIdentity(
+            domain = "acme.com",
+            onlyHostedGoogleAccounts = true,
+            isCodeSignInAvailable = false,
+        ).admissionState(AdmissionPolicy.ANYONE)
         assertEquals(AdmissionPolicy.ANYONE, state.selected, "The stranded selection was silently replaced.")
         val option = state.options.first { it.policy == state.selected }
         assertFalse(option.isSelectable)
         assertNotNull(option.unavailableReason)
-    }
-
-    /** Every option is always present, in ladder order. Greyed, never removed. */
-    @Test
-    fun `no configuration removes an option from the list`() {
-        val configurations = listOf(
-            InstanceIdentity(),
-            InstanceIdentity(domain = "acme.com"),
-            InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true),
-            InstanceIdentity(domain = "acme.com", isCodeSignInAvailable = false),
-            InstanceIdentity(onlyHostedGoogleAccounts = true, isCodeSignInAvailable = false),
-        )
-        for (identity in configurations) {
-            assertEquals(
-                AdmissionPolicy.entries,
-                identity.admissionState(AdmissionPolicy.ANYONE).options.map { it.policy },
-                "An option went missing under $identity.",
-            )
-        }
     }
 
     // ── The gate itself ─────────────────────────────────────────────────────

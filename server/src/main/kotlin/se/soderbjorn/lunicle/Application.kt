@@ -179,14 +179,20 @@ fun Application.module() {
     // `allowEmailCodeSignIn` is a third term on isEmailAvailable beside a configured
     // transport and LUNICLE_EMAIL_SIGN_IN, and it can only ever narrow. The
     // deployment's own identity is then everything the manifest says about itself
-    // plus the one fact only this process knows — whether a mailed code actually
-    // works here. See InstanceIdentity.
+    // plus the two facts only this process knows — whether a mailed code actually
+    // works here, and whether Google credentials reached it. See InstanceIdentity.
     val oauthConfig = resolveOAuthConfig(brandInfo?.allowEmailCodeSignIn ?: true)
-    val instanceIdentity = brandInfo.toInstanceIdentity(oauthConfig.isEmailAvailable)
+    val instanceIdentity = brandInfo.toInstanceIdentity(
+        isCodeSignInAvailable = oauthConfig.isEmailAvailable,
+        // Both doors, honestly, because the admission rules ask about both at once
+        // (LNL-195): a deployment with neither can honour no policy at all, and one
+        // whose only door is a pinned Google chooser can admit no outsider under any.
+        isGoogleAvailable = oauthConfig.google != null,
+    )
     log.info(
         "Instance identity: domain=${instanceIdentity.domain ?: "(unset — no staff tier)"}; " +
             "google-pin=${instanceIdentity.googleHostedDomainPin ?: "(none)"}; " +
-            "code-sign-in=${instanceIdentity.isCodeSignInAvailable}",
+            "ways-in=${instanceIdentity.waysIn.joinToString(" · ").ifEmpty { "(none)" }}",
     )
 
     // Which backend this process runs on, chosen once here — see DatabaseBackend.
