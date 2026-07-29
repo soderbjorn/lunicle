@@ -318,6 +318,67 @@ class AdmissionRoutesTest {
         }
     }
 
+    /**
+     * THE test the plus-added policy never had (LNL-194).
+     *
+     * `staff domain plus added` behaved **identically** to `staff domain only` until this
+     * ticket, because `isAlreadyAdded` was a parameter nothing set. So the two policies
+     * are asserted side by side, on the same address, and the only difference between the
+     * two halves is which policy is stored: under the strict one the added outsider is
+     * refused, under the plus-added one they are let in.
+     *
+     * If somebody makes `admissionRefusal` stop passing the flag, the second half fails
+     * and the first still passes — which is the shape that catches a regression rather
+     * than merely covering the line.
+     */
+    @Test
+    fun `an added outsider gets in under plus-added and not under staff-domain-only`(): Unit = runBlocking {
+        seed()
+        // The gesture from the Access section: a row for an address nobody has used.
+        val added = users.addByEmail("added@example.com", UserKind.MEMBER)
+        assertFalse(added.hasSignedIn, "addByEmail wrote a row that claims somebody has arrived.")
+
+        instanceSettings.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_ONLY)
+        withRoutes(InstanceIdentity(domain = "acme.com")) { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.signIn("added@example.com").status,
+                "The strict policy admitted an outside address merely because somebody added it.",
+            )
+        }
+
+        instanceSettings.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)
+        withRoutes(InstanceIdentity(domain = "acme.com")) { client ->
+            assertEquals(
+                HttpStatusCode.OK,
+                client.signIn("added@example.com").status,
+                "The plus-added policy refused an address that had been added, which is the one " +
+                    "case it exists for.",
+            )
+        }
+        // And they landed in the row that was already holding their grants, rather than
+        // beside it.
+        val after = users.findExisting(
+            ProviderIdentity(AuthProvider.EMAIL, "added@example.com", "added", "added@example.com"),
+        )
+        assertNotNull(after)
+        assertEquals(added.id, after.id, "Signing in made a second account instead of adopting the added row.")
+        assertTrue(after.hasSignedIn, "The arrival was not stamped.")
+    }
+
+    /**
+     * An address nobody added is still refused under plus-added — the policy widens by
+     * exactly one case and not by "anybody who asks twice".
+     */
+    @Test
+    fun `plus-added still refuses an outsider nobody added`(): Unit = runBlocking {
+        seed()
+        instanceSettings.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)
+        withRoutes(InstanceIdentity(domain = "acme.com")) { client ->
+            assertEquals(HttpStatusCode.Forbidden, client.signIn("stranger@example.com").status)
+        }
+    }
+
     /** With no domain configured there is no staff tier, so the door stays open to everybody. */
     @Test
     fun `an unbranded instance admits anybody`(): Unit = runBlocking {

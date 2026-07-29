@@ -4898,3 +4898,203 @@ body[data-lnl-notif="1"] .lnl-notif-bell {
 }
 .notif-dismiss:hover { opacity: 1; color: var(--red); }
 .notif-dismiss .icon { width: 14px; height: 14px; }
+
+/* ── The Projects rail (LNL-194) ────────────────────────────────────────────
+
+   One rail, two levels: every project the caller holds something in, and the
+   selected project's sections indented beneath it. It is `.admin-split`'s shape
+   — a fixed-width list beside a pane that scrolls on its own — with the second
+   level living INSIDE the list rather than as a strip above the content. That is
+   the whole point of the arrangement: selecting another project keeps you on the
+   same section, so comparing Access across two boards is two clicks and never
+   passes through General.
+
+   Deliberately not a nested `<ul>`: the rail is a flat sequence of buttons with
+   the section rows indented by padding, so keyboard order runs top to bottom
+   through exactly what is on screen. A tree would give it a structure nobody
+   navigates. */
+.project-rail-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 16px;
+}
+
+/* Fixed rather than a fraction, for .admin-user-list's reason: project names are
+   short, so a rail that grew with the pane would be mostly whitespace while the
+   Access rows beside it wrapped. */
+.project-rail {
+  flex: none;
+  width: 232px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding-right: 8px;
+}
+
+.project-rail-content {
+  flex: 1;
+  min-width: 0;       /* or a long e-mail widens the pane instead of wrapping */
+  min-height: 0;
+  display: flex;
+  overflow: hidden;   /* each section pane owns its own scrolling */
+}
+
+/* A real <button> per project, so the rail is keyboard-navigable — flat, because
+   a list of buttons drawn as buttons is a wall of chrome. Same treatment
+   .admin-user-row gets. */
+.project-rail-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 6px 9px;
+  margin-bottom: 1px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--body);
+}
+
+.project-rail-row:hover { background: var(--panel-2); }
+
+/* Background AND border, not colour alone: this is the one piece of state saying
+   which project everything to the right belongs to, and getting it wrong means
+   configuring the wrong board. */
+.project-rail-selected,
+.project-rail-selected:hover {
+  background: var(--panel-2);
+  border-color: var(--border-hi);
+}
+
+.project-rail-name {
+  display: block;
+  color: var(--head);
+  font-size: 13px;
+}
+
+/* What the caller holds here, under the name — the rail's whole reason for
+   carrying a rung. Muted and small: it is a fact about the row, not a second
+   heading. */
+.project-rail-role {
+  display: block;
+  font-size: 11px;
+  color: var(--body);
+  opacity: .7;
+}
+
+/* The second level. Indented rather than boxed, and left-aligned under the
+   project's name so the relationship is read from the position alone. */
+.project-rail-section {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  padding: 4px 9px 4px 22px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--body);
+  opacity: .8;
+}
+
+.project-rail-section:hover { color: var(--head); opacity: 1; }
+
+/* The accent on the left edge rather than a fill: the project row above is
+   already carrying a fill for ITS selection, and two fills stacked would make the
+   pair read as one selected block. */
+.project-rail-section-selected,
+.project-rail-section-selected:hover {
+  color: var(--head);
+  opacity: 1;
+  border-left-color: var(--green-dim);
+}
+
+/* The only way to make a project. Separated by a rule so it reads as an action
+   under the list rather than as a thirteenth project. */
+.project-rail-new {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding: 10px 9px 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--green-dim);
+}
+
+.project-rail-new:hover { color: var(--head); }
+
+/* ── Access rows (LNL-194) ──────────────────────────────────────────────────
+
+   One row per audience, and one per person who holds something different. The
+   picker sits at the end of the row and the reason a dead picker is dead wraps
+   underneath it — beside the control rather than instead of it, which is the
+   rule this whole section is built on: a control that vanishes reads as a bug,
+   where a dead one with a sentence tells you who to ask. */
+.access-rows { margin: 0 0 14px; }
+
+.access-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.access-row-text {
+  flex: 1;
+  min-width: 0;       /* or a long address widens the row instead of wrapping */
+}
+
+/* The name and its badge on one line: NOT SIGNED IN is an adjective on the name,
+   and a line of its own would give it the weight of the address below, which is
+   the more useful fact. Same reasoning as .admin-user-badge. */
+.access-row-name-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.access-row-name {
+  color: var(--head);
+  font-size: 13px;
+}
+
+.access-row-detail {
+  font-size: 11px;
+  color: var(--body);
+  opacity: .75;
+  overflow-wrap: anywhere;
+}
+
+/* The warning colour rather than the accent: a grant nobody has claimed is not a
+   state to be pleased about, and it looks exactly like one that has been claimed
+   unless something says otherwise. `--yellow` is the theme's warn token, so this
+   follows a rebrand rather than pinning a literal. */
+.access-row-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--yellow);
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* Full width, so it wraps under the row rather than squeezing the picker. */
+.access-row-reason {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--body);
+  opacity: .75;
+  margin: 0;
+}
