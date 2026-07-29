@@ -53,6 +53,11 @@ import se.soderbjorn.lunicle.clientserver.ProjectSummary
  *   lambda rather than a value because the list arrives a tick after the pane is built
  *   and can change under it; see [SettingsPane.refreshAvailability].
  * @param dialogHost where confirmations and the add-a-person dialog layer.
+ * @param canCreateProject whether this caller may make one at all — the instance's
+ *   per-tier setting, read fresh off the board state. False hides the row rather than
+ *   greying it: unlike a rung out of reach on a board you are looking at, "your account
+ *   may not make boards here" is not a fact about anything on this screen, and a dead
+ *   row at the end of your project list would read as a broken button.
  * @param onNewProject "New project…" was pressed. Raised by the app rather than here,
  *   because creating one is a modal over the whole window and its outcome — a board
  *   opening — is the workspace's business.
@@ -66,6 +71,7 @@ class ProjectsTab(
     private val storage: StorageRepository,
     private val projects: () -> List<ProjectSummary>,
     private val dialogHost: HTMLElement,
+    private val canCreateProject: () -> Boolean,
     private val onNewProject: () -> Unit,
     private val onRouteChanged: () -> Unit,
     private val onProjectWritten: () -> Unit,
@@ -141,6 +147,21 @@ class ProjectsTab(
 
         renderRail(visible)
         mountSections()
+        // Pushed on every render, not only when the view is built — which is the bug this
+        // line fixes. `refreshAvailability` fires on the first board tick, and on a reload
+        // whose stored workspace already held a settings pane that tick arrives BEFORE the
+        // deep link's route does: the sections were mounted at General, `show` then set
+        // this field to "access", and `mountSections` returned early because the project
+        // had not changed — so the already-mounted view was never told. The rail's field is
+        // the one memory of which section is showing; the view is told, every time.
+        //
+        // Then adopted back, because the view may settle somewhere else: a stale bookmark
+        // naming a section this caller's rung does not reach lands on the first one they
+        // have, and the rail (and the address bar behind it) should say where they are.
+        sections?.let { view ->
+            view.showSection(selectedSection)
+            selectedSection = view.currentSection()
+        }
         placeholder.visible(selectedId == null)
     }
 
@@ -155,7 +176,8 @@ class ProjectsTab(
         val offered = sections?.let { s ->
             if (mountedFor == selectedId) currentSectionKeys() else emptyList()
         }.orEmpty()
-        val signature = "$selectedId|$selectedSection|" +
+        val mayCreate = canCreateProject()
+        val signature = "$selectedId|$selectedSection|$mayCreate|" +
             visible.joinToString("|") { "${it.id}:${it.name}:${it.roleLabel}" } +
             "|" + offered.joinToString(",")
         if (signature == railSignature) return
@@ -200,10 +222,11 @@ class ProjectsTab(
             }
         }
 
-        // The only way to make one. See this file's preamble.
-        rail.appendChild(
-            button("New project…", "project-rail-new") { onNewProject() },
-        )
+        // The only way to make one, for whoever this deployment lets make one. See this
+        // file's preamble and the canCreateProject parameter.
+        if (mayCreate) {
+            rail.appendChild(button("New project…", "project-rail-new") { onNewProject() })
+        }
     }
 
     /** The selected project's sections, as (key, label) pairs in the server's order. */
@@ -252,7 +275,12 @@ class ProjectsTab(
                 if (changed) onProjectWritten()
             },
         )
-        val host = element("div", "")
+        // Classed, and it is load-bearing: `.project-rail-content` hides its overflow so
+        // each section pane scrolls inside itself, and a plain block wrapper between the
+        // two breaks the flex chain — the pane's `flex: 1; min-height: 0` has nothing to
+        // measure against, so nothing scrolls and the content is simply clipped. Found by
+        // driving the app.
+        val host = element("div", "project-sections-host")
         val view = ProjectSections(
             viewModel = model,
             scope = scope,
@@ -261,6 +289,7 @@ class ProjectsTab(
             // Through the rail's own signature check, so this is cheap to fire on every
             // settings emission.
             onSectionsChanged = { renderRail(projects()) },
+            onSettingsWritten = onProjectWritten,
         )
         content.appendChild(host)
         view.mount(host)

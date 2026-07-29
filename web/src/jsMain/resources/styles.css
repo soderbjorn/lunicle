@@ -5098,3 +5098,40 @@ body[data-lnl-notif="1"] .lnl-notif-bell {
   opacity: .75;
   margin: 0;
 }
+
+/* The wrapper one project's sections mount into.
+   It has to pass the flex chain through: `.project-rail-content` hides its own
+   overflow so each `.project-pane` scrolls inside itself, and a plain block here
+   leaves the pane's `flex: 1; min-height: 0` with nothing to measure against —
+   the content is clipped and nothing scrolls. */
+.project-sections-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+/* The rung picker sits at the end of its row, at a width that fits the longest
+   rung name and its reason — not `width: 100%`, which is what a `.dropdown`
+   field is by default and which pushed every picker onto a line of its own,
+   making a five-row list read as ten. Capped rather than fixed so a long
+   "Maintainer — you are an Admin here…" wraps the reason under the row instead
+   of widening the pane. */
+.access-row .dropdown.dt-menu-trigger-field {
+  flex: none;
+  width: 190px;
+  max-width: 100%;
+}
+
+/* The rung, as text, on a row with no picker — a read-only reader's view of what
+   somebody holds. Sized and placed like the picker it stands in for, so the
+   column of answers still lines up down the list. */
+.access-row-rung {
+  flex: none;
+  width: 190px;
+  max-width: 100%;
+  font-size: 12.5px;
+  color: var(--head);
+  padding: 0 11px;
+  line-height: 30px;
+}

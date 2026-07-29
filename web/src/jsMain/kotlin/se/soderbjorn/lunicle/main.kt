@@ -2435,6 +2435,9 @@ private class SettingsPanes(
                 // is a flow this pane does not collect.
                 projects = { mainViewModel.stateFlow.value.projects },
                 dialogHost = dialogHost,
+                // The instance's per-tier creation setting, as the board state reports it —
+                // the same affordance the "+" menu's row rode on before it moved here.
+                canCreateProject = { mainViewModel.stateFlow.value.canCreateProject },
                 onNewProject = { mainViewModel.onNewProjectTapped() },
                 onRouteChanged = { onRouteChanged() },
                 // A rename, a display switch or a delete has to reach the boards and the

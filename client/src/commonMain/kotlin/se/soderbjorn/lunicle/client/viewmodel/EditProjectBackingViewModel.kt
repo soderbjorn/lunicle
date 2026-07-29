@@ -1053,6 +1053,12 @@ class EditProjectBackingViewModel(
             result.fold(
                 onSuccess = {
                     println("EditProject: saved ${it.name}")
+                    // Cleared on success too, which it was not (LNL-194). The modal dismissed
+                    // itself on the next tick so a busy flag left standing was invisible; the
+                    // settings pane does not go anywhere, so a rename left every switch in the
+                    // General section dead until the reader selected another project. Found by
+                    // driving the app.
+                    _stateFlow.value = _stateFlow.value.copy(isBusy = false)
                     onFinished(true, it)
                 },
                 onFailure = { t ->

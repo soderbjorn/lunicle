@@ -68,6 +68,7 @@ import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.PersonRow
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectSectionKeys
+import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunicle.clientserver.TokenModes
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
@@ -86,12 +87,18 @@ import se.soderbjorn.lunicle.clientserver.VocabularyKind
  *   redraws its second level. Fired on every settings emission rather than only on a
  *   difference, because the rail is cheap to redraw and a missed change is a rail
  *   offering a section that is not there.
+ * @param onSettingsWritten a settings write landed, so whatever else is on screen has
+ *   to catch up. The board reads the display switches and the vocabulary off its own
+ *   response, so turning issue numbers off here has to reach it — in the tabbed dialog
+ *   that happened when the dialog *closed*, which a pane has no equivalent of. Fired on
+ *   the change rather than on every emission, so it is not a board fetch per tick.
  */
 class ProjectSections(
     private val viewModel: EditProjectBackingViewModel,
     private val scope: CoroutineScope,
     private val dialogHost: HTMLElement,
     private val onSectionsChanged: () -> Unit,
+    private val onSettingsWritten: () -> Unit,
 ) {
     /** The panes, by section key. Built once; shown and hidden by [showSection]. */
     private val panes = mutableMapOf<String, HTMLElement>()
@@ -155,6 +162,15 @@ class ProjectSections(
      * re-render — the field is where the admin is typing when everything else changes.
      */
     private val sectionViews = mutableMapOf<VocabularyKind, SectionView>()
+
+    /**
+     * The settings as last rendered, so a write can be told from a redraw.
+     *
+     * The pair with [EditProjectBackingViewModel.State.hasWrittenSettings]: that flag is a
+     * latch and says only "something has been written at some point", so it cannot on its
+     * own tell the emission that carried a change from the twenty that followed it.
+     */
+    private var lastSettings: ProjectSettingsState? = null
 
     private var vocabularyConfirm: ConfirmDialog? = null
     private var deleteConfirm: ConfirmDialog? = null
@@ -494,6 +510,14 @@ class ProjectSections(
         // promotion, or the settings simply arriving. Told after the panes are filled, so
         // the rail never points at a pane that has not been rendered yet.
         onSectionsChanged()
+        // A write landed — not merely a redraw. The board is what needs telling: it reads
+        // the display switches, the vocabularies and the project's name off its own
+        // response, and none of that follows a settings write on its own.
+        val settings = state.settings
+        if (state.hasWrittenSettings && settings != null && settings != lastSettings) {
+            onSettingsWritten()
+        }
+        lastSettings = settings
         // Re-assert, so a section this caller has lost — a right withdrawn while the pane
         // was open — cannot stay showing under them.
         showSection(selected)
@@ -700,6 +724,17 @@ class ProjectSections(
                     onPick = { key -> viewModel.onPersonRungChanged(person.userId, key) },
                 ),
             )
+        } else {
+            // The rung as plain text where there is no picker. Without this a read-only
+            // reader — a Maintainer, who is told they "can see who is here" — saw a list of
+            // names and addresses with no indication of what any of them held, which is the
+            // one thing the list is for. Found by driving the app.
+            //
+            // Blank for a row whose rung is not stored at all (an instance administrator):
+            // their note says where their Owner comes from, and a label beside it would
+            // claim a row that does not exist.
+            val label = person.roleKey?.let { key -> rungs.firstOrNull { it.key == key }?.label }
+            if (label != null) container.appendChild(element("span", "access-row-rung", label))
         }
         person.note?.let { container.appendChild(element("p", "access-row-reason", it)) }
         return container
@@ -725,7 +760,16 @@ class ProjectSections(
             // sub-rows. It is the only place a dead rung can say why while still being
             // visible — and it must stay visible: "a rung out of the caller's reach shows
             // with the reason, not omitted".
-            val label = if (rung.isSelectable) rung.label else "${rung.label} — ${rung.unavailableReason}"
+            //
+            // Except on the rung that is currently held, because the closed control reads
+            // that row's label: a read-only reader, for whom no rung is selectable, saw
+            // "Contributor — You are a Maintainer here, so Cont…" as the *value* of the
+            // field. The reason belongs in the menu, and there is nothing to explain about
+            // a rung somebody already holds. Found by driving the app.
+            val label = when {
+                rung.isSelectable || rung.key == selectedKey -> rung.label
+                else -> "${rung.label} — ${rung.unavailableReason}"
+            }
             items.add(DropdownItem(index.toLong(), label))
         }
         lateinit var dropdown: Dropdown

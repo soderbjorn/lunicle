@@ -670,7 +670,7 @@ private suspend fun BoardDependencies.buildSettings(
     val base = ProjectSettingsState(
         canMutateProject = administers,
         sections = sectionsFor(rung),
-        yourAccessLine = "You are a ${rung.label} here. ${rung.description}",
+        yourAccessLine = "You are ${rung.label.article()} ${rung.label} here. ${rung.description}",
         // From Maintainer up. Null below, which is what makes the Access section a
         // Viewer sees be the "Your access" line and nothing else.
         access = if (rung.atLeast(ProjectRole.MAINTAINER)) buildAccess(project, caller, rung) else null,
@@ -833,9 +833,13 @@ private suspend fun BoardDependencies.buildAccess(
             )
         },
         canGrant = canGrant,
-        readOnlyReason = "Adding people and changing what they hold is for an administrator of " +
-            "this project. You can see who is here."
-            .takeIf { !canGrant },
+        // Parenthesised, and it matters: `"a" + "b".takeIf { … }` binds the takeIf to the
+        // second literal alone, so a caller who CAN grant was handed "a" + "null" — a
+        // read-only banner over a live section. Found by driving the app.
+        readOnlyReason = (
+            "Adding people and changing what they hold is for an administrator of this " +
+                "project. You can see who is here."
+            ).takeIf { !canGrant },
         addressAdvice = addressAdvice(),
         staffDomain = identity.domain,
     )
@@ -908,8 +912,11 @@ private suspend fun BoardDependencies.peopleRows(
             effectiveLine = when {
                 runsInstance -> null
                 floor == null -> null
-                // Only worth saying when the audience is actually carrying some of the
-                // weight — otherwise it is a sentence restating the picker beside it.
+                // Only when the audience is actually carrying some of the weight. Somebody
+                // whose own row is already senior to their audience is effectively their own
+                // row, and saying so is a sentence restating the picker beside it — which is
+                // what it did on the first pass, on every row. Found by driving the app.
+                floor.value.rank < (own?.rank ?: -1) -> null
                 else -> "The ${floor.key.title.lowercase()} row here already gives " +
                     "${floor.value.label}, so this person is effectively " +
                     "${effective?.label ?: floor.value.label}."
@@ -925,7 +932,13 @@ private suspend fun BoardDependencies.peopleRows(
                 person.isInstanceAdmin -> "Runs this instance, so holds Owner on every project here."
                 person.id == instanceOwnerId -> "Owns this instance, so holds Owner on every project here."
                 own != null && canGrant && !access.canGrant(caller, project.id, own) ->
-                    "Only an owner of this project can change what ${person.resolvedName} holds."
+                    // Second person for the caller's own row: "what Adi Admin holds" on the
+                    // row labelled "Adi Admin (you)" reads as being about somebody else.
+                    if (person.id == caller.id) {
+                        "Only an owner of this project can change what you hold here."
+                    } else {
+                        "Only an owner of this project can change what ${person.resolvedName} holds."
+                    }
                 else -> null
             },
         )
