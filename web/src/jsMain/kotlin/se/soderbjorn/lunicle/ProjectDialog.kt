@@ -148,10 +148,9 @@ class ProjectDialog(
     private lateinit var watchRow: HTMLElement
     private lateinit var notifyHint: HTMLElement
 
-    /** The Features section (LNL-96): the discussions and messages switches. */
-    private lateinit var featuresElement: HTMLElement
-    private lateinit var discussionsToggle: Toggle
-    private lateinit var messagesToggle: Toggle
+    // The Features section (LNL-96) — the discussions and messages switches — stood
+    // here until LNL-190 retired both features. Nothing replaced it: the General tab
+    // goes straight from the identity form to Notifications.
 
     // The per-user display section (LNL-105) — on the General tab beside notifications.
     private lateinit var displayElement: HTMLElement
@@ -321,14 +320,15 @@ class ProjectDialog(
         )
 
         notificationElement = buildNotificationSection()
-        featuresElement = buildFeaturesSection()
         displayElement = buildDisplaySection()
 
         // ── The panes ──
-        // General: identity form, then Features, then Notifications, then the
-        // per-user display choices (LNL-105) — the order the spec asks for (LNL-102).
+        // General: identity form, then Notifications, then the per-user display
+        // choices (LNL-105) — the order the spec asks for (LNL-102), less the
+        // Features section that used to sit between the first two: discussions and
+        // private messages are retired, so there is nothing left to switch (LNL-190).
         generalPane = element("div", "project-pane")
-            .children(formElement, featuresElement, notificationElement, displayElement)
+            .children(formElement, notificationElement, displayElement)
         githubPane = element("div", "project-pane").children(repositorySection)
 
         requirementsElement = buildRequirementsSection()
@@ -457,31 +457,6 @@ class ProjectDialog(
     }
 
     /**
-     * The Features section (LNL-96): switch this project's discussions and
-     * messages on or off.
-     *
-     * Two plain toggles rather than the watch pill — these are settings, not a
-     * standing subscription. Shown only to a project administrator (its visibility
-     * is decided in [render] from `showFeaturesSection`); the toggles write
-     * immediately, so there is no Save here to press. The caption under each says
-     * what it hides, because "off" is not obviously "the tab disappears".
-     */
-    private fun buildFeaturesSection(): HTMLElement {
-        discussionsToggle = Toggle { viewModel.onDiscussionsEnabledChanged(it) }
-        messagesToggle = Toggle { viewModel.onMessagesEnabledChanged(it) }
-        return element("div", "project-features").children(
-            element("h3", "section-title", "Features"),
-            element(
-                "p",
-                "field-hint",
-                "Switch these off to hide their tab for this project, even where forums are enabled.",
-            ),
-            toggleRow(discussionsToggle, "Discussions — a project forum for longer conversations"),
-            toggleRow(messagesToggle, "Private messages between members"),
-        )
-    }
-
-    /**
      * The per-user display section (LNL-105): hide the issue number on this
      * project's board cards and issue windows, for the person looking — not the
      * project. A plain toggle beside Notifications, and like it shown to anyone who
@@ -561,7 +536,6 @@ class ProjectDialog(
         okButton.visible(state.showForm, displayValue = "inline-flex")
 
         renderNotifications(state)
-        renderFeatures(state)
         renderDisplay(state)
         renderRequirements(state)
 
@@ -680,18 +654,6 @@ class ProjectDialog(
         watchRow.visible(canReceive, displayValue = "flex")
         notifyHint.visible(!canReceive)
         watchButton.render(watching = state.notifyOnNewIssue, isEnabled = !state.isBusy)
-    }
-
-    private fun renderFeatures(state: EditProjectBackingViewModel.State) {
-        featuresElement.visible(state.showFeaturesSection)
-        if (!state.showFeaturesSection) return
-        // Disabled while a write is in flight, so a double click cannot queue two
-        // opposite intents against one flag — the same guard the admin dialog's
-        // switches use.
-        discussionsToggle.checked = state.discussionsEnabled
-        discussionsToggle.disabled = state.isBusy
-        messagesToggle.checked = state.messagesEnabled
-        messagesToggle.disabled = state.isBusy
     }
 
     /** The per-user hide-issue-numbers toggle (LNL-105). */

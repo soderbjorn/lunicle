@@ -193,6 +193,12 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
     /**
      * Switch this project's discussions and messages on or off (LNL-96).
      *
+     * Answers "off" whatever it is asked for, since LNL-190 retired both features:
+     * it still writes the columns, but every read of a project fills the two flags
+     * from [PROJECT_FORUM_FEATURES_ENABLED], so the response says off. Left standing
+     * with nothing calling it — the Features section is gone from the settings
+     * dialog — because a re-enable wants this route exactly as it is.
+     *
      * Project administrator only, via [adminProject] — a narrower gate than the
      * `canMutateProjects` the identity PUT uses, because turning a forum off is a
      * project administrator's call, not only the instance owner's. The pair is
@@ -497,9 +503,10 @@ private suspend fun BoardDependencies.buildSettings(
             canMutateProject = false,
             notifyOnNewIssue = notifyOnNewIssue,
             canReceiveEmailNotifications = canReceiveEmailNotifications,
-            // Not secret — every reader sees them on the board (they hide tabs, not
-            // data) — so sent honestly even though this caller's dialog renders no
-            // section to edit them. See ProjectSettingsState.discussionsEnabled.
+            // Both false for everybody since LNL-190 retired them, and still sent
+            // rather than dropped: the field is on the wire, and a client reading it
+            // deserves the same answer the board gives. No dialog renders a section
+            // to edit them any more. See ProjectSettingsState.discussionsEnabled.
             discussionsEnabled = project.discussionsEnabled,
             messagesEnabled = project.messagesEnabled,
             // Not secret either — the issue editor sees them on the board it loads

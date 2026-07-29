@@ -119,7 +119,13 @@
  * consults that list, so [sendEmail] asks again. An agent that names a tool it
  * was never offered is exactly the caller this surface assumes.
  *
- * ── The fourth exception: the forums, and why they are admin-only ───────────
+ * ── The fourth exception: the forums, retired but still standing ────────────
+ *
+ * Read this section in the past tense. LNL-190 retired discussions and private
+ * messages ahead of the permission rework, and the fifteen forum tools below are
+ * offered to nobody — see [toolsFor]. Every definition, handler and refusal is
+ * still here and still correct, so what follows describes what they do when they
+ * come back rather than what any caller sees today.
  *
  * LNL-30 settled that forums would get no MCP tools. LNL-78 asked for them, for
  * a reason that was not on the table then: a forum's history has to be
@@ -380,8 +386,9 @@ internal val MCP_AGENT_MAIL_INSTRUCTIONS = """
 """.trimIndent()
 
 /**
- * The forum paragraphs, appended to [MCP_INSTRUCTIONS] only for a caller who is
- * offered the forum tools — see [McpTools.instructionsFor].
+ * The forum paragraphs, appended to [MCP_INSTRUCTIONS] for a caller who is offered
+ * the forum tools — which since LNL-190 is nobody, so this reaches no conversation
+ * at all. See [McpTools.instructionsFor], which is where it goes back.
  *
  * Conditional for [MCP_AGENT_MAIL_INSTRUCTIONS]' reason, which applies with more
  * force here: this is the longest block of text in the file, and describing
@@ -389,6 +396,7 @@ internal val MCP_AGENT_MAIL_INSTRUCTIONS = """
  * every ordinary user's conversation in exchange for teaching their model to
  * hallucinate calls.
  */
+@Suppress("unused")
 internal val MCP_FORUM_INSTRUCTIONS = """
     Discussion forums, which you can reach because you are acting as a system
     administrator: a project may have forums, a forum holds posts, and a post
@@ -1291,7 +1299,12 @@ class McpTools(private val deps: BoardDependencies) {
             // to the account that could be trusted with a brand-new destructive
             // power. See AccessControl.canDeleteAttachment and deleteAttachment.
             "delete_attachment" -> deps.access.canDeleteAttachment(user)
-            in FORUM_TOOL_NAMES -> deps.access.canUseForumTools(user)
+            // Offered to nobody, not even a system administrator: discussions are
+            // retired (LNL-190), so the fifteen forum tools are off every caller's
+            // list. The tools themselves still stand — their definitions above, their
+            // handlers below and their canUseForumTools refusals all untouched — so
+            // re-enabling discussions is this line going back to the access check.
+            in FORUM_TOOL_NAMES -> false
             else -> true
         }
     }
@@ -1307,7 +1320,9 @@ class McpTools(private val deps: BoardDependencies) {
     fun instructionsFor(user: UserRecord): String = buildString {
         append(MCP_INSTRUCTIONS)
         if (deps.access.canSendAgentMail(user)) append("\n\n").append(MCP_AGENT_MAIL_INSTRUCTIONS)
-        if (deps.access.canUseForumTools(user)) append("\n\n").append(MCP_FORUM_INSTRUCTIONS)
+        // [MCP_FORUM_INSTRUCTIONS] is appended for nobody since LNL-190 retired
+        // discussions, exactly as [toolsFor] offers the forum tools to nobody — the
+        // two match tool for tool, which is why they were changed together.
     }
 
     /**

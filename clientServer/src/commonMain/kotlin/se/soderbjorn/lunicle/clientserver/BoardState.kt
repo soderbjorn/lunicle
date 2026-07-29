@@ -31,11 +31,13 @@ import kotlinx.serialization.Serializable
  *   and [messagesEnabled] whether it offers private messages (LNL-96). The tab
  *   shell reads these off the board it already loads and hides the Discussion or
  *   Messages tab for a project that has switched one off — on top of the forum
- *   master toggle, which decides whether the tabs can appear at all. Both default
- *   enabled, so an older server that does not send them, or a project made before
- *   the columns existed, keeps its tabs. Affordances, like [isPublic]: hiding a
- *   tab is not a lock on the data behind it, which LNL-30 settled is not access-
- *   controlled beyond project visibility.
+ *   master toggle, which decides whether the tabs can appear at all. Affordances,
+ *   like [isPublic]: hiding a tab is not a lock on the data behind it, which
+ *   LNL-30 settled is not access-controlled beyond project visibility.
+ *
+ *   Both features are retired (LNL-190) and the server now sends both as false for
+ *   every project, so these default false too: a client talking to a server that
+ *   omits them shows no forum either.
  */
 @Serializable
 data class ProjectSummary(
@@ -44,8 +46,8 @@ data class ProjectSummary(
     val namePrefix: String,
     val isPublic: Boolean,
     val visibleToAllSignedIn: Boolean = false,
-    val discussionsEnabled: Boolean = true,
-    val messagesEnabled: Boolean = true,
+    val discussionsEnabled: Boolean = false,
+    val messagesEnabled: Boolean = false,
     /**
      * Whether filing a new ticket here must carry a label, and whether it must
      * carry a component (LNL-106). Ride on the summary for the forum flags' reason:

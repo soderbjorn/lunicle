@@ -188,8 +188,9 @@ class ProjectRepository(
                     row.name_prefix,
                     row.is_public != 0L,
                     row.visible_to_all_signed_in != 0L,
-                    row.discussions_enabled != 0L,
-                    row.messages_enabled != 0L,
+                    // Not row.discussions_enabled/row.messages_enabled: retired, see LNL-190.
+                    PROJECT_FORUM_FEATURES_ENABLED,
+                    PROJECT_FORUM_FEATURES_ENABLED,
                     row.require_label != 0L,
                     row.require_component != 0L,
                     row.require_fixed_version_on_resolve != 0L,

@@ -325,15 +325,14 @@ data class ProjectSettingsState(
     val canReceiveEmailNotifications: Boolean = false,
     /**
      * Whether this project offers a discussion forum and private messages
-     * (LNL-96) — the two switches a project administrator flips in the Features
-     * section here. Both default enabled, the state every project had before the
-     * switches existed. Sent to every caller who reaches this state, but only the
-     * admin half of the dialog renders the section that edits them; see
-     * [canMutateProject]. The same two flags ride to the tab shell on
-     * [ProjectSummary], which is what actually hides the tabs.
+     * (LNL-96) — once the two switches a project administrator flipped in the
+     * Features section here. Both features are retired (LNL-190): the section is
+     * gone from the dialog, the server sends both as false for every project, and
+     * these default false so a client talking to a server that omits them agrees.
+     * The same two flags ride to the tab shell on [ProjectSummary].
      */
-    val discussionsEnabled: Boolean = true,
-    val messagesEnabled: Boolean = true,
+    val discussionsEnabled: Boolean = false,
+    val messagesEnabled: Boolean = false,
     /**
      * Whether filing a new ticket must carry a label, and whether it must carry a
      * component (LNL-106) — the two switches a project administrator flips in the

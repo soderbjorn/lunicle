@@ -406,32 +406,49 @@ class ProjectAdminTest {
         assertFalse(stored.messagesEnabled, "The column was not written.")
     }
 
-    /** The two flags move independently: switching messages off leaves discussions on. */
+    /**
+     * A project administrator asking for discussions back does not get them.
+     *
+     * This test read "the two flags move independently" until LNL-190 retired both
+     * features: the route still takes the pair and still writes the columns, but
+     * every read fills them from `PROJECT_FORUM_FEATURES_ENABLED`, so the answer to
+     * "switch discussions on" is now no. The route is unreachable from the web app —
+     * the Features section is gone — so this is about the one caller left, somebody
+     * posting the old body by hand.
+     */
     @Test
-    fun `the two feature flags are independent`(): Unit = runBlocking {
+    fun `switching a feature back on does not switch it back on`(): Unit = runBlocking {
         val f = seed()
 
         withRoutes { client ->
             val settings: ProjectSettingsState = client.post(ApiRoutes.projectFeatures(f.projectId)) {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(ProjectFeatures(discussionsEnabled = true, messagesEnabled = false))
+                setBody(ProjectFeatures(discussionsEnabled = true, messagesEnabled = true))
             }.body()
-            assertTrue(settings.discussionsEnabled, "Discussions were switched off by a messages-only change.")
-            assertFalse(settings.messagesEnabled)
+            assertFalse(settings.discussionsEnabled, "Discussions came back on for the asking.")
+            assertFalse(settings.messagesEnabled, "Messages came back on for the asking.")
+
+            val board: BoardState = client.get("/api/projects/${f.projectId}/board") {
+                cookie(SESSION_COOKIE, f.projectAdminCookie)
+            }.body()
+            assertFalse(board.project.discussionsEnabled, "The board's project says discussions are on.")
+            assertFalse(board.project.messagesEnabled, "The board's project says messages are on.")
         }
 
         val stored = projects.findById(f.projectId)!!
-        assertTrue(stored.discussionsEnabled)
+        assertFalse(stored.discussionsEnabled)
         assertFalse(stored.messagesEnabled)
     }
 
     /**
-     * Someone who does not administer the project cannot change its features, and
-     * the flags are untouched afterwards.
+     * Someone who does not administer the project cannot change its features.
      *
-     * The store is re-read directly, for the file's usual reason: a 403 that had
-     * already written would still read as a 403.
+     * The status is the whole of it now. This used to re-read the store afterwards —
+     * a 403 that had already written would still read as a 403 — but since LNL-190
+     * every read of the two flags answers false whatever is in the column, so a
+     * write is no longer observable from here. The retired feature is pinned by the
+     * test above; this one is about the gate.
      */
     @Test
     fun `an outsider cannot change a project's features`(): Unit = runBlocking {
@@ -447,10 +464,6 @@ class ProjectAdminTest {
                 }.status,
             )
         }
-
-        val stored = projects.findById(f.projectId)!!
-        assertTrue(stored.discussionsEnabled, "A refused request switched discussions off anyway.")
-        assertTrue(stored.messagesEnabled, "A refused request switched messages off anyway.")
     }
 
     // ── Fixture ──────────────────────────────────────────────────────────────

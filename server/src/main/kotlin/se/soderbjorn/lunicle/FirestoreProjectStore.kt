@@ -103,9 +103,11 @@ class FirestoreProjectStore(
                 NAME_PREFIX to namePrefix,
                 IS_PUBLIC to isPublic,
                 VISIBLE_TO_ALL_SIGNED_IN to visibleToAllSignedIn,
-                // Defaults a fresh row carries — see the class preamble.
-                DISCUSSIONS to true,
-                MESSAGES to true,
+                // Defaults a fresh row carries — see the class preamble. The two
+                // forum flags are written off and read off (LNL-190); the fields
+                // stay so a re-enable has somewhere to put the answer.
+                DISCUSSIONS to PROJECT_FORUM_FEATURES_ENABLED,
+                MESSAGES to PROJECT_FORUM_FEATURES_ENABLED,
                 REQUIRE_LABEL to false,
                 REQUIRE_COMPONENT to false,
                 REQUIRE_FIXED_VERSION to false,
@@ -125,8 +127,8 @@ class FirestoreProjectStore(
             namePrefix = namePrefix,
             isPublic = isPublic,
             visibleToAllSignedIn = visibleToAllSignedIn,
-            discussionsEnabled = true,
-            messagesEnabled = true,
+            discussionsEnabled = PROJECT_FORUM_FEATURES_ENABLED,
+            messagesEnabled = PROJECT_FORUM_FEATURES_ENABLED,
             requireLabel = false,
             requireComponent = false,
             requireFixedVersionOnResolve = false,
@@ -290,8 +292,10 @@ private fun DocumentSnapshot.toRecord(): ProjectRecord = ProjectRecord(
     // the members-only/public behaviour it had then, exactly like the SQLite column's
     // DEFAULT 0. See LNL-138 and the class preamble on why absent = default here.
     visibleToAllSignedIn = getBoolean("visibleToAllSignedIn") ?: false,
-    discussionsEnabled = getBoolean("discussionsEnabled") ?: true,
-    messagesEnabled = getBoolean("messagesEnabled") ?: true,
+    // Not read from the document at all: discussions and private messages are
+    // retired, so a doc written while the switches still existed reads off (LNL-190).
+    discussionsEnabled = PROJECT_FORUM_FEATURES_ENABLED,
+    messagesEnabled = PROJECT_FORUM_FEATURES_ENABLED,
     requireLabel = getBoolean("requireLabel") ?: false,
     requireComponent = getBoolean("requireComponent") ?: false,
     requireFixedVersionOnResolve = getBoolean("requireFixedVersionOnResolve") ?: false,

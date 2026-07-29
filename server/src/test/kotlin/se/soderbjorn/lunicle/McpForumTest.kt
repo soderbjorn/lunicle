@@ -144,18 +144,26 @@ class McpForumTest {
         File("${file.absolutePath}-shm").delete()
     }
 
-    // ── The gate: admin only, invisible then refused ──────────────────────────
+    // ── The gate: offered to nobody, and refused for a non-admin ──────────────
 
-    /** Every forum tool is offered to the admin and to nobody else. */
+    /**
+     * Every forum tool is offered to nobody at all — not even to the system
+     * administrator they were reserved for.
+     *
+     * This asserted "offered to the admin and to nobody else" until LNL-190 retired
+     * discussions. The tools still exist and an admin naming one still gets it, but
+     * a `tools/list` that named them would hand an agent a capability nothing in the
+     * product reaches any more, so the admin half of the old claim is now wrong.
+     */
     @Test
-    fun `forum tools are offered to an admin only`(): Unit = runBlocking {
+    fun `forum tools are offered to nobody`(): Unit = runBlocking {
         val f = seed()
         withMcp { client ->
             val adminTools = client.listTools(tokenFor(f.adminId))
             val ordinaryTools = client.listTools(tokenFor(f.ordinaryId))
             forumToolNames.forEach { name ->
-                assertTrue(name in adminTools, "An admin was not offered $name.")
-                assertTrue(name !in ordinaryTools, "An ordinary user was offered $name.")
+                assertTrue(name !in adminTools, "An admin was offered the retired $name.")
+                assertTrue(name !in ordinaryTools, "An ordinary user was offered the retired $name.")
             }
         }
     }

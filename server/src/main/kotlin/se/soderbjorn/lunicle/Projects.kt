@@ -17,6 +17,24 @@ import kotlinx.coroutines.withContext
 import se.soderbjorn.lunicle.db.LunicleDatabase
 
 /**
+ * Whether a project offers discussions or private messages — retired, and so
+ * false for every project on every backend (LNL-190).
+ *
+ * Both features were too unfinished to carry through the permission rework, and
+ * between them they accounted for seven access rules and fifteen MCP tools that
+ * the rework would otherwise have had to keep coherent. Rather than migrate the
+ * data, every store maps the stored column onto this constant: a SQLite row or a
+ * Firestore document written when the switches still existed reads as off, and no
+ * deployment needs a roll-forward to make that true.
+ *
+ * Nothing was deleted for it. The tables, the routes, the stores and the views all
+ * still stand, so finishing discussions later means putting the column read back
+ * where this constant is and restoring the two switches in the project settings
+ * dialog — not an excavation.
+ */
+internal const val PROJECT_FORUM_FEATURES_ENABLED = false
+
+/**
  * A project as this server knows it.
  *
  * @property namePrefix the "FOO" in FOO-123. Unique across all projects, so a
@@ -45,6 +63,10 @@ data class ProjectRecord(
      * shell on every board, so every read that builds a summary needs them in
      * hand. Both default enabled — the state every project had before the columns
      * existed. See Projects.sq.
+     *
+     * Since LNL-190 neither is read from its column: every store fills both from
+     * [PROJECT_FORUM_FEATURES_ENABLED], so both are always false. The columns and
+     * the setter are still there, untouched, for whoever re-enables discussions.
      */
     val discussionsEnabled: Boolean,
     val messagesEnabled: Boolean,
@@ -179,8 +201,9 @@ class ProjectStore(
                 it.name_prefix,
                 it.is_public != 0L,
                 it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,
@@ -285,8 +308,9 @@ class ProjectStore(
                 it.name_prefix,
                 it.is_public != 0L,
                 it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,
@@ -304,8 +328,9 @@ class ProjectStore(
                 it.name_prefix,
                 it.is_public != 0L,
                 it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,
@@ -329,8 +354,9 @@ class ProjectStore(
                 it.name_prefix,
                 it.is_public != 0L,
                 it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,

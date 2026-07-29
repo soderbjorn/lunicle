@@ -78,8 +78,11 @@ abstract class ProjectStoreContract {
     @Test
     fun `the feature and requirement flags flip`() = runBlocking {
         val p = insertProject()
-        // Defaults: features on, requirements off.
-        store.setFeatures(p.id, discussionsEnabled = false, messagesEnabled = false)
+        // Requirements default off. The two feature flags no longer round-trip at
+        // all — every backend reads them as false since LNL-190 retired discussions
+        // and private messages — so what is pinned here is that both stores agree
+        // they are off, whatever setFeatures was asked for.
+        store.setFeatures(p.id, discussionsEnabled = true, messagesEnabled = true)
         // All three requirement flags together, each flipped off its default, so the
         // fix-version flag (LNL-134) is pinned to round-trip like the other two.
         store.setRequirements(p.id, requireLabel = true, requireComponent = true, requireFixedVersionOnResolve = true)
