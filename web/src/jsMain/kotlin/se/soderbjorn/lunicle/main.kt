@@ -57,6 +57,7 @@ import se.soderbjorn.lunula.web.shell.AppShellSpec
 import se.soderbjorn.lunula.web.shell.InitialPaneGeometry
 import se.soderbjorn.lunula.web.shell.PaneAddMenuItem
 import se.soderbjorn.lunula.web.shell.paneAddSeparator
+import se.soderbjorn.lunula.web.shell.PaneOverflowSpec
 import se.soderbjorn.lunula.web.shell.PaneSnapshotEntry
 import se.soderbjorn.lunula.web.shell.TabListSnapshot
 import se.soderbjorn.lunula.web.shell.TabSnapshotEntry
@@ -997,6 +998,16 @@ private fun start() {
                 workspaceViewModel.onTabReordered(source, target, before)
             },
             onPaneSelect = { tabId, paneId -> workspaceViewModel.onPaneSelected(tabId, paneId) },
+            // The pane overflow menu's "Move to tab ▸". The toolkit builds the
+            // destination list from the snapshot below and reports the choice;
+            // moving the window is ours, exactly as closing it is. The source
+            // tab id matters here in a way it does not for other hosts: a
+            // Lunicle pane id names what the pane SHOWS, so the same board open
+            // in two tabs is `board-7` in both, and only the caller knows which
+            // copy the menu was opened on.
+            onPaneMove = { tabId, paneId, targetTabId ->
+                workspaceViewModel.onPaneMovedToTab(tabId, paneId, targetTabId)
+            },
             onPaneClose = { tabId, paneId ->
                 // A settings pane may be mid-edit; ask it first, exactly as an
                 // issue window is asked. Everything else just goes.
@@ -1126,20 +1137,43 @@ private fun start() {
         // "Board · Lunamux" for a board, and the ticket (or the title, where issue
         // numbers are hidden) for an issue. The pane title is the only place a
         // project name is needed now: an issue pane's key prefix already carries it.
-        paneLabel = { _, paneId ->
+        paneLabel = { tabId, paneId ->
+            // A name the user typed wins outright — that is what typing it meant.
+            // Everything below is the derived title it replaced, and clearing the
+            // override (an empty commit; see paneRename) puts the derivation back.
+            workspaceViewModel.stateFlow.value.workspace.tabs
+                .firstOrNull { it.id == tabId }?.paneLabel(paneId)
             // "Board · Lunamux", "Settings · Lunamux", "Analytics · Lunamux". The
             // pane title is the only place a project name is needed: an issue
             // pane's key prefix already carries it.
-            fun named(kind: String, projectId: Long): String {
-                val name = mainViewModel.stateFlow.value.screen(projectId).project?.name
-                return if (name == null) kind else "$kind · $name"
-            }
-            boardProjectIdOfPane(paneId)?.let { named("Board", it) }
-                ?: settingsProjectIdOfPane(paneId)?.let { named("Settings", it) }
-                ?: analyticsProjectIdOfPane(paneId)?.let { named("Analytics", it) }
-                ?: issueIdOfPane(paneId)?.let { mainViewModel.stateFlow.value.issueWindowTitle(it) }
-                ?: "Lunicle"
+                ?: run {
+                    fun named(kind: String, projectId: Long): String {
+                        val name = mainViewModel.stateFlow.value.screen(projectId).project?.name
+                        return if (name == null) kind else "$kind · $name"
+                    }
+                    boardProjectIdOfPane(paneId)?.let { named("Board", it) }
+                        ?: settingsProjectIdOfPane(paneId)?.let { named("Settings", it) }
+                        ?: analyticsProjectIdOfPane(paneId)?.let { named("Analytics", it) }
+                        ?: issueIdOfPane(paneId)?.let {
+                            mainViewModel.stateFlow.value.issueWindowTitle(it)
+                        }
+                        ?: "Lunicle"
+                }
         },
+        // Every Lunicle pane gets the toolkit's `⋮`, and it holds exactly the two
+        // rows the toolkit brings: Rename window, and Move to tab ▸. Nothing here
+        // describes either of them — that is the whole of what LNA-5 moved into
+        // the toolkit, and Lunicle has no third row of its own to add.
+        paneOverflowMenu = { _, _ -> PaneOverflowSpec() },
+        // The host half of the toolkit's inline rename. An EMPTY commit is
+        // meaningful and is why `allowEmptyPaneRename` is set below: a Lunicle
+        // pane title is derived from what the pane shows, so emptying the field
+        // clears the override and hands the title back to the derivation rather
+        // than blanking the window. See onPaneRenamed.
+        paneRename = { tabId, paneId, newLabel ->
+            workspaceViewModel.onPaneRenamed(tabId, paneId, newLabel)
+        },
+        allowEmptyPaneRename = true,
         paneIcon = { _, paneId ->
             when {
                 boardProjectIdOfPane(paneId) != null -> ICON_BOARD_PANE

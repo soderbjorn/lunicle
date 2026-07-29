@@ -248,6 +248,12 @@ class WorkspaceBackingViewModel(
                             panes = kept,
                             activePaneId = tab.activePaneId?.takeIf { id -> kept.any { it.paneId == id } }
                                 ?: kept.firstOrNull()?.paneId,
+                            // A name for a window that has gone is not a name for
+                            // anything; same rule as `withoutPane`, applied to the
+                            // panes this prune took rather than to one close.
+                            paneLabels = tab.paneLabels.filterKeys { id ->
+                                kept.any { it.paneId == id }
+                            },
                         )
                     }
                 },
@@ -374,6 +380,102 @@ class WorkspaceBackingViewModel(
         val tab = ws.tabs.firstOrNull { it.id == tabId } ?: return
         if (tab.pane(paneId) == null) return
         commit(ws.mapTab(tabId) { it.withoutPane(paneId) })
+    }
+
+    /**
+     * A window was renamed from the pane overflow menu's **Rename window**.
+     *
+     * The toolkit owns the gesture — it arms its own inline editor in the pane
+     * titlebar and hands the committed string here; all that is left is deciding
+     * what the string *means*. Two answers, and the empty one is the interesting
+     * half: a Lunicle pane title is derived (a project's name, an issue's ticket
+     * key) and should keep following what it names, so **emptying the field
+     * clears the override** rather than blanking the window. That is the case
+     * `AppShellSpec.allowEmptyPaneRename` exists for, and the bootstrap sets it.
+     *
+     * Scoped to one tab, matching [WorkspaceTab.paneLabels]: the same board open
+     * in two tabs is two windows, and naming one does not name the other.
+     *
+     * A no-op when the name is what the pane is already called, so a rename
+     * opened and dismissed with Enter does not write a workspace.
+     *
+     * @param tabId   the tab holding the window; ignored if it has gone.
+     * @param paneId  the window renamed.
+     * @param newLabel the committed text, already trimmed by the toolkit. Empty
+     *   clears the override.
+     * @see WorkspaceTab.paneLabels
+     */
+    fun onPaneRenamed(tabId: String, paneId: String, newLabel: String) {
+        val clean = newLabel.trim()
+        val ws = _stateFlow.value.workspace
+        val tab = ws.tabs.firstOrNull { it.id == tabId } ?: return
+        if (tab.pane(paneId) == null) return
+        if (tab.paneLabel(paneId) == clean.takeIf { it.isNotEmpty() }) return
+        commit(
+            ws.mapTab(tabId) {
+                it.copy(
+                    paneLabels = if (clean.isEmpty()) {
+                        it.paneLabels - paneId
+                    } else {
+                        it.paneLabels + (paneId to clean)
+                    },
+                )
+            },
+        )
+    }
+
+    /**
+     * A window was moved to another tab from the pane overflow menu's
+     * **Move to tab ▸**.
+     *
+     * The toolkit builds the destination list and reports the choice; moving is
+     * ours, exactly as closing is. The window arrives at the end of the target
+     * tab's pane list — where a newly opened one lands — and focused there, so
+     * that visiting the tab lands on it.
+     *
+     * The **active tab does not follow it**. "Move to tab" is how a working set
+     * is tidied — this does not belong here, put it over there — and jumping the
+     * reader to somewhere they did not ask to look would make tidying up cost a
+     * trip back. It also keeps Lunicle and Lunamux answering the same gesture
+     * the same way; Lunamux's server has always left the reader where they were.
+     *
+     * The window keeps whatever name it was given ([WorkspaceTab.paneLabels]
+     * travels with it): the rename was a statement about this window, and the
+     * window is what moved.
+     *
+     * Two refusals, both silent. A move to the tab it is already in is nothing.
+     * And a move onto a tab that **already holds this pane** — the same board
+     * open in both — collapses to a close of the source copy rather than a
+     * duplicate, because the one-pane-per-thing-per-tab rule (see [PaneRef]) is
+     * structural: two copies would collide on the id and the second would be
+     * unreachable.
+     *
+     * @param tabId       the tab the window is leaving. Named rather than
+     *   searched for, because a derived pane id can be in several tabs at once
+     *   and only the caller knows which copy the user opened the menu on.
+     * @param paneId      the window moved.
+     * @param targetTabId where it lands; ignored when no such tab exists.
+     * @see se.soderbjorn.lunicle.client.viewmodel.WorkspaceTab.paneLabels
+     */
+    fun onPaneMovedToTab(tabId: String, paneId: String, targetTabId: String) {
+        if (tabId == targetTabId) return
+        val ws = _stateFlow.value.workspace
+        val source = ws.tabs.firstOrNull { it.id == tabId } ?: return
+        val pane = source.pane(paneId) ?: return
+        if (ws.tabs.none { it.id == targetTabId }) return
+        val carriedLabel = source.paneLabel(paneId)
+        commit(
+            ws.mapTab(tabId) { it.withoutPane(paneId) }
+                .mapTab(targetTabId) { target ->
+                    target.withPane(pane).copy(
+                        paneLabels = if (carriedLabel == null) {
+                            target.paneLabels
+                        } else {
+                            target.paneLabels + (paneId to carriedLabel)
+                        },
+                    )
+                },
+        )
     }
 
     /**
@@ -729,12 +831,21 @@ private fun WorkspaceTab.withPane(pane: PaneRef): WorkspaceTab =
         copy(panes = panes + pane, activePaneId = pane.paneId)
     }
 
-/** This tab without that pane, and with focus moved off it if it had it. */
+/**
+ * This tab without that pane, its name forgotten, and with focus moved off it
+ * if it had it.
+ *
+ * The name goes with the window rather than outliving it: keeping the override
+ * would mean re-opening the same board later — a fresh window, by every rule in
+ * this file — and finding it already wearing a title somebody typed for a
+ * window they closed.
+ */
 private fun WorkspaceTab.withoutPane(paneId: String): WorkspaceTab {
     val kept = panes.filterNot { it.paneId == paneId }
     if (kept.size == panes.size) return this
     return copy(
         panes = kept,
         activePaneId = activePaneId?.takeUnless { it == paneId } ?: kept.lastOrNull()?.paneId,
+        paneLabels = paneLabels - paneId,
     )
 }
