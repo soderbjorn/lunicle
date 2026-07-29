@@ -152,6 +152,12 @@ class SettingsPane(
     fun mount(host: HTMLElement) {
         shell.setTitle("Settings")
 
+        // The body becomes a fixed-height flex column so the strip stays put and each
+        // tab scrolls inside itself. Without it the body scrolls and the strip rides
+        // off the top — which is what the project settings pane did, and is worse here
+        // because there are five tabs to get back to rather than one.
+        shell.body.classList.add("settings-shell-body")
+
         tabStrip = buildTabStrip()
         tabPanes[SettingsTab.YOU] = buildYouTab()
         tabPanes[SettingsTab.ACCESS] = stubPane(
@@ -202,6 +208,21 @@ class SettingsPane(
 
     /** Where the pane currently is — what the address bar writes. */
     fun currentRoute(): SettingsRoute = route
+
+    /**
+     * Re-decide which tabs are on offer.
+     *
+     * [hasProjects] is read off the board state, which is a flow this pane does not
+     * collect — so a projects list landing after the pane was built would leave the
+     * Projects tab hidden until the next *session* emission, and there may not be
+     * one. That is not an edge case: on a cold load the pane is built before the
+     * project list returns, which is exactly what a `?settings=` deep link does.
+     * The caller drives this from the tick it does see; see main.kt's
+     * SettingsPanes.sync.
+     */
+    fun refreshAvailability() {
+        if (::tabStrip.isInitialized) renderTabs(lastSession)
+    }
 
     private fun buildTabStrip(): HTMLElement {
         val strip = element("div", "admin-tabs")

@@ -3245,7 +3245,17 @@ body > .dt-pane-menu {
    Five tabs on the `.admin-tabs` strip above, and one of these under it. Each
    scrolls itself rather than the body, so switching tabs does not carry the strip
    off the top — the same three-band argument the block above makes, with the strip
-   as the fixed band. */
+   as the fixed band.
+
+   The body has to opt out of `.pane-shell-body`'s own `overflow-y: auto` for that:
+   two nested scrollers means the outer one wins and the strip scrolls away with the
+   content. Scoped to this pane rather than fixed on `.pane-shell-body`, which every
+   other pane-hosted view shares and none of the others wants a fixed band in. */
+.settings-shell-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .settings-tab-pane {
   flex: 1;
   min-height: 0;

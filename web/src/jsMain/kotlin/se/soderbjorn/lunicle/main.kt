@@ -565,6 +565,12 @@ private fun start() {
     openSettingsAt = { route ->
         settingsPanes.show(route)
         workspaceViewModel.onProjectPaneOpened(PaneRef.Settings(route.projectId))
+        // ...and then tell the address bar, because the workspace may have nothing to
+        // report. Pressing the top bar's gear while the pane is already open and
+        // focused at You moves it to Instance without changing a single thing the
+        // workspace stores — same pane, same project, same focus — so the state flow
+        // does not emit and the URL would still name the tab you left.
+        syncSettingsAddress()
     }
     syncSettingsAddress = {
         val ws = workspaceState.workspace
@@ -2372,6 +2378,12 @@ private class SettingsPanes(
         val wanted = workspace.tabs.any { tab -> tab.panes.any { it is PaneRef.Settings } }
         if (wanted) {
             if (view == null) create()
+            // Both collectors call this, which makes it the pane's one hook onto the
+            // BOARD state — a flow it does not collect and whose project list decides
+            // whether it has a Projects tab. Without this the tab stayed hidden on
+            // every cold load, the projects having landed a tick after the pane was
+            // built. See SettingsPane.refreshAvailability.
+            view?.refreshAvailability()
         } else if (view != null) {
             dispose()
         }
