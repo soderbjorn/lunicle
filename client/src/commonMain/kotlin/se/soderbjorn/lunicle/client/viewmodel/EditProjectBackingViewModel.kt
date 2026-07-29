@@ -45,6 +45,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunicle.client.StorageRepository
 import se.soderbjorn.lunicle.client.userMessage
+import se.soderbjorn.lunicle.clientserver.ProjectAccessState
+import se.soderbjorn.lunicle.clientserver.ProjectSection
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
 import se.soderbjorn.lunicle.clientserver.TokenModes
@@ -57,15 +59,13 @@ import se.soderbjorn.lunicle.clientserver.VocabularyKind
  * Literals here because the client has no copy of the server's `ProjectRole` enum
  * — the keys ARE the wire format and are branched on by name (see Roles.kt, which
  * says so and warns that changing one is a migration). These are the only keys the
- * client has to recognise rather than merely render, because they are the two rows
- * of the privileges table whose availability depends on who is looking: both are
- * handed out only by an owner.
+ * client had to recognise rather than merely render.
+ *
+ * They are **gone** (LNL-194). Which rungs a caller may hand out is decided on the
+ * server and arrives per rung on [se.soderbjorn.lunicle.clientserver.RungOption], with
+ * the sentence saying why a dead one is dead — so the client no longer has to know
+ * which two rungs are senior, or that seniority is what makes them special.
  */
-private const val PROJECT_ADMIN_ROLE_KEY = "admin"
-private const val PROJECT_OWNER_ROLE_KEY = "owner"
-
-/** The two rows gated on [ProjectSettingsState.canGrantSeniorRoles]. */
-private val SENIOR_ROLE_KEYS = setOf(PROJECT_ADMIN_ROLE_KEY, PROJECT_OWNER_ROLE_KEY)
 
 /**
  * The phrase an owner must type to arm the delete-project button (LNL-107).
@@ -161,36 +161,13 @@ data class VocabularySection(
     val rows: List<VocabularyRowState>,
 )
 
-/**
- * One role checkbox against one user.
- *
- * Never built for an instance admin — their row carries no toggles at all, only
- * the note saying why. See [State.members].
- *
- * @property isEnabled false while a write is in flight, so a second click cannot
- *   be sent from a state the first has already invalidated.
- */
-data class RoleToggle(
-    val key: String,
-    val description: String,
-    val isOn: Boolean,
-    val isEnabled: Boolean,
-)
-
-/**
- * One account, and what it may do here.
- *
- * @property note the sentence that stands in place of the checkboxes for this row
- *   — "Admin — can do everything in every project" — or null for an ordinary
- *   user. Where there is a note, [roles] is empty: the note is not an annotation
- *   on the boxes, it is what the row says instead of them.
- */
-data class MemberRowState(
-    val userId: Long,
-    val name: String,
-    val note: String?,
-    val roles: List<RoleToggle>,
-)
+// `RoleToggle` and `MemberRowState` stood here: one checkbox per role per account,
+// and a row per account on the instance. Both are gone (LNL-194). The Access section
+// renders the server's own
+// [se.soderbjorn.lunicle.clientserver.PersonRow]/[se.soderbjorn.lunicle.clientserver.AudienceRow]
+// directly, because there is nothing left for a view model to decide about them —
+// every label, every dead control and every reason is computed where the write is
+// enforced. See ProjectAccessState.
 
 /**
  * A vocabulary row the admin has asked to delete, held while the confirmation is
@@ -750,65 +727,36 @@ class EditProjectBackingViewModel(
         }.orEmpty()
 
         /**
-         * Every account, and what it holds here.
+         * The sections this caller has on this project, in rail order (LNL-194).
          *
-         * Admins first, and `sortedByDescending` because it is stable — the
-         * server's order survives among the rest. They lead because they are the
-         * answer to "who can do this?" that outranks every row below them: read
-         * top-down, the table now states the blanket permission before the
-         * granted ones, which is the order they actually apply in.
+         * Named `railSections` and not `sections` because [sections] above is the
+         * *vocabulary* sections the Structure tab renders — an older, unrelated use of
+         * the word that predates the rail.
+         *
+         * Straight from the server, undecided here — see
+         * [se.soderbjorn.lunicle.clientserver.ProjectSection]. Empty until the settings
+         * land, which is what the rail draws as "loading" rather than as "no sections".
          */
-        val members: List<MemberRowState> get() = settings?.let { loaded ->
-            loaded.members.sortedByDescending { it.isSysAdmin }.map { member ->
-                MemberRowState(
-                    userId = member.userId,
-                    name = if (member.isSelf) "${member.name} (you)" else member.name,
-                    note = when {
-                        member.isSysAdmin ->
-                            "System administrator — can do everything in every project."
-                        else -> null
-                    },
-                    // No boxes at all on an admin's row, rather than boxes that
-                    // are ticked-and-dead or unticked-and-dead. Either way they
-                    // describe a grant that decides nothing: AccessControl says
-                    // yes to an admin before it looks at a role. The note is the
-                    // whole truth of the row, so it is the only thing on it.
-                    roles = if (member.isSysAdmin) {
-                        emptyList()
-                    } else {
-                        loaded.roles.map { role ->
-                            RoleToggle(
-                                key = role.key,
-                                description = role.description,
-                                isOn = role.key in member.roleKeys,
-                                // Not while a write is in flight: two clicks on the
-                                // same box before the first answer arrives would send
-                                // the second from a state that is already stale.
-                                //
-                                // And never the two senior boxes — project
-                                // administrator and project owner — unless the caller
-                                // may grant them: an administrator opens this dialog
-                                // and hands out the ordinary roles freely, but may
-                                // promote neither a peer nor an owner. Shown rather
-                                // than hidden, so the row still explains what the role
-                                // is and who would have to grant it — see
-                                // AccessControl.canGrant, which refuses it regardless.
-                                isEnabled = !isBusy && (
-                                    role.key !in SENIOR_ROLE_KEYS || loaded.canGrantSeniorRoles
-                                    ),
-                            )
-                        }
-                    },
-                )
-            }
-        }.orEmpty()
+        val railSections: List<ProjectSection> get() = settings?.sections.orEmpty()
 
-        /** The heading over the privileges table, and what it is for. */
-        val membersHint: String get() =
-            "Who may do what in this project. Everyone with an account is listed — " +
-                "tick a box to grant, untick to revoke. It takes effect immediately."
+        /** Who this project admits, or null for a caller below Maintainer. */
+        val access: ProjectAccessState? get() = settings?.access
 
-        private fun section(
+        /** What **you** hold here, in one sentence. Empty until the settings land. */
+        val yourAccessLine: String get() = settings?.yourAccessLine.orEmpty()
+
+        /**
+         * Whether to offer "Delete this project", and [deleteBlockedReason] why the row
+         * is there and dead.
+         *
+         * Two flags rather than one, because there are three states: offered, offered and
+         * dead with a reason (an Admin, who would reasonably expect it), and absent
+         * (everybody below, for whom an explanation of a power two rungs up is noise).
+         */
+        val canDeleteProject: Boolean get() = settings?.canDeleteProject == true
+        val deleteBlockedReason: String? get() = settings?.deleteBlockedReason
+
+                private fun section(
             loaded: ProjectSettingsState,
             kind: VocabularyKind,
             title: String,
@@ -1323,20 +1271,51 @@ class EditProjectBackingViewModel(
         }
     }
 
-    // ── The privileges ───────────────────────────────────────────────────────
+    // ── Access ───────────────────────────────────────────────────────────────
 
     /**
-     * Grant or revoke one role for one user.
+     * Put one person on one rung here, or [roleKey] null for "no access".
      *
-     * No confirmation, deliberately, and it is the one destructive-looking thing
-     * here that does not get one: revoking is instantly reversible by ticking the
-     * box again, and nothing is lost when you do. A confirmation on an action that
-     * undoes itself teaches people to click through confirmations.
+     * No confirmation, deliberately, and it is the one destructive-looking thing here
+     * that does not get one: a rung is instantly reversible by picking it again, and
+     * nothing is lost when you do. A confirmation on an action that undoes itself
+     * teaches people to click through confirmations.
      */
-    fun onRoleToggled(userId: Long, roleKey: String, isGranted: Boolean) {
+    fun onPersonRungChanged(userId: Long, roleKey: String?) {
         val project = existing ?: return
-        write("Could not change that privilege.") {
-            storage.setProjectRole(project.id, userId, roleKey, isGranted)
+        write("Could not change what that person holds here.") {
+            storage.setProjectRole(project.id, userId, roleKey)
+        }
+    }
+
+    /**
+     * Say at what rung a whole audience arrives here, or [roleKey] null to withdraw the
+     * row.
+     *
+     * No confirmation either, on the same reasoning — with one caveat worth stating:
+     * handing guests a rung publishes the board to the internet, which is not reversible
+     * in the sense that anybody who already read it has read it. The confirmation that
+     * would help there is the instance-wide veto, which is a switch an administrator
+     * sets once rather than a dialog everybody clicks through.
+     */
+    fun onAudienceRungChanged(audienceKey: String, roleKey: String?) {
+        val project = existing ?: return
+        write("Could not change who this project admits.") {
+            storage.setProjectAudience(project.id, audienceKey, roleKey)
+        }
+    }
+
+    /**
+     * Add an address, holding a rung. Nothing is sent; see the server's route.
+     *
+     * The error goes through [write] like every other access change, which is what puts
+     * a refused address ("that does not look like an e-mail address", "only an owner can
+     * hand out Admin") in front of the person who typed it.
+     */
+    fun onPersonAdded(email: String, roleKey: String) {
+        val project = existing ?: return
+        write("Could not add that person.") {
+            storage.addProjectPerson(project.id, email, roleKey)
         }
     }
 
@@ -1397,6 +1376,15 @@ class EditProjectBackingViewModel(
                     _stateFlow.value = _stateFlow.value.copy(
                         settings = settings,
                         canConfigureRepository = settings.canConfigureRepository,
+                        // The two seeds handed in at construction are replaced by the
+                        // server's own answers the moment they arrive (LNL-194). The rail
+                        // builds this view model before it knows the caller's rung on this
+                        // project, so it seeds both false — the safe direction, fields dead
+                        // until the response says otherwise — and this is where the truth
+                        // lands. Re-derived on every settings write too, so a right
+                        // withdrawn while the pane is open takes the fields with it.
+                        canConfigure = settings.canMutateProject,
+                        canConfigureIdentity = settings.canMutateProjectIdentity,
                         repositoryUrl = _stateFlow.value.repositoryUrl.ifEmpty { settings.repositoryUrl },
                         githubTokenEnv = _stateFlow.value.githubTokenEnv.ifEmpty { settings.githubTokenEnv },
                         // The mode is not an .ifEmpty field — its "unset" is not a
@@ -1443,6 +1431,11 @@ class EditProjectBackingViewModel(
                         isBusy = false,
                         settings = settings,
                         hasWrittenSettings = true,
+                        // Re-taken from every write's answer, not only from the first load: a
+                        // rung can move while the pane is open, and the response after a write
+                        // is the freshest word on what this caller may still do.
+                        canConfigure = settings.canMutateProject,
+                        canConfigureIdentity = settings.canMutateProjectIdentity,
                     )
                 },
                 onFailure = { t ->

@@ -19,6 +19,7 @@
 package se.soderbjorn.lunicle.demo
 
 import io.ktor.http.HttpStatusCode
+import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.ApiFailure
@@ -258,15 +259,40 @@ internal class DemoLunicleApi(
         return world.projectSettingsState(p)
     }
 
-    override suspend fun setProjectRole(
+    override suspend fun setProjectRole(projectId: Long, userId: Long, roleKey: String?): ProjectSettingsState {
+        val p = requireProject(projectId)
+        // Null is "no access", which removes the row rather than storing an empty rung.
+        if (roleKey == null) p.members.remove(userId) else p.members[userId] = roleKey
+        return world.projectSettingsState(p)
+    }
+
+    override suspend fun setProjectAudience(
         projectId: Long,
-        userId: Long,
-        roleKey: String,
-        isGranted: Boolean,
+        audienceKey: String,
+        roleKey: String?,
     ): ProjectSettingsState {
         val p = requireProject(projectId)
-        val roles = p.members.getOrPut(userId) { mutableSetOf() }
-        if (isGranted) roles.add(roleKey) else roles.remove(roleKey)
+        if (roleKey == null) p.audiences.remove(audienceKey) else p.audiences[audienceKey] = roleKey
+        return world.projectSettingsState(p)
+    }
+
+    /**
+     * Add somebody by address. The demo has no sign-in, so the new row is a crew member
+     * who will never arrive — which is exactly what the NOT SIGNED IN badge is for.
+     */
+    override suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState {
+        val p = requireProject(projectId)
+        val existing = world.users.firstOrNull { it.email.equals(email, ignoreCase = true) }
+        val person = existing ?: DemoUser(
+            id = world.allocId(),
+            name = email.substringBefore('@'),
+            email = email,
+            // EMAIL, matching what the real server writes for a row added by address: the
+            // provider pair records how the row came to exist, and nobody chose a provider
+            // for this one.
+            provider = AuthProvider.EMAIL,
+        ).also { world.users.add(it) }
+        p.members[person.id] = roleKey
         return world.projectSettingsState(p)
     }
 

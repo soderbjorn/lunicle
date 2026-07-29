@@ -173,18 +173,11 @@ internal fun seedMeridianProject(w: DemoWorld) {
 
     // Membership. Janeway owns the instance and therefore the board; Tova is the
     // lead maintainer; the contributors may file and talk, and nothing else.
-    p.members[janeway.id] = mutableSetOf(DemoRoleKeys.PROJECT_OWNER)
-    p.members[tova.id] = mutableSetOf(DemoRoleKeys.PROJECT_ADMIN, DemoRoleKeys.BE_ASSIGNED_ISSUE)
-    val maintainer = mutableSetOf(
-        DemoRoleKeys.CREATE_ISSUE,
-        DemoRoleKeys.COMMENT_ON_ISSUE,
-        DemoRoleKeys.CHANGE_UNOWNED_ISSUES,
-        DemoRoleKeys.BE_ASSIGNED_ISSUE,
-    )
-    listOf(rafael, wen, ada).forEach { p.members[it.id] = maintainer.toMutableSet() }
-    val contributor = mutableSetOf(DemoRoleKeys.CREATE_ISSUE, DemoRoleKeys.COMMENT_ON_ISSUE)
-    listOf(kasper, yara, sofia).forEach { p.members[it.id] = contributor.toMutableSet() }
-    p.members[jonas.id] = mutableSetOf(DemoRoleKeys.VIEW_PROJECT, DemoRoleKeys.COMMENT_ON_ISSUE)
+    p.members[janeway.id] = DemoRungKeys.OWNER
+    p.members[tova.id] = DemoRungKeys.ADMIN
+    listOf(rafael, wen, ada).forEach { p.members[it.id] = DemoRungKeys.MAINTAINER }
+    listOf(kasper, yara, sofia).forEach { p.members[it.id] = DemoRungKeys.CONTRIBUTOR }
+    p.members[jonas.id] = DemoRungKeys.CONTRIBUTOR
 
     // ── Issues ────────────────────────────────────────────────────────────────
     //

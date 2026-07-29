@@ -899,16 +899,32 @@ class HttpLunicleApi(
         httpClient.delete(baseUrl + ApiRoutes.conversationMessage(conversationId, messageId))
             .requireSuccess()
 
-    /** Grant or revoke one role for one user in one project. Admin only. */
-    override suspend fun setProjectRole(
-        projectId: Long,
-        userId: Long,
-        roleKey: String,
-        isGranted: Boolean,
-    ): ProjectSettingsState =
+    /**
+     * Put one person on one rung in one project, or take them off it. Admin and above;
+     * the two senior rungs are an owner's. Null is "no access".
+     */
+    override suspend fun setProjectRole(projectId: Long, userId: Long, roleKey: String?): ProjectSettingsState =
         httpClient.post(baseUrl + ApiRoutes.projectRoles(projectId)) {
             contentType(ContentType.Application.Json)
-            setBody(RoleGrant(userId, roleKey, isGranted))
+            setBody(RungGrant(userId, roleKey))
+        }.requireSuccess()
+
+    /** Say at what rung an audience arrives here. The project's owner's. */
+    override suspend fun setProjectAudience(
+        projectId: Long,
+        audienceKey: String,
+        roleKey: String?,
+    ): ProjectSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.projectAudience(projectId)) {
+            contentType(ContentType.Application.Json)
+            setBody(AudienceGrant(audienceKey, roleKey))
+        }.requireSuccess()
+
+    /** Add an address holding a rung. No mail is sent; see [PersonAdd]. */
+    override suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.projectPeople(projectId)) {
+            contentType(ContentType.Application.Json)
+            setBody(PersonAdd(email, roleKey))
         }.requireSuccess()
 
     // ── The board ────────────────────────────────────────────────────────────

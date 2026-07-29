@@ -278,11 +278,8 @@ private const val ICON_NEW_TAB: String =
         "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\">" +
         "<path d=\"M12 5v14M5 12h14\"/></svg>"
 
-/** Inline SVG for the "+" menu's New project row. */
-private const val ICON_NEW_PROJECT: String =
-    "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" " +
-        "stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
-        "<path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg>"
+// ICON_NEW_PROJECT stood here, for the "+" menu's New project row. Both are gone
+// (LNL-194): the rail's own row is a text button, so there is no glyph to draw.
 
 /**
  * The pane glyph for a board — a window split into columns, which is what a board
@@ -1191,19 +1188,12 @@ private fun start() {
                         ),
                     )
                 }
-                val projects = buildList {
-                    if (state.canCreateProject) {
-                        add(
-                            PaneAddMenuItem(
-                                id = "new-project",
-                                label = "New project…",
-                                iconHtml = ICON_NEW_PROJECT,
-                                onSelect = { mainViewModel.onNewProjectTapped() },
-                            ),
-                        )
-                    }
-                }
-                listOf(create, projects)
+                // "New project…" was a row here and is gone (LNL-194). It sat next to
+                // "Open board", which put "make a board" beside "look at a board" — two very
+                // different acts — and nowhere near the place you go to configure the boards
+                // you have. It is now the last row of the settings pane's Projects rail, and
+                // the only way to make one.
+                listOf(create)
                     .filter { it.isNotEmpty() }
                     .reduceOrNull { acc, group -> acc + paneAddSeparator("sep-${acc.size}") + group }
                     .orEmpty()
@@ -2439,6 +2429,18 @@ private class SettingsPanes(
             // Read fresh: a caller with no project has no Projects tab, and a
             // project arriving (or a sign-in) has to grow one.
             hasProjects = { mainViewModel.stateFlow.value.projects.isNotEmpty() },
+            projectsTab = ProjectsTab(
+                storage = storage,
+                // Read fresh on every render, like hasProjects and for its reason: the list
+                // is a flow this pane does not collect.
+                projects = { mainViewModel.stateFlow.value.projects },
+                dialogHost = dialogHost,
+                onNewProject = { mainViewModel.onNewProjectTapped() },
+                onRouteChanged = { onRouteChanged() },
+                // A rename, a display switch or a delete has to reach the boards and the
+                // project list — the rail's own names among them.
+                onProjectWritten = { mainViewModel.reload() },
+            ),
         )
         pane.mount(hostElement())
         view = pane

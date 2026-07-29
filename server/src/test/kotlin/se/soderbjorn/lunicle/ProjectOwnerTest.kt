@@ -46,7 +46,7 @@ import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
-import se.soderbjorn.lunicle.clientserver.RoleGrant
+import se.soderbjorn.lunicle.clientserver.RungGrant
 import se.soderbjorn.lunicle.clientserver.TokenModes
 import java.io.File
 import java.nio.file.Files
@@ -160,7 +160,7 @@ class ProjectOwnerTest {
                 val response = client.post("/api/projects/${f.projectId}/roles") {
                     cookie(SESSION_COOKIE, f.ownerCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(RoleGrant(f.outsiderId, role.key, isGranted = true))
+                    setBody(RungGrant(f.outsiderId, role.key))
                 }
                 assertEquals(HttpStatusCode.OK, response.status, "An owner could not grant ${role.key}.")
             }
@@ -180,7 +180,7 @@ class ProjectOwnerTest {
                 client.post("/api/projects/${f.projectId}/roles") {
                     cookie(SESSION_COOKIE, f.projectAdminCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(RoleGrant(f.outsiderId, ProjectRole.ADMIN.key, isGranted = true))
+                    setBody(RungGrant(f.outsiderId, ProjectRole.ADMIN.key))
                 }.status,
             )
         }

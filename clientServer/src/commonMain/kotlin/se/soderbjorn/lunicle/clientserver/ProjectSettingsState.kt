@@ -237,36 +237,10 @@ data class RoleDescription(
     val description: String,
 )
 
-/**
- * One account, and what it holds in this project.
- *
- * Every account on the instance, not only the ones with a grant: "assign
- * privileges to other users" needs a list of the users you could assign to, and a
- * table that only showed people who already have a role would have no row to tick
- * for the person you are trying to add.
- *
- * A name and an id, like [UserOption], and for the same reason — no email, no
- * provider. The id is unavoidable: it is what a grant has to name.
- *
- * @property isSysAdmin whether this account is the instance admin. Sent because an
- *   admin's checkboxes would be meaningless — [se.soderbjorn.lunicle.AccessControl]
- *   says yes to an admin before it ever looks at a role — so the dialog gives the
- *   row a sentence instead of boxes, and sorts it to the top.
- * @property isSelf whether this is the caller. The dialog shows it, like the
- *   impersonation menu does, so the table matches the user list an admin is
- *   looking at.
- * @property roleKeys the roles this user holds *here*. Keys rather than an enum,
- *   because the client renders them against [ProjectSettingsState.roles] and has
- *   no business knowing what any of them mean.
- */
-@Serializable
-data class ProjectMember(
-    val userId: Long,
-    val name: String,
-    val isSysAdmin: Boolean = false,
-    val isSelf: Boolean = false,
-    val roleKeys: List<String> = emptyList(),
-)
+// `ProjectMember` stood here — a row per account on the instance with the roles it
+// held, which is what the old privileges table rendered. It is gone (LNL-194),
+// replaced by [PersonRow]: the Access list shows the *exceptions*, not a directory of
+// everybody who has ever signed in beside a mostly-empty rung.
 
 /**
  * Everything the settings dialog needs, in one round-trip.
@@ -284,12 +258,8 @@ data class ProjectMember(
  *   practice". What they still receive is the notification fields below, which are
  *   theirs to change. An affordance either way — every write route re-derives the
  *   answer from the session.
- * @property canGrantSeniorRoles whether the caller may tick the `project_admin`
- *   and `project_owner` boxes in the privileges table. Strictly narrower than
- *   [canMutateProject]: a project administrator hands out the issue-scoped roles
- *   but may promote neither a peer nor an owner, so the dialog disables exactly
- *   those two rows for them rather than hiding the table. An owner or a system
- *   administrator (LNL-107). See AccessControl.canGrant.
+ * @property sections which sections of this project the caller has, and [access] who
+ *   the project admits. See [ProjectAccessState], which replaced the privileges table.
  * @property notifyOnNewIssue whether the caller has asked to be e-mailed when a
  *   new issue is created in this project. Every signed-in reader gets this,
  *   administrator or not; it is the one thing anyone else can change here.
@@ -318,10 +288,54 @@ data class ProjectSettingsState(
      * is how you make the first one, exactly like [sprints].
      */
     val versions: List<VocabularyEntry> = emptyList(),
-    val roles: List<RoleDescription> = emptyList(),
-    val members: List<ProjectMember> = emptyList(),
     val canMutateProject: Boolean = false,
-    val canGrantSeniorRoles: Boolean = false,
+    /**
+     * The sections this caller has on this project, in rail order (LNL-194).
+     *
+     * Decided by the server from the rung, never by the rail — see [ProjectSection].
+     * Never empty: everybody who can see a project at all gets at least
+     * [ProjectSectionKeys.ACCESS], which for a Viewer is the "Your access" statement.
+     */
+    val sections: List<ProjectSection> = emptyList(),
+    /**
+     * Who this project admits, or null for a caller below Maintainer.
+     *
+     * Omitted rather than sent-and-flagged, on this file's founding principle: the
+     * person rows carry addresses, and somebody who merely reads a board has no
+     * business receiving the list of exceptions on it. See [ProjectAccessState].
+     */
+    val access: ProjectAccessState? = null,
+    /**
+     * What **you** can do here, in one sentence — "You are a Viewer here, so you can
+     * read this project and change nothing in it."
+     *
+     * Sent to everybody, at every rung, because it is a statement about the reader
+     * rather than about anybody else. It is the whole of a Viewer's Access section and
+     * the top line of an administrator's.
+     */
+    val yourAccessLine: String = "",
+    /**
+     * Whether this caller may delete the project, and [deleteBlockedReason] why not.
+     *
+     * The Owner's. The reason is sent for an Admin — the one rung that would
+     * reasonably expect the button and does not get it — so the row can say which rung
+     * it belongs to rather than simply not being there. Null for everybody else, who
+     * are not offered the row at all: an explanation of a power three rungs up is
+     * noise, not information.
+     */
+    val canDeleteProject: Boolean = false,
+    val deleteBlockedReason: String? = null,
+    /**
+     * Whether the caller may change the project's **identity** — its name and its
+     * prefix. The Owner's, like [canDeleteProject] and for a sharper reason than
+     * "it is senior": a re-prefix rewrites what every ticket reference in every commit
+     * message ever written about this project points at.
+     *
+     * Sent rather than inferred from [canConfigureRepository] (which is also the owner's,
+     * and also true) because the two answer different questions and would have to be
+     * un-conflated the day one of them moved.
+     */
+    val canMutateProjectIdentity: Boolean = false,
     val notifyOnNewIssue: Boolean = false,
     val canReceiveEmailNotifications: Boolean = false,
     /**
@@ -390,7 +404,7 @@ data class ProjectSettingsState(
      * Whether the caller may see and set the repository fields below.
      *
      * Strictly narrower than [canMutateProject], and a sibling of
-     * [canGrantSeniorRoles] in both shape and reason: an **owner or a system
+     * [canDeleteProject] in both shape and reason: an **owner or a system
      * administrator** (LNL-107), where the rest of the admin half opened up to
      * project administrators in LNL-37.
      *
@@ -557,26 +571,7 @@ data class VocabularyOrder(
     val ids: List<Long> = emptyList(),
 )
 
-/**
- * "Give this user this role here", or take it away.
- *
- * [isGranted] is the state to move to rather than a toggle, for
- * [McpEnabledRequest]'s reason: a retry says the same thing, and two admins with
- * the dialog open cannot flip a grant back and forth by both clicking once.
- *
- * Note what this does not say: who is asking. That comes from the session cookie
- * server-side, on every request. A field for it would be the authorization system
- * asking the caller to authorize themselves — see [ImpersonateRequest], which is
- * the same shape for the same reason.
- *
- * @property userId whose privileges to change.
- * @property roleKey which role, as [RoleDescription.key]. A key this server does
- *   not have is a 400: the alternative is `INSERT OR IGNORE` quietly doing
- *   nothing while the dialog re-renders the box as ticked.
- */
-@Serializable
-data class RoleGrant(
-    val userId: Long,
-    val roleKey: String,
-    val isGranted: Boolean,
-)
+// `RoleGrant` — a user, a role key and a granted flag — stood here and is gone
+// (LNL-194). A person holds one rung per project, so the tick-box shape had to guess
+// what unticking one box among five meant; [RungGrant] names the rung to move to, and
+// null is "no access".

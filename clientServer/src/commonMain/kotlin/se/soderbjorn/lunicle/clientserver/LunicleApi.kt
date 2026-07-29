@@ -178,12 +178,21 @@ interface LunicleApi {
     suspend fun createMessageDraft(conversationId: Long): ConversationDraft
     suspend fun publishMessage(conversationId: Long, messageId: Long, body: String): ConversationDetail
     suspend fun deleteMessage(conversationId: Long, messageId: Long): ConversationDetail
-    suspend fun setProjectRole(
-        projectId: Long,
-        userId: Long,
-        roleKey: String,
-        isGranted: Boolean,
-    ): ProjectSettingsState
+    // ── Access (LNL-194) ─────────────────────────────────────────────────────
+
+    /** Put one person on one rung here, or pass null for "no access". */
+    suspend fun setProjectRole(projectId: Long, userId: Long, roleKey: String?): ProjectSettingsState
+
+    /** Say at what rung a whole audience arrives here, or pass null to withdraw the row. */
+    suspend fun setProjectAudience(projectId: Long, audienceKey: String, roleKey: String?): ProjectSettingsState
+
+    /**
+     * Add an address, holding a rung. Nothing is sent — see [PersonAdd].
+     *
+     * @throws ApiFailure 400 for an address that is not one, 403 for a rung this caller
+     *   may not hand out.
+     */
+    suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState
 
     // ── The board ────────────────────────────────────────────────────────────
 

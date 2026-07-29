@@ -33,14 +33,20 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import org.slf4j.LoggerFactory
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
+import se.soderbjorn.lunicle.clientserver.AudienceGrant
+import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.NotificationSubscriptionRequest
+import se.soderbjorn.lunicle.clientserver.PersonAdd
+import se.soderbjorn.lunicle.clientserver.PersonRow
+import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectDisplaySettings
 import se.soderbjorn.lunicle.clientserver.ProjectFeatures
 import se.soderbjorn.lunicle.clientserver.ProjectRequirements
-import se.soderbjorn.lunicle.clientserver.ProjectMember
+import se.soderbjorn.lunicle.clientserver.ProjectSection
+import se.soderbjorn.lunicle.clientserver.ProjectSectionKeys
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
-import se.soderbjorn.lunicle.clientserver.RoleDescription
-import se.soderbjorn.lunicle.clientserver.RoleGrant
+import se.soderbjorn.lunicle.clientserver.RungGrant
+import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunicle.clientserver.TokenModes
 import se.soderbjorn.lunicle.clientserver.VocabularyAdd
 import se.soderbjorn.lunicle.clientserver.VocabularyEdit
@@ -278,62 +284,181 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Grant or revoke one role for one user here.
+     * Put one person on one rung here, or take them off it.
      *
-     * The role is looked up by key rather than trusted: an unknown key is a 400,
-     * because `Roles.sq`'s grant is an `INSERT OR IGNORE … SELECT … WHERE role_key
-     * = ?`, which inserts *nothing* for a key that names no role. Without this
-     * check the response would be a settings state saying the grant did not
-     * happen, next to a dialog that just ticked the box.
+     * ── Why the second gate is the interesting one ───────────────────────────
      *
-     * Granting a role to a system administrator is allowed and does nothing:
-     * `isSysAdmin` short-circuits every check in [AccessControl] before it looks
-     * at a role. The row is honest — it says what was asked for — and it becomes
-     * load-bearing the moment that account stops being one. The dialog explains
-     * this rather than the route refusing it.
+     * [ApplicationCall.adminProject] above says the caller administers this project,
+     * which is enough for the rungs up to maintainer and **not** enough for Admin or
+     * Owner — see [AccessControl.canGrant], asked once the rung is known, because it is
+     * the rung that decides. Without it the first Admin could promote a second and the
+     * Owner who granted them would have no say.
      *
-     * **The second gate is the interesting one.** [ApplicationCall.adminProject]
-     * above says the caller administers this project, which a project
-     * administrator does. That is enough for the issue-scoped roles and NOT
-     * enough for `project_admin` itself — see [AccessControl.canGrant], which is
-     * asked once the role is known, because it is the role that decides. Without
-     * it, the first project administrator could promote a second and the system
-     * administrator who granted them would have no say in it.
+     * And it is asked **twice**: about the rung being written, and about the rung being
+     * replaced. An Admin who could write Viewer over somebody's Owner row would be
+     * demoting an Owner with a gesture the ladder says is not theirs — the same
+     * escalation, running downhill.
+     *
+     * Granting a rung to an instance administrator is allowed and does nothing:
+     * [AccessControl.effectiveRole] gives them Owner everywhere before it looks at a
+     * row. The row is honest — it says what was asked for — and becomes load-bearing
+     * the moment that account stops being one. The Access list explains this rather
+     * than the route refusing it.
      */
     post("${ApiRoutes.PROJECTS}/{id}/roles") {
-        val scope = call.adminProject(deps, "change this project's privileges") ?: return@post
-        val body = call.receiveOrNull<RoleGrant>() ?: run {
+        val scope = call.adminProject(deps, "change who this project admits") ?: return@post
+        val body = call.receiveOrNull<RungGrant>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed grant.")
             return@post
         }
-        val role = ProjectRole.byKey(body.roleKey) ?: run {
-            call.respond(HttpStatusCode.BadRequest, "This server has no role called \"${body.roleKey}\".")
-            return@post
-        }
-        if (!deps.access.canGrant(scope.user, scope.project.id, role)) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                "Only a project owner or system administrator can grant that role.",
-            )
-            return@post
+        // Null is "no access", which is a legal request and removes their row. A
+        // non-null key this server does not have is a 400 rather than a silent no-op:
+        // the alternative is a response saying nothing happened next to a menu that
+        // just showed the new rung.
+        val rung = body.roleKey?.let {
+            ProjectRole.byKey(it) ?: run {
+                call.respond(HttpStatusCode.BadRequest, "This server has no role called \"$it\".")
+                return@post
+            }
         }
         val target = deps.users.findById(body.userId) ?: run {
             call.respond(HttpStatusCode.NotFound, "No such user.")
             return@post
         }
-        // A rung is single-valued, so "granted" is a move TO it and "not granted" is
-        // a move OFF it — and only off the rung named, so a stale dialog unticking a
-        // box for a rung this person no longer holds does not knock them off the one
-        // they do. The tick-box wire shape is what tickets 3–5 replace; until then
-        // this is the honest reading of it.
-        if (body.isGranted) {
-            deps.roles.setRole(target.id, scope.project.id, role)
-        } else if (deps.roles.roleFor(target.id, scope.project.id) == role) {
-            deps.roles.setRole(target.id, scope.project.id, null)
+        val existing = deps.roles.roleFor(target.id, scope.project.id)
+        // Both ends of the move, for the reason above. `listOfNotNull` so "no access"
+        // asks only about what is being taken away, and a first grant only about what is
+        // being given.
+        listOfNotNull(rung, existing).forEach { asked ->
+            if (!deps.access.canGrant(scope.user, scope.project.id, asked)) {
+                call.respond(
+                    HttpStatusCode.Forbidden,
+                    "Only an owner of this project can hand out or withdraw ${asked.label}.",
+                )
+                return@post
+            }
         }
+        deps.roles.setRole(target.id, scope.project.id, rung)
         logger.info(
-            "Role ${if (body.isGranted) "granted" else "revoked"}: ${role.key} for user " +
-                "${target.id} in project ${scope.project.id} by admin ${scope.user.id}",
+            "Rung set: user ${target.id} is now ${rung?.key ?: "nothing"} in project " +
+                "${scope.project.id}, by user ${scope.user.id}",
+        )
+        call.respond(deps.buildSettings(scope.project, scope.user))
+    }
+
+    /**
+     * Say at what rung a whole audience arrives here — guests, members, staff — or
+     * withdraw the row (LNL-194).
+     *
+     * The replacement for `is_public` and `visible_to_all_signed_in`, which could each
+     * only say "may look". An **owner's**, through
+     * [AccessControl.canSetAudience]: this is the row that can hand the entire internet
+     * a rung on the board, so it sits with the person who may also delete it.
+     *
+     * That function also refuses [Audience.GUEST] outright while the instance's
+     * "allow projects to be public" switch is off, whoever asks — and the refusal is
+     * here rather than only greyed in the list for the obvious reason: a rule that
+     * lives in a screen is a rule a POST goes around.
+     *
+     * Gated at ADMIN by [adminProject] first and then at the real rung by
+     * `canSetAudience`, so an Admin gets "not yours" rather than "no such project".
+     */
+    post("${ApiRoutes.PROJECTS}/{id}/audience") {
+        val scope = call.adminProject(deps, "change who this project admits") ?: return@post
+        val body = call.receiveOrNull<AudienceGrant>() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        val audience = Audience.byKey(body.audienceKey) ?: run {
+            call.respond(
+                HttpStatusCode.BadRequest,
+                "This server has no audience called \"${body.audienceKey}\".",
+            )
+            return@post
+        }
+        val rung = body.roleKey?.let {
+            ProjectRole.byKey(it) ?: run {
+                call.respond(HttpStatusCode.BadRequest, "This server has no role called \"$it\".")
+                return@post
+            }
+        }
+        if (!deps.access.canSetAudience(scope.user, scope.project.id, audience)) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                if (audience == Audience.GUEST && !deps.instanceSettings.current().allowPublicProjects) {
+                    "This deployment does not allow a project to be made public."
+                } else {
+                    "Only an owner of this project can change who it admits."
+                },
+            )
+            return@post
+        }
+        deps.roles.setAudienceRole(scope.project.id, audience, rung)
+        logger.info(
+            "Audience set: ${audience.key} is now ${rung?.key ?: "nothing"} in project " +
+                "${scope.project.id}, by user ${scope.user.id}",
+        )
+        call.respond(deps.buildSettings(scope.project, scope.user))
+    }
+
+    /**
+     * Add a person by address, holding a rung (LNL-194).
+     *
+     * ── Nothing is sent ─────────────────────────────────────────────────────
+     *
+     * No mail, no token, no link, no expiry. The address gets a `users` row that has
+     * never been signed into, the rung is written against it, and whoever owns the
+     * address picks it up on their first sign-in — `upsert` finds the row by address
+     * and adopts it. So there is nothing to deliver for the grant to exist, and nothing
+     * to expire if it is never claimed.
+     *
+     * The consequence an administrator has to be told, and is, in the Access section's
+     * advice line: on a deployment that cannot mail a sign-in code, only an address
+     * that can sign in with Google will ever arrive, so adding any other is a grant
+     * nobody can claim.
+     *
+     * ── And this is the gesture admission was waiting for ───────────────────
+     *
+     * [AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED] means "this organisation's domain, plus
+     * addresses already added", and until now nothing added anybody, so it behaved
+     * exactly like the staff-domain-only policy. A row written here is what makes that
+     * `isAlreadyAdded` true at sign-in; see `admissionRefusal`.
+     *
+     * Admin and above, with the same two-ended rung check as the grant above — except
+     * there is no existing rung to withdraw, this address having no row yet.
+     */
+    post("${ApiRoutes.PROJECTS}/{id}/people") {
+        val scope = call.adminProject(deps, "add somebody to this project") ?: return@post
+        val body = call.receiveOrNull<PersonAdd>() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        val rung = ProjectRole.byKey(body.roleKey) ?: run {
+            call.respond(HttpStatusCode.BadRequest, "This server has no role called \"${body.roleKey}\".")
+            return@post
+        }
+        if (!deps.access.canGrant(scope.user, scope.project.id, rung)) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                "Only an owner of this project can hand out ${rung.label}.",
+            )
+            return@post
+        }
+        // Normalised and shape-checked by the same two functions sign-in uses, so the
+        // row this writes is the row a sign-in will find — a different spelling here
+        // would hand somebody a rung they never pick up. See normalizeEmail.
+        val address = normalizeEmail(body.email)
+        if (address == null || !isPlausibleEmail(address)) {
+            call.respond(HttpStatusCode.BadRequest, "That does not look like an e-mail address.")
+            return@post
+        }
+        // The staff/member answer from the same function sign-in derives it with, so a
+        // row added ahead of time and the same row after its owner arrives agree.
+        val person = deps.users.addByEmail(address, UserKind.forEmail(address, deps.identity.domain))
+        deps.roles.setRole(person.id, scope.project.id, rung)
+        logger.info(
+            "Person added: user ${person.id} holds ${rung.key} in project ${scope.project.id}, " +
+                "added by user ${scope.user.id} (signed in before: ${person.hasSignedIn})",
         )
         call.respond(deps.buildSettings(scope.project, scope.user))
     }
@@ -508,137 +633,350 @@ private suspend inline fun BoardDependencies.runVocabularyWrite(
 /**
  * Assemble one settings response.
  *
- * Returned by every write as well as the read, so a dialog never has to guess
- * what its own edit did. That matters most for the things an edit changes
- * *elsewhere*: deleting a status renumbers nothing but changes every other row's
- * "can I be deleted?" answer, and adding a priority moves the middle of the scale
- * that new issues land on. A client that patched its own state locally would be
- * right about the row it touched and wrong about the rest.
+ * Returned by every write as well as the read, so a screen never has to guess what
+ * its own edit did. That matters most for the things an edit changes *elsewhere*:
+ * deleting a status renumbers nothing but changes every other row's "can I be
+ * deleted?" answer, and adding a priority moves the middle of the scale that new
+ * issues land on. A client that patched its own state locally would be right about
+ * the row it touched and wrong about the rest.
+ *
+ * ── Narrowed by rung, in three steps, and each step is a decision ────────────
+ *
+ * Everybody who can read the project gets the bottom layer: what *they* hold, their
+ * own notification subscription, and how the board reads (not a secret — the board
+ * itself reads it to draw a card).
+ *
+ * From Maintainer up, the Access section — the audience rows and the people who hold
+ * something different. It stops there and not lower because the person rows carry
+ * addresses, and somebody who merely reads a board has no business receiving the list
+ * of exceptions on it.
+ *
+ * From Admin up, the vocabularies and their usage counts. From Owner, the repository
+ * and its token source. Both are **omitted**, not sent-and-flagged: a field the
+ * caller may not have does not travel and get hidden by the browser. See this file's
+ * preamble and ProjectSettingsState's.
  */
 private suspend fun BoardDependencies.buildSettings(
     project: ProjectRecord,
     caller: UserRecord,
 ): ProjectSettingsState {
-    // The notification fields every signed-in caller gets, administrator or not —
-    // the one thing a non-administrator can change here.
-    val notifyOnNewIssue = subscriptions.isSubscribedToProjectNewIssues(caller.id, project.id)
-    val canReceiveEmailNotifications = caller.email != null
+    // One rung, asked once, and every gate below is `atLeast` against it — which is
+    // the whole point of the ladder replacing a set of keys. A response cannot
+    // disagree with itself about what this caller may do.
+    val rung = access.effectiveRole(caller, project.id) ?: ProjectRole.VIEWER
+    val administers = rung.atLeast(ProjectRole.ADMIN)
+    val owns = rung.atLeast(ProjectRole.OWNER)
 
-    // Anyone else gets *only* those fields. The admin sections are omitted, not
-    // sent-and-flagged: the members list is a directory of every account on the
-    // instance, and someone who does not administer this project has no business
-    // receiving it. This is the "narrow for a lesser caller" the board does,
-    // applied here now that the dialog opens for everyone. See
-    // ProjectSettingsState's preamble.
-    if (!access.canAdministerProject(caller, project.id)) {
-        return ProjectSettingsState(
-            canMutateProject = false,
-            notifyOnNewIssue = notifyOnNewIssue,
-            canReceiveEmailNotifications = canReceiveEmailNotifications,
-            // Both false for everybody since LNL-190 retired them, and still sent
-            // rather than dropped: the field is on the wire, and a client reading it
-            // deserves the same answer the board gives. No dialog renders a section
-            // to edit them any more. See ProjectSettingsState.discussionsEnabled.
-            discussionsEnabled = project.discussionsEnabled,
-            messagesEnabled = project.messagesEnabled,
-            // Not secret either — the issue editor sees them on the board it loads
-            // — so sent honestly even though this caller's dialog renders no
-            // section to edit them. See ProjectSettingsState.requireLabel.
-            requireLabel = project.requireLabel,
-            requireComponent = project.requireComponent,
-            requireFixedVersionOnResolve = project.requireFixedVersionOnResolve,
-            // Not secret either — the board reads it to render the card footer — so
-            // sent honestly even though this caller's dialog renders no section to
-            // edit it. See ProjectSettingsState.showIssueAuthor.
-            showIssueAuthor = project.showIssueAuthor,
-            hideIssueNumbers = project.hideIssueNumbers,
-        )
-    }
-
-    val rungs = roles.rolesForProject(project.id)
-    // ── Why this is a SECOND gate, and not the one just above ───────────────
-    //
-    // Everything else in this response is the project-administrator's business,
-    // which is what the return above filters on. The repository fields are not.
-    // The write that sets them goes through `canOwnProject` — an owner or a system
-    // administrator (LNL-107) — and the token field can carry a deployment secret,
-    // so narrowing these on canAdministerProject would send a project administrator
-    // fields they can see, cannot change, and would be shown as editable right up
-    // until the save came back 403.
-    //
-    // The read gate is therefore drawn where the write gate is. That the two are
-    // different lines in different files is exactly why this is stated here:
-    // LNL-37 split one notion of "admin" into administer-and-own, LNL-107 seated
-    // the "own" half in a role, and a response narrowed on the wrong half of that
-    // split leaks a project's repository — and possibly a stored token — to whoever
-    // merely runs its board.
-    val owns = access.canOwnProject(caller, project.id)
-    val repository = projects.repositoryConfig(project.id).takeIf { owns }
-    return ProjectSettingsState(
-        labels = vocabularies.rows(project.id, VocabularyKind.LABEL).map { it.toEntry() },
-        components = vocabularies.rows(project.id, VocabularyKind.COMPONENT).map { it.toEntry() },
-        statuses = vocabularies.rows(project.id, VocabularyKind.STATUS).map { it.toEntry() },
-        priorities = vocabularies.rows(project.id, VocabularyKind.PRIORITY).map { it.toEntry() },
-        resolutions = vocabularies.rows(project.id, VocabularyKind.RESOLUTION).map { it.toEntry() },
-        // Empty for every project that has never made one, and the section still
-        // renders — an empty list with an add field is how the first sprint gets
-        // made. See Sprints.sq for why there is no seed.
-        sprints = vocabularies.rows(project.id, VocabularyKind.SPRINT).map { it.toEntry() },
-        // Empty for every project that has never made one, and the section still
-        // renders — an empty list with an add field is how the first version gets
-        // made, like sprints. See Versions.sq for why there is no seed.
-        versions = vocabularies.rows(project.id, VocabularyKind.VERSION).map { it.toEntry() },
-        // The enum, not a table read: `roles` associates users with these, it does
-        // not define them, and a row naming a role this build has never heard of
-        // grants nothing. See RoleStore.seed.
-        roles = ProjectRole.entries.map { RoleDescription(it.key, it.description) },
-        members = users.selectAll().map { member ->
-            ProjectMember(
-                userId = member.id,
-                // resolvedName, so the table says what every other screen says.
-                // Note what does NOT cross: the email and the provider id are on
-                // the UserRecord right here and stop at this line. See Users.kt.
-                name = member.resolvedName,
-                isSysAdmin = member.isInstanceAdmin,
-                isSelf = member.id == caller.id,
-                // At most one now — a person holds one rung per project. The wire
-                // field stays a list because tickets 3–5 rebuild this table.
-                roleKeys = listOfNotNull(rungs[member.id]?.key),
-            )
-        },
-        canMutateProject = true,
-        // Narrower than the line above, deliberately: a project administrator
-        // reaches this branch and still may promote neither a peer nor an owner.
-        // See canGrant.
-        canGrantSeniorRoles = owns,
-        notifyOnNewIssue = notifyOnNewIssue,
-        canReceiveEmailNotifications = canReceiveEmailNotifications,
-        // Rendered back as `owner/name` rather than the URL that was pasted,
-        // because that is what was stored and echoing a reconstructed URL would
-        // invite the owner to believe their exact spelling round-tripped. It is
-        // accepted as input again unchanged; see parseRepositoryUrl.
-        canConfigureRepository = owns,
-        repositoryUrl = repository?.repository?.toString().orEmpty(),
-        // The env-variable name is echoed (it is not a secret); a literal token is
-        // not (it is). So the mode travels for the radio, and githubTokenEnv carries
-        // the name only in env mode. A literal is signalled by the mode alone —
-        // there is no field to hold it — which the dialog reads as "one is stored,
-        // leave the field blank to keep it". See ProjectSettingsState.githubTokenMode.
-        githubTokenEnv = (repository?.token as? TokenSource.Env)?.variableName.orEmpty(),
-        githubTokenMode = when (repository?.token) {
-            is TokenSource.Env -> TokenModes.ENV
-            is TokenSource.Literal -> TokenModes.LITERAL
-            null, TokenSource.None -> TokenModes.NONE
-        },
+    val base = ProjectSettingsState(
+        canMutateProject = administers,
+        sections = sectionsFor(rung),
+        yourAccessLine = "You are a ${rung.label} here. ${rung.description}",
+        // From Maintainer up. Null below, which is what makes the Access section a
+        // Viewer sees be the "Your access" line and nothing else.
+        access = if (rung.atLeast(ProjectRole.MAINTAINER)) buildAccess(project, caller, rung) else null,
+        canDeleteProject = owns,
+        canMutateProjectIdentity = owns,
+        // Worded for an Admin only — the one rung that would reasonably expect the row
+        // and does not get it. Explaining a power three rungs up to a Viewer is noise.
+        deleteBlockedReason = "Deleting this project is its owner's."
+            .takeIf { !owns && rung == ProjectRole.ADMIN },
+        // The one thing a caller at any rung can change here.
+        notifyOnNewIssue = subscriptions.isSubscribedToProjectNewIssues(caller.id, project.id),
+        canReceiveEmailNotifications = caller.email != null,
+        // Both false for everybody since LNL-190 retired them, and still sent rather
+        // than dropped: the field is on the wire, and a client reading it deserves the
+        // same answer the board gives. See ProjectSettingsState.discussionsEnabled.
         discussionsEnabled = project.discussionsEnabled,
         messagesEnabled = project.messagesEnabled,
+        // Not secret — the issue editor and the board read all five off the board they
+        // already load — so sent honestly at every rung even though only Admin and above
+        // renders them as editable. See ProjectSettingsState.requireLabel.
         requireLabel = project.requireLabel,
         requireComponent = project.requireComponent,
         requireFixedVersionOnResolve = project.requireFixedVersionOnResolve,
         showIssueAuthor = project.showIssueAuthor,
         hideIssueNumbers = project.hideIssueNumbers,
     )
+    if (!administers) return base
+
+    // ── Why the repository is a SECOND gate, and not the one just above ──────
+    //
+    // Everything else added here is the project administrator's business. The
+    // repository fields are not: the write that sets them goes through
+    // `canOwnProject`, and the token field can carry a deployment secret — so
+    // narrowing these on `administers` would send a project administrator fields they
+    // can see, cannot change, and would be shown as editable right up until the save
+    // came back 403.
+    //
+    // That the two gates are different lines in different files is exactly why this is
+    // stated here: a response narrowed on the wrong half of that split leaks a
+    // project's repository, and possibly a stored token, to whoever merely runs its
+    // board.
+    val repository = projects.repositoryConfig(project.id).takeIf { owns }
+    return base.copy(
+        labels = vocabularies.rows(project.id, VocabularyKind.LABEL).map { it.toEntry() },
+        components = vocabularies.rows(project.id, VocabularyKind.COMPONENT).map { it.toEntry() },
+        statuses = vocabularies.rows(project.id, VocabularyKind.STATUS).map { it.toEntry() },
+        priorities = vocabularies.rows(project.id, VocabularyKind.PRIORITY).map { it.toEntry() },
+        resolutions = vocabularies.rows(project.id, VocabularyKind.RESOLUTION).map { it.toEntry() },
+        // Empty for every project that has never made one, and the section still
+        // renders — an empty list with an add field is how the first one gets made.
+        sprints = vocabularies.rows(project.id, VocabularyKind.SPRINT).map { it.toEntry() },
+        versions = vocabularies.rows(project.id, VocabularyKind.VERSION).map { it.toEntry() },
+        // Rendered back as `owner/name` rather than the URL that was pasted, because
+        // that is what was stored and echoing a reconstruction would invite the owner to
+        // believe their exact spelling round-tripped. See parseRepositoryUrl.
+        canConfigureRepository = owns,
+        repositoryUrl = repository?.repository?.toString().orEmpty(),
+        // The env-variable name is echoed (it is not a secret); a literal token is not
+        // (it is). So the mode travels for the radio, and githubTokenEnv carries the name
+        // only in env mode. A literal is signalled by the mode alone — which the dialog
+        // reads as "one is stored, leave the field blank to keep it".
+        githubTokenEnv = (repository?.token as? TokenSource.Env)?.variableName.orEmpty(),
+        githubTokenMode = when (repository?.token) {
+            is TokenSource.Env -> TokenModes.ENV
+            is TokenSource.Literal -> TokenModes.LITERAL
+            null, TokenSource.None -> TokenModes.NONE
+        },
+    )
 }
+
+/**
+ * Which sections of a project this rung has, in rail order (LNL-194).
+ *
+ * The one place the answer lives, because the rail draws what it is handed — see
+ * [ProjectSection]. Every line below is a rung's powers restated as a screen, so
+ * moving a power between rungs moves its section with it.
+ *
+ * Below Maintainer there is **one** section, and it is Access relabelled "Your
+ * access": a Viewer has nothing to configure, and a rail offering them General with
+ * every field dead would be four screens of things that are not theirs. The
+ * notification toggle rides in that section for every caller, at every rung, because
+ * it is the one control here that is about the reader rather than about the project —
+ * so it is in the same place for a Viewer and for an Owner.
+ *
+ * General appears from Maintainer up **read-only**, which is deliberate and is the
+ * opposite of hiding it: a Maintainer sees the name, the prefix and how the board
+ * reads, and can change none of it, with each group saying whose it is. Hiding what
+ * somebody cannot edit only prompts "where did the project name go".
+ */
+private fun sectionsFor(rung: ProjectRole): List<ProjectSection> {
+    if (!rung.atLeast(ProjectRole.MAINTAINER)) {
+        return listOf(ProjectSection(ProjectSectionKeys.ACCESS, "Your access"))
+    }
+    return buildList {
+        add(ProjectSection(ProjectSectionKeys.GENERAL, "General"))
+        // The repository is part of a project's identity and its token is a deployment
+        // secret, so this one is the owner's alone.
+        if (rung.atLeast(ProjectRole.OWNER)) add(ProjectSection(ProjectSectionKeys.GITHUB, "Github"))
+        // What the board *is*. An administrator's, with the sprints one rung below.
+        if (rung.atLeast(ProjectRole.ADMIN)) add(ProjectSection(ProjectSectionKeys.STRUCTURE, "Structure"))
+        add(ProjectSection(ProjectSectionKeys.SPRINTS, "Sprints"))
+        add(ProjectSection(ProjectSectionKeys.ACCESS, "Access"))
+    }
+}
+
+/**
+ * Who this project admits, as the Access section renders it (LNL-194).
+ *
+ * Built for a caller at Maintainer or above; see [buildSettings] for why the line is
+ * drawn there. Everything about *whether a control is live* is decided here rather
+ * than in the screen, because the greying has to agree with the refusal and the
+ * refusal lives on this side. See [ProjectAccessState].
+ */
+private suspend fun BoardDependencies.buildAccess(
+    project: ProjectRecord,
+    caller: UserRecord,
+    rung: ProjectRole,
+): ProjectAccessState {
+    val canGrant = rung.atLeast(ProjectRole.ADMIN)
+    val owns = rung.atLeast(ProjectRole.OWNER)
+    val settings = instanceSettings.current()
+    val audienceRoles = roles.audienceRoles(project.id)
+    val ownRows = roles.rolesForProject(project.id)
+
+    return ProjectAccessState(
+        audiences = Audience.entries
+            // No staff row on a deployment that has not named its own domain: the
+            // audience would match nobody, so the row would be a control that cannot do
+            // anything rather than a stricter setting. Two rows, not three.
+            .filter { it != Audience.STAFF || identity.hasStaffTier }
+            .map { audience ->
+                val refusal = audienceRefusal(audience, settings.allowPublicProjects, owns)
+                AudienceRow(
+                    key = audience.key,
+                    title = audience.title,
+                    subtitle = audience.subtitle(identity.domain),
+                    roleKey = audienceRoles[audience]?.key,
+                    isSelectable = refusal == null,
+                    unavailableReason = refusal,
+                )
+            },
+        people = peopleRows(project, caller, ownRows, audienceRoles, settings.ownerUserId, canGrant),
+        rungs = ProjectRole.entries.map { offered ->
+            // The same question the write asks — canGrant — so a rung offered here
+            // cannot be refused there and a rung greyed here is genuinely refused.
+            val grantable = access.canGrant(caller, project.id, offered)
+            RungOption(
+                key = offered.key,
+                label = offered.label,
+                description = offered.description,
+                isSelectable = grantable,
+                unavailableReason = if (grantable) {
+                    null
+                } else {
+                    // Names the caller's own rung, because the useful part of the refusal
+                    // is who to ask rather than that there was one.
+                    "You are ${rung.label.article()} ${rung.label} here, so ${offered.label} " +
+                        "is not yours to hand out."
+                },
+            )
+        },
+        canGrant = canGrant,
+        readOnlyReason = "Adding people and changing what they hold is for an administrator of " +
+            "this project. You can see who is here."
+            .takeIf { !canGrant },
+        addressAdvice = addressAdvice(),
+        staffDomain = identity.domain,
+    )
+}
+
+/**
+ * Why this audience row is dead, or null because it is live.
+ *
+ * The publish veto is checked **first and separately**, because it is the refusal that
+ * would still stand if the other were fixed: it applies to the guest row whoever asks,
+ * an instance administrator and the deployment's own owner included, and
+ * [AccessControl.canSetAudience] enforces it on the write. Greying it with the reason
+ * is the explanation, not the enforcement.
+ */
+private fun audienceRefusal(audience: Audience, allowPublic: Boolean, owns: Boolean): String? = when {
+    audience == Audience.GUEST && !allowPublic ->
+        "This deployment does not allow a project to be made public. An instance " +
+            "administrator decides that, in the instance settings."
+    !owns -> "Who this project admits is its owner's to change."
+    else -> null
+}
+
+/**
+ * The exception rows: everybody who holds something other than what their audience
+ * gives them.
+ *
+ * Three kinds of row, and nobody else:
+ *
+ *  - somebody with an **own row** in `project_roles`;
+ *  - an **instance administrator**, who reaches Owner everywhere without one;
+ *  - the **instance owner**, likewise, and separately because ownership is a setting
+ *    rather than a column so no [UserRecord] carries it.
+ *
+ * Anybody adequately served by an audience row is deliberately absent. That is what
+ * keeps this list short enough to *be* the audit — a screen listing every account on
+ * the instance answers "who can get in here" with a directory, which is not an answer,
+ * and is what the old privileges table did.
+ */
+private suspend fun BoardDependencies.peopleRows(
+    project: ProjectRecord,
+    caller: UserRecord,
+    ownRows: Map<Long, ProjectRole>,
+    audienceRoles: Map<Audience, ProjectRole>,
+    instanceOwnerId: Long?,
+    canGrant: Boolean,
+): List<PersonRow> = users.selectAll()
+    .filter { it.id in ownRows.keys || it.isInstanceAdmin || it.id == instanceOwnerId }
+    .map { person ->
+        val own = ownRows[person.id]
+        // What their audience gives them anyway, by the same one-comparison rule
+        // AccessControl.effectiveRole uses: the instance ladder ascends, so "matches this
+        // audience" is `their rank >= the audience's`.
+        val floor = audienceRoles
+            .filterKeys { person.storedInstanceRole.atLeast(it.instanceRole) }
+            .entries
+            .maxByOrNull { it.value.rank }
+        val runsInstance = person.isInstanceAdmin || person.id == instanceOwnerId
+        val effective = when {
+            runsInstance -> ProjectRole.OWNER
+            else -> listOfNotNull(own, floor?.value).maxByOrNull { it.rank }
+        }
+        PersonRow(
+            userId = person.id,
+            name = person.resolvedName,
+            // The address, which does not cross on any other project wire type. It has to
+            // here: this list is an audit of who was let in by name, and two accounts can
+            // share a display name. See PersonRow.email.
+            email = person.email.orEmpty(),
+            roleKey = own?.key,
+            effectiveLine = when {
+                runsInstance -> null
+                floor == null -> null
+                // Only worth saying when the audience is actually carrying some of the
+                // weight — otherwise it is a sentence restating the picker beside it.
+                else -> "The ${floor.key.title.lowercase()} row here already gives " +
+                    "${floor.value.label}, so this person is effectively " +
+                    "${effective?.label ?: floor.value.label}."
+            },
+            hasSignedIn = person.hasSignedIn,
+            isSelf = person.id == caller.id,
+            // An instance administrator's rung here is not stored and cannot be lowered
+            // from this screen; and nobody may move somebody off a rung they could not
+            // hand out themselves, which is what stops an Admin demoting an Owner.
+            isEditable = canGrant && !runsInstance &&
+                (own == null || access.canGrant(caller, project.id, own)),
+            note = when {
+                person.isInstanceAdmin -> "Runs this instance, so holds Owner on every project here."
+                person.id == instanceOwnerId -> "Owns this instance, so holds Owner on every project here."
+                own != null && canGrant && !access.canGrant(caller, project.id, own) ->
+                    "Only an owner of this project can change what ${person.resolvedName} holds."
+                else -> null
+            },
+        )
+    }
+
+/**
+ * What an administrator needs to know before typing an address into the add dialog.
+ *
+ * Worded for *this* deployment, and computed here because the answer depends on
+ * whether a mail transport is configured — which a screen has no way to know.
+ *
+ * The second sentence is the one worth having. Adding an address is a grant that has
+ * to be **claimed** by somebody signing in, and on a deployment that cannot mail a
+ * code the only way to claim one is Google. So adding an address that cannot reach
+ * Google is not a slow invitation; it is a grant nobody can ever collect, and saying
+ * so here is cheaper than the support conversation.
+ */
+private fun BoardDependencies.addressAdvice(): String {
+    val nothingSent = "Nothing is sent. The address gets an account that can hold a role straight " +
+        "away, and whoever owns it picks the role up the first time they sign in."
+    return if (identity.isCodeSignInAvailable) {
+        nothingSent
+    } else {
+        "$nothingSent This deployment cannot mail a sign-in code, so only an address that can " +
+            "sign in with Google will ever arrive — adding any other is a role nobody can claim."
+    }
+}
+
+/** What to call an audience on screen. */
+private val Audience.title: String
+    get() = when (this) {
+        Audience.GUEST -> "Guests"
+        Audience.MEMBER -> "Members"
+        Audience.STAFF -> "Staff"
+    }
+
+/**
+ * Who that audience is, in one sentence.
+ *
+ * The staff row's answer names the deployment's own domain, which is why this is
+ * written here rather than on the enum: [Audience] is a permission vocabulary and does
+ * not hold configuration.
+ */
+private fun Audience.subtitle(domain: String?): String = when (this) {
+    Audience.GUEST -> "Anybody at all, without signing in."
+    Audience.MEMBER -> "Everybody with an account on this deployment."
+    Audience.STAFF -> domain?.let { "Accounts on $it." } ?: "Accounts on this organisation's domain."
+}
+
+/** "an" before Admin and Owner, "a" before the rest. Only ever applied to a rung label. */
+private fun String.article(): String = if (firstOrNull()?.lowercaseChar() in setOf('a', 'e', 'i', 'o', 'u')) "an" else "a"
 
 private fun VocabularyRow.toEntry(): VocabularyEntry = VocabularyEntry(
     id = id,

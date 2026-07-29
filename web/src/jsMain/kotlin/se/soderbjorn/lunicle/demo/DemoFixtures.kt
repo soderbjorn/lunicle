@@ -171,23 +171,17 @@ internal fun seedDemoWorld(): DemoWorld {
     val sprint4 = sprint("Sprint 4 — Bridge & Combat", 2)
     p.activeSprintId = sprint4.id
 
-    // Membership. The demo user owns the board; the rest hold a working set.
-    p.members[janeway.id] = mutableSetOf(DemoRoleKeys.PROJECT_OWNER)
-    val working = mutableSetOf(
-        DemoRoleKeys.CREATE_ISSUE,
-        DemoRoleKeys.COMMENT_ON_ISSUE,
-        DemoRoleKeys.CHANGE_UNOWNED_ISSUES,
-        DemoRoleKeys.BE_ASSIGNED_ISSUE,
-    )
-    listOf(seven, data, riker, laforge, worf, torres, kim, tuvok, chakotay).forEach {
-        p.members[it.id] = working.toMutableSet()
+    // Who holds what. The demo user owns the board; the crew who do the work are
+    // maintainers, two run it, and the rest ride the members audience row and so are
+    // deliberately absent from the exception list. One rung each — see DemoRungKeys.
+    p.members[janeway.id] = DemoRungKeys.OWNER
+    listOf(seven, data, riker, worf, torres, kim, tuvok, chakotay).forEach {
+        p.members[it.id] = DemoRungKeys.MAINTAINER
     }
-    // A couple of project administrators, and lighter roles for the rest.
-    p.members[picard.id] = mutableSetOf(DemoRoleKeys.PROJECT_ADMIN)
-    p.members[laforge.id] = mutableSetOf(DemoRoleKeys.PROJECT_ADMIN, DemoRoleKeys.BE_ASSIGNED_ISSUE)
-    p.members[troi.id] = mutableSetOf(DemoRoleKeys.COMMENT_ON_ISSUE, DemoRoleKeys.VIEW_PROJECT)
-    p.members[crusher.id] = mutableSetOf(DemoRoleKeys.COMMENT_ON_ISSUE, DemoRoleKeys.VIEW_PROJECT)
-    p.members[doctor.id] = mutableSetOf(DemoRoleKeys.VIEW_PROJECT)
+    p.members[picard.id] = DemoRungKeys.ADMIN
+    p.members[laforge.id] = DemoRungKeys.ADMIN
+    p.members[troi.id] = DemoRungKeys.CONTRIBUTOR
+    p.members[crusher.id] = DemoRungKeys.CONTRIBUTOR
 
     // ── Issues ──────────────────────────────────────────────────────────────
 

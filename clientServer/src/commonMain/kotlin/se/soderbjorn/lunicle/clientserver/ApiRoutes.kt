@@ -716,15 +716,27 @@ object ApiRoutes {
         "$PROJECTS/$projectId/sprints/$sprintId/issues"
 
     /**
-     * `POST` — grant or revoke one role for one user in this project, from a
-     * [RoleGrant].
+     * `POST` — put one person on one rung in this project, from a [RungGrant].
      *
-     * One grant per request rather than "here is the whole matrix": a checkbox is
-     * one intent, and a route that took the table would let a stale dialog revoke
-     * a grant another admin made thirty seconds ago just by re-sending what it
-     * had on screen.
+     * One person per request rather than "here is the whole list": a picker is one
+     * intent, and a route that took the table would let a stale screen revoke a grant
+     * another administrator made thirty seconds ago just by re-sending what it had on
+     * screen.
      */
     fun projectRoles(projectId: Long): String = "$PROJECTS/$projectId/roles"
+
+    /**
+     * `POST` — say at what rung a whole audience arrives here, from an
+     * [AudienceGrant]. The project's owner's, and refused for guests outright while the
+     * instance forbids publishing.
+     */
+    fun projectAudience(projectId: Long): String = "$PROJECTS/$projectId/audience"
+
+    /**
+     * `POST` — add an address holding a rung, from a [PersonAdd]. Nothing is sent; the
+     * grant waits to be claimed by a sign-in.
+     */
+    fun projectPeople(projectId: Long): String = "$PROJECTS/$projectId/people"
 
     /** `POST` — create a hidden draft issue, returning an [IssueDraft]. */
     fun issues(projectId: Long): String = "$PROJECTS/$projectId/issues"

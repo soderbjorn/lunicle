@@ -167,21 +167,11 @@ internal fun seedKlinikProject(w: DemoWorld) {
 
     // Membership. Janeway owns it; Nadia runs the bench day to day; Otto is on the
     // front desk and books jobs in; Milo is the apprentice and may only look and talk.
-    p.members[janeway.id] = mutableSetOf(DemoRoleKeys.PROJECT_OWNER)
-    val bench = mutableSetOf(
-        DemoRoleKeys.CREATE_ISSUE,
-        DemoRoleKeys.COMMENT_ON_ISSUE,
-        DemoRoleKeys.CHANGE_UNOWNED_ISSUES,
-        DemoRoleKeys.BE_ASSIGNED_ISSUE,
-    )
-    listOf(priya, sam, elin, marcus, hedvig).forEach { p.members[it.id] = bench.toMutableSet() }
-    p.members[nadia.id] = mutableSetOf(DemoRoleKeys.PROJECT_ADMIN, DemoRoleKeys.BE_ASSIGNED_ISSUE)
-    p.members[otto.id] = mutableSetOf(
-        DemoRoleKeys.CREATE_ISSUE,
-        DemoRoleKeys.COMMENT_ON_ISSUE,
-        DemoRoleKeys.CHANGE_UNOWNED_ISSUES,
-    )
-    p.members[milo.id] = mutableSetOf(DemoRoleKeys.VIEW_PROJECT, DemoRoleKeys.COMMENT_ON_ISSUE)
+    p.members[janeway.id] = DemoRungKeys.OWNER
+    listOf(priya, sam, elin, marcus, hedvig).forEach { p.members[it.id] = DemoRungKeys.MAINTAINER }
+    p.members[nadia.id] = DemoRungKeys.ADMIN
+    p.members[otto.id] = DemoRungKeys.MAINTAINER
+    p.members[milo.id] = DemoRungKeys.CONTRIBUTOR
 
     // ── Jobs ──────────────────────────────────────────────────────────────────
     //

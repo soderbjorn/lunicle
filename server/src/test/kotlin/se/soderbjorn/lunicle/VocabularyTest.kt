@@ -553,8 +553,8 @@ class VocabularyTest {
             val body = settings.body<ProjectSettingsState>()
             assertTrue(!body.canMutateProject, "A non-admin was told they may configure the project.")
             assertTrue(
-                body.members.isEmpty(),
-                "A non-admin was handed the member directory — every account on the instance.",
+                body.access == null,
+                "A viewer was handed the Access section, which carries other people's addresses.",
             )
             assertTrue(
                 body.labels.isEmpty() && body.statuses.isEmpty(),

@@ -42,11 +42,16 @@ import se.soderbjorn.lunicle.clientserver.IssueSummary
 import se.soderbjorn.lunicle.clientserver.NotificationKind
 import se.soderbjorn.lunicle.clientserver.NotificationListState
 import se.soderbjorn.lunicle.clientserver.NotificationSummary
-import se.soderbjorn.lunicle.clientserver.ProjectMember
 import se.soderbjorn.lunicle.clientserver.ProjectPermissionsView
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
+import se.soderbjorn.lunicle.clientserver.AudienceRow
+import se.soderbjorn.lunicle.clientserver.PersonRow
+import se.soderbjorn.lunicle.clientserver.ProjectAccessState
+import se.soderbjorn.lunicle.clientserver.ProjectSection
+import se.soderbjorn.lunicle.clientserver.ProjectSectionKeys
 import se.soderbjorn.lunicle.clientserver.RoleDescription
+import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SignedInUser
 import se.soderbjorn.lunicle.clientserver.SprintItem
@@ -60,39 +65,54 @@ import se.soderbjorn.lunicle.clientserver.VocabularyEntry
 import se.soderbjorn.lunicle.clientserver.VocabularyItem
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
 
-// ── Role vocabulary ─────────────────────────────────────────────────────────
+// ── Rung vocabulary ─────────────────────────────────────────────────────────
 //
-// The server's `Role` enum lives in the JVM-only `:server` module, so the demo
-// carries its own copy of the keys and descriptions the settings dialog renders.
-// These strings are wire format on the real server; here they are just what the
-// privileges table shows. Kept in declaration order, weakest grant first, the way
-// the real dialog draws them.
+// The server's `ProjectRole` enum lives in the JVM-only `:server` module, so the demo
+// carries its own copy of the five rungs the Access section renders. These strings are
+// wire format on the real server; here they are just what the pickers show. Declaration
+// order is the ladder, weakest first — the same order the real rung menu draws.
+//
+// This replaced a set of seven privilege keys (LNL-194 following LNL-191): a person
+// holds one rung per project now, not a subset of grants, so the demo's own model is a
+// key per person per project rather than a set of them.
 
-internal object DemoRoleKeys {
-    const val VIEW_PROJECT = "view_project"
-    const val CREATE_ISSUE = "create_issue"
-    const val COMMENT_ON_ISSUE = "comment_on_issue"
-    const val CHANGE_UNOWNED_ISSUES = "change_unowned_issues"
-    const val BE_ASSIGNED_ISSUE = "be_assigned_issue"
-    const val PROJECT_ADMIN = "project_admin"
-    const val PROJECT_OWNER = "project_owner"
+internal object DemoRungKeys {
+    const val VIEWER = "viewer"
+    const val CONTRIBUTOR = "contributor"
+    const val MAINTAINER = "maintainer"
+    const val ADMIN = "admin"
+    const val OWNER = "owner"
 }
 
-internal val DEMO_ROLE_DESCRIPTIONS: List<RoleDescription> = listOf(
-    RoleDescription(DemoRoleKeys.VIEW_PROJECT, "See this project, without being able to change anything in it."),
-    RoleDescription(DemoRoleKeys.CREATE_ISSUE, "Create issues in this project."),
-    RoleDescription(DemoRoleKeys.COMMENT_ON_ISSUE, "Post comments on this project's issues."),
-    RoleDescription(DemoRoleKeys.CHANGE_UNOWNED_ISSUES, "Edit issues they did not create."),
-    RoleDescription(DemoRoleKeys.BE_ASSIGNED_ISSUE, "Be assigned this project's issues."),
-    RoleDescription(
-        DemoRoleKeys.PROJECT_ADMIN,
-        "Administer this project: its sprints, its vocabulary and its privileges.",
+/**
+ * The rungs as the demo's pickers offer them — all selectable, because the demo visitor
+ * owns every board and there is nobody senior to refuse them anything.
+ */
+internal val DEMO_RUNGS: List<RungOption> = listOf(
+    RungOption(DemoRungKeys.VIEWER, "Viewer", "Read this project, without being able to change anything in it."),
+    RungOption(DemoRungKeys.CONTRIBUTOR, "Contributor", "File issues, comment on them, and be assigned them."),
+    RungOption(
+        DemoRungKeys.MAINTAINER,
+        "Maintainer",
+        "Edit anyone's issue here, and manage the sprints and versions.",
     ),
-    RoleDescription(
-        DemoRoleKeys.PROJECT_OWNER,
-        "Own this project: everything an administrator can do, plus its name, its repository, and deleting it.",
+    RungOption(
+        DemoRungKeys.ADMIN,
+        "Admin",
+        "Administer this project: its vocabulary, its settings, deleting issues, and granting " +
+            "roles up to maintainer.",
+    ),
+    RungOption(
+        DemoRungKeys.OWNER,
+        "Owner",
+        "Own this project: everything an administrator can do, plus its name, its prefix, its " +
+            "repository, its visibility, its deletion, and promoting administrators and owners.",
     ),
 )
+
+/** The rung label for a key, for the rows the demo renders. */
+internal fun demoRungLabel(key: String): String =
+    DEMO_RUNGS.firstOrNull { it.key == key }?.label ?: key
 
 // ── Entities ────────────────────────────────────────────────────────────────
 
@@ -225,7 +245,19 @@ internal class DemoProject(
     val events: MutableList<DemoEvent> = mutableListOf(),
     var nextNumber: Long = 1,
     // userId -> the role keys they hold here.
-    val members: MutableMap<Long, MutableSet<String>> = mutableMapOf(),
+    /**
+     * Who holds what here: one rung per person, by key (LNL-194).
+     *
+     * A map to a single key rather than to a set of privilege keys, because that is what
+     * the real model is now — see [DemoRungKeys].
+     */
+    val members: MutableMap<Long, String> = mutableMapOf(),
+    /**
+     * What each audience arrives as, by audience key, or absent for "no access"
+     * (LNL-194). Seeded to admit members as viewers, so the demo's Access section opens
+     * with something to look at rather than an empty board nobody can see.
+     */
+    val audiences: MutableMap<String, String> = mutableMapOf("member" to DemoRungKeys.VIEWER),
 )
 
 // ── The world ───────────────────────────────────────────────────────────────
@@ -519,15 +551,42 @@ internal class DemoWorld {
     private fun sprintEntry(s: DemoSprint, usage: Int) =
         VocabularyEntry(s.id, s.name, s.position, usageCount = usage)
 
-    fun projectMembers(p: DemoProject): List<ProjectMember> = users.map { u ->
-        ProjectMember(
-            userId = u.id,
-            name = u.name,
-            isSysAdmin = u.isSysAdmin,
-            isSelf = u.id == demoUserId,
-            roleKeys = p.members[u.id]?.toList() ?: emptyList(),
-        )
-    }
+    /**
+     * Who this project admits, as the demo's Access section (LNL-194).
+     *
+     * Audience rows come from [DemoProject.audiences]; person rows are the exceptions —
+     * exactly the accounts with a rung in [DemoProject.members], which is what the real
+     * server sends. The visitor may grant anything, being the owner of every demo board.
+     */
+    fun projectAccessState(p: DemoProject): ProjectAccessState = ProjectAccessState(
+        audiences = listOf(
+            AudienceRow("guest", "Guests", "Anybody at all, without signing in.", p.audiences["guest"]),
+            AudienceRow(
+                "member",
+                "Members",
+                "Everybody with an account on this deployment.",
+                p.audiences["member"],
+            ),
+            // No staff row: the demo is an unbranded install with no domain of its own, so
+            // the staff audience would match nobody. Two rows, not three — see the server's
+            // buildAccess.
+        ),
+        people = users.filter { it.id in p.members.keys }.map { u ->
+            PersonRow(
+                userId = u.id,
+                name = u.name,
+                email = u.email.orEmpty(),
+                roleKey = p.members[u.id],
+                hasSignedIn = u.id == demoUserId,
+                isSelf = u.id == demoUserId,
+                isEditable = true,
+            )
+        },
+        rungs = DEMO_RUNGS,
+        canGrant = true,
+        addressAdvice = "Nothing is sent. The address gets an account that can hold a role straight " +
+            "away, and whoever owns it picks the role up the first time they sign in.",
+    )
 
     fun projectSettingsState(p: DemoProject): ProjectSettingsState = ProjectSettingsState(
         labels = p.labels.sortedBy { it.position }.map { namedEntry(it, usageOfLabel(p, it.id)) },
@@ -537,10 +596,21 @@ internal class DemoWorld {
         resolutions = p.resolutions.sortedBy { it.position }.map { statusEntry(p, it, usageOfResolution(p, it.id)) },
         sprints = p.sprints.sortedBy { it.position }.map { sprintEntry(it, usageOfSprint(p, it.id)) },
         versions = p.versions.sortedBy { it.position }.map { namedEntry(it, usageOfVersion(p, it.id)) },
-        roles = DEMO_ROLE_DESCRIPTIONS,
-        members = projectMembers(p),
         canMutateProject = true,
-        canGrantSeniorRoles = true,
+        // Every section, because the demo visitor owns every board — the same list the
+        // server builds for an owner. See ProjectSectionKeys.
+        sections = listOf(
+            ProjectSection(ProjectSectionKeys.GENERAL, "General"),
+            ProjectSection(ProjectSectionKeys.GITHUB, "Github"),
+            ProjectSection(ProjectSectionKeys.STRUCTURE, "Structure"),
+            ProjectSection(ProjectSectionKeys.SPRINTS, "Sprints"),
+            ProjectSection(ProjectSectionKeys.ACCESS, "Access"),
+        ),
+        access = projectAccessState(p),
+        yourAccessLine = "You are an Owner here. Own this project: everything an administrator " +
+            "can do, plus its name, its prefix, its repository, its visibility, its deletion, " +
+            "and promoting administrators and owners.",
+        canDeleteProject = true,
         notifyOnNewIssue = p.notifyOnNewIssue,
         canReceiveEmailNotifications = true,
         discussionsEnabled = p.discussionsEnabled,
@@ -549,6 +619,7 @@ internal class DemoWorld {
         requireComponent = p.requireComponent,
         requireFixedVersionOnResolve = p.requireFixedVersionOnResolve,
         showIssueAuthor = p.showIssueAuthor,
+        hideIssueNumbers = p.hideIssueNumbers,
         // No repository in the demo — the fields are offered (owner) but empty.
         repositoryUrl = "",
         canConfigureRepository = true,
@@ -559,7 +630,9 @@ internal class DemoWorld {
     // ── Instance administration ───────────────────────────────────────────────
 
     fun adminSettingsState(): AdminSettingsState = AdminSettingsState(
-        roles = DEMO_ROLE_DESCRIPTIONS,
+        // The instance dialog's per-project rights table still speaks in role keys; it is
+        // ticket 5's to rebuild, so the demo hands it the rungs under the same shape.
+        roles = DEMO_RUNGS.map { RoleDescription(it.key, it.description) },
         users = users.map { u ->
             AdminUser(
                 userId = u.id,
@@ -573,7 +646,7 @@ internal class DemoWorld {
                     AdminProjectRights(
                         projectId = p.id,
                         projectName = p.name,
-                        heldRoleKeys = p.members[u.id]?.toList() ?: emptyList(),
+                        heldRoleKeys = listOfNotNull(p.members[u.id]),
                         canSeeProject = true,
                     )
                 },

@@ -53,7 +53,7 @@ import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.ProjectFeatures
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
-import se.soderbjorn.lunicle.clientserver.RoleGrant
+import se.soderbjorn.lunicle.clientserver.RungGrant
 import se.soderbjorn.lunicle.clientserver.SprintActivation
 import se.soderbjorn.lunicle.clientserver.VocabularyAdd
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
@@ -63,6 +63,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
@@ -172,7 +173,7 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.CONTRIBUTOR.key, isGranted = true))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = ProjectRole.CONTRIBUTOR.key))
             }
             assertEquals(HttpStatusCode.OK, response.status, "A project administrator could not grant a role.")
         }
@@ -196,7 +197,7 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key, isGranted = true))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key))
             }
             assertEquals(
                 HttpStatusCode.Forbidden,
@@ -219,7 +220,7 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.sysAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key, isGranted = true))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key))
             }
             assertEquals(HttpStatusCode.OK, response.status)
         }
@@ -302,36 +303,53 @@ class ProjectAdminTest {
     // ── The affordance ───────────────────────────────────────────────────────
 
     /**
-     * The settings dialog opens for a project administrator, with the admin half
-     * — and with the one box they may not tick flagged.
+     * The Access section opens for a project administrator, with the two senior rungs
+     * greyed and worded (LNL-194).
      *
-     * `canMutateProject` and `canGrantSeniorRoles` differ for exactly this
-     * caller and nobody else, which is why they are two fields rather than one.
+     * The rung options are where `canMutateProject` and "may promote" part company, and
+     * they part company for exactly this caller and nobody else — which is why the
+     * greying is per rung rather than one flag on the response.
      */
     @Test
-    fun `the settings state tells a project administrator what they may not grant`(): Unit = runBlocking {
+    fun `the access state tells a project administrator what they may not grant`(): Unit = runBlocking {
         val f = seed()
         withRoutes { client ->
             val theirs: ProjectSettingsState = client.get("/api/projects/${f.projectId}/settings") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
             }.body()
             assertTrue(theirs.canMutateProject, "A project administrator got the read-only dialog.")
-            assertFalse(
-                theirs.canGrantSeniorRoles,
-                "The dialog would offer a project administrator the promote box, which the route refuses.",
+            val theirRungs = theirs.access?.rungs.orEmpty().associateBy { it.key }
+            assertTrue(theirRungs.isNotEmpty(), "The Access section was omitted for an administrator.")
+            assertTrue(
+                theirRungs.getValue(ProjectRole.MAINTAINER.key).isSelectable,
+                "A project administrator lost the rungs they may hand out.",
             )
-            assertTrue(theirs.members.isNotEmpty(), "The admin half was omitted.")
+            assertFalse(
+                theirRungs.getValue(ProjectRole.ADMIN.key).isSelectable,
+                "The screen would offer a project administrator a rung the route refuses.",
+            )
+            assertNotNull(
+                theirRungs.getValue(ProjectRole.OWNER.key).unavailableReason,
+                "A rung out of reach was greyed without saying why.",
+            )
+            assertTrue(theirs.access?.canGrant == true, "A project administrator cannot add anybody.")
 
             val sysAdmin: ProjectSettingsState = client.get("/api/projects/${f.projectId}/settings") {
                 cookie(SESSION_COOKIE, f.sysAdminCookie)
             }.body()
-            assertTrue(sysAdmin.canGrantSeniorRoles, "A system administrator lost the promote box.")
+            assertTrue(
+                sysAdmin.access?.rungs.orEmpty().all { it.isSelectable },
+                "A system administrator lost a rung.",
+            )
 
             val outsider: ProjectSettingsState = client.get("/api/projects/${f.projectId}/settings") {
                 cookie(SESSION_COOKIE, f.outsiderCookie)
             }.body()
             assertFalse(outsider.canMutateProject)
-            assertTrue(outsider.members.isEmpty(), "The members directory leaked to a non-administrator.")
+            assertNull(
+                outsider.access,
+                "The Access section — which carries e-mail addresses — leaked below Maintainer.",
+            )
         }
     }
 

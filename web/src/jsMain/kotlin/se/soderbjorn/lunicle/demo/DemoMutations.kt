@@ -39,7 +39,7 @@ internal fun provisionProject(
     listOf("Desktop", "Server", "Android", "iOS")
         .forEachIndexed { i, n -> p.components.add(DemoNamed(world.allocId(), n, i)) }
     // The creator owns the board.
-    p.members[world.demoUserId] = mutableSetOf(DemoRoleKeys.PROJECT_OWNER)
+    p.members[world.demoUserId] = DemoRungKeys.OWNER
     return p
 }
 

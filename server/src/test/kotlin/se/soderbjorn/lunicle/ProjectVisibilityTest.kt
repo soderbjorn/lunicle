@@ -67,7 +67,7 @@ import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectListState
-import se.soderbjorn.lunicle.clientserver.RoleGrant
+import se.soderbjorn.lunicle.clientserver.RungGrant
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -434,7 +434,7 @@ class ProjectVisibilityTest {
             val granted = client.post(ApiRoutes.projectRoles(f.privateId)) {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.VIEWER.key, isGranted = true))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = ProjectRole.VIEWER.key))
             }
             assertEquals(HttpStatusCode.OK, granted.status, "A project administrator could not grant visibility.")
             assertTrue((roles.roleFor(f.outsiderId, f.privateId) != null))
@@ -442,7 +442,7 @@ class ProjectVisibilityTest {
             val revoked = client.post(ApiRoutes.projectRoles(f.privateId)) {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = ProjectRole.VIEWER.key, isGranted = false))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = null))
             }
             assertEquals(HttpStatusCode.OK, revoked.status)
             assertFalse((roles.roleFor(f.outsiderId, f.privateId) != null), "Revoking visibility left the caller a member.")
@@ -452,21 +452,21 @@ class ProjectVisibilityTest {
     /**
      * And the settings dialog is offered the new role without being told about it.
      *
-     * The privileges table is built from `Role.entries`, so a role added to the
-     * enum appears there for free — that inheritance was the argument for reusing
-     * `project_roles` over a `project_members` table, and it is worth one
-     * assertion that it actually happened.
+     * The rung menu is built from `ProjectRole.entries`, so a rung added to the enum
+     * appears there for free — that inheritance was the argument for reusing
+     * `project_roles` over a `project_members` table, and it is worth one assertion that
+     * it actually happened.
      */
     @Test
-    fun `the settings dialog offers the visibility role`(): Unit = runBlocking {
+    fun `the access section offers the rung that decides who sees the project`(): Unit = runBlocking {
         val f = seed()
         withRoutes { client ->
             val state: ProjectSettingsState = client.get(ApiRoutes.projectSettings(f.privateId)) {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
             }.body()
             assertTrue(
-                state.roles.any { it.key == ProjectRole.VIEWER.key },
-                "The privileges table has no row for the role that decides who sees the project.",
+                state.access?.rungs.orEmpty().any { it.key == ProjectRole.VIEWER.key },
+                "The rung menu has no row for the rung that decides who sees the project.",
             )
         }
     }

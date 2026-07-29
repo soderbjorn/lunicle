@@ -503,12 +503,17 @@ class StorageRepository(
     suspend fun reorderVocabulary(projectId: Long, kind: VocabularyKind, ids: List<Long>): ProjectSettingsState =
         api.reorderVocabulary(projectId, kind, ids)
 
-    suspend fun setProjectRole(
-        projectId: Long,
-        userId: Long,
-        roleKey: String,
-        isGranted: Boolean,
-    ): ProjectSettingsState = api.setProjectRole(projectId, userId, roleKey, isGranted)
+    /** Put one person on one rung here, or null for "no access" (LNL-194). */
+    suspend fun setProjectRole(projectId: Long, userId: Long, roleKey: String?): ProjectSettingsState =
+        api.setProjectRole(projectId, userId, roleKey)
+
+    /** Say at what rung a whole audience arrives here, or null to withdraw the row. */
+    suspend fun setProjectAudience(projectId: Long, audienceKey: String, roleKey: String?): ProjectSettingsState =
+        api.setProjectAudience(projectId, audienceKey, roleKey)
+
+    /** Add an address holding a rung. Nothing is sent. */
+    suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState =
+        api.addProjectPerson(projectId, email, roleKey)
 
     suspend fun setProjectNewIssueNotification(projectId: Long, subscribed: Boolean): ProjectSettingsState =
         api.setProjectNewIssueNotification(projectId, subscribed)

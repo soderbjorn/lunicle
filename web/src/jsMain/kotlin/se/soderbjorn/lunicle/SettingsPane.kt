@@ -20,11 +20,13 @@
  *
  * ── What is deliberately not built yet ──────────────────────────────────────
  *
- * Who gets in, People, Projects and Instance are **stubs**, naming what tickets 4
- * and 5 of this epic will move into them. Their content still lives in
- * [AdminSettingsDialog] and [ProjectDialog], which is where those tickets will
- * take it from — it is being moved, not rewritten from memory, so nothing is
- * deleted here to make room.
+ * Who gets in, People and Instance are **stubs**, naming what ticket 5 of this epic
+ * will move into them. Their content still lives in [AdminSettingsDialog], which is
+ * where that ticket will take it from — it is being moved, not rewritten from memory,
+ * so nothing is deleted here to make room.
+ *
+ * Projects is built (LNL-194): a rail listing every project the caller holds something
+ * in, with the selected one's sections indented beneath it. See [ProjectsTab].
  *
  * ── No dialog-wide OK ───────────────────────────────────────────────────────
  *
@@ -32,7 +34,8 @@
  * five tabs and every project on the instance — half the pane would commit and
  * half would not — so **every edit applies immediately**, which is what the
  * project dialog's Privileges tab already did. There is no Delete in the footer
- * either: it belongs to the project it deletes, and lands beside it in ticket 4.
+ * either: it belongs to the project it deletes, and sits at the bottom of that
+ * project's General section (LNL-194).
  *
  * ── Tabs inside tabs ────────────────────────────────────────────────────────
  *
@@ -96,6 +99,12 @@ class SettingsPane(
     private val onRestoreDefaultLayout: () -> Unit,
     private val onRouteChanged: (SettingsRoute) -> Unit,
     private val hasProjects: () -> Boolean,
+    /**
+     * The Projects tab, built by the caller because it needs the API and the app's
+     * "open a new project" gesture — neither of which this pane has any other use for.
+     * Handed in rather than constructed here so the pane stays a shell over five tabs.
+     */
+    private val projectsTab: ProjectsTab,
 ) {
     /**
      * Where in the pane the reader is.
@@ -166,10 +175,7 @@ class SettingsPane(
         tabPanes[SettingsTab.PEOPLE] = stubPane(
             "Every account on this instance, and what each of them holds.",
         )
-        tabPanes[SettingsTab.PROJECTS] = stubPane(
-            "Every project, and everything about the one selected — its general settings, its " +
-                "access, its structure and its people.",
-        )
+        tabPanes[SettingsTab.PROJECTS] = projectsTab.mount()
         tabPanes[SettingsTab.INSTANCE] = stubPane(
             "The switches that are true for everybody here.",
         )
@@ -204,10 +210,24 @@ class SettingsPane(
     fun show(next: SettingsRoute) {
         route = next
         if (::tabStrip.isInitialized) selectTab(next.tab)
+        // Carried into the tab even when the tab being shown is another one: the route
+        // keeps a project id across a trip to Instance and back, and the tab is where that
+        // memory has to live for the trip back to land on it.
+        projectsTab.show(next.projectId, next.section)
     }
 
-    /** Where the pane currently is — what the address bar writes. */
-    fun currentRoute(): SettingsRoute = route
+    /**
+     * Where the pane currently is — what the address bar writes.
+     *
+     * The project and the section are read back off the Projects tab rather than off
+     * [route], because the tab settles them: a route naming no project lands on the first
+     * one, and a route naming a section this caller's rung does not reach lands on the
+     * first section they have. The address bar should say where the reader actually is.
+     */
+    fun currentRoute(): SettingsRoute = route.copy(
+        projectId = projectsTab.currentProjectId() ?: route.projectId,
+        section = projectsTab.currentSection(),
+    )
 
     /**
      * Re-decide which tabs are on offer.
@@ -221,7 +241,12 @@ class SettingsPane(
      * SettingsPanes.sync.
      */
     fun refreshAvailability() {
-        if (::tabStrip.isInitialized) renderTabs(lastSession)
+        if (!::tabStrip.isInitialized) return
+        renderTabs(lastSession)
+        // The same tick, for the same reason: the Projects rail is drawn from the board
+        // state's project list, which is a flow neither this pane nor the tab collects. A
+        // project arriving, being renamed or being deleted reaches the rail here.
+        projectsTab.render()
     }
 
     private fun buildTabStrip(): HTMLElement {
@@ -230,7 +255,7 @@ class SettingsPane(
             val btn = button(tab.label, "admin-tab") {
                 route = route.copy(tab = tab)
                 selectTab(tab)
-                onRouteChanged(route)
+                onRouteChanged(currentRoute())
             }
             tabButtons[tab] = btn
             strip.appendChild(btn)
@@ -238,9 +263,17 @@ class SettingsPane(
         return strip
     }
 
-    /** Show one pane, hide the rest, and move the underline with it. */
+    /**
+     * Show one pane, hide the rest, and move the underline with it.
+     *
+     * The Projects pane is a flex row — rail beside content — so showing it with the
+     * default `display: block` would drop the content below the rail and stop the split
+     * filling the tab. Same treatment the old project dialog's Privileges split needed.
+     */
     private fun selectTab(tab: SettingsTab) {
-        tabPanes.forEach { (which, pane) -> pane.visible(which == tab) }
+        tabPanes.forEach { (which, pane) ->
+            pane.visible(which == tab, displayValue = if (which == SettingsTab.PROJECTS) "flex" else "block")
+        }
         tabButtons.forEach { (which, btn) -> btn.classList.toggle("admin-tab-selected", which == tab) }
     }
 
@@ -737,6 +770,7 @@ class SettingsPane(
     fun dismiss() {
         confirmDialog?.dismiss()
         confirmDialog = null
+        projectsTab.dispose()
         shell.dismiss()
     }
 }

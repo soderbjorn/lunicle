@@ -934,11 +934,26 @@ fun Route.authRoutes(
  * ── Asked once, at creation, and it grants nothing ──────────────────────────
  *
  * Both sign-in paths go through here, immediately before their `upsert`, and both
- * short-circuit on an account that already exists: admission is who may *hold* an
+ * short-circuit on an account somebody has **used**: admission is who may *hold* an
  * account, so a policy tightened this morning does not lock out somebody who has had
  * one since last year. Whether an account exists is [UserStore.findExisting]'s answer
  * and not a second copy of upsert's two-step lookup, because a copy that drifted
  * would refuse exactly the returning people this is careful not to.
+ *
+ * ── The row that exists and has never been used (LNL-194) ───────────────────
+ *
+ * A row is not proof of an arrival any more. Adding a person to a project writes one
+ * for an address nobody has signed in with, so that the rung can be granted before
+ * its holder turns up — and that row is exactly the case
+ * [AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED] was written for. So the short-circuit
+ * asks [UserRecord.hasSignedIn] rather than merely "is there a row", and the row's
+ * existence becomes the `isAlreadyAdded` input instead.
+ *
+ * That is what makes the two staff policies differ, which until now they did not:
+ * nothing set `isAlreadyAdded`, so plus-added behaved identically to
+ * staff-domain-only. With this, an outside address an administrator has added is
+ * admitted under plus-added and still refused under staff-domain-only — which is the
+ * whole distinction between the two settings.
  *
  * Somebody admitted here arrives as a member or a staff member with whatever the
  * ladders give that tier, which on a fresh instance is nothing at all. The door is
@@ -952,11 +967,14 @@ private suspend fun admissionRefusal(
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore?,
     identity: InstanceIdentity,
 ): String? {
-    // Already here: this is a sign-in, not a creation, and admission has nothing to
-    // say about it.
-    if (users.findExisting(provided) != null) return null
+    val existing = users.findExisting(provided)
+    // Already been here: this is a sign-in, not a creation, and admission has nothing
+    // to say about it.
+    if (existing?.hasSignedIn == true) return null
     val policy = instanceSettingsOrDefault(instanceSettings).admission
-    if (policy.admitsNewAccount(provided.email, identity)) return null
+    // A row with no arrival means somebody on this instance named this address on
+    // purpose. See this function's doc.
+    if (policy.admitsNewAccount(provided.email, identity, isAlreadyAdded = existing != null)) return null
     // Named plainly. The caller is mid-sign-in with a proved address or a completed
     // OAuth exchange, so there is no oracle to protect here — the alternative is
     // somebody staring at a generic failure for a deployment that simply is not open
