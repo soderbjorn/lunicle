@@ -187,6 +187,30 @@ class SignInView(
         nameElement.setAttribute("aria-live", "polite")
 
         root.children(signInButton, accountButton, menuElement)
+        // The corner heals itself on the way to being used (LNL-208).
+        //
+        // This menu is unusual twice over: it is built once and left in the
+        // document for the life of the page, and it wears the toolkit's surface
+        // class (see MENU_PANEL_CLASS) so it paints like every other menu in the
+        // app. That combination made it collateral damage — the toolkit's own
+        // topbar dropdown enforced "one menu at a time" by removing every
+        // `.dt-hover-menu` in the document, so one hover over the top bar's "+"
+        // deleted this panel and the account corner never opened again. Nothing
+        // said so: `render` kept writing rows into an element attached to
+        // nothing, and the only symptom was a hover that did nothing.
+        //
+        // The toolkit no longer does that (it closes menus through their owners
+        // now), but this corner cannot verify which toolkit build it is running
+        // against — Lunicle deploys against the published artifact in libs-repo,
+        // not the source tree — and the same trap is open to anything else that
+        // ever sweeps the document for a shared class. So the menu is re-attached
+        // on the way in, where "attached" is exactly what is about to matter.
+        // Cheap (a parent comparison per hover), and it restores the panel while
+        // the pointer is still inside `root`, so the `:hover` rule that reveals
+        // it is already true and the menu appears in the same gesture.
+        root.addEventListener("mouseenter", {
+            if (menuElement.parentElement !== root) root.appendChild(menuElement)
+        })
         host.appendChild(root)
     }
 
