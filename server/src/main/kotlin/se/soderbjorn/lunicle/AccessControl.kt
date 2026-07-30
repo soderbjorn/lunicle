@@ -225,6 +225,29 @@ class AccessControl(
         instanceRole(user).atLeast(InstanceRole.ADMIN)
 
     /**
+     * May [user] act as somebody else — an address, or a signed-out visitor?
+     *
+     * **The instance owner, and not an instance administrator** (LNL-197). It was any
+     * administrator, which is the wrong audience for the one facility in the product
+     * that hands you another person's rights *with their writes attached*. Every
+     * other narrowing in this rework is about disposing of work; this one is about
+     * becoming somebody, which is strictly more than administering them.
+     *
+     * Named rather than spelled [canMutateProjects] at the call sites, even though the
+     * two answer identically today. They answer different questions — one is about the
+     * project list, one is about identity — and a gate that borrows another gate's name
+     * is a gate that silently follows it the next time it moves.
+     *
+     * Note what it deliberately does **not** do: weaken impersonation to a read-only
+     * preview. Full powers, writes included, is the point — "could a stranger file
+     * this?" is not a question a read-only view can answer — and owner-only is what
+     * makes keeping them acceptable. See the server's Impersonations, and
+     * `resolveCaller`, which asks this again on every single request so that somebody
+     * who loses ownership mid-session stops acting as another person.
+     */
+    suspend fun canImpersonate(user: UserRecord?): Boolean = ownsInstance(user)
+
+    /**
      * May [user] bring a *new* project into existence?
      *
      * **Per tier** (LNL-192): signed in, and standing on a rung of the instance

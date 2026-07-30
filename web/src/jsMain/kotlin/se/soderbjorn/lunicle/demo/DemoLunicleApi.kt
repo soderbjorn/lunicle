@@ -19,6 +19,8 @@
 package se.soderbjorn.lunicle.demo
 
 import io.ktor.http.HttpStatusCode
+import se.soderbjorn.lunicle.clientserver.AddressPreview
+import se.soderbjorn.lunicle.clientserver.AddressStanding
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
@@ -86,7 +88,21 @@ internal class DemoLunicleApi(
     override suspend fun requestEmailSignIn(email: String) = Unit
     override suspend fun signInWithEmailCode(email: String, code: String): SessionState = world.sessionState()
     override suspend fun signOut(): SessionState = world.sessionState()
-    override suspend fun impersonate(userId: Long): SessionState = world.sessionState()
+    override suspend fun impersonate(email: String): SessionState = world.sessionState()
+
+    /**
+     * What the demo says an address resolves to: nothing, because it never asks.
+     *
+     * The demo's `canImpersonate` is false, so the menu that would reach here is not
+     * drawn at all — this exists to satisfy the interface, and it answers the honest
+     * thing rather than inventing a resolution for an address in a world with no
+     * domain, no admission policy and no `users` table. See DemoWorld.sessionState.
+     */
+    override suspend fun previewAddress(email: String): AddressPreview = AddressPreview(
+        email = email,
+        standing = AddressStanding.NO_ACCOUNT,
+        summary = "The demo has no accounts to resolve an address against.",
+    )
     override suspend fun impersonateSignedOut(): SessionState = world.sessionState()
     override suspend fun stopImpersonating(): SessionState = world.sessionState()
 

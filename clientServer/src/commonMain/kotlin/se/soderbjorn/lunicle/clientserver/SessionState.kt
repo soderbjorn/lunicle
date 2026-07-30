@@ -77,9 +77,16 @@ enum class AuthProvider {
  *   deliberately wearing). It is never a directory. The profile dialog renders it
  *   in the User tab and lets its owner edit it, and the notification toggles are
  *   hidden without it — a toggle that promises an e-mail we have no address to
- *   send is a lie. Other people's addresses still never cross: [UserOption] and
- *   `ProjectMember` remain a name and an id, and the board's author fields remain
- *   a name. See the server's `UserRecord.toSignedInUser`.
+ *   send is a lie. Other people's addresses still never cross as part of the
+ *   ordinary app: [UserOption] and `ProjectMember` remain a name and an id, and the
+ *   board's author fields remain a name. See the server's
+ *   `UserRecord.toSignedInUser`.
+ *
+ *   The one exception is [impersonatableAddresses] (LNL-197), which is a list of
+ *   addresses by construction — and it goes to **the instance owner alone**, who
+ *   can read the account directory anyway. That is the trade the narrowing from
+ *   "any administrator" bought: the list may say the true thing because the
+ *   audience for it is one person.
  * @property id who this is, as an identity the client can COMPARE — never one it
  *   can act on.
  *
@@ -148,15 +155,17 @@ data class SignedInUser(
  *   admin loses the admin affordances — see the server's Impersonations.
  * @property isImpersonating whether [user] is somebody other than whoever signed
  *   in. Drives "Stop impersonating" replacing "Impersonate".
- * @property canImpersonate whether the **real** signed-in user is an admin, and
- *   so may start or stop impersonating. Separate from `user.isSysAdmin` on purpose:
- *   while impersonating, `user.isSysAdmin` is false and this is still true — that is
- *   precisely the state in which "Stop impersonating" has to remain reachable. An
- *   affordance like every other flag here; the routes re-derive it from the
- *   session.
- * @property impersonatableUsers everyone this admin could act as. Empty unless
- *   [canImpersonate] — the server does not send the user list to people who
- *   cannot use it, rather than sending it and trusting the menu to stay hidden.
+ * @property canImpersonate whether the **real** signed-in user owns this instance,
+ *   and so may start or stop impersonating (LNL-197 — it was any administrator
+ *   before, which is a wider audience than a facility with full write powers should
+ *   have). Separate from `user.isSysAdmin` on purpose: while impersonating,
+ *   `user.isSysAdmin` is false and this is still true — that is precisely the state
+ *   in which "Stop impersonating" has to remain reachable. An affordance like every
+ *   other flag here; the routes re-derive it from the session.
+ * @property impersonatableAddresses the addresses on offer, each with what it
+ *   resolves to. Empty unless [canImpersonate] — the server does not send the list
+ *   to people who cannot use it, rather than sending it and trusting the menu to
+ *   stay hidden.
  * @property pendingEmail an address the caller has asked to attach and not yet
  *   confirmed, or null.
  *
@@ -198,7 +207,7 @@ data class SessionState(
     val googleClientId: String? = null,
     val isImpersonating: Boolean = false,
     val canImpersonate: Boolean = false,
-    val impersonatableUsers: List<UserOption> = emptyList(),
+    val impersonatableAddresses: List<ImpersonationTarget> = emptyList(),
     val pendingEmail: String? = null,
     val isEmailSignInAvailable: Boolean = false,
     val isSignInRequired: Boolean = false,
@@ -216,22 +225,114 @@ data class SessionState(
 }
 
 /**
- * One entry in the impersonation menu.
+ * One person, as a name and an id: an assignee, a mention candidate, a recipient.
  *
- * A name and an id, and nothing else — no email, no provider, no admin flag. The
- * menu renders a name; anything more would be a directory of everyone's accounts
- * shipped to the browser for no reason. The id is unavoidable: it is what "act as
- * this one" has to name.
+ * A name and an id, and nothing else — no email, no provider, no admin flag. Every
+ * surface that uses one renders the name; anything more would be a directory of
+ * everyone's accounts shipped to the browser for no reason. The id is unavoidable:
+ * it is what "assign this one" has to name.
  *
- * @property isSelf whether this is the admin's own account. The menu shows it so
- *   the list matches the user table someone is looking at, but it is not worth
- *   picking — see the client's SignInView.
+ * **It is no longer the impersonation menu's row** — see [ImpersonationTarget],
+ * which is keyed on the address because that is what the permission model keys on
+ * (LNL-197).
+ *
+ * @property isSelf whether this is the caller's own account. Surfaces that need to
+ *   mark or exclude "you" read this rather than comparing ids themselves.
  */
 @Serializable
 data class UserOption(
     val id: Long,
     val name: String,
     val isSelf: Boolean = false,
+)
+
+/**
+ * What signing in with an address would make of it.
+ *
+ * ── Why the impersonation menu speaks of addresses at all ───────────────────
+ *
+ * Because the permission model keys on them (LNL-197). Staff-ness is derived from
+ * the address and never chosen; somebody can be added, and hold rungs, before an
+ * account exists (`users.added_at` beside `users.signed_in_at`); and an audience row
+ * is a statement about what an address *is*. A list of display names is a list of
+ * the wrong thing — it cannot express any of that, and it cannot name the three
+ * states hardest to get right, none of which is an account.
+ *
+ * The labels are the words a menu row shows, so they are lower case and short: the
+ * row reads `ada@acme.com — staff`.
+ */
+@Serializable
+enum class AddressStanding(val label: String) {
+    /** The caller's own address. Shown, and not worth picking — "become myself" is Stop. */
+    SELF("you"),
+
+    /** An account on the deployment's own domain. The upper signed-in rung. */
+    STAFF("staff"),
+
+    /** An account from outside it. */
+    MEMBER("member"),
+
+    /**
+     * A row somebody added whose owner has never turned up.
+     *
+     * It holds whatever rungs it was given and has no session behind it, which is
+     * why it wins over [STAFF]/[MEMBER] as the thing to report: the tier is
+     * derivable from the address on screen, and "nobody has ever been here" is not.
+     */
+    NOT_SIGNED_IN("not signed in"),
+
+    /**
+     * No row at all — the first-time arrival.
+     *
+     * Only [AddressPreview] ever carries this. Every row in
+     * [SessionState.impersonatableAddresses] comes from a `users` row by
+     * construction, so the menu cannot show it; typing an address is the only way to
+     * reach this state, which is exactly why `Any address…` exists.
+     */
+    NO_ACCOUNT("no account here"),
+}
+
+/**
+ * One row of the impersonation menu: an address, and what it resolves to.
+ *
+ * No id, deliberately. The route takes an address (see [ImpersonateRequest]), so an
+ * id here would be a second way to name the same target and a second thing for the
+ * server to trust. An account with **no address at all** therefore has no row and
+ * cannot be impersonated — an accepted consequence of keying on addresses, and a
+ * state only a hand-written row or a provider that returned no e-mail can produce.
+ *
+ * @property standing what a sign-in would make of it. [AddressStanding.SELF] marks
+ *   the owner's own address, which the menu renders disabled so the list matches the
+ *   account directory they are looking at.
+ */
+@Serializable
+data class ImpersonationTarget(
+    val email: String,
+    val standing: AddressStanding,
+)
+
+/**
+ * What an arbitrary address resolves to, answered before anything is done about it.
+ *
+ * The `Any address…` half of the menu, and the reason it exists: three of the states
+ * a permission model has to get right are not accounts, so none can be picked from a
+ * list of accounts — a stranger at the staff domain who has never signed in, an
+ * outside address with no row at all, and a member who was added and never arrived.
+ * Typing the address is the whole point, and seeing the resolution before committing
+ * is what makes typing one safe.
+ *
+ * **Producing this writes nothing.** See [ApiRoutes.IMPERSONATE_PREVIEW].
+ *
+ * @property summary the whole answer as one sentence, composed on the server — which
+ *   is the only place that knows the deployment's domain, its admission policy and
+ *   what the row (if any) holds. A client that assembled its own could describe a
+ *   deployment it cannot see.
+ */
+@Serializable
+data class AddressPreview(
+    val email: String,
+    val standing: AddressStanding,
+    val summary: String,
 )
 
 /**
@@ -247,7 +348,7 @@ data class GoogleCodeRequest(
 )
 
 /**
- * "Let me act as this user."
+ * "Let me act as this address", or "tell me what it resolves to".
  *
  * The only thing a client is permitted to say about identity, and note what it
  * does *not* say: it names who to become, never who is asking. Who is asking
@@ -255,14 +356,18 @@ data class GoogleCodeRequest(
  * Impersonations. A field here for the *acting* user would be the authorization
  * system asking the caller to authorize themselves.
  *
- * @property userId the account to act as, or null to act as a signed-out visitor —
+ * An address rather than the user id it carried before LNL-197. The id was the
+ * narrower thing to send and the wrong thing to key on: it can only ever name a row
+ * that exists, and the states worth previewing include an address that has none.
+ *
+ * @property email the address to act as, or null to act as a signed-out visitor —
  *   no account at all (LNL-103). Refused either way unless the calling session's
- *   real user is an admin. Null is a deliberate choice, not an omission: it is the
- *   only way to name "become nobody", which is a real thing to preview.
+ *   real user owns the instance. Null is a deliberate choice, not an omission: it is
+ *   the only way to name "become nobody", which is a real thing to preview.
  */
 @Serializable
 data class ImpersonateRequest(
-    val userId: Long? = null,
+    val email: String? = null,
 )
 
 /**

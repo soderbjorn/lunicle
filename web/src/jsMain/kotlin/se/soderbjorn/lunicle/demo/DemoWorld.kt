@@ -356,7 +356,7 @@ internal class DemoWorld {
             // Fixed-account rule (LNL-146): impersonation stays off so the menu is
             // hidden, even though the demo user is an administrator.
             canImpersonate = false,
-            impersonatableUsers = emptyList(),
+            impersonatableAddresses = emptyList(),
             pendingEmail = null,
             isEmailSignInAvailable = false,
             isSignInRequired = false,

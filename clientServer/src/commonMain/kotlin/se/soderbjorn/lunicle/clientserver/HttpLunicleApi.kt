@@ -177,34 +177,48 @@ class HttpLunicleApi(
         httpClient.post(baseUrl + ApiRoutes.SIGN_OUT).requireSuccess()
 
     /**
-     * Start acting as another user. Admin only, enforced server-side.
+     * Start acting as an address. Instance owner only, enforced server-side.
      *
-     * The returned [SessionState] is the whole result: its `user` is now the
-     * impersonated one, and everything the caller may do has changed with it. The
-     * caller does not get to hold "I am now user 7" locally — it asks and is told,
-     * like every other question here.
+     * The returned [SessionState] is the whole result: its `user` is now whatever
+     * the address resolved to, and everything the caller may do has changed with
+     * it. The caller does not get to hold "I am now user 7" locally — it asks and
+     * is told, like every other question here.
      *
-     * @param userId the account to act as. The server refuses unless this
-     *   session's real user is an admin; nothing in this call says who is asking,
-     *   because the cookie already does.
+     * @param email the address to act as. The server refuses unless this session's
+     *   real user owns the instance; nothing in this call says who is asking,
+     *   because the cookie already does. An address with no account is legal and
+     *   creates nothing.
      */
-    override suspend fun impersonate(userId: Long): SessionState =
+    override suspend fun impersonate(email: String): SessionState =
         httpClient.post(baseUrl + ApiRoutes.IMPERSONATE) {
             contentType(ContentType.Application.Json)
-            setBody(ImpersonateRequest(userId))
+            setBody(ImpersonateRequest(email))
+        }.requireSuccess()
+
+    /**
+     * Ask what an address resolves to, without becoming it.
+     *
+     * Nothing is written — see [ApiRoutes.IMPERSONATE_PREVIEW] — so this may be
+     * called on every keystroke's worth of second thoughts, and the answer the
+     * dialog shows is the same answer [impersonate] would act on.
+     */
+    override suspend fun previewAddress(email: String): AddressPreview =
+        httpClient.post(baseUrl + ApiRoutes.IMPERSONATE_PREVIEW) {
+            contentType(ContentType.Application.Json)
+            setBody(ImpersonateRequest(email))
         }.requireSuccess()
 
     /**
      * Act as a signed-out visitor — no account at all (LNL-103).
      *
-     * The same route as [impersonate] with a null id, since "become nobody" and
-     * "become that account" are one decision the server makes the same way. Refused
-     * unless this session's real user is an admin.
+     * The same route as [impersonate] with a null address, since "become nobody" and
+     * "become that address" are one decision the server makes the same way. Refused
+     * unless this session's real user owns the instance.
      */
     override suspend fun impersonateSignedOut(): SessionState =
         httpClient.post(baseUrl + ApiRoutes.IMPERSONATE) {
             contentType(ContentType.Application.Json)
-            setBody(ImpersonateRequest(userId = null))
+            setBody(ImpersonateRequest(email = null))
         }.requireSuccess()
 
     /** Stop impersonating and go back to the account that signed in. */

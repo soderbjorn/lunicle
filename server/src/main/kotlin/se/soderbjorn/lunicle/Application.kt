@@ -433,6 +433,10 @@ fun Application.module() {
         // board routes hold, so an administrator's switch reaches the token path
         // within one request. See canUseMcp.
         instanceSettings = instanceSettings,
+        // Read only by the Connections section's cookie path, and only to ask whether
+        // an impersonation is still the caller's to hold (LNL-197). The same object the
+        // board routes hold, for that same one-request reason.
+        access = access,
     )
 
     // Startup housekeeping, all of it in one launch{} rather than blocking the
@@ -598,12 +602,19 @@ fun Application.module() {
             // chooser is pinned to it. Unbranded ⇒ neither, and sign-in behaves
             // exactly as it did.
             identity = instanceIdentity,
+            // Who may impersonate — the instance owner alone (LNL-197). The same
+            // object every other gate reads, so a transfer of ownership takes effect
+            // on the transferee's and the transferor's next request alike.
+            access = access,
+            // Read by the address preview alone, for one number: how many boards an
+            // address already holds a row on.
+            roles = roles,
         )
 
         // Not part of authRoutes despite sharing its three dependencies: what a
         // user's shell looks like is not a fact about signing in. See
         // UiSettingsRoutes.
-        uiSettingsRoutes(sessions, users, impersonations, uiSettings)
+        uiSettingsRoutes(sessions, users, impersonations, uiSettings, access)
 
         // Lunicle as an authorization server, and the MCP endpoint it protects.
         // Both are deliberately unauthenticated at the route level — see

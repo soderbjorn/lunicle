@@ -38,6 +38,8 @@ import kotlinx.browser.window
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
+import se.soderbjorn.lunicle.clientserver.AddressStanding
+import se.soderbjorn.lunicle.clientserver.ImpersonationTarget
 
 /**
  * Renders the account corner.
@@ -111,11 +113,14 @@ class SignInView(
      */
     var googleHostedDomain: String? = null
 
-    /** The impersonation submenu's rows, rebuilt only when the user list changes. */
+    /** The impersonation submenu's rows, rebuilt only when the address list changes. */
     private lateinit var impersonateItem: HTMLElement
     private lateinit var impersonateSubmenu: HTMLElement
     private lateinit var stopImpersonatingButton: HTMLButtonElement
-    private var renderedUserIds: List<Long> = emptyList()
+    private var renderedTargets: List<ImpersonationTarget> = emptyList()
+
+    /** The `Any address…` prompt while it is up (LNL-197). */
+    private var addressDialog: ImpersonateAddressDialog? = null
 
     /**
      * Build the corner and attach it to [host].
@@ -242,14 +247,15 @@ class SignInView(
         signOutButton.disabled = state.isBusy
 
         // "Impersonate" and "Stop impersonating" are the same slot, never both.
-        // Both hang off canImpersonate — the REAL user being an admin — and not
-        // off user.isSysAdmin, which is false for the whole time an admin is
+        // Both hang off canImpersonate — the REAL user owning the instance (LNL-197)
+        // — and not off user.isSysAdmin, which is false for the whole time somebody is
         // impersonating and would take "Stop impersonating" away exactly when it
         // is the only thing needed. See SessionBackingViewModel.State.
         impersonateItem.visible(state.canImpersonate && !state.isImpersonating, displayValue = "flex")
         stopImpersonatingButton.visible(state.canImpersonate && state.isImpersonating, displayValue = "block")
         stopImpersonatingButton.disabled = state.isBusy
-        renderImpersonatableUsers(state)
+        renderImpersonatableAddresses(state)
+        renderAddressDialog(state)
 
         // A deployment with no credentials renders no sign-in at all, rather
         // than a button that cannot work. The server decides this, not the
@@ -375,38 +381,77 @@ class SignInView(
     /**
      * Fill the impersonation submenu.
      *
-     * Rebuilt only when the ids change, like the project picker: this runs on
+     * Rebuilt only when the addresses change, like the project picker: this runs on
      * every session emission, and replacing the rows under a pointer that is
-     * hovering one of them makes the submenu flicker and lose the hover.
+     * hovering one of them makes the submenu flicker and lose the hover. Compared
+     * whole rather than by address, so a row whose *standing* changed — somebody
+     * finally signed in — redraws too.
      *
-     * The admin's own row is rendered and disabled rather than omitted, so the
-     * list matches the user table they are looking at — and "become myself" is
+     * ── Addresses, not names (LNL-197) ─────────────────────────────────────
+     *
+     * Each row is an address and what it resolves to, because that is what the
+     * permission model keys on: staff-ness is derived from the address, somebody can
+     * hold rungs before an account exists, and an audience row is a statement about
+     * what an address *is*. A list of display names is a list of the wrong thing.
+     *
+     * The owner's own row is rendered and disabled rather than omitted, so the list
+     * matches the account directory they are looking at — and "become myself" is
      * spelled "Stop impersonating", which is a different item.
      */
-    private fun renderImpersonatableUsers(state: SessionBackingViewModel.State) {
-        val ids = state.impersonatableUsers.map { it.id }
-        if (ids == renderedUserIds) return
-        renderedUserIds = ids
+    private fun renderImpersonatableAddresses(state: SessionBackingViewModel.State) {
+        val targets = state.impersonatableAddresses
+        if (targets == renderedTargets) return
+        renderedTargets = targets
         impersonateSubmenu.clear()
         // A fixed choice, always first and always offered: see the app as a
         // signed-out visitor does — no account at all — rather than as any named
-        // user (LNL-103). It stands even when there are no other accounts to pick,
+        // address (LNL-103). It stands even when there are no accounts to pick,
         // so the submenu is never truly empty.
         impersonateSubmenu.appendChild(
             button("Signed-out visitor", MENU_ITEM_CLASS) {
                 viewModel.onImpersonateSignedOutTapped()
             } as HTMLButtonElement,
         )
-        state.impersonatableUsers.forEach { option ->
-            val row = button(option.name, MENU_ITEM_CLASS) {
-                viewModel.onImpersonateTapped(option.id)
+        targets.forEach { target ->
+            val row = button("${target.email} — ${target.standing.label}", MENU_ITEM_CLASS) {
+                viewModel.onImpersonateTapped(target.email)
             } as HTMLButtonElement
-            if (option.isSelf) {
+            if (target.standing == AddressStanding.SELF) {
                 row.disabled = true
                 row.title = "This is you."
             }
             impersonateSubmenu.appendChild(row)
         }
+        // Last, because it is the general case behind the list rather than one of its
+        // rows, and because the three states worth reaching this way have no account
+        // and so appear nowhere above (LNL-197). See ImpersonateAddressDialog.
+        impersonateSubmenu.appendChild(
+            button("Any address…", MENU_ITEM_CLASS) {
+                viewModel.onImpersonateAddressPromptOpened()
+            } as HTMLButtonElement,
+        )
+    }
+
+    /**
+     * Raise or dismiss the `Any address…` prompt to match the state.
+     *
+     * Keyed on presence like the picker and the gate: the view model decides whether
+     * it belongs on screen, and this only builds and tears down — which is what makes
+     * a completed impersonation close it without a line here mentioning impersonation.
+     * Built fresh per opening for [renderSignInPicker]'s reason: it holds a half-typed
+     * address, and an instance kept across openings would show the last one.
+     */
+    private fun renderAddressDialog(state: SessionBackingViewModel.State) {
+        if (state.isImpersonateAddressPromptOpen && addressDialog == null) {
+            addressDialog = ImpersonateAddressDialog(
+                viewModel = viewModel,
+                onDismiss = { viewModel.onImpersonateAddressPromptDismissed() },
+            ).also { it.mount(dialogHost) }
+        } else if (!state.isImpersonateAddressPromptOpen && addressDialog != null) {
+            addressDialog?.dismiss()
+            addressDialog = null
+        }
+        addressDialog?.render(state)
     }
 
 

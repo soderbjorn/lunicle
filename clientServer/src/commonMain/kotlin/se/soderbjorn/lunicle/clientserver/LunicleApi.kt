@@ -32,7 +32,8 @@ interface LunicleApi {
     suspend fun requestEmailSignIn(email: String)
     suspend fun signInWithEmailCode(email: String, code: String): SessionState
     suspend fun signOut(): SessionState
-    suspend fun impersonate(userId: Long): SessionState
+    suspend fun impersonate(email: String): SessionState
+    suspend fun previewAddress(email: String): AddressPreview
     suspend fun impersonateSignedOut(): SessionState
     suspend fun stopImpersonating(): SessionState
 

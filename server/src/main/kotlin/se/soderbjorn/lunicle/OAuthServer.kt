@@ -113,6 +113,19 @@ class McpDependencies(
      * administrator's switch reaches the token path within one request.
      */
     val instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore = InMemoryInstanceSettingsStore(),
+    /**
+     * The permission oracle, asked one question by [mcpApiRoutes]: may this session's
+     * real user be impersonating at all (LNL-197)?
+     *
+     * Read only through `resolveCaller`, and only for the Connections section's
+     * browser-session path — never by the token path, which honours no impersonation.
+     * Nullable and defaulted to null because the MCP tests wire a token path and no
+     * permission oracle, and because null fails in the safe direction: a stale
+     * impersonation is dropped rather than honoured unchecked. [Application.module]
+     * passes the same object the board routes hold, so ownership transferred in one
+     * place is ownership transferred everywhere within one request.
+     */
+    val access: AccessControl? = null,
 )
 
 /**

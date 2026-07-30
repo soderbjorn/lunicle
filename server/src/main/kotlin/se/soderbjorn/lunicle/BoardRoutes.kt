@@ -342,7 +342,7 @@ class BoardDependencies(
  * resolved once, here, so a route cannot forget. See [resolveCaller].
  */
 internal suspend fun ApplicationCall.caller(deps: BoardDependencies): UserRecord? =
-    resolveCaller(deps.sessions, deps.users, deps.impersonations).effective
+    resolveCaller(deps.sessions, deps.users, deps.impersonations, deps.access).effective
 
 /**
  * Resolve who a request is acting as, and who it really is.
@@ -350,47 +350,76 @@ internal suspend fun ApplicationCall.caller(deps: BoardDependencies): UserRecord
  * The one place that turns a cookie into an identity, shared by these routes and
  * AuthRoutes so there is exactly one implementation of the rule.
  *
- * The `isSysAdmin` re-check is the important line. An admin who starts impersonating
- * and is then demoted — by another admin, or by a hand-edited database — must not
- * keep acting as somebody else, so the *stored* impersonation is only honoured
- * while the real user is still an admin at this moment. Anything else would mean
- * the admin bit could be taken away without taking away what it granted, which is
- * exactly the shape of a privilege-escalation bug.
+ * The entitlement re-check is the important line. Somebody who starts impersonating
+ * and then loses the entitlement — ownership transferred, or a hand-edited database —
+ * must not keep acting as somebody else, so the *stored* impersonation is only
+ * honoured while the real user is still entitled **at this moment**. Anything else
+ * would mean the authority could be taken away without taking away what it granted,
+ * which is exactly the shape of a privilege-escalation bug.
+ *
+ * Since LNL-197 the entitlement is **ownership of the instance**, not the
+ * administrator flag. That is why [access] is a parameter: ownership is
+ * `instance_settings.owner_user_id`, so unlike `isInstanceAdmin` it cannot be read off
+ * the record and there is exactly one thing on this server permitted to answer a
+ * permission question. The read it costs is paid once per request with a session, on a
+ * one-row table both backends already read on most permission checks.
  *
  * A stale impersonation is dropped rather than merely ignored: if the target's
- * account is gone, or the impersonator is no longer an admin, the entry is
+ * account is gone, or the impersonator no longer owns the instance, the entry is
  * removed so the next request does not have to work it out again.
+ *
+ * @param access the permission oracle, or null for an installation that wired none —
+ *   which is a handful of tests mounting one routes file to exercise one exchange, and
+ *   never [Application.module]. A null one answers "nobody may impersonate", so it
+ *   fails in the direction that withholds authority: an impersonation is dropped
+ *   rather than honoured unchecked.
  */
 internal suspend fun ApplicationCall.resolveCaller(
     sessions: se.soderbjorn.lunicle.store.SessionStore,
     users: se.soderbjorn.lunicle.store.UserStore,
     impersonations: Impersonations,
+    access: AccessControl?,
 ): Caller {
     val sessionId = request.cookies[SESSION_COOKIE] ?: return Caller(null, null)
     val real = sessions.lookup(sessionId) ?: return Caller(null, null)
 
-    val impersonation = impersonations.current(sessionId)
-        ?: return Caller(effective = real, real = real)
+    // Asked whether or not anything is being impersonated, because it is also the
+    // account menu's affordance: the owner has to be told they may start, and — while
+    // impersonating — that they may stop. See Caller.canImpersonate.
+    val canImpersonate = access?.canImpersonate(real) == true
 
-    if (!real.isInstanceAdmin) {
-        // Demoted while impersonating. Drop it and be themselves.
+    val impersonation = impersonations.current(sessionId)
+        ?: return Caller(effective = real, real = real, canImpersonate = canImpersonate)
+
+    if (!canImpersonate) {
+        // No longer entitled while impersonating. Drop it and be themselves.
         impersonations.stop(sessionId)
-        return Caller(effective = real, real = real)
+        return Caller(effective = real, real = real, canImpersonate = false)
     }
     return when (impersonation) {
         // A signed-out visitor has no account: the effective user is null, exactly
         // as it is for a caller with no cookie, so every AccessControl call sees the
-        // public view. The real user stays the admin, so the impersonation is still
+        // public view. The real user stays the owner, so the impersonation is still
         // theirs to stop. See Impersonation.AsSignedOut (LNL-103).
         is Impersonation.AsSignedOut ->
-            Caller(effective = null, real = real, isImpersonating = true)
+            Caller(effective = null, real = real, isImpersonating = true, canImpersonate = true)
+        // An address with no account at all: the effective user is built here, from
+        // what the session holds, and nothing about it is read from or written to
+        // `users` — there is no row to read. See previewRecordFor (LNL-197).
+        is Impersonation.AsAddress ->
+            Caller(
+                effective = previewRecordFor(impersonation.email, impersonation.kind),
+                real = real,
+                isImpersonating = true,
+                canImpersonate = true,
+            )
         is Impersonation.AsUser -> {
             val target = users.findById(impersonation.userId) ?: run {
                 // The impersonated account was deleted out from under them.
                 impersonations.stop(sessionId)
-                return Caller(effective = real, real = real)
+                return Caller(effective = real, real = real, canImpersonate = true)
             }
-            Caller(effective = target, real = real, isImpersonating = true)
+            Caller(effective = target, real = real, isImpersonating = true, canImpersonate = true)
         }
     }
 }

@@ -79,7 +79,7 @@ private suspend fun ApplicationCall.mcpStateFor(user: UserRecord, deps: McpDepen
  * that is a token, which names one person forever. See McpServer.resolveMcpUser.
  */
 private suspend fun ApplicationCall.mcpCaller(deps: McpDependencies): UserRecord? =
-    resolveCaller(deps.sessions, deps.users, deps.impersonations).effective
+    resolveCaller(deps.sessions, deps.users, deps.impersonations, deps.access).effective
 
 /** Mount the Connections section's routes. */
 fun Route.mcpApiRoutes(deps: McpDependencies) {

@@ -98,6 +98,19 @@ data class UserRecord(
     val hasSignedIn: Boolean get() = signedInAt != null
 
     /**
+     * Is this a record that names **no row at all** — a previewed address (LNL-197)?
+     *
+     * True only for [previewRecordFor]'s product, which carries [PREVIEW_USER_ID].
+     * Everything else on the server may treat this record as an ordinary caller and
+     * mostly should: it is what makes the preview answer the same permission
+     * questions a real first-time arrival would. What it must **not** do is store
+     * [id] anywhere, because `users` has no such row and every table that references
+     * one says so with a foreign key. The two places that would have — authorship,
+     * and the shell's remembered settings — check this.
+     */
+    val isPreviewOnly: Boolean get() = id == PREVIEW_USER_ID
+
+    /**
      * The name to render: the user's override if they set one, else what the
      * provider calls them.
      *
@@ -135,6 +148,69 @@ data class UserRecord(
         isStaff = kind == UserKind.STAFF,
     )
 }
+
+/**
+ * The id every previewed address carries, and no row ever will (LNL-197).
+ *
+ * Negative on purpose. SQLite hands out positive rowids and Firestore's user ids come
+ * from the same counter, so a negative id cannot collide with an account now or after
+ * any amount of growth — which matters more than it looks: [AccessControl] answers
+ * `roles.roleFor(user.id, projectId)`, so an id that could one day be somebody's would
+ * be an id that could one day inherit their grants.
+ *
+ * Not zero, for the same reason `InstanceSettingsStore` refuses to read a
+ * non-numeric owner as id 0: zero is what a mis-parse produces, and a sentinel that
+ * a bug can arrive at by accident is not a sentinel.
+ */
+const val PREVIEW_USER_ID: Long = -1L
+
+/**
+ * The effective caller for an address that holds no account: what a first sign-in
+ * would produce, minus the row (LNL-197).
+ *
+ * ── What it is for ─────────────────────────────────────────────────────────
+ *
+ * One of the three states the permission model has to get right and none of the
+ * three is an account, so none can be picked from a list of them. This is the two
+ * that have no row: a stranger at the staff domain who has never signed in, and an
+ * outside address with nothing on file. Everything downstream — audience matching,
+ * `canReadProject`, `canCreateIssue` — takes a [UserRecord] and asks it the same
+ * questions, so handing it this is what makes the preview honest rather than a
+ * separate code path that could drift from the real one.
+ *
+ * ── What it deliberately is not ────────────────────────────────────────────
+ *
+ * Not written anywhere. It is constructed per request from what the session holds
+ * (see [Impersonation.AsAddress]) and thrown away with the response, so nothing
+ * about it can outlive the impersonation: no `users` row, no `added_at`, no People
+ * row on any project. Its [signedInAt] is null and its [isInstanceAdmin] is false —
+ * an unknown address arrives with nothing, which is the entire fact being previewed.
+ *
+ * @param kind staff or member, already decided against the deployment's domain by
+ *   the route that started the impersonation. Passed rather than derived because
+ *   this function has no business reading configuration, and because the answer is
+ *   fixed for the life of the impersonation — see [Impersonation.AsAddress.kind].
+ */
+fun previewRecordFor(email: String, kind: UserKind): UserRecord = UserRecord(
+    id = PREVIEW_USER_ID,
+    // EMAIL because that is what an address is a credential for, and because a
+    // preview must not claim a provider relationship nobody has established.
+    provider = AuthProvider.EMAIL,
+    providerId = email,
+    // The address is the name. There is no provider to have supplied one, and
+    // inventing "Unknown visitor" would put a name on screen that no sign-in would
+    // ever reproduce.
+    providerName = email,
+    displayNameOverride = null,
+    email = email,
+    // Nobody has proved control of it. A preview that claimed otherwise would be
+    // previewing a stronger position than the address actually holds.
+    isEmailVerified = false,
+    kind = kind,
+    isInstanceAdmin = false,
+    isMcpEnabled = false,
+    signedInAt = null,
+)
 
 /**
  * Who wrote an issue, a comment or an attachment.
@@ -189,8 +265,18 @@ sealed interface Author {
  *
  * Note there is no way to reach [Author.External] from a [UserRecord], and that
  * is the point: an imported author is not a user and never becomes one.
+ *
+ * A **previewed address** writes as [Author.Nobody] (LNL-197). It is not that the
+ * write is refused — impersonation keeps full powers on purpose, and "could a
+ * stranger file this?" is the question it exists to answer — but the row it files
+ * cannot point at a `users` row that does not exist. `created_by` is nullable and
+ * `Author.Nobody` is exactly the shape for "somebody wrote this and it was not an
+ * account", so the write lands and the board shows it authored by nobody. Attributing
+ * it to the impersonating owner instead would be the one lie this file exists not to
+ * tell. See [previewRecordFor].
  */
-fun UserRecord?.asAuthor(): Author = this?.let { Author.Account(it.id) } ?: Author.Nobody
+fun UserRecord?.asAuthor(): Author =
+    this?.takeIf { !it.isPreviewOnly }?.let { Author.Account(it.id) } ?: Author.Nobody
 
 /**
  * Is this account **permitted** to hold agent access — the tier's half of the question?

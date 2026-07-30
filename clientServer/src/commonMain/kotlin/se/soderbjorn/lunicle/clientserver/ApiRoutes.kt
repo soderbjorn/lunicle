@@ -49,16 +49,37 @@ object ApiRoutes {
     const val SIGN_OUT: String = "/api/auth/signout"
 
     /**
-     * `POST` — start acting as another user. Admin only. Returns the new
-     * [SessionState], whose `user` is now the impersonated one.
+     * `POST` — start acting as an address. **The instance owner only** (LNL-197).
+     * Returns the new [SessionState], whose `user` is whatever that address now
+     * resolves to.
      *
      * The body names *who to become*, and that is the only thing a client may say
      * about identity here — the server takes who is *asking* from the session
-     * cookie and refuses this unless that session's real user is an admin. A
-     * route that accepted "I am user 7" rather than "let me become user 7" would
-     * be the whole authorization system, undone. See the server's Impersonations.
+     * cookie and refuses this unless that session's real user owns the instance. A
+     * route that accepted "I am user 7" rather than "let me become this address"
+     * would be the whole authorization system, undone. See the server's
+     * Impersonations.
+     *
+     * An **address** rather than a user id since LNL-197, because the permission
+     * model keys on one: staff-ness is derived from the address, somebody can hold
+     * rungs before an account exists, and the audience rows are about what an
+     * address *is*. An address with no account at all is a legal target — it
+     * previews the first-time arrival — and wearing it creates nothing.
      */
     const val IMPERSONATE: String = "/api/impersonate"
+
+    /**
+     * `POST` — what would signing in with this address produce? Takes an
+     * [ImpersonateRequest] and answers an [AddressPreview]. Owner only, like the
+     * route it previews.
+     *
+     * **It reads, and writes nothing at all.** No `users` row appears, no
+     * `added_at` is set, and the address turns up in no project's People list.
+     * That is why it is a route of its own rather than a flag on [IMPERSONATE]:
+     * the owner sees what an address resolves to *before* committing to wearing
+     * it, and asking has no effect either way.
+     */
+    const val IMPERSONATE_PREVIEW: String = "/api/impersonate/preview"
 
     /**
      * `POST` — stop impersonating and go back to being yourself.
