@@ -213,6 +213,9 @@ interface LunicleApi {
     suspend fun reorderChildren(id: Long, childIds: List<Long>): IssueDetail
     suspend fun activateSprint(projectId: Long, sprintId: Long?): BoardState
     suspend fun completeSprint(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?): BoardState
+
+    /** Clear a sprint's completion stamp, and nothing else. See [ApiRoutes.sprintReopening]. */
+    suspend fun reopenSprint(projectId: Long, sprintId: Long): BoardState
     suspend fun setSprintIssues(projectId: Long, sprintId: Long, issueIds: List<Long>): BoardState
     suspend fun deleteIssue(id: Long)
     suspend fun setIssueOrder(id: Long, issueIds: List<Long>, priorityId: Long? = null)

@@ -176,6 +176,33 @@ data class VocabularyEntry(
      */
     val isDone: Boolean = false,
     val usageCount: Int = 0,
+    /**
+     * When this sprint was completed, or null because it has not been (LNL-196).
+     *
+     * **Sprints only**, like [requiresResolution] is statuses only — a version or a
+     * label leaves it null forever. It rides here rather than on a sprint-shaped wire
+     * type of its own because the Sprints section renders the same rows every other
+     * vocabulary does, plus a date and one action; a parallel type would be
+     * [VocabularyEntry] with two fields added and every other screen having to know
+     * which of the two it was handed.
+     *
+     * Note that the server's `VocabularyRow` deliberately does *not* carry this — see
+     * `VocabularyRepository`'s `SprintRecord.toRow`. The completion instant is joined
+     * in where the settings response is assembled, which keeps the row shape "a named
+     * thing you can rename, reorder and delete" and out of the completion business.
+     */
+    val completedAt: Long? = null,
+    /**
+     * How many issues in this sprint are **not** in a closing column (LNL-196).
+     *
+     * Sprints only, for [completedAt]'s reason, and null-equivalent (0) everywhere
+     * else. It is what the completion confirmation counts: "3 issues in Sprint 4 are
+     * not finished. Where should they go?" — a question that has to be asked, and one
+     * the browser cannot answer for itself, because "unfinished" means "not in a
+     * status that requires a resolution" and the settings pane does not hold the
+     * board's issues.
+     */
+    val unfinishedCount: Int = 0,
 )
 
 /**
@@ -290,6 +317,32 @@ data class ProjectSettingsState(
     val versions: List<VocabularyEntry> = emptyList(),
     val canMutateProject: Boolean = false,
     /**
+     * Whether the caller may shape the sprints and the versions — **Maintainer and
+     * above** (LNL-196).
+     *
+     * A second, lower gate beside [canMutateProject], and the two are different lines
+     * for the reason [canConfigureRepository] is a third: scheduling work that already
+     * exists is a maintainer's, and what the board *is* is an administrator's. The
+     * server has drawn that line since LNL-191 (see `VocabularyKind.minimumRole`); this
+     * is the flag that lets the two sections render it, rather than a Maintainer
+     * reaching Sprints and finding an empty pane.
+     *
+     * [sprints] and [versions] travel from Maintainer up for the same reason. They are
+     * not secret — the board sends every reader the names, because a card cannot draw a
+     * sprint scope without them — so the narrowing here is about who is offered a
+     * section, not about what is withheld.
+     */
+    val canMutateProjectPlanning: Boolean = false,
+    /**
+     * Why the Sprints and Versions lists are read-only, or null when they are not.
+     *
+     * Present exactly when [canMutateProjectPlanning] is false and the caller was sent
+     * the sections anyway, so the pane can grey its controls with the sentence beside
+     * them rather than hiding them — this file's standing rule. See
+     * [ProjectAccessState]'s preamble on why a vanished control reads as a bug.
+     */
+    val planningReadOnlyReason: String? = null,
+    /**
      * The sections this caller has on this project, in rail order (LNL-194).
      *
      * Decided by the server from the rung, never by the rail — see [ProjectSection].
@@ -361,9 +414,15 @@ data class ProjectSettingsState(
     val requireComponent: Boolean = false,
     /**
      * Whether closing an issue with a done resolution must carry a fixed version
-     * (LNL-134) — the third requirement toggle in the Structure tab. Default off.
-     * Rides to the board and resolution dialog on [ProjectSummary], which is what
-     * actually enforces it at close time. See [requireLabel].
+     * (LNL-134). Default off. Rides to the board and resolution dialog on
+     * [ProjectSummary], which is what actually enforces it at close time. See
+     * [requireLabel].
+     *
+     * Rendered in the **Versions** section since LNL-196, not beside its two siblings
+     * in Structure: a switch that cannot be satisfied without a version has no business
+     * living two sections away from the list of them. It is still written through
+     * [ProjectRequirements] with the other two, and is still an administrator's — which
+     * is what makes it the one control in a Maintainer's Versions section that is dead.
      */
     val requireFixedVersionOnResolve: Boolean = false,
     /**

@@ -156,24 +156,11 @@ sealed interface ActiveDialog {
         val prefix: String,
     ) : ActiveDialog
 
-    /**
-     * "This sprint is over — where does the unfinished work go?"
-     *
-     * The question has to be asked rather than defaulted, because "roll it into
-     * the next sprint" and "put it back in the backlog" are genuinely different
-     * intentions and getting it wrong is tedious to undo — the issues are spread
-     * across two places and nothing records which ones moved.
-     *
-     * @property openSprints where the work could go, this one excluded. Empty is
-     *   normal and fine: the dialog then offers only the backlog.
-     */
-    data class CompleteSprint(
-        val projectId: Long,
-        val sprintId: Long,
-        val sprintName: String,
-        val unfinishedCount: Int,
-        val openSprints: List<SprintItem>,
-    ) : ActiveDialog
+    // `CompleteSprint` stood here — "this sprint is over, where does the unfinished work
+    // go?" — and is gone (LNL-196). The question is still asked, and by the same view
+    // (`CompleteSprintDialog`); it is raised from the project's Sprints section now
+    // rather than from this board's scope picker, so the prompt it is built from is
+    // `EditProjectBackingViewModel.PendingSprintCompletion`.
 }
 
 /**
@@ -754,9 +741,16 @@ class MainScreenBackingViewModel(
          * whether the caller may configure the project, whether the current scope
          * is a sprint at all, and whether that sprint is still open.
          *
-         * Completing and activating are absent on a finished sprint rather than
-         * disabled: a greyed-out "Complete" on something already complete is a
-         * control explaining a state the row above it already showed.
+         * Activating and planning are absent on a finished sprint rather than
+         * disabled: a greyed-out "Plan" on something already over is a control
+         * explaining a state the row above it already showed.
+         *
+         * **Completing a sprint is not here** (LNL-196). It ended everybody's columns
+         * from a control that reads as a view switch, and it was within reach of whoever
+         * happened to be looking at the board rather than of the people planning it —
+         * so it is a per-row action in the project's Sprints section now, beside the date
+         * it sets and at the rung that owns the sprints. What stays here is the three
+         * things that are about *this view* or about making the next sprint.
          */
         val sprintScopeItems: List<ScopeItem> get() {
             val scopes = listOf(
@@ -773,7 +767,6 @@ class MainScreenBackingViewModel(
                     if (board?.activeSprintId != scoped.id) {
                         add(ScopeItem(ACTION_ACTIVATE_SPRINT, "Make ${scoped.name} active"))
                     }
-                    add(ScopeItem(ACTION_COMPLETE_SPRINT, "Complete ${scoped.name}…"))
                 }
             }
             return scopes + actions
@@ -1596,23 +1589,6 @@ class MainScreenBackingViewModel(
                 activate(projectId, sprint.id)
             }
 
-            ACTION_COMPLETE_SPRINT -> {
-                val sprint = scoped ?: return
-                // Counted here rather than in the dialog, because "unfinished"
-                // means "not in a column that requires a resolution" and the
-                // status list is right here. The dialog gets a number, not a rule.
-                val closing = board.statuses.filter { it.requiresResolution }.map { it.id }.toSet()
-                _stateFlow.value = current.copy(
-                    dialog = ActiveDialog.CompleteSprint(
-                        projectId = board.project.id,
-                        sprintId = sprint.id,
-                        sprintName = sprint.name,
-                        unfinishedCount = board.issues
-                            .count { it.sprintId == sprint.id && it.statusId !in closing },
-                        openSprints = board.sprints.filter { it.isOpen && it.id != sprint.id },
-                    ),
-                )
-            }
         }
     }
 
@@ -1723,13 +1699,10 @@ class MainScreenBackingViewModel(
         else -> board.defaultScope()
     }
 
-    /** The completion dialog was answered. */
-    fun onSprintCompleted(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?) {
-        _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None, isBusy = true)
-        replaceBoard(projectId, "Could not complete that sprint.") {
-            storage.completeSprint(projectId, sprintId, moveUnfinishedTo)
-        }
-    }
+    // `onSprintCompleted` stood here and is gone with the board's Complete row (LNL-196).
+    // The write lives in EditProjectBackingViewModel now, beside the section that raises
+    // the question. The board still catches up — a settings write tells it to reload, which
+    // is how every other change made in that pane reaches it.
 
     private fun activate(projectId: Long, sprintId: Long) {
         _stateFlow.value = _stateFlow.value.copy(isBusy = true)
@@ -2259,7 +2232,11 @@ class MainScreenBackingViewModel(
         const val ACTION_NEW_SPRINT: Long = -2L
         const val ACTION_PLAN_SPRINT: Long = -3L
         const val ACTION_ACTIVATE_SPRINT: Long = -4L
-        const val ACTION_COMPLETE_SPRINT: Long = -5L
+        // -5L was ACTION_COMPLETE_SPRINT and is gone (LNL-196). Completing a sprint
+        // rewrites what everybody's columns mean, and it was offered from a control that
+        // reads as a view switch, within reach of everybody looking at the board rather
+        // than of the people planning it. It is a per-row action in the Sprints section
+        // now, beside the date it sets. The sentinel is deliberately left unreused.
 
         /** Whether a picked dropdown id is an action rather than a scope. */
         fun isSprintAction(id: Long): Boolean = id <= ACTION_NEW_SPRINT

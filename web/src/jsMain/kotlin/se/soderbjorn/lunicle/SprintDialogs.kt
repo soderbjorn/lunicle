@@ -18,6 +18,7 @@ import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
 import se.soderbjorn.lunicle.client.viewmodel.ActiveDialog
+import se.soderbjorn.lunicle.client.viewmodel.PendingSprintCompletion
 import se.soderbjorn.lunicle.clientserver.IssueSummary
 
 /**
@@ -174,16 +175,22 @@ class PlanSprintDialog(
  * A button per destination, like [ResolutionDialog], for the same reason — a
  * dropdown plus an OK is three interactions to express one choice, and the
  * choices here are usually two.
+ *
+ * Raised from the project's **Sprints section** since LNL-196, not from the board's
+ * scope picker; the prompt it renders is
+ * [se.soderbjorn.lunicle.client.viewmodel.PendingSprintCompletion]. It takes the prompt
+ * and one callback rather than an `ActiveDialog`, so the project id and the sprint id
+ * stay with the view model that raised it — this view never needed either.
  */
 class CompleteSprintDialog(
-    private val dialog: ActiveDialog.CompleteSprint,
-    private val onComplete: (projectId: Long, sprintId: Long, moveUnfinishedTo: Long?) -> Unit,
+    private val prompt: PendingSprintCompletion,
+    private val onComplete: (moveUnfinishedTo: Long?) -> Unit,
     private val onCancel: () -> Unit,
 ) {
-    private val modal = Modal("Complete ${dialog.sprintName}", onDismiss = { onCancel() })
+    private val modal = Modal("Complete ${prompt.sprintName}", onDismiss = { onCancel() })
 
     fun mount(host: HTMLElement) {
-        val n = dialog.unfinishedCount
+        val n = prompt.unfinishedCount
         modal.body.appendChild(
             element(
                 "p",
@@ -192,10 +199,10 @@ class CompleteSprintDialog(
                     // The finished work is not mentioned, on purpose: it stays in
                     // this sprint, which is the only thing it could do and the
                     // thing "completing a sprint" already means.
-                    n == 0 -> "Everything in ${dialog.sprintName} is finished. " +
+                    n == 0 -> "Everything in ${prompt.sprintName} is finished. " +
                         "Completing it now closes it out."
-                    n == 1 -> "1 issue in ${dialog.sprintName} is not finished. Where should it go?"
-                    else -> "$n issues in ${dialog.sprintName} are not finished. Where should they go?"
+                    n == 1 -> "1 issue in ${prompt.sprintName} is not finished. Where should it go?"
+                    else -> "$n issues in ${prompt.sprintName} are not finished. Where should they go?"
                 },
             ),
         )
@@ -205,18 +212,18 @@ class CompleteSprintDialog(
         // answer when there is somewhere to roll to, so it gets the primary style
         // and the first position — and the backlog stays available rather than
         // being the thing you have to notice.
-        dialog.openSprints.forEachIndexed { index, sprint ->
+        prompt.destinations.forEachIndexed { index, sprint ->
             val style = if (index == 0) "btn btn-primary" else "btn"
             choices.appendChild(
                 button("Move to ${sprint.name}", "$style resolution-choice") {
-                    onComplete(dialog.projectId, dialog.sprintId, sprint.id)
+                    onComplete(sprint.sprintId)
                 } as HTMLButtonElement,
             )
         }
-        val backlogStyle = if (dialog.openSprints.isEmpty()) "btn btn-primary" else "btn"
+        val backlogStyle = if (prompt.destinations.isEmpty()) "btn btn-primary" else "btn"
         choices.appendChild(
             button("Move to the backlog", "$backlogStyle resolution-choice") {
-                onComplete(dialog.projectId, dialog.sprintId, null)
+                onComplete(null)
             } as HTMLButtonElement,
         )
         modal.body.appendChild(choices)

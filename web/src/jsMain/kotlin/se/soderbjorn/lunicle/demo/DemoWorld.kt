@@ -559,8 +559,23 @@ internal class DemoWorld {
     private fun namedEntry(v: DemoNamed, usage: Int) =
         VocabularyEntry(v.id, v.name, v.position, usageCount = usage)
 
-    private fun sprintEntry(s: DemoSprint, usage: Int) =
-        VocabularyEntry(s.id, s.name, s.position, usageCount = usage)
+    /**
+     * A sprint row, with the two fields only a sprint carries (LNL-196): when it was
+     * completed, and how many of its issues are not in a closing column — which is what
+     * the Sprints section shows beside each row and what its completion confirmation
+     * counts.
+     */
+    private fun sprintEntry(p: DemoProject, s: DemoSprint, usage: Int): VocabularyEntry {
+        val closing = p.statuses.filter { it.requiresResolution }.map { it.id }.toSet()
+        return VocabularyEntry(
+            s.id,
+            s.name,
+            s.position,
+            usageCount = usage,
+            completedAt = s.completedAt,
+            unfinishedCount = p.published.count { it.sprintId == s.id && it.statusId !in closing },
+        )
+    }
 
     /**
      * Who this project admits, as the demo's Access section (LNL-194).
@@ -605,9 +620,13 @@ internal class DemoWorld {
         statuses = p.statuses.sortedBy { it.position }.map { statusEntry(p, it, usageOfStatus(p, it.id)) },
         priorities = p.priorities.sortedBy { it.position }.map { statusEntry(p, it, usageOfPriority(p, it.id)) },
         resolutions = p.resolutions.sortedBy { it.position }.map { statusEntry(p, it, usageOfResolution(p, it.id)) },
-        sprints = p.sprints.sortedBy { it.position }.map { sprintEntry(it, usageOfSprint(p, it.id)) },
+        sprints = p.sprints.sortedBy { it.position }.map { sprintEntry(p, it, usageOfSprint(p, it.id)) },
         versions = p.versions.sortedBy { it.position }.map { namedEntry(it, usageOfVersion(p, it.id)) },
         canMutateProject = true,
+        // Maintainer and above, which an owner is. The demo has no caller below it, so the
+        // read-only halves of Sprints and Versions never show here — see the server's
+        // buildSettings (LNL-196).
+        canMutateProjectPlanning = true,
         // Every section, because the demo visitor owns every board — the same list the
         // server builds for an owner. See ProjectSectionKeys.
         sections = listOf(
@@ -615,6 +634,7 @@ internal class DemoWorld {
             ProjectSection(ProjectSectionKeys.GITHUB, "Github"),
             ProjectSection(ProjectSectionKeys.STRUCTURE, "Structure"),
             ProjectSection(ProjectSectionKeys.SPRINTS, "Sprints"),
+            ProjectSection(ProjectSectionKeys.VERSIONS, "Versions"),
             ProjectSection(ProjectSectionKeys.ACCESS, "Access"),
         ),
         access = projectAccessState(p),

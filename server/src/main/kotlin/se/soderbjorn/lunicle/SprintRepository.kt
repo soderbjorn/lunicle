@@ -151,6 +151,35 @@ class SprintRepository(
     }
 
     /**
+     * Un-finish a sprint: clear `completed_at` and stop (LNL-196).
+     *
+     * One write, and deliberately not a mirror of [complete]'s three. What reopening
+     * does **not** do is the interesting half:
+     *
+     *  - It does not pull the rolled-forward work back. Those issues have been in the
+     *    backlog or the next sprint since, have been looked at, and may have been
+     *    deliberately re-planned; hauling them back would undo somebody else's
+     *    decisions in order to undo one of yours. Which issues are in a sprint has its
+     *    own gesture — see [setMembership].
+     *  - It does not re-activate the project's board. "Which sprint are we working in"
+     *    is a separate decision with a separate route, and completing this one may well
+     *    have been followed by activating the next. See [activate].
+     *
+     * So this is honestly narrower than "undo": it makes the sprint plannable and
+     * completable again, which is the whole of what the stamp was blocking.
+     *
+     * Idempotent rather than refused on an already-open sprint, for [activate]'s
+     * reason: it is what a second click on a slow connection sends.
+     *
+     * @throws SprintRefusal if the sprint is not this project's.
+     */
+    override suspend fun reopen(projectId: Long, sprintId: Long) {
+        sprints.findByIdInProject(sprintId, projectId)
+            ?: throw SprintRefusal("That sprint is not in this project.")
+        withContext(DatabaseDispatcher) { database.sprintsQueries.reopen(sprintId) }
+    }
+
+    /**
      * Set exactly which issues are in a sprint.
      *
      * The complete set, not a delta — the same convention as `IssueOrderUpdate`

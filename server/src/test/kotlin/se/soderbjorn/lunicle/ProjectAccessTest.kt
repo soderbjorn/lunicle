@@ -128,11 +128,26 @@ class ProjectAccessTest {
         val f = seed()
         val state = settingsFor(f.maintainerCookie, f.projectId)
         assertEquals(
-            listOf(ProjectSectionKeys.GENERAL, ProjectSectionKeys.SPRINTS, ProjectSectionKeys.ACCESS),
+            listOf(
+                ProjectSectionKeys.GENERAL,
+                ProjectSectionKeys.SPRINTS,
+                ProjectSectionKeys.VERSIONS,
+                ProjectSectionKeys.ACCESS,
+            ),
             state.sections.map { it.key },
-            "A maintainer's sections are not the three their rung reaches.",
+            "A maintainer's sections are not the four their rung reaches.",
         )
         assertFalse(state.canMutateProject, "A maintainer was told they may configure the board.")
+        // The half LNL-196 fixed: the two sections a maintainer is offered are the two they
+        // may edit, and they used to arrive empty because both lists were behind the admin
+        // gate. A section that renders nothing is worse than one that is not offered.
+        assertTrue(
+            state.canMutateProjectPlanning,
+            "A maintainer was offered Sprints and Versions and told they may not change them.",
+        )
+        assertNull(state.planningReadOnlyReason)
+        assertTrue(state.sprints.isNotEmpty(), "A maintainer's Sprints section arrived empty.")
+        assertTrue(state.versions.isNotEmpty(), "A maintainer's Versions section arrived empty.")
         assertFalse(state.canMutateProjectIdentity, "A maintainer was offered the project's name.")
         assertFalse(state.canDeleteProject)
         assertNull(state.deleteBlockedReason, "A maintainer was explained a power two rungs up.")
@@ -157,6 +172,7 @@ class ProjectAccessTest {
                 ProjectSectionKeys.GITHUB,
                 ProjectSectionKeys.STRUCTURE,
                 ProjectSectionKeys.SPRINTS,
+                ProjectSectionKeys.VERSIONS,
                 ProjectSectionKeys.ACCESS,
             ),
             owner,
@@ -502,6 +518,11 @@ class ProjectAccessTest {
         roles.setRole(viewer.id, project.id, ProjectRole.VIEWER)
         // The outsider holds nothing on purpose: they are what proves the person list is
         // exceptions rather than a directory, and what an audience row admits.
+
+        // One sprint and one version, because a project starts with neither and the
+        // maintainer assertions are about the two lists arriving at all (LNL-196).
+        vocabularies.add(project.id, se.soderbjorn.lunicle.clientserver.VocabularyKind.SPRINT, "Q3")
+        vocabularies.add(project.id, se.soderbjorn.lunicle.clientserver.VocabularyKind.VERSION, "1.0")
 
         // Production seats the instance owner at boot; a fixture that skipped it would be
         // testing an instance nobody runs. See InstanceLadder.

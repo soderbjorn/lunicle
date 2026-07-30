@@ -8,6 +8,12 @@
  * Access is written fresh around audience rows and person rows. The dialog kept only
  * what a *new* project needs, which is four fields and a modal.
  *
+ * Versions is a sixth section since LNL-196 — lifted out of Structure, where it was one
+ * list among the labels, to sit beside Sprints. The two belong together because they are
+ * the two whose *presence* is the feature flag: make the first one and something turns on
+ * across the whole board. The fixed-version requirement came with it, out of Structure's
+ * ticket requirements and under the list it cannot be satisfied without.
+ *
  * The tab strip went with them. One strip and one rail, two levels: the rail lists
  * every project the caller holds something in, and the selected project's sections
  * indent beneath it. So selecting another project keeps you on the same section, and
@@ -134,10 +140,18 @@ class ProjectSections(
     private lateinit var requirementsElement: HTMLElement
     private lateinit var requireLabelToggle: Toggle
     private lateinit var requireComponentToggle: Toggle
-    private lateinit var requireFixedVersionToggle: Toggle
 
     // ── Sprints ──
     private lateinit var sprintSectionElement: HTMLElement
+    private lateinit var sprintReadOnly: HTMLElement
+
+    // ── Versions ──
+    private lateinit var versionSectionElement: HTMLElement
+    private lateinit var versionReadOnly: HTMLElement
+    private lateinit var fixedVersionGroup: HTMLElement
+    private lateinit var requireFixedVersionToggle: Toggle
+    private lateinit var fixedVersionReadOnly: HTMLElement
+    private lateinit var fixedVersionCaveat: HTMLElement
 
     // ── Access ──
     private lateinit var yourAccessElement: HTMLElement
@@ -173,6 +187,7 @@ class ProjectSections(
     private var lastSettings: ProjectSettingsState? = null
 
     private var vocabularyConfirm: ConfirmDialog? = null
+    private var completeSprintDialog: CompleteSprintDialog? = null
     private var deleteConfirm: ConfirmDialog? = null
     private var addPersonDialog: AddPersonDialog? = null
     private var alert: AlertDialog? = null
@@ -184,6 +199,7 @@ class ProjectSections(
         panes[ProjectSectionKeys.GITHUB] = buildGithub()
         panes[ProjectSectionKeys.STRUCTURE] = buildStructure()
         panes[ProjectSectionKeys.SPRINTS] = buildSprints()
+        panes[ProjectSectionKeys.VERSIONS] = buildVersions()
         panes[ProjectSectionKeys.ACCESS] = buildAccess()
         host.children(*panes.values.toTypedArray())
         showSection(selected)
@@ -213,6 +229,7 @@ class ProjectSections(
     /** Take the confirmations down with the view. The rail cancels [scope]. */
     fun dismiss() {
         vocabularyConfirm?.dismiss()
+        completeSprintDialog?.dismiss()
         deleteConfirm?.dismiss()
         addPersonDialog?.dismiss()
         alert?.dismiss()
@@ -356,7 +373,7 @@ class ProjectSections(
         )
     }
 
-    // ── Structure and Sprints ────────────────────────────────────────────────
+    // ── Structure, Sprints and Versions ──────────────────────────────────────
 
     private fun buildStructure(): HTMLElement {
         structureSectionsElement = element("div", "project-structure")
@@ -367,20 +384,56 @@ class ProjectSections(
         return element("div", "project-pane").children(structureSectionsElement, requirementsElement)
     }
 
+    /**
+     * The sprints, and per row the completion date with the action that sets it
+     * (LNL-196).
+     *
+     * The Complete control used to be a row in the board's scope picker. It ended
+     * everybody's columns from a control that reads as a view switch, and it sat within
+     * reach of whoever happened to be looking at the board rather than of the people
+     * planning it. Here it is one action per row, beside the date, at the rung that owns
+     * the sprints — and the board keeps the scope picker, which is about this view.
+     */
     private fun buildSprints(): HTMLElement {
         sprintSectionElement = element("div", "project-structure")
-        return element("div", "project-pane").children(sprintSectionElement)
+        sprintReadOnly = element("p", "admin-note")
+        return element("div", "project-pane").children(sprintSectionElement, sprintReadOnly)
+    }
+
+    /**
+     * The versions, and under them the one rule that cannot be satisfied without one
+     * (LNL-196).
+     *
+     * Its own section, beside Sprints, because it is the other vocabulary whose
+     * *presence* is the feature flag: make the first version and two fields appear on
+     * every issue, exactly as making the first sprint gives the board a scope picker. It
+     * used to be rendered inside Structure among the labels and components, one rung
+     * above the caller who is allowed to change it and beside a list of things it does
+     * not resemble.
+     */
+    private fun buildVersions(): HTMLElement {
+        versionSectionElement = element("div", "project-structure")
+        versionReadOnly = element("p", "admin-note")
+        return element("div", "project-pane").children(
+            versionSectionElement,
+            versionReadOnly,
+            buildFixedVersionGroup(),
+        )
     }
 
     /**
      * The new-ticket requirements (LNL-106). Moved from the dialog, less the
      * show-issue-author switch, which went to General's Board display group where it
      * belongs: it decides how the board reads, not what a ticket must carry (LNL-194).
+     *
+     * Two switches, not three. The fixed-version rule moved to the Versions section
+     * (LNL-196) — see [buildFixedVersionGroup] — and this keeps a pointer, because
+     * somebody who came to Structure looking for "must have a fixed version" has to be
+     * told where it went rather than left concluding it was withdrawn.
      */
     private fun buildRequirementsSection(): HTMLElement {
         requireLabelToggle = Toggle { viewModel.onRequireLabelChanged(it) }
         requireComponentToggle = Toggle { viewModel.onRequireComponentChanged(it) }
-        requireFixedVersionToggle = Toggle { viewModel.onRequireFixedVersionChanged(it) }
         return element("div", "project-requirements").children(
             element("h3", "section-title", "Ticket requirements"),
             element(
@@ -395,13 +448,46 @@ class ProjectSections(
             element(
                 "p",
                 "field-hint",
-                "And insist on a fixed version when an issue is closed as done. This asks only for " +
-                    "resolutions ticked \"means done\" above, and only once the project has a version " +
-                    "to pick — so make a version and mark a done resolution first, or it is quietly " +
-                    "ignored.",
+                "The third requirement — that closing as done must name a fixed version — is in the " +
+                    "Versions section, under the list of versions it needs.",
+            ),
+        )
+    }
+
+    /**
+     * "Closing as done must have a fixed version", under the list it depends on
+     * (LNL-196).
+     *
+     * It sat in Structure's requirements beside its two siblings, two sections away from
+     * the versions that make it satisfiable at all. A switch whose precondition is a
+     * list somewhere else is a switch that reads as broken the first time somebody turns
+     * it on with an empty list.
+     *
+     * The rule is still an **administrator's**, and it did not move with the switch — so
+     * for a Maintainer this is the one dead control in the section, with the sentence
+     * saying whose it is. [fixedVersionCaveat] is the other half: the switch is quietly
+     * ignored until there is a version and a resolution ticked "means done", and that
+     * has to be said where the switch is rather than discovered by it not working.
+     */
+    private fun buildFixedVersionGroup(): HTMLElement {
+        requireFixedVersionToggle = Toggle { viewModel.onRequireFixedVersionChanged(it) }
+        fixedVersionReadOnly = element("p", "admin-note")
+        fixedVersionCaveat = element("p", "field-hint")
+        fixedVersionGroup = element("div", "project-requirements").children(
+            element("div", "settings-section-rule"),
+            element("h3", "section-title", "Closing an issue"),
+            element(
+                "p",
+                "field-hint",
+                "One requirement lives here rather than with the other two in Structure, because it " +
+                    "is about the list above: an issue cannot name a fixed version until this project " +
+                    "has one.",
             ),
             toggleRow(requireFixedVersionToggle, "Closing as done must have a fixed version"),
+            fixedVersionCaveat,
+            fixedVersionReadOnly,
         )
+        return fixedVersionGroup
     }
 
     // ── Access ───────────────────────────────────────────────────────────────
@@ -504,6 +590,7 @@ class ProjectSections(
         renderStructure(state)
         renderAccess(state)
         renderVocabularyConfirm(state)
+        renderSprintCompletion(state)
         renderDeleteConfirm(state)
         renderAlert(state)
         // The rail's second level is the server's list, so it can change under us: a
@@ -584,12 +671,18 @@ class ProjectSections(
     }
 
     /**
-     * The vocabulary sections, split across Structure and Sprints.
+     * The vocabulary sections, across three panes (LNL-196).
      *
-     * Absent entirely until the settings arrive, and for a caller the server refused,
-     * forever: a section that cannot be filled in is worse than no section. The view
-     * model already sorts sprints last, so the split is "sprint here, everything else
-     * there" — and Versions rides on Structure until ticket 6 lifts it out.
+     * Two different gates, because the two halves belong to two rungs. The five lists
+     * that define what the board *is* are an administrator's and are absent below that,
+     * forever: a section that cannot be filled in is worse than no section. The sprints
+     * and the versions are a maintainer's, render from Maintainer up, and are read-only
+     * below rather than absent — knowing what the releases are is not the same as being
+     * able to change them.
+     *
+     * Which host a section lands in is a lookup on the kind and nothing more. That is the
+     * whole of "lift Versions out of Structure": the view already did exactly this for
+     * sprints, so the change is a third host, not a change to the view model.
      */
     private fun renderStructure(state: EditProjectBackingViewModel.State) {
         requirementsElement.visible(state.showRequirementsSection)
@@ -598,23 +691,69 @@ class ProjectSections(
             requireLabelToggle.disabled = state.isBusy
             requireComponentToggle.checked = state.requireComponent
             requireComponentToggle.disabled = state.isBusy
+        }
+
+        // The fixed-version rule, in the Versions section now. Shown from Maintainer up
+        // and live only for an administrator, which is the one dead control down here.
+        fixedVersionGroup.visible(state.showFixedVersionRequirement)
+        if (state.showFixedVersionRequirement) {
             requireFixedVersionToggle.checked = state.requireFixedVersionOnResolve
-            requireFixedVersionToggle.disabled = state.isBusy
+            requireFixedVersionToggle.disabled = state.isBusy || !state.canSetRequirements
+            fixedVersionReadOnly.setTextIfChanged(state.requirementsReadOnlyReason ?: "")
+            fixedVersionReadOnly.visible(state.requirementsReadOnlyReason != null)
+            // Said under the switch rather than left to be discovered: with no version
+            // above, or no resolution ticked "means done", the rule is quietly ignored —
+            // and a switch that is on and does nothing is the thing people file bugs
+            // about. Which half is missing is named, because "it needs setting up" is not
+            // an instruction.
+            fixedVersionCaveat.setTextIfChanged(
+                when {
+                    !state.hasVersions && !state.hasDoneResolution ->
+                        "Ignored for now: this project has no versions to pick and no resolution " +
+                            "ticked \"means done\". Add a version above and tick one in Structure."
+                    !state.hasVersions ->
+                        "Ignored for now: this project has no versions to pick. Add one above."
+                    !state.hasDoneResolution ->
+                        "Ignored for now: no resolution is ticked \"means done\", so no close counts " +
+                            "as done. Tick one in Structure."
+                    else ->
+                        "Asks only for resolutions ticked \"means done\" in Structure, and only for " +
+                            "the versions above."
+                },
+            )
+        }
+
+        // The maintainer half first, so a Maintainer's two sections fill even though the
+        // administrator's five never will.
+        if (state.hasPlanningSettings) {
+            sprintReadOnly.setTextIfChanged(state.planningReadOnlyReason ?: "")
+            sprintReadOnly.visible(state.planningReadOnlyReason != null)
+            versionReadOnly.setTextIfChanged(state.planningReadOnlyReason ?: "")
+            versionReadOnly.visible(state.planningReadOnlyReason != null)
+            state.planningSections.forEach { renderVocabularySection(it) }
         }
         if (!state.hasSettings) return
-        state.sections.forEach { section ->
-            val view = sectionViews.getOrPut(section.kind) {
-                SectionView(section.kind).also {
-                    val host = if (section.kind == VocabularyKind.SPRINT) {
-                        sprintSectionElement
-                    } else {
-                        structureSectionsElement
-                    }
-                    host.appendChild(it.root)
+        state.structureSections.forEach { renderVocabularySection(it) }
+    }
+
+    /**
+     * Draw one vocabulary section into the pane its kind belongs to.
+     *
+     * The views are kept rather than rebuilt so the add field keeps its text and its
+     * focus across a re-render — see [sectionViews].
+     */
+    private fun renderVocabularySection(section: VocabularySection) {
+        val view = sectionViews.getOrPut(section.kind) {
+            SectionView(section.kind).also {
+                val host = when (section.kind) {
+                    VocabularyKind.SPRINT -> sprintSectionElement
+                    VocabularyKind.VERSION -> versionSectionElement
+                    else -> structureSectionsElement
                 }
+                host.appendChild(it.root)
             }
-            view.render(section)
         }
+        view.render(section)
     }
 
     private fun renderAccess(state: EditProjectBackingViewModel.State) {
@@ -757,6 +896,27 @@ class ProjectSections(
         }
     }
 
+    /**
+     * "This sprint is over — where does the unfinished work go?" (LNL-196).
+     *
+     * The same view the board's scope picker used to raise, mounted from here instead.
+     * Keyed on presence like the other two confirmations, so a second sprint's prompt
+     * cannot open under the first one's.
+     */
+    private fun renderSprintCompletion(state: EditProjectBackingViewModel.State) {
+        val pending = state.pendingSprintCompletion
+        if (pending != null && completeSprintDialog == null) {
+            completeSprintDialog = CompleteSprintDialog(
+                prompt = pending,
+                onComplete = { viewModel.onSprintCompletionConfirmed(it) },
+                onCancel = { viewModel.onSprintCompletionCancelled() },
+            ).also { it.mount(dialogHost) }
+        } else if (pending == null && completeSprintDialog != null) {
+            completeSprintDialog?.dismiss()
+            completeSprintDialog = null
+        }
+    }
+
     private fun renderVocabularyConfirm(state: EditProjectBackingViewModel.State) {
         val pending = state.pendingVocabularyDelete
         if (pending != null && vocabularyConfirm == null) {
@@ -804,15 +964,16 @@ class ProjectSections(
         val root = element("div", "vocab-section")
         private val title = element("h3", "section-title")
         private val hint = element("p", "field-hint")
+        private val readOnly = element("p", "admin-note")
         private val rowsElement = element("div", "vocab-rows")
         private val addField = textField { viewModel.onVocabularyDraftChanged(kind, it) }
         private val addButton = button("Add", "btn btn-quiet vocab-add-btn") { viewModel.onAddVocabularyTapped(kind) }
+        private val addRow = element("div", "vocab-add")
 
         /** The rows as last rendered, so they are rebuilt only when they changed. */
         private var signature: String? = null
 
         init {
-            val addRow = element("div", "vocab-add")
             addRow.children(addField, addButton)
             // The rows and the add field share ONE grid, which is what makes the
             // name fields line up. They are two elements rather than one because
@@ -820,7 +981,7 @@ class ProjectSections(
             // survive that — it is where the admin's cursor is when they press
             // Add. `display: contents` on both is what lets the grid see past them
             // to the cells; see .vocab-list.
-            root.children(title, hint, element("div", "vocab-list").children(rowsElement, addRow))
+            root.children(title, hint, readOnly, element("div", "vocab-list").children(rowsElement, addRow))
         }
 
         fun render(section: VocabularySection) {
@@ -828,11 +989,20 @@ class ProjectSections(
             hint.setTextIfChanged(section.hint)
             addField.setValueIfChanged(section.draftName)
             addButton.disabled = !section.isAddEnabled
+            // The add field goes away entirely for a reader who cannot add, rather than
+            // being greyed. It is the one control here where a dead version explains
+            // nothing: a greyed Delete at least sits beside the row it would have removed,
+            // where an empty text box with a dead Add beside it is just furniture. The
+            // sentence under the hint is what says why (LNL-196).
+            addRow.visible(section.isEditable, displayValue = "contents")
+            readOnly.setTextIfChanged(section.readOnlyReason ?: "")
+            readOnly.visible(section.readOnlyReason != null)
 
             val next = section.rows.joinToString("|") { row ->
                 "${row.id}:${row.name}:${row.requiresResolution}:${row.isDone}:" +
                     "${row.isDeletable}/${row.deleteBlockedReason}/${row.deleteBlockedSummary}:" +
-                    "${row.canMoveUp}/${row.canMoveDown}"
+                    "${row.canMoveUp}/${row.canMoveDown}:${row.isEditable}:" +
+                    "${row.completionLine}/${row.completionActionLabel}"
             }
             if (next == signature) return
             signature = next
@@ -851,6 +1021,9 @@ class ProjectSections(
                 viewModel.onVocabularyEdited(section.kind, row.id, it, row.requiresResolution, row.isDone)
             }
             nameField.value = row.name
+            // Dead for a reader who may not write here, and still shown with the name in
+            // it — a list you can read and not change is worth reading (LNL-196).
+            nameField.disabled = !row.isEditable
             container.appendChild(nameField)
 
             // Everything after the name goes in one cell, so the grid has two
@@ -868,6 +1041,7 @@ class ProjectSections(
                     viewModel.onVocabularyEdited(section.kind, row.id, nameField.value, it, row.isDone)
                 }
                 flag.checked = row.requiresResolution
+                flag.disabled = !row.isEditable
                 actions.appendChild(toggleRow(flag, "needs a resolution", "vocab-flag"))
             }
 
@@ -879,7 +1053,22 @@ class ProjectSections(
                     viewModel.onVocabularyEdited(section.kind, row.id, nameField.value, row.requiresResolution, it)
                 }
                 doneFlag.checked = row.isDone
+                doneFlag.disabled = !row.isEditable
                 actions.appendChild(toggleRow(doneFlag, "means done", "vocab-flag"))
+            }
+
+            // A sprint's completion, as a date and the one action that changes it
+            // (LNL-196). The date first and the button beside it, in that order, because
+            // the button's label is a consequence of the date — "Reopen" only makes sense
+            // once you have read "Completed 14 Jul". Both are absent for every other kind:
+            // the view model sends null, and it is the only thing this branch asks.
+            row.completionLine?.let { actions.appendChild(element("span", "vocab-completed", it)) }
+            row.completionActionLabel?.let { label ->
+                val completion = button(label, "btn btn-quiet vocab-complete") {
+                    viewModel.onSprintCompletionTapped(row.id)
+                }
+                completion.disabled = !row.isEditable
+                actions.appendChild(completion)
             }
 
             // Every vocabulary is arrangeable, labels and components included —

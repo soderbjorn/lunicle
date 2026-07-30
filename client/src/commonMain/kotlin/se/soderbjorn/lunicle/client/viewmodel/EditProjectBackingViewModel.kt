@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunicle.client.StorageRepository
+import se.soderbjorn.lunicle.client.formatTimestamp
 import se.soderbjorn.lunicle.client.userMessage
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectSection
@@ -136,6 +137,35 @@ data class VocabularyRowState(
     val canMoveDown: Boolean,
     val showsClosingFlag: Boolean,
     val showsDoneFlag: Boolean,
+    /**
+     * Whether this row may be renamed, moved or deleted at all (LNL-196).
+     *
+     * The caller's rung, not a fact about the row, which is why [isDeletable] does not
+     * cover it: that one answers "would the server refuse this delete", and this one
+     * answers "may this caller write in this list". False renders the row with dead
+     * controls, never as an absent row — a list you may read and not change is worth
+     * seeing, and a Versions section that showed a reader nothing would read as a project
+     * with no releases.
+     */
+    val isEditable: Boolean,
+    /**
+     * When this sprint finished, as a sentence — "Completed 17 Jul 2026, 14:32" — or
+     * "Open" while it has not (LNL-196). Null for every kind that is not a sprint.
+     *
+     * Both states are worded, not only the interesting one. A row with a date beside it
+     * and a row with nothing beside it are told apart by noticing an absence, which is
+     * exactly the reading nobody does down a list of five.
+     */
+    val completionLine: String?,
+    /**
+     * What the completion button says — "Complete…" or "Reopen" — or null for a kind
+     * that has no such thing.
+     *
+     * The ellipsis is on one of them only, and it is load-bearing: completing asks where
+     * the unfinished work goes, and reopening asks nothing. See
+     * [PendingSprintCompletion].
+     */
+    val completionActionLabel: String?,
 )
 
 /**
@@ -159,6 +189,49 @@ data class VocabularySection(
     val draftName: String,
     val isAddEnabled: Boolean,
     val rows: List<VocabularyRowState>,
+    /**
+     * Whether this caller may add to and edit this list (LNL-196).
+     *
+     * False hides the add field — an add field that cannot add is not an explanation of
+     * anything, unlike a greyed Delete, which at least sits beside the row it would have
+     * removed — and greys every row's controls. [readOnlyReason] is the sentence.
+     */
+    val isEditable: Boolean = true,
+    /** Why this list is read-only, shown once under the hint. Null when it is not. */
+    val readOnlyReason: String? = null,
+)
+
+/**
+ * "This sprint is over — where does the unfinished work go?", held while the
+ * confirmation is up (LNL-196).
+ *
+ * The question is asked rather than defaulted because rolling into the next sprint and
+ * dropping back to the backlog are different intentions, and the wrong one is tedious
+ * to undo: the issues end up spread across two places with nothing recording which of
+ * them moved.
+ *
+ * The whole prompt rather than an id, for [PendingVocabularyDelete]'s reason — the
+ * dialog names what is about to happen and needs the name and the count to say it, and
+ * looking them back up from the id would confirm one thing and complete another if a
+ * reload landed in between.
+ */
+data class PendingSprintCompletion(
+    val sprintId: Long,
+    val sprintName: String,
+    val unfinishedCount: Int,
+    /**
+     * Where the unfinished work may go: this project's other **open** sprints, in
+     * planning order. Empty is normal and fine — the dialog then offers only the
+     * backlog. A finished sprint is never a destination; work put there could not leave
+     * again. See the server's SprintRepository.complete.
+     */
+    val destinations: List<SprintDestination>,
+)
+
+/** One place unfinished work could be rolled to. See [PendingSprintCompletion]. */
+data class SprintDestination(
+    val sprintId: Long,
+    val name: String,
 )
 
 // `RoleToggle` and `MemberRowState` stood here: one checkbox per role per account,
@@ -390,6 +463,8 @@ class EditProjectBackingViewModel(
         val settings: ProjectSettingsState? = null,
         val vocabularyDrafts: Map<VocabularyKind, String> = emptyMap(),
         val pendingVocabularyDelete: PendingVocabularyDelete? = null,
+        /** The sprint whose completion is being confirmed, or null (LNL-196). */
+        val pendingSprintCompletion: PendingSprintCompletion? = null,
         val settingsErrorMessage: String? = null,
         val hasWrittenSettings: Boolean = false,
         /**
@@ -515,6 +590,27 @@ class EditProjectBackingViewModel(
          */
         val hasSettings: Boolean get() = settings != null && canConfigure
 
+        /**
+         * Whether the Sprints and Versions sections have anything to draw (LNL-196).
+         *
+         * The settings alone, with **no rung in the condition** — unlike [hasSettings],
+         * which insists on an administrator. The two sections are offered from Maintainer
+         * up and are read-only below, so what decides whether they paint is whether the
+         * response has arrived; what decides whether their controls are live is
+         * [canPlanProject]. Collapsing the two into one flag is what left a Maintainer
+         * looking at an empty Sprints pane before this ticket.
+         */
+        val hasPlanningSettings: Boolean get() = settings != null
+
+        /**
+         * Whether this caller may shape the sprints and the versions — Maintainer and
+         * above, one rung below the vocabularies. [planningReadOnlyReason] is the
+         * sentence when they may not.
+         */
+        val canPlanProject: Boolean get() = settings?.canMutateProjectPlanning == true
+        val planningReadOnlyReason: String? get() =
+            if (canPlanProject || settings == null) null else settings?.planningReadOnlyReason
+
         // ── The Features section (LNL-96) ──
 
         /**
@@ -533,9 +629,14 @@ class EditProjectBackingViewModel(
         val discussionsEnabled: Boolean get() = settings?.discussionsEnabled ?: true
         val messagesEnabled: Boolean get() = settings?.messagesEnabled ?: true
 
-        // ── The Structure tab's new-ticket requirements (LNL-106) ─────────────
+        // ── The new-ticket requirements (LNL-106), across two sections (LNL-196) ──
 
-        /** Shown on the Structure tab for a project administrator; same gate as the vocabularies. */
+        /**
+         * Shown in Structure for a project administrator; same gate as the vocabularies.
+         *
+         * Two of the three switches, since LNL-196: the fixed-version rule moved to the
+         * Versions section, under the list it depends on. Structure keeps a pointer.
+         */
         val showRequirementsSection: Boolean get() = hasSettings
 
         /** Whether a new ticket must carry a label, and whether it must carry a component. */
@@ -544,6 +645,32 @@ class EditProjectBackingViewModel(
 
         /** Whether closing an issue with a done resolution must carry a fixed version (LNL-134). */
         val requireFixedVersionOnResolve: Boolean get() = settings?.requireFixedVersionOnResolve ?: false
+
+        /**
+         * Whether the fixed-version switch renders in the Versions section (LNL-196).
+         *
+         * [hasPlanningSettings], not [hasSettings]: it lives in a section a Maintainer
+         * reaches, and it is written by an administrator — so a Maintainer sees it and
+         * cannot change it, which is the arrangement Board display already has in General.
+         * Hiding it would leave a Maintainer wondering why the board demands a version.
+         */
+        val showFixedVersionRequirement: Boolean get() = hasPlanningSettings
+
+        /**
+         * Whether the fixed-version switch is live, and [requirementsReadOnlyReason] why
+         * not.
+         *
+         * The requirements route is an administrator's, and it did not move with the
+         * switch — so this is the one control in a Maintainer's Versions section that is
+         * dead, and it says whose it is rather than vanishing.
+         */
+        val canSetRequirements: Boolean get() = settings?.canMutateProject == true
+        val requirementsReadOnlyReason: String? get() =
+            if (canSetRequirements || settings == null) {
+                null
+            } else {
+                "What a ticket must carry is an administrator of this project's."
+            }
 
         /** Whether the board shows each card's author on a muted footer line (LNL-157). */
         val showIssueAuthor: Boolean get() = settings?.showIssueAuthor ?: false
@@ -640,7 +767,8 @@ class EditProjectBackingViewModel(
         val canReceiveEmailNotifications: Boolean get() = settings?.canReceiveEmailNotifications == true
 
         /**
-         * The six vocabularies, in the order the dialog stacks them.
+         * The five vocabularies that define what the board **is** — the Structure
+         * section's lists.
          *
          * Statuses first because they are the board: they are what an admin came
          * here to change, and the one whose order is visible on screen five
@@ -650,13 +778,14 @@ class EditProjectBackingViewModel(
          * Labels and components last because they are the ones an issue merely
          * wears rather than the ones that place it.
          *
-         * Sprint is last of all and the view lifts it onto its own tab (LNL-102);
-         * everything above shares the Structure tab. All six are arrangeable —
-         * labels and components used to be the exception, sorted by name with no
-         * arrows, which read as a missing feature rather than a rule, because it
-         * was one. See LNL-28.
+         * All five are arrangeable — labels and components used to be the exception,
+         * sorted by name with no arrows, which read as a missing feature rather than a
+         * rule, because it was one. See LNL-28.
+         *
+         * Sprints and versions are **not** here: they are a rung lower and a section
+         * each. See [planningSections].
          */
-        val sections: List<VocabularySection> get() = settings?.let { loaded ->
+        val structureSections: List<VocabularySection> get() = settings?.let { loaded ->
             listOf(
                 section(
                     loaded,
@@ -695,11 +824,25 @@ class EditProjectBackingViewModel(
                     hint = "Which part of the thing an issue is about, in the order they are " +
                         "offered. Deleting one removes it from its issues, like a label.",
                 ),
-                // Last, and empty in most projects. The hint has to do more work
-                // than the others': every section above describes something the
-                // project already has, and this one has to explain what making
-                // the first sprint would turn on — including that nothing here
-                // changes until somebody does. See Sprints.sq.
+            )
+        }.orEmpty()
+
+        /**
+         * The two vocabularies whose **presence** is the feature flag: sprints, then
+         * versions. One section each, side by side in the rail (LNL-196).
+         *
+         * They are together and one rung below the five above because they are the same
+         * kind of thing: empty in most projects, and making the first one turns something
+         * on across the whole board. Both hints have to carry more than the others' — every
+         * Structure hint describes something the project already has, and these two have
+         * to explain what does not exist yet and what would appear if it did, including
+         * that nothing changes until somebody makes one. See Sprints.sq and Versions.sq.
+         *
+         * Read-only below Maintainer, not absent: knowing what the releases are is not the
+         * same as changing them. See [VocabularySection.isEditable].
+         */
+        val planningSections: List<VocabularySection> get() = settings?.let { loaded ->
+            listOf(
                 section(
                     loaded,
                     VocabularyKind.SPRINT,
@@ -710,9 +853,6 @@ class EditProjectBackingViewModel(
                         "picker. Deleting a sprint releases its issues to the backlog rather " +
                         "than refusing.",
                 ),
-                // Empty in most projects, like sprints — presence is the flag. The
-                // hint carries the same weight: nothing about versions appears until
-                // the first one is made. See Versions.sq.
                 section(
                     loaded,
                     VocabularyKind.VERSION,
@@ -729,9 +869,9 @@ class EditProjectBackingViewModel(
         /**
          * The sections this caller has on this project, in rail order (LNL-194).
          *
-         * Named `railSections` and not `sections` because [sections] above is the
-         * *vocabulary* sections the Structure tab renders — an older, unrelated use of
-         * the word that predates the rail.
+         * Named `railSections` and not `sections` because [structureSections] and
+         * [planningSections] above are the *vocabulary* sections those panes render — an
+         * older, unrelated use of the word that predates the rail.
          *
          * Straight from the server, undecided here — see
          * [se.soderbjorn.lunicle.clientserver.ProjectSection]. Empty until the settings
@@ -764,15 +904,31 @@ class EditProjectBackingViewModel(
         ): VocabularySection {
             val entries = loaded.entriesFor(kind)
             val draft = vocabularyDrafts[kind].orEmpty()
+            // Which rung owns this list, asked once. Sprints and versions are a
+            // maintainer's and the five that define the board are an administrator's —
+            // the same split the server draws in VocabularyKind.minimumRole, read here
+            // off the two flags it sends rather than re-derived from a ladder this side
+            // does not have (LNL-196).
+            val isEditable = when (kind) {
+                VocabularyKind.SPRINT, VocabularyKind.VERSION -> canPlanProject
+                else -> canConfigure
+            }
+            val readOnlyReason = when {
+                isEditable -> null
+                kind == VocabularyKind.SPRINT || kind == VocabularyKind.VERSION -> planningReadOnlyReason
+                else -> null
+            }
             return VocabularySection(
                 kind = kind,
                 title = title,
                 hint = hint,
                 draftName = draft,
-                isAddEnabled = draft.isNotBlank() && !isBusy,
+                isAddEnabled = isEditable && draft.isNotBlank() && !isBusy,
                 rows = entries.mapIndexed { index, entry ->
-                    entry.toRow(kind, index, entries)
+                    entry.toRow(kind, index, entries, isEditable)
                 },
+                isEditable = isEditable,
+                readOnlyReason = readOnlyReason,
             )
         }
 
@@ -798,6 +954,7 @@ class EditProjectBackingViewModel(
             kind: VocabularyKind,
             index: Int,
             siblings: List<VocabularyEntry>,
+            isEditable: Boolean,
         ): VocabularyRowState {
             val isLastOfAKindThatMatters = siblings.size <= 1 && kind.isLoadBearing
             val isBlockedByUse = kind.restrictsOnUse && usageCount > 0
@@ -806,7 +963,7 @@ class EditProjectBackingViewModel(
                 name = name,
                 requiresResolution = requiresResolution,
                 isDone = isDone,
-                isDeletable = !isLastOfAKindThatMatters && !isBlockedByUse && !isBusy,
+                isDeletable = isEditable && !isLastOfAKindThatMatters && !isBlockedByUse && !isBusy,
                 // Two or three words, on the row. The long sentence below says what
                 // to do; this says what is true, and it is the half somebody
                 // reading a greyed-out Delete actually gets to see.
@@ -835,10 +992,31 @@ class EditProjectBackingViewModel(
                     }
                     else -> null
                 },
-                canMoveUp = index > 0 && !isBusy,
-                canMoveDown = index < siblings.size - 1 && !isBusy,
+                canMoveUp = isEditable && index > 0 && !isBusy,
+                canMoveDown = isEditable && index < siblings.size - 1 && !isBusy,
                 showsClosingFlag = kind == VocabularyKind.STATUS,
                 showsDoneFlag = kind == VocabularyKind.RESOLUTION,
+                isEditable = isEditable,
+                // Sprints only, and both states worded (LNL-196). "Open" is not a
+                // placeholder: the alternative is a row whose completion is signalled by
+                // an empty space beside it, which is a reading nobody performs.
+                // `finished` rather than reading `completedAt` twice: it is a property from
+                // another module, so a smart cast is not available and the null check would
+                // not narrow it.
+                completionLine = completedAt.let { finished ->
+                    when {
+                        kind != VocabularyKind.SPRINT -> null
+                        finished != null -> "Completed ${formatTimestamp(finished)}"
+                        else -> "Open"
+                    }
+                },
+                completionActionLabel = when {
+                    kind != VocabularyKind.SPRINT -> null
+                    completedAt != null -> "Reopen"
+                    // The ellipsis, because this one asks a question — where the
+                    // unfinished work goes. Reopening asks nothing and has none.
+                    else -> "Complete…"
+                },
             )
         }
     }
@@ -1246,12 +1424,25 @@ class EditProjectBackingViewModel(
     fun onDeleteVocabularyTapped(kind: VocabularyKind, id: Long) {
         val entry = _stateFlow.value.settings?.entriesFor(kind)?.firstOrNull { it.id == id } ?: return
         val issues = "${entry.usageCount} ${if (entry.usageCount == 1) "issue" else "issues"}"
+        val plural = entry.usageCount != 1
         val consequence = when {
             entry.usageCount == 0 -> "Nothing uses it."
-            // The only kinds that reach a confirmation while in use: the others
-            // are refused before the button lights up. Deleting one of these
-            // unlabels the issues; it does not touch the issues themselves. See
-            // IssueLabels.sq.
+            // A version RELEASES the issues that named it, exactly as a sprint does — the
+            // schema says so (both references are ON DELETE SET NULL; see
+            // VocabularyKind.restrictsOnUse) and the count is therefore context for this
+            // confirmation and never a reason the Delete is dead. That is the whole
+            // difference from a status or a resolution, whose count is a refusal: those
+            // never reach here, because the button does not light up (LNL-196).
+            kind == VocabularyKind.VERSION ->
+                "$issues ${if (plural) "name" else "names"} this version; " +
+                    "${if (plural) "they" else "it"} will lose it. " +
+                    "The ${if (plural) "issues" else "issue"} " +
+                    "${if (plural) "themselves are" else "itself is"} not affected."
+            kind == VocabularyKind.SPRINT ->
+                "$issues ${if (plural) "are" else "is"} in this sprint; " +
+                    "${if (plural) "they" else "it"} will go back to the backlog."
+            // Labels and components: the links cascade, so deleting one unlabels the
+            // issues and leaves them standing. See IssueLabels.sq.
             else -> "$issues will lose it. The issues themselves are not affected."
         }
         _stateFlow.value = _stateFlow.value.copy(
@@ -1274,6 +1465,76 @@ class EditProjectBackingViewModel(
         _stateFlow.value = _stateFlow.value.copy(pendingVocabularyDelete = null)
         write("Could not delete that ${pending.kind.noun}.") {
             storage.deleteVocabulary(project.id, pending.kind, pending.id)
+        }
+    }
+
+    // ── Completing and reopening a sprint (LNL-196) ───────────────────────────
+    //
+    // This used to be a row in the board's scope picker, which is where it was found
+    // and not where it belonged: it changed the meaning of everybody's columns from a
+    // control that reads as a view switch, and it sat within reach of everybody looking
+    // at the board rather than beside the people planning it. Here it is one action per
+    // row, next to the date it sets, in the section that owns the sprints.
+
+    /**
+     * The Complete-or-Reopen button on a sprint row was pressed.
+     *
+     * One entry point for both, and the view decides nothing: it renders the label the
+     * row was handed and reports the click. Which of the two verbs this is depends on
+     * whether the sprint is stamped, and that answer has to come from the same state
+     * that drew the label — two places deciding it is how a button ends up saying
+     * "Reopen" and completing.
+     *
+     * Reopening writes immediately, with no confirmation: it asks nothing — the server's
+     * `SprintRepository.reopen` clears the stamp and nothing else — and it is undone by
+     * completing again. Completing asks where the unfinished work goes.
+     */
+    fun onSprintCompletionTapped(sprintId: Long) {
+        val project = existing ?: return
+        val loaded = _stateFlow.value.settings ?: return
+        val sprint = loaded.sprints.firstOrNull { it.id == sprintId } ?: return
+
+        if (sprint.completedAt != null) {
+            // Both writes take the board back and then re-read the settings, because
+            // completion is the one sprint fact that lives on both: the board's scope
+            // picker has to stop offering a finished sprint as a destination, and this
+            // pane's row has to show the date. `write` adopts the settings, and the
+            // fresh state is what tells the board to catch up — see the view's
+            // onSettingsWritten.
+            write("Could not reopen that sprint.") {
+                storage.reopenSprint(project.id, sprintId)
+                storage.projectSettings(project.id)
+            }
+            return
+        }
+
+        _stateFlow.value = _stateFlow.value.copy(
+            pendingSprintCompletion = PendingSprintCompletion(
+                sprintId = sprintId,
+                sprintName = sprint.name,
+                unfinishedCount = sprint.unfinishedCount,
+                // Open sprints only, this one excluded. A finished sprint is not a
+                // destination — work put there could never leave again, which is the
+                // stranding the server refuses outright.
+                destinations = loaded.sprints
+                    .filter { it.id != sprintId && it.completedAt == null }
+                    .map { SprintDestination(it.id, it.name) },
+            ),
+        )
+    }
+
+    fun onSprintCompletionCancelled() {
+        _stateFlow.value = _stateFlow.value.copy(pendingSprintCompletion = null)
+    }
+
+    /** The completion question was answered: roll the unfinished work here, or to the backlog. */
+    fun onSprintCompletionConfirmed(moveUnfinishedTo: Long?) {
+        val project = existing ?: return
+        val pending = _stateFlow.value.pendingSprintCompletion ?: return
+        _stateFlow.value = _stateFlow.value.copy(pendingSprintCompletion = null)
+        write("Could not complete that sprint.") {
+            storage.completeSprint(project.id, pending.sprintId, moveUnfinishedTo)
+            storage.projectSettings(project.id)
         }
     }
 

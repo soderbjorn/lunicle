@@ -579,7 +579,7 @@ class StorageRepository(
 
     // ── Sprints ──────────────────────────────────────────────────────────────
     //
-    // All three return the refreshed board rather than the sprint they touched,
+    // All four return the refreshed board rather than the sprint they touched,
     // the same convention the settings writes keep: activating one sprint changes
     // which issues the board shows, and completing one moves work between sprints.
     // A client that patched its own state would be right about the sprint and
@@ -590,6 +590,10 @@ class StorageRepository(
 
     suspend fun completeSprint(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?): BoardState =
         api.completeSprint(projectId, sprintId, moveUnfinishedTo)
+
+    /** Clear a sprint's completion stamp, from the Sprints section's row action (LNL-196). */
+    suspend fun reopenSprint(projectId: Long, sprintId: Long): BoardState =
+        api.reopenSprint(projectId, sprintId)
 
     suspend fun setSprintIssues(projectId: Long, sprintId: Long, issueIds: List<Long>): BoardState =
         api.setSprintIssues(projectId, sprintId, issueIds)

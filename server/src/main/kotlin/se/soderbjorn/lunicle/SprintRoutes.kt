@@ -3,16 +3,16 @@
  *
  * Creating, renaming, reordering and deleting a sprint go through
  * `/api/projects/{id}/vocabulary/sprint` with every other kind — see
- * [VocabularyKind]. What is here is the residue: the three verbs a label has no
+ * [VocabularyKind]. What is here is the residue: the four verbs a label has no
  * meaning for, plus the per-issue write that schedules one card.
  *
  * ── Two gates, drawn where the rest of the API draws them ───────────────────
  *
  * **Shaping the sprint axis is admin.** Creating a sprint is already admin, because
- * it is a vocabulary write; activating and completing one are the same kind of act
- * on the same objects, and splitting them would produce the odd result that a
+ * it is a vocabulary write; activating, completing and reopening one are the same kind
+ * of act on the same objects, and splitting them would produce the odd result that a
  * non-admin could end a sprint but not make the next one. So [Route.sprintRoutes]'s
- * first two handlers ask `canMutateProjects`, exactly as ProjectSettingsRoutes does.
+ * first three handlers ask `canMutateProjects`, exactly as ProjectSettingsRoutes does.
  *
  * **Scheduling work into it is `canEditIssue`.** Which sprint an issue is in is a
  * column on that issue, and every other column on it — status, priority, assignee
@@ -73,6 +73,23 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
         }
         deps.runSprintWrite(call) {
             deps.sprintRepository.complete(project.id, sprintId!!, body.moveUnfinishedTo)
+            call.respond(deps.buildBoard(project, call.caller(deps)))
+        }
+    }
+
+    /**
+     * Un-finish a sprint. See SprintRepository.reopen for what it deliberately leaves
+     * alone.
+     *
+     * No body, so nothing to malform: the sprint is in the path and there is exactly
+     * one thing to do to it. The same maintainer gate as completing one — the two are
+     * the same act on the same object, and a rung that could end a sprint but not
+     * un-end it would be a rung that can only make the mistake.
+     */
+    post("${ApiRoutes.PROJECTS}/{id}/sprints/{sid}/reopen") {
+        val (project, sprintId) = call.adminSprintScope(deps, needsSprintId = true) ?: return@post
+        deps.runSprintWrite(call) {
+            deps.sprintRepository.reopen(project.id, sprintId!!)
             call.respond(deps.buildBoard(project, call.caller(deps)))
         }
     }

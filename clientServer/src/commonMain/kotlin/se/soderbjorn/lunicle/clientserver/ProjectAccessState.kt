@@ -256,6 +256,18 @@ object ProjectSectionKeys {
     /** The timeboxes. A maintainer's, one rung below Structure. */
     const val SPRINTS: String = "sprints"
 
+    /**
+     * The releases. A maintainer's, beside [SPRINTS] (LNL-196).
+     *
+     * Lifted out of Structure, where it sat among the labels and components, because
+     * it is the other of the two vocabularies whose *presence* is the feature flag:
+     * make the first version and planned- and fixed-version fields appear across the
+     * whole board, exactly as making the first sprint turns on the scope picker. The
+     * two belong side by side, one rung below the vocabularies that define what the
+     * board is.
+     */
+    const val VERSIONS: String = "versions"
+
     /** Who this project admits — or, below Maintainer, what you yourself hold in it. */
     const val ACCESS: String = "access"
 }

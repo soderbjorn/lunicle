@@ -1090,6 +1090,10 @@ class HttpLunicleApi(
             setBody(SprintCompletion(moveUnfinishedTo))
         }.requireSuccess()
 
+    /** Clear a sprint's completion stamp. No body — the path says everything (LNL-196). */
+    override suspend fun reopenSprint(projectId: Long, sprintId: Long): BoardState =
+        httpClient.post(baseUrl + ApiRoutes.sprintReopening(projectId, sprintId)).requireSuccess()
+
     /** Set exactly which issues are in a sprint — the planning dialog's save. */
     override suspend fun setSprintIssues(projectId: Long, sprintId: Long, issueIds: List<Long>): BoardState =
         httpClient.post(baseUrl + ApiRoutes.sprintIssues(projectId, sprintId)) {

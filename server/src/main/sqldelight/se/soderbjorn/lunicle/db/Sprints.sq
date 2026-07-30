@@ -67,6 +67,18 @@ UPDATE sprints SET position = ? WHERE id = ?;
 complete:
 UPDATE sprints SET completed_at = ? WHERE id = ?;
 
+-- Un-stamp it (LNL-196). The other half of the pair this file's `completed_at`
+-- comment has always named, and until the Sprints section grew a per-row action
+-- there was no caller for it: completion was a one-way door, and the stamp is the
+-- one value on a sprint nobody typed, so a mis-click could not be corrected
+-- anywhere.
+--
+-- Clears the instant and nothing else. It does not pull back the work that was
+-- rolled forward and it does not re-activate the board — see
+-- SprintRepository.reopen for why neither is this statement's business.
+reopen:
+UPDATE sprints SET completed_at = NULL WHERE id = ?;
+
 -- Deleting a sprint un-sprints its issues rather than being refused:
 -- issues.sprint_id is nullable with ON DELETE SET NULL, so no RESTRICT fires and
 -- VocabularyRepository has nothing to count first. That is why SPRINT's

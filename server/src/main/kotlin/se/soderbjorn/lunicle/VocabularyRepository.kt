@@ -458,6 +458,11 @@ class VocabularyRepository(
      * directly rather than through this class. Widening the row so one kind in
      * six could carry one more nullable would put a column on labels that could
      * only ever be null, for no caller's benefit.
+     *
+     * The Sprints section does need it since LNL-196 — each row shows its completion
+     * date with a Complete-or-Reopen beside it — and it joins the sprint records back in
+     * for itself rather than reaching through here. See
+     * `ProjectSettingsRoutes.sprintEntries`.
      */
     private fun SprintRecord.toRow(uses: Map<Long, Long>) =
         VocabularyRow(id, projectId, name, position, usageCount = uses[id] ?: 0)

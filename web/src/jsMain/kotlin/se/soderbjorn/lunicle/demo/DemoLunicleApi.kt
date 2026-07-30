@@ -584,6 +584,19 @@ internal class DemoLunicleApi(
         return world.boardState(p)
     }
 
+    /**
+     * Clear a sprint's completion stamp, and nothing else (LNL-196).
+     *
+     * Deliberately not the inverse of [completeSprint]: the work that was rolled forward
+     * stays where it went and the active sprint is untouched. See the server's
+     * SprintRepository.reopen.
+     */
+    override suspend fun reopenSprint(projectId: Long, sprintId: Long): BoardState {
+        val p = requireProject(projectId)
+        p.sprints.firstOrNull { it.id == sprintId }?.completedAt = null
+        return world.boardState(p)
+    }
+
     override suspend fun setSprintIssues(projectId: Long, sprintId: Long, issueIds: List<Long>): BoardState {
         val p = requireProject(projectId)
         val chosen = issueIds.toSet()

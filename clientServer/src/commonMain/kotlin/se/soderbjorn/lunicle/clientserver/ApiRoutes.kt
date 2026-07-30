@@ -718,6 +718,24 @@ object ApiRoutes {
         "$PROJECTS/$projectId/sprints/$sprintId/complete"
 
     /**
+     * `POST` — un-finish a sprint: clear its completion stamp. No body. Returns the
+     * refreshed [BoardState].
+     *
+     * The counterpart [sprintCompletion] never had, added with the Sprints section's
+     * per-row action (LNL-196). Completing was a one-way door up to then, and the door
+     * had a wrong side: the stamp is the *only* value on a sprint that nobody typed, so
+     * a mis-click could not be corrected from any screen.
+     *
+     * Deliberately **not** the inverse of completion. Reopening clears the stamp and
+     * does nothing else — it does not fetch the rolled-forward work back, and it does
+     * not re-activate the project's board. Both would be guesses: the issues have been
+     * looked at and possibly re-planned since, and "which sprint is being worked in" is
+     * its own decision with its own route. See SprintRepository.reopen.
+     */
+    fun sprintReopening(projectId: Long, sprintId: Long): String =
+        "$PROJECTS/$projectId/sprints/$sprintId/reopen"
+
+    /**
      * `POST` — set exactly which issues are in a sprint, from a
      * [SprintMembership]. Returns the refreshed [BoardState].
      *

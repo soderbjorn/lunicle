@@ -2029,7 +2029,9 @@ private class Dialogs(
             is ActiveDialog.ChooseResolution -> openResolution(dialog)
             is ActiveDialog.NewSprint -> openNewSprint(dialog)
             is ActiveDialog.PlanSprint -> openPlanSprint(dialog)
-            is ActiveDialog.CompleteSprint -> openCompleteSprint(dialog)
+            // `is ActiveDialog.CompleteSprint ->` stood here (LNL-196). Completing a
+            // sprint is raised from the project's Sprints section now, so the dialog is
+            // mounted by ProjectSections rather than by this host.
         }
     }
 
@@ -2101,16 +2103,6 @@ private class Dialogs(
         val view = PlanSprintDialog(
             dialog = dialog,
             onSave = { projectId, sprintId, ids -> mainViewModel.onSprintPlanned(projectId, sprintId, ids) },
-            onCancel = { mainViewModel.onDialogClosed(changed = false) },
-        )
-        view.mount(host)
-        dismiss = { view.dismiss() }
-    }
-
-    private fun openCompleteSprint(dialog: ActiveDialog.CompleteSprint) {
-        val view = CompleteSprintDialog(
-            dialog = dialog,
-            onComplete = { projectId, sprintId, to -> mainViewModel.onSprintCompleted(projectId, sprintId, to) },
             onCancel = { mainViewModel.onDialogClosed(changed = false) },
         )
         view.mount(host)

@@ -3176,6 +3176,28 @@ body > .dt-pane-menu {
   white-space: nowrap;
 }
 
+/* When a sprint finished, or "Open" (LNL-196). The same muted register as
+   .vocab-blocked, because it is the same kind of thing — a fact about the row
+   rather than a control — and it sits immediately before the button that changes
+   it, so the pair reads as one statement: "Completed 14 Jul 2026  Reopen".
+
+   It does not wrap, for .vocab-flag's reason: a broken date would make the sprint
+   rows taller than every other section's. */
+.vocab-completed {
+  flex: none;
+  font-size: 11px;
+  color: var(--green-dim);
+  white-space: nowrap;
+}
+
+/* Complete… / Reopen. Sized like the arrows and the Delete beside it, because it
+   is a row action among row actions — the one thing it must not look like is the
+   section's primary act. */
+.vocab-complete {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* A disabled control still has to look like it exists, and — for Delete — still
    has to be hoverable: its title says WHY it is dead ("3 issues are in this
    status"), and a control with pointer-events off never shows a tooltip. That

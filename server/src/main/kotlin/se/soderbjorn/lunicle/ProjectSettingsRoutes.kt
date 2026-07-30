@@ -666,6 +666,12 @@ private suspend fun BoardDependencies.buildSettings(
     val rung = access.effectiveRole(caller, project.id) ?: ProjectRole.VIEWER
     val administers = rung.atLeast(ProjectRole.ADMIN)
     val owns = rung.atLeast(ProjectRole.OWNER)
+    // Sprints and versions are a maintainer's — the ladder has said so since LNL-191,
+    // via VocabularyKind.minimumRole, and until LNL-196 the settings response did not:
+    // both lists were inside the `administers` branch below, so a Maintainer was offered
+    // a Sprints section and handed an empty one. Same rung, asked the same way, so the
+    // section and the rows cannot disagree.
+    val plans = rung.atLeast(ProjectRole.MAINTAINER)
 
     val base = ProjectSettingsState(
         canMutateProject = administers,
@@ -696,6 +702,23 @@ private suspend fun BoardDependencies.buildSettings(
         requireFixedVersionOnResolve = project.requireFixedVersionOnResolve,
         showIssueAuthor = project.showIssueAuthor,
         hideIssueNumbers = project.hideIssueNumbers,
+        // ── The two maintainer vocabularies (LNL-196) ────────────────────────
+        //
+        // In `base` rather than in the administrator's copy below, because the Sprints
+        // and Versions sections are offered from Maintainer up and a section has to be
+        // able to render. Not a leak: the board already sends every reader the sprint and
+        // version *names* — a scope picker cannot draw itself without them — so what is
+        // added here is the usage counts and the completion instants, for a caller who
+        // may edit both lists.
+        sprints = if (plans) sprintEntries(project.id) else emptyList(),
+        versions = if (plans) vocabularies.rows(project.id, VocabularyKind.VERSION).map { it.toEntry() } else emptyList(),
+        canMutateProjectPlanning = plans,
+        // Null in every response this server builds today, because the rung that is
+        // offered the two sections is the rung that may edit them. It is sent anyway, and
+        // the pane greys off it, so that moving either power leaves a read-only section
+        // with a sentence rather than a section whose controls lie.
+        planningReadOnlyReason = "Shaping the sprints and the versions is a maintainer's."
+            .takeIf { !plans },
     )
     if (!administers) return base
 
@@ -719,10 +742,9 @@ private suspend fun BoardDependencies.buildSettings(
         statuses = vocabularies.rows(project.id, VocabularyKind.STATUS).map { it.toEntry() },
         priorities = vocabularies.rows(project.id, VocabularyKind.PRIORITY).map { it.toEntry() },
         resolutions = vocabularies.rows(project.id, VocabularyKind.RESOLUTION).map { it.toEntry() },
-        // Empty for every project that has never made one, and the section still
-        // renders — an empty list with an add field is how the first one gets made.
-        sprints = vocabularies.rows(project.id, VocabularyKind.SPRINT).map { it.toEntry() },
-        versions = vocabularies.rows(project.id, VocabularyKind.VERSION).map { it.toEntry() },
+        // `sprints` and `versions` are set in `base` above — they are a maintainer's, one
+        // rung below everything on this list. See LNL-196.
+        //
         // Rendered back as `owner/name` rather than the URL that was pasted, because
         // that is what was stored and echoing a reconstruction would invite the owner to
         // believe their exact spelling round-tripped. See parseRepositoryUrl.
@@ -769,9 +791,16 @@ private fun sectionsFor(rung: ProjectRole): List<ProjectSection> {
         // The repository is part of a project's identity and its token is a deployment
         // secret, so this one is the owner's alone.
         if (rung.atLeast(ProjectRole.OWNER)) add(ProjectSection(ProjectSectionKeys.GITHUB, "Github"))
-        // What the board *is*. An administrator's, with the sprints one rung below.
+        // What the board *is*. An administrator's, with the sprints and the versions one
+        // rung below.
         if (rung.atLeast(ProjectRole.ADMIN)) add(ProjectSection(ProjectSectionKeys.STRUCTURE, "Structure"))
+        // The two vocabularies whose PRESENCE is the feature flag, side by side
+        // (LNL-196): make the first sprint and the board gains a scope picker, make the
+        // first version and every issue gains its two version fields. Versions used to
+        // sit inside Structure among the labels — one rung too high, and beside a list of
+        // things it does not resemble.
         add(ProjectSection(ProjectSectionKeys.SPRINTS, "Sprints"))
+        add(ProjectSection(ProjectSectionKeys.VERSIONS, "Versions"))
         add(ProjectSection(ProjectSectionKeys.ACCESS, "Access"))
     }
 }
@@ -1001,3 +1030,38 @@ private fun VocabularyRow.toEntry(): VocabularyEntry = VocabularyEntry(
     // problems this cast is not among.
     usageCount = usageCount.toInt(),
 )
+
+/**
+ * The sprint rows, with the two things only a sprint has (LNL-196).
+ *
+ * `VocabularyRow` deliberately drops the completion instant — see
+ * `VocabularyRepository`'s `SprintRecord.toRow`, which says why widening the shared row
+ * shape so one kind in seven could carry one more nullable is the wrong trade. So the
+ * join happens here instead, where the Sprints section's response is assembled and
+ * where the extra reads are already paid for.
+ *
+ * Two extra reads, and only for a caller who reaches Maintainer:
+ *
+ *  - the sprint records, for `completed_at`, which is what puts a date and a
+ *    Complete-or-Reopen on each row;
+ *  - the project's issues and its closing columns, for how many of each sprint's issues
+ *    are **not** finished. That is the number the completion confirmation asks about,
+ *    and "unfinished" means "not in a status that requires a resolution" — a rule the
+ *    browser cannot apply, because the settings pane does not hold the board.
+ */
+private suspend fun BoardDependencies.sprintEntries(projectId: Long): List<VocabularyEntry> {
+    val rows = vocabularies.rows(projectId, VocabularyKind.SPRINT)
+    if (rows.isEmpty()) return emptyList()
+    val records = sprintRepository.forProject(projectId).associateBy { it.id }
+    val closing = sprintRepository.closingStatusIds(projectId)
+    val unfinished = issues.forProject(projectId)
+        .filter { it.sprintId != null && it.statusId !in closing }
+        .groupingBy { it.sprintId!! }
+        .eachCount()
+    return rows.map { row ->
+        row.toEntry().copy(
+            completedAt = records[row.id]?.completedAt,
+            unfinishedCount = unfinished[row.id] ?: 0,
+        )
+    }
+}
