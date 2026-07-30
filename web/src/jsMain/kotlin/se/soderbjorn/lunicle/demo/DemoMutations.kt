@@ -27,6 +27,15 @@ internal fun provisionProject(
         prefix = prefix.trim().uppercase(),
         discussionsEnabled = false,
         messagesEnabled = false,
+        // What the INSTANCE says a new project starts out admitting (LNL-195), rather than
+        // the fixtures' own members-as-viewers default. Nothing read that setting in the
+        // demo before: a visitor could set "new projects admit staff as contributors" on the
+        // Who-gets-in tab, create a board, and find it admitting members as viewers instead
+        // — a switch that visibly did nothing, which is worse than one that is absent.
+        //
+        // Empty is the ordinary state and is what a real fresh instance has: a new project
+        // admits nobody wholesale, and its creator's own row below is the only way in.
+        audiences = world.newProjectAudiences.toMutableMap(),
     )
     listOf("New", "Backlog", "Ready for development", "In progress", "Ready for test", "Closed")
         .forEachIndexed { i, n -> p.statuses.add(DemoStatus(world.allocId(), n, i, requiresResolution = n == "Closed")) }

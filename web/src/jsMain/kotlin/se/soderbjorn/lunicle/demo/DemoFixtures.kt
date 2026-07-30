@@ -51,14 +51,39 @@ internal fun seedDemoWorld(): DemoWorld {
 
     // ── Crew ──────────────────────────────────────────────────────────────────
 
-    fun user(name: String, mailbox: String, sysAdmin: Boolean = false): DemoUser {
-        val u = DemoUser(w.allocId(), name, "$mailbox@voyager.starfleet", AuthProvider.EMAIL, sysAdmin)
+    // Everybody here is on the deployment's own domain, which since LNL-199 is what makes
+    // them STAFF — see DEMO_STAFF_DOMAIN. The two later projects' people are on domains of
+    // their own and are therefore members, which is the split the Staff audience row and
+    // the two tier cards exist to draw.
+    //
+    // `arrived` is whether anybody has ever signed into the account. Nearly everybody has:
+    // a world where thirty people work on three boards and none of them has signed in
+    // badged every row NOT SIGNED IN, which made the badge read as decoration rather than
+    // as the one row worth looking at. Two accounts below are left unclaimed on purpose.
+    fun user(
+        name: String,
+        mailbox: String,
+        sysAdmin: Boolean = false,
+        arrived: Boolean = true,
+    ): DemoUser {
+        val u = DemoUser(
+            w.allocId(),
+            name,
+            "$mailbox@$DEMO_STAFF_DOMAIN",
+            AuthProvider.EMAIL,
+            sysAdmin,
+            hasSignedIn = arrived,
+        )
         w.users.add(u)
         return u
     }
 
     val janeway = user("Kathryn Janeway", "janeway", sysAdmin = true)
     w.demoUserId = janeway.id
+    // The instance's owner seat, which is a setting rather than a flag on the account —
+    // see DemoWorld.ownerUserId. Handing the instance over moves this and leaves Janeway
+    // an administrator, so the demo can show both sides of that transfer.
+    w.ownerUserId = janeway.id
     val picard = user("Jean-Luc Picard", "picard")
     val seven = user("Seven of Nine", "seven")
     val data = user("Data", "data")
@@ -69,9 +94,16 @@ internal fun seedDemoWorld(): DemoWorld {
     val crusher = user("Beverly Crusher", "crusher")
     val torres = user("B'Elanna Torres", "torres")
     val kim = user("Harry Kim", "kim")
-    val doctor = user("The Doctor", "emh")
+    // Added to the board by address and never claimed — a rung waiting for somebody to
+    // sign in and collect it. The Access list badges this row NOT SIGNED IN, and the
+    // hand-over picker leaves it out: an address nobody has proved control of cannot be
+    // handed a deployment, however much the domain vouches for it.
+    val doctor = user("The Doctor", "emh", arrived = false)
     val tuvok = user("Tuvok", "tuvok")
     val chakotay = user("Chakotay", "chakotay")
+    // A second unclaimed address, so the badge reads as a state rather than as one odd
+    // row.
+    val wildman = user("Samantha Wildman", "wildman", arrived = false)
 
     // ── Project ───────────────────────────────────────────────────────────────
 
@@ -171,9 +203,16 @@ internal fun seedDemoWorld(): DemoWorld {
     val sprint4 = sprint("Sprint 4 — Bridge & Combat", 2)
     p.activeSprintId = sprint4.id
 
-    // Who holds what. The demo user owns the board; the crew who do the work are
-    // maintainers, two run it, and the rest ride the members audience row and so are
-    // deliberately absent from the exception list. One rung each — see DemoRungKeys.
+    // Who this board admits wholesale, over and above the members row every project
+    // starts with (LNL-199). The crew are staff, so a staff row is what lets them work
+    // here without a row each — and the two rows together are the ladder doing the thing
+    // it is for: everybody signed in can read, the deployment's own people can file.
+    p.audiences[DemoAudienceKeys.STAFF] = DemoRungKeys.CONTRIBUTOR
+
+    // Who holds what over and above that. The demo user owns the board, the crew who do
+    // the work are maintainers, two run it, and anybody adequately served by an audience
+    // row is deliberately absent — which is what keeps this list short enough to BE the
+    // audit. One rung each; see DemoRungKeys.
     p.members[janeway.id] = DemoRungKeys.OWNER
     listOf(seven, data, riker, worf, torres, kim, tuvok, chakotay).forEach {
         p.members[it.id] = DemoRungKeys.MAINTAINER
@@ -182,6 +221,12 @@ internal fun seedDemoWorld(): DemoWorld {
     p.members[laforge.id] = DemoRungKeys.ADMIN
     p.members[troi.id] = DemoRungKeys.CONTRIBUTOR
     p.members[crusher.id] = DemoRungKeys.CONTRIBUTOR
+    // Two rungs nobody has collected. Both accounts were added by address and neither has
+    // ever been signed into, so both rows carry the NOT SIGNED IN badge. They sit above
+    // the Contributor the staff row would have given them anyway, because a row that
+    // merely restates the audience is one the real server would not send.
+    p.members[doctor.id] = DemoRungKeys.MAINTAINER
+    p.members[wildman.id] = DemoRungKeys.ADMIN
 
     // ── Issues ──────────────────────────────────────────────────────────────
 

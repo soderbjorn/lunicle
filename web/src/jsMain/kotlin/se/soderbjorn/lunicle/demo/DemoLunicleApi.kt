@@ -19,6 +19,7 @@
 package se.soderbjorn.lunicle.demo
 
 import io.ktor.http.HttpStatusCode
+import kotlinx.browser.window
 import se.soderbjorn.lunicle.clientserver.AddressPreview
 import se.soderbjorn.lunicle.clientserver.AddressStanding
 import se.soderbjorn.lunicle.clientserver.AuthProvider
@@ -91,18 +92,38 @@ internal class DemoLunicleApi(
     override suspend fun impersonate(email: String): SessionState = world.sessionState()
 
     /**
-     * What the demo says an address resolves to: nothing, because it never asks.
+     * What an address resolves to in this world.
      *
-     * The demo's `canImpersonate` is false, so the menu that would reach here is not
-     * drawn at all — this exists to satisfy the interface, and it answers the honest
-     * thing rather than inventing a resolution for an address in a world with no
-     * domain, no admission policy and no `users` table. See DemoWorld.sessionState.
+     * Unreachable, and answered properly anyway. The demo's `canImpersonate` is false by
+     * the fixed-account rule (LNL-146), so the menu that would raise this is not drawn —
+     * but the old answer was "the demo has no accounts to resolve an address against",
+     * which stopped being true the moment the world got a staff domain and thirty-odd
+     * accounts (LNL-199). A stub whose stated reason has expired is worse than one that
+     * answers, so this resolves the address the way the server would.
      */
-    override suspend fun previewAddress(email: String): AddressPreview = AddressPreview(
-        email = email,
-        standing = AddressStanding.NO_ACCOUNT,
-        summary = "The demo has no accounts to resolve an address against.",
-    )
+    override suspend fun previewAddress(email: String): AddressPreview {
+        val normalized = email.trim().lowercase()
+        val existing = world.users.firstOrNull { it.email?.lowercase() == normalized }
+        val standing = when {
+            existing == null -> AddressStanding.NO_ACCOUNT
+            existing.id == world.demoUserId -> AddressStanding.SELF
+            !existing.hasSignedIn -> AddressStanding.NOT_SIGNED_IN
+            existing.isStaff -> AddressStanding.STAFF
+            else -> AddressStanding.MEMBER
+        }
+        return AddressPreview(
+            email = email,
+            standing = standing,
+            summary = when (standing) {
+                AddressStanding.SELF -> "That is your own account."
+                AddressStanding.STAFF -> "An account on $DEMO_STAFF_DOMAIN."
+                AddressStanding.MEMBER -> "An account from outside $DEMO_STAFF_DOMAIN."
+                AddressStanding.NOT_SIGNED_IN ->
+                    "An address somebody has been given access to and never signed in with."
+                AddressStanding.NO_ACCOUNT -> "No account here uses that address."
+            },
+        )
+    }
     override suspend fun impersonateSignedOut(): SessionState = world.sessionState()
     override suspend fun stopImpersonating(): SessionState = world.sessionState()
 
@@ -127,11 +148,57 @@ internal class DemoLunicleApi(
         world.uiSettings[key] = value
     }
 
-    // ── Agent connections (stubbed: not permitted, so the section never renders) ─
+    // ── Agent connections ────────────────────────────────────────────────────
 
-    override suspend fun mcpState(): McpState = McpState(isAllowed = false)
-    override suspend fun setMcpEnabled(isEnabled: Boolean): McpState = McpState(isAllowed = false)
-    override suspend fun revokeMcpConnection(clientId: String): McpState = McpState(isAllowed = false)
+    /**
+     * Agent access, which the demo now actually models (LNL-199).
+     *
+     * ── The contradiction this replaced ─────────────────────────────────────
+     *
+     * These three used to return `isAllowed = false` flat, and the You tab therefore
+     * greyed the agent switch with "Not permitted for members on this instance." — about
+     * an account the very next line of the same tab calls the instance owner. LNL-193
+     * found it. It is not a wording bug: the permission is per tier and administrators and
+     * the owner are always permitted, so `false` was the wrong answer rather than a
+     * badly-explained one.
+     *
+     * So it is asked of [DemoWorld.permitsAgents], which is the rule. The visitor is
+     * permitted because they own the place; a member or staff account would depend on
+     * their tier card's switch, which is exactly what a visitor can go and toggle on the
+     * Instance tab and then watch move in the People tab's MCP column.
+     *
+     * The switch itself is the person's own half and is stored, so it stays where the
+     * visitor put it until they reload. There are no connections and never will be:
+     * connecting an agent needs a server to hold a token, which is the one thing demo mode
+     * does not have. An empty list is the honest answer and is also what a real account
+     * that has just switched agent access on sees.
+     */
+    override suspend fun mcpState(): McpState = mcpStateForVisitor()
+
+    override suspend fun setMcpEnabled(isEnabled: Boolean): McpState {
+        world.mcpEnabled = isEnabled
+        return mcpStateForVisitor()
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    override suspend fun revokeMcpConnection(clientId: String): McpState = mcpStateForVisitor()
+
+    private fun mcpStateForVisitor(): McpState {
+        val allowed = world.permitsAgents(world.tierOf(world.demoUser))
+        return McpState(
+            isAllowed = allowed,
+            // A switch that is on for somebody no longer permitted would report an agent
+            // access they do not have, so the person's own answer is reported only while
+            // their tier still allows it — the same `isEnabled && permitted` conjunction
+            // the server's canUseMcp applies.
+            isEnabled = allowed && world.mcpEnabled,
+            // This deployment's own origin, which is what the real route sends and is why
+            // the client is careful never to build it itself. It resolves to whatever is
+            // serving the demo bundle — so the address on screen is at least a real one,
+            // rather than a fabricated host somebody might paste into a terminal.
+            serverUrl = "${window.location.origin}/mcp",
+        )
+    }
 
     // ── Instance administration ──────────────────────────────────────────────
 
@@ -174,17 +241,38 @@ internal class DemoLunicleApi(
     }
 
     /**
-     * Handing the instance over (LNL-198) — which the demo honestly cannot do.
+     * Hand the whole deployment to another account (LNL-198), which the demo can now
+     * genuinely do (LNL-199).
      *
-     * Not a stub that pretends. The demo world names no staff domain, so every account in
-     * it is a member, so **nobody is eligible**: the dialog shows the reason where the
-     * picker would be, and there is nothing to call this with. It returns the world
-     * unchanged rather than throwing, because a demo should not be able to raise an error
-     * dialog — and it moves nothing, because seating an ineligible account would teach a
-     * rule the server does not have.
+     * ── Why this stopped being a no-op ──────────────────────────────────────
+     *
+     * It was one, honestly: the demo named no staff domain, so every account in the world
+     * was a member, so nobody was eligible and the dialog showed a reason where the picker
+     * would be. Nothing could ever call this, and moving ownership to an ineligible account
+     * would have taught a rule the server does not have.
+     *
+     * LNL-199 gave the world a domain, which makes the crew who have signed in genuinely
+     * eligible. A populated picker over a Confirm that did nothing would be a worse lie
+     * than the empty one, so the seat moves for real — and the eligibility is re-derived
+     * here rather than trusted from the request, exactly as the server's route re-derives
+     * it, so a call naming a placeholder account is refused on the same grounds.
+     *
+     * The outgoing owner is left holding the administrator rung, as the server leaves them:
+     * the visitor keeps the instance tabs and loses the owner-only controls, which is the
+     * whole point of being able to watch it happen. They are already an administrator in
+     * this world, so there is nothing to write for that — [DemoUser.isSysAdmin] said so
+     * before the hand-over and says so after.
+     *
+     * A refusal returns the world unchanged rather than throwing. A demo should not be able
+     * to raise an error dialog.
      */
-    @Suppress("UNUSED_PARAMETER")
-    override suspend fun handOverInstance(userId: Long): AdminSettingsState = world.adminSettingsState()
+    override suspend fun handOverInstance(userId: Long): AdminSettingsState {
+        val successor = world.users.firstOrNull { it.id == userId }
+        if (successor != null && world.mayBeHandedTheInstance(successor)) {
+            world.ownerUserId = successor.id
+        }
+        return world.adminSettingsState()
+    }
 
     override suspend fun reorderProjects(ids: List<Long>): AdminSettingsState {
         world.projects.sortBy { ids.indexOf(it.id) }
@@ -314,19 +402,35 @@ internal class DemoLunicleApi(
         return world.projectSettingsState(p)
     }
 
+    /**
+     * Who this project admits, wholesale.
+     *
+     * Carries the publish veto (LNL-199), which this was missing while its sibling
+     * [setNewProjectAudience] had it: a guest row cannot be set while the instance forbids
+     * public projects, whoever asks — the owner included. Without the check here a visitor
+     * could publish a board from the Access section while the switch that governs it read
+     * off, which is exactly the "two answers to who can see this, one of them enforced"
+     * state the audience table exists to retire.
+     */
     override suspend fun setProjectAudience(
         projectId: Long,
         audienceKey: String,
         roleKey: String?,
     ): ProjectSettingsState {
         val p = requireProject(projectId)
+        if (audienceKey == DemoAudienceKeys.GUEST && roleKey != null && !world.allowPublicProjects) {
+            return world.projectSettingsState(p)
+        }
         if (roleKey == null) p.audiences.remove(audienceKey) else p.audiences[audienceKey] = roleKey
         return world.projectSettingsState(p)
     }
 
     /**
-     * Add somebody by address. The demo has no sign-in, so the new row is a crew member
-     * who will never arrive — which is exactly what the NOT SIGNED IN badge is for.
+     * Add somebody by address.
+     *
+     * The new row has never been signed into, which is what puts the NOT SIGNED IN badge
+     * on it — a rung nobody has collected yet. That is the one state this dialog can
+     * create, and being able to watch it appear is the point of the badge.
      */
     override suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState {
         val p = requireProject(projectId)
@@ -339,6 +443,7 @@ internal class DemoLunicleApi(
             // provider pair records how the row came to exist, and nobody chose a provider
             // for this one.
             provider = AuthProvider.EMAIL,
+            hasSignedIn = false,
         ).also { world.users.add(it) }
         p.members[person.id] = roleKey
         return world.projectSettingsState(p)

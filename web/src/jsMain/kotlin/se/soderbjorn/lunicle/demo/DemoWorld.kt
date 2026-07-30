@@ -13,11 +13,27 @@
  * loads and lives only in memory, so a reload starts over from the seed — which is
  * the whole point of a demo you can poke at without consequence.
  *
- * The demo user (Captain Janeway) is the instance's system administrator and the
- * project's owner, so every affordance flag this file projects is simply `true`:
- * that is what surfaces the admin surfaces, the drag handles and the edit controls
- * a visitor is meant to explore. The real server would re-derive each of those from
- * the session; here there is one fixed session and it may do everything.
+ * The demo user (Captain Janeway) is the **instance owner** — the top of both ladders —
+ * so nearly every affordance flag this file projects is simply `true`: that is what
+ * surfaces the settings pane, the drag handles and the edit controls a visitor is meant
+ * to explore. The real server would re-derive each of those from the session; here there
+ * is one fixed session and it may do everything.
+ *
+ * ── What is derived rather than asserted, and why it matters (LNL-199) ───────
+ *
+ * "The visitor may do everything" is true and is not a licence to hard-code every answer.
+ * Where a screen's whole point is to *show the rule*, the projection re-implements the
+ * rule instead: [tierOf] and [permitsAgents] for the instance ladder, [audienceFloor] and
+ * [higherRung] for a project's `max(audience row, own row)`. Two things fell out of
+ * getting that wrong. The People tab reported every account with no own row as having no
+ * access, on a board whose members row admits them; and the guest audience row could be
+ * set while the switch that governs public projects read off. Both were a literal
+ * standing in for a rule, and both looked fine until you read the screen beside the one
+ * it contradicted.
+ *
+ * This deployment also names a staff domain ([DEMO_STAFF_DOMAIN]), which is what gives
+ * the demo a Staff audience row, a Staff tier card and somebody eligible to be handed the
+ * instance.
  *
  * @see DemoLunicleApi
  * @see se.soderbjorn.lunicle.clientserver.LunicleApi
@@ -46,6 +62,7 @@ import se.soderbjorn.lunicle.clientserver.IssueSummary
 import se.soderbjorn.lunicle.clientserver.NotificationKind
 import se.soderbjorn.lunicle.clientserver.NotificationListState
 import se.soderbjorn.lunicle.clientserver.NotificationSummary
+import se.soderbjorn.lunicle.clientserver.OwnerCandidate
 import se.soderbjorn.lunicle.clientserver.ProjectPermissionsView
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
@@ -117,16 +134,137 @@ internal val DEMO_RUNGS: List<RungOption> = listOf(
 internal fun demoRungLabel(key: String): String =
     DEMO_RUNGS.firstOrNull { it.key == key }?.label ?: key
 
+/** Where a rung sits on the ladder, so the demo can take the same max the server takes. */
+internal fun demoRungRank(key: String?): Int =
+    if (key == null) -1 else DEMO_RUNGS.indexOfFirst { it.key == key }
+
+/** The senior of two rungs, either of which may be absent. */
+internal fun higherRung(a: String?, b: String?): String? =
+    if (demoRungRank(a) >= demoRungRank(b)) a else b
+
+// ── The instance ladder ─────────────────────────────────────────────────────
+//
+// The demo's copy of `InstanceRole`, for the same reason it carries its own rungs: the
+// server's enum is JVM-only. Only the four an account can be are here — guest is the
+// absence of an account, and there is nothing in this world without one.
+
+internal object DemoTierKeys {
+    const val MEMBER = "member"
+    const val STAFF = "staff"
+    const val ADMIN = "admin"
+    const val OWNER = "owner"
+}
+
+/** What the People tab calls a tier. One word where one will do, as the server does. */
+internal fun demoTierLabel(key: String): String = when (key) {
+    DemoTierKeys.MEMBER -> "Member"
+    DemoTierKeys.STAFF -> "Staff"
+    DemoTierKeys.ADMIN -> "Instance admin"
+    DemoTierKeys.OWNER -> "Instance owner"
+    else -> key
+}
+
+/** Ascending, so "does this account reach that audience" is one comparison. */
+private val DEMO_TIER_ORDER: List<String> = listOf(
+    DemoAudienceKeys.GUEST,
+    DemoTierKeys.MEMBER,
+    DemoTierKeys.STAFF,
+    DemoTierKeys.ADMIN,
+    DemoTierKeys.OWNER,
+)
+
+/** Does an account on [tier] reach an audience row written for [audience]? */
+internal fun tierReaches(tier: String, audience: String): Boolean =
+    DEMO_TIER_ORDER.indexOf(tier) >= DEMO_TIER_ORDER.indexOf(audience)
+
+// ── Audiences, and the domain that makes the middle one real ────────────────
+
+internal object DemoAudienceKeys {
+    const val GUEST = "guest"
+    const val MEMBER = "member"
+    const val STAFF = "staff"
+}
+
+/**
+ * The domain this demo deployment calls its own — which is what gives it a **staff**
+ * tier at all (LNL-199).
+ *
+ * ── Why the demo names one, having not before ────────────────────────────────
+ *
+ * A deployment's staff domain is deploy-time configuration, read from `brand.json`, and
+ * the demo is a bundle with no server to read one. So the demo world simply declares
+ * what a `brand.json` would have said, and derives every account's tier from its address
+ * exactly as `UserKind.forEmail` does.
+ *
+ * The alternative — leaving it unset, which is what LNL-198 found — is a coherent
+ * deployment and a poor demo. With no domain there is no staff audience row, no staff
+ * tier card and therefore nowhere to see the two per-tier switches, no "Staff domain"
+ * fact on the Instance tab, no domain note in the add-a-person dialog, and nobody who
+ * may be handed the deployment — so Hand over… opens on a sentence explaining why it
+ * cannot be used. That is five screens a visitor cannot see, and all five are the half
+ * of the model that distinguishes an instance's own people from everybody else.
+ *
+ * `voyager.starfleet` because it is already the crew's address (see DemoFixtures), so
+ * the split the staff tier draws lands where the story already has a seam: the ship's
+ * crew are staff, and the two later projects' people — `kilobyteklinik.se`,
+ * `meridian.dev` and the outside contributors on `example.com` — are members. A domain
+ * matching nobody would have been a card over an empty set, which is the thing the
+ * server refuses to draw.
+ */
+internal const val DEMO_STAFF_DOMAIN: String = "voyager.starfleet"
+
 // ── Entities ────────────────────────────────────────────────────────────────
 
-/** An account. The demo user is [isSysAdmin]; the rest of the crew never sign in. */
+/**
+ * An account.
+ *
+ * @property isSysAdmin whether this account holds the instance-**administrator** rung.
+ *   Never the owner rung: ownership is [DemoWorld.ownerUserId], a seat rather than a flag,
+ *   for the reason the real `users.instance_role` cannot hold it either. Ask
+ *   [DemoWorld.tierOf] for the whole answer.
+ * @property hasSignedIn whether anybody has ever signed into it (LNL-194). False is a
+ *   **placeholder**: a row an administrator created by typing an address, holding a rung
+ *   that nobody has collected yet. The Access list badges those NOT SIGNED IN, and the
+ *   demo keeps a couple so the badge means something — it read as the default when every
+ *   account but the visitor's carried it.
+ */
 internal class DemoUser(
     val id: Long,
     var name: String,
     val email: String?,
     val provider: AuthProvider,
     val isSysAdmin: Boolean = false,
-)
+    val hasSignedIn: Boolean = true,
+) {
+    /**
+     * Where this account stands on the instance ladder, ownership aside.
+     *
+     * The demo's copy of the server's `storedInstanceRole`, and it stops short of Owner
+     * for the same reason that one does — no account carries ownership, so nothing derived
+     * from an account alone can report it.
+     *
+     * The staff/member half is derived from the address against [DEMO_STAFF_DOMAIN] rather
+     * than stored per fixture, which is the rule the real server applies: `users.kind` is
+     * re-derived from one function on every boot and is never written by hand, so storing
+     * it here would be the one place the demo and the rule could disagree.
+     */
+    val tier: String
+        get() = when {
+            isSysAdmin -> DemoTierKeys.ADMIN
+            isStaff -> DemoTierKeys.STAFF
+            else -> DemoTierKeys.MEMBER
+        }
+
+    /**
+     * Whether this account is on the deployment's own domain.
+     *
+     * Purely a fact about the address, and deliberately **independent of [tier]** — the
+     * server's `users.kind` is too. An owner from outside the domain is a member who runs
+     * the place, and the You tab says both things separately for exactly that reason.
+     */
+    val isStaff: Boolean
+        get() = email?.substringAfterLast('@')?.lowercase() == DEMO_STAFF_DOMAIN
+}
 
 /**
  * A status, priority or resolution — all three are an id, a name and an order, so
@@ -259,8 +397,11 @@ internal class DemoProject(
      * What each audience arrives as, by audience key, or absent for "no access"
      * (LNL-194). Seeded to admit members as viewers, so the demo's Access section opens
      * with something to look at rather than an empty board nobody can see.
+     *
+     * A board created *in* the demo takes the instance's own new-project list instead —
+     * see [provisionProject], which passes it explicitly rather than inheriting this.
      */
-    val audiences: MutableMap<String, String> = mutableMapOf("member" to DemoRungKeys.VIEWER),
+    val audiences: MutableMap<String, String> = mutableMapOf(DemoAudienceKeys.MEMBER to DemoRungKeys.VIEWER),
 )
 
 // ── The world ───────────────────────────────────────────────────────────────
@@ -292,6 +433,20 @@ internal class DemoWorld {
     var hideDisplayName: Boolean = false
 
     /**
+     * Whether the visitor has switched agent access on for their own account (LNL-199).
+     *
+     * The person's own answer, and only half of it: [permitsAgents] is the other, and both
+     * have to be true for an agent to connect. Kept in the world rather than returned
+     * fixed, so the switch on the You tab actually moves and the People tab's MCP column
+     * follows it.
+     *
+     * Starts off. Somebody who has never asked for agent access has not got it, and the
+     * interesting thing to show is the switch working rather than a connection already
+     * there.
+     */
+    var mcpEnabled: Boolean = false
+
+    /**
      * What a new project starts out admitting, by audience key (LNL-195).
      *
      * Empty, like a real fresh instance: out of the box a new project admits nobody. The
@@ -300,6 +455,59 @@ internal class DemoWorld {
     val newProjectAudiences: MutableMap<String, String> = mutableMapOf()
 
     var demoUserId: Long = 0
+
+    /**
+     * Which account owns the deployment (LNL-199).
+     *
+     * A field of its own rather than a flag on the account, because that is the shape the
+     * real model has: ownership is one setting naming one id, so that "exactly one owner"
+     * needs no constraint to enforce. It also makes handing the instance over a single
+     * assignment here — see [DemoLunicleApi.handOverInstance], which could do nothing at
+     * all while ownership was a `val` on [DemoUser].
+     *
+     * Seeded to the visitor. A hand-over moves it, and the visitor keeps the account they
+     * signed in as — so the demo can show what the screen looks like from the other side
+     * of a transfer, which is the one thing that screen is for.
+     */
+    var ownerUserId: Long = 0
+
+    /** Is [user] the one account that owns this deployment? */
+    fun owns(user: DemoUser): Boolean = user.id == ownerUserId
+
+    /**
+     * Where [user] stands, ownership included.
+     *
+     * [DemoUser.tier] cannot answer this on its own for the same reason the server's
+     * `storedInstanceRole` cannot: ownership is a setting, so no account carries it.
+     */
+    fun tierOf(user: DemoUser): String =
+        if (owns(user)) DemoTierKeys.OWNER else user.tier
+
+    /**
+     * May an account on this tier hold agent access at all?
+     *
+     * The per-tier rule LNL-192 introduced, mirroring `InstanceSettings.permitsAgents`:
+     * administrators and the owner always, staff and members only where the tier card's
+     * switch is on. This is what the You tab's greyed switch and the People tab's
+     * read-only "MCP allowed" column both report, and having one function answer both is
+     * what keeps them from disagreeing.
+     */
+    fun permitsAgents(tier: String): Boolean = when (tier) {
+        DemoTierKeys.OWNER, DemoTierKeys.ADMIN -> true
+        DemoTierKeys.STAFF -> staffMayUseAgents
+        else -> memberMayUseAgents
+    }
+
+    /**
+     * May somebody be handed this deployment?
+     *
+     * The server's `mayBeHandedTheInstance`: staff, who have actually signed in, and not
+     * whoever is asking. The signed-in half is the interesting one — an address typed into
+     * an Access list and never claimed cannot be handed a deployment, so the demo's
+     * placeholder accounts are legitimately absent from the picker.
+     */
+    fun mayBeHandedTheInstance(user: DemoUser): Boolean =
+        user.id != ownerUserId && user.isStaff && user.hasSignedIn
 
     private var nextId: Long = 1
 
@@ -343,10 +551,23 @@ internal class DemoWorld {
                 id = u.id,
                 displayName = u.name,
                 provider = u.provider,
-                isSysAdmin = u.isSysAdmin,
+                // "Runs this instance", which is the administrator rung OR the owner seat
+                // above it — one flag on the wire for both, so it is asked of the ladder
+                // rather than of the account. That is what keeps the instance tabs where
+                // they should be after a hand-over: the outgoing owner is left an
+                // administrator, exactly as the server's route leaves them, so the tabs
+                // stay and only the owner-only controls go.
+                isSysAdmin = tierReaches(tierOf(u), DemoTierKeys.ADMIN),
                 hasDisplayNameOverride = false,
                 email = u.email,
                 isEmailVerified = true,
+                // Their address is on the deployment's own domain (LNL-199), so the You
+                // tab reads "Staff on this instance." beside "You administer this
+                // instance." Two separate sentences about two separate things — the
+                // account's tier and whether it runs the place — and the demo can now
+                // show both being true at once, which is the ordinary case for the person
+                // who set a deployment up.
+                isStaff = u.isStaff,
             ),
             // No provider is configured in the demo, and none needs to be: the
             // session is already signed in, so the sign-in affordances never show.
@@ -370,10 +591,12 @@ internal class DemoWorld {
         id = p.id,
         name = p.name,
         namePrefix = p.prefix,
-        // The demo visitor owns every board here — there is nobody else in the world to
-        // hold a lesser rung, and the point of the demo is to show the whole app.
-        roleKey = "owner",
-        roleLabel = "Owner",
+        // The visitor's own rung on this board. Asked rather than asserted, so that the
+        // sidebar and the Access section cannot drift apart — and so that a hand-over
+        // shows up here too: an administrator still reaches Owner everywhere, but the
+        // answer now comes from the ladder rather than from a literal.
+        roleKey = visitorRung(p),
+        roleLabel = demoRungLabel(visitorRung(p)),
         discussionsEnabled = p.discussionsEnabled,
         messagesEnabled = p.messagesEnabled,
         requireLabel = p.requireLabel,
@@ -382,6 +605,22 @@ internal class DemoWorld {
         showIssueAuthor = p.showIssueAuthor,
         hideIssueNumbers = p.hideIssueNumbers,
     )
+
+    /**
+     * What the visitor effectively holds on [p].
+     *
+     * The whole rule in one line, and it is the server's: an instance administrator or the
+     * owner reaches Owner on every board without a row, and anybody else gets the max of
+     * their audience and their own row. The visitor is at the top of the instance ladder,
+     * so this answers Owner — but it answers it by asking, which is what makes the answer
+     * still correct if the demo ever seats somebody else.
+     */
+    private fun visitorRung(p: DemoProject): String {
+        val me = demoUser
+        if (tierReaches(tierOf(me), DemoTierKeys.ADMIN)) return DemoRungKeys.OWNER
+        return higherRung(p.members[me.id], audienceFloor(p, tierOf(me))?.second)
+            ?: DemoRungKeys.VIEWER
+    }
 
     private fun statusItem(s: DemoStatus): StatusItem =
         StatusItem(s.id, s.name, s.position, s.requiresResolution, s.isDone)
@@ -585,34 +824,103 @@ internal class DemoWorld {
      * server sends. The visitor may grant anything, being the owner of every demo board.
      */
     fun projectAccessState(p: DemoProject): ProjectAccessState = ProjectAccessState(
+        // All three rows, because this deployment names a domain (LNL-199) and so has a
+        // staff tier for the middle one to mean something. The server drops the staff row
+        // where there is no domain — a control that cannot do anything is worse than one
+        // row fewer — and the demo used to be that case.
         audiences = listOf(
-            AudienceRow("guest", "Guests", "Anybody at all, without signing in.", p.audiences["guest"]),
             AudienceRow(
-                "member",
+                DemoAudienceKeys.GUEST,
+                "Guests",
+                "Anybody at all, without signing in.",
+                p.audiences[DemoAudienceKeys.GUEST],
+                // The publish veto, which the demo now honours here as well as on the
+                // instance's own default list. It applies to the guest row whoever asks,
+                // the owner included, so a demo that let the click through would be
+                // teaching a rule the server does not have — and would leave a board
+                // public while the switch that governs it reads off.
+                isSelectable = allowPublicProjects,
+                unavailableReason = if (allowPublicProjects) {
+                    null
+                } else {
+                    "This deployment does not allow a project to be made public. An " +
+                        "instance administrator decides that, in the instance settings."
+                },
+            ),
+            AudienceRow(
+                DemoAudienceKeys.MEMBER,
                 "Members",
                 "Everybody with an account on this deployment.",
-                p.audiences["member"],
+                p.audiences[DemoAudienceKeys.MEMBER],
             ),
-            // No staff row: the demo is an unbranded install with no domain of its own, so
-            // the staff audience would match nobody. Two rows, not three — see the server's
-            // buildAccess.
+            AudienceRow(
+                DemoAudienceKeys.STAFF,
+                "Staff",
+                "Accounts on $DEMO_STAFF_DOMAIN.",
+                p.audiences[DemoAudienceKeys.STAFF],
+            ),
         ),
-        people = users.filter { it.id in p.members.keys }.map { u ->
+        // The exceptions: everybody holding something other than what their audience gives
+        // them, plus whoever runs the instance — who reaches Owner everywhere without a row
+        // and is listed so the audit is not silently missing them.
+        people = users.filter { it.id in p.members.keys || it.id == ownerUserId }.map { u ->
+            val own = p.members[u.id]
+            val floor = audienceFloor(p, tierOf(u))
+            val runsInstance = owns(u)
+            val effective = if (runsInstance) DemoRungKeys.OWNER else higherRung(own, floor?.second)
             PersonRow(
                 userId = u.id,
                 name = u.name,
                 email = u.email.orEmpty(),
-                roleKey = p.members[u.id],
-                hasSignedIn = u.id == demoUserId,
+                roleKey = own,
+                // Only where the audience is actually carrying some of the weight.
+                // Somebody whose own row already outranks their audience is effectively
+                // their own row, and saying so restates the picker beside it.
+                effectiveLine = when {
+                    runsInstance -> null
+                    floor == null -> null
+                    demoRungRank(floor.second) < demoRungRank(own) -> null
+                    else -> "The ${audienceTitle(floor.first).lowercase()} row here already gives " +
+                        "${demoRungLabel(floor.second)}, so this person is effectively " +
+                        "${demoRungLabel(effective ?: floor.second)}."
+                },
+                hasSignedIn = u.hasSignedIn,
                 isSelf = u.id == demoUserId,
-                isEditable = true,
+                // An instance owner's rung here is not stored and cannot be lowered from
+                // this screen.
+                isEditable = !runsInstance,
+                note = "Owns this instance, so holds Owner on every project here."
+                    .takeIf { runsInstance },
             )
         },
         rungs = DEMO_RUNGS,
         canGrant = true,
         addressAdvice = "Nothing is sent. The address gets an account that can hold a role straight " +
             "away, and whoever owns it picks the role up the first time they sign in.",
+        // What the add-a-person dialog notes beside an address from somewhere else, so
+        // that adding an outsider is a visible decision rather than a typo.
+        staffDomain = DEMO_STAFF_DOMAIN,
     )
+
+    /**
+     * The best rung [tier] gets from [p]'s audience rows, with the audience it came from.
+     *
+     * One comparison per row, by the rule `AccessControl.effectiveRole` uses: the instance
+     * ladder ascends, so "matches this audience" is "their tier reaches it".
+     */
+    private fun audienceFloor(p: DemoProject, tier: String): Pair<String, String>? =
+        p.audiences.entries
+            .filter { tierReaches(tier, it.key) }
+            .maxByOrNull { demoRungRank(it.value) }
+            ?.let { it.key to it.value }
+
+    /** What to call an audience on screen. */
+    private fun audienceTitle(key: String): String = when (key) {
+        DemoAudienceKeys.GUEST -> "Guests"
+        DemoAudienceKeys.MEMBER -> "Members"
+        DemoAudienceKeys.STAFF -> "Staff"
+        else -> key
+    }
 
     fun projectSettingsState(p: DemoProject): ProjectSettingsState = ProjectSettingsState(
         labels = p.labels.sortedBy { it.position }.map { namedEntry(it, usageOfLabel(p, it.id)) },
@@ -638,9 +946,11 @@ internal class DemoWorld {
             ProjectSection(ProjectSectionKeys.ACCESS, "Access"),
         ),
         access = projectAccessState(p),
-        yourAccessLine = "You are an Owner here. Own this project: everything an administrator " +
-            "can do, plus its name, its prefix, its repository, its visibility, its deletion, " +
-            "and promoting administrators and owners.",
+        yourAccessLine = visitorRung(p).let { key ->
+            val rung = DEMO_RUNGS.first { it.key == key }
+            "You are ${if (key == DemoRungKeys.ADMIN || key == DemoRungKeys.OWNER) "an" else "a"} " +
+                "${rung.label} here. ${rung.description}"
+        },
         canDeleteProject = true,
         notifyOnNewIssue = p.notifyOnNewIssue,
         canReceiveEmailNotifications = true,
@@ -662,46 +972,84 @@ internal class DemoWorld {
 
     fun adminSettingsState(): AdminSettingsState = AdminSettingsState(
         rungs = DEMO_RUNGS,
-        users = users.map { u ->
+        // Administrators first, then in the order they were seeded, matching the server's
+        // sort. It hoists the row a visitor is looking for to the top of a directory of
+        // thirty-odd accounts.
+        users = users.sortedByDescending { tierReaches(tierOf(it), DemoTierKeys.ADMIN) }.map { u ->
+            val tier = tierOf(u)
             AdminUser(
                 userId = u.id,
                 name = u.name,
                 email = u.email,
-                // No staff tier in the demo — it is an unbranded install with no domain of
-                // its own — so everybody who is not the visitor is a plain member.
-                tierLabel = if (u.isSysAdmin) "Instance owner" else "Member",
-                isSysAdmin = u.isSysAdmin,
+                tierLabel = demoTierLabel(tier),
+                isSysAdmin = tierReaches(tier, DemoTierKeys.ADMIN),
                 isSelf = u.id == demoUserId,
-                // The crew never sign in; only the visitor has. That is what puts the
-                // NOT SIGNED IN badge on the rest, which is the real thing to show off.
-                hasSignedIn = u.id == demoUserId,
-                isMcpAllowed = false,
-                isMcpEnabled = false,
+                // A grant nobody has claimed looks exactly like one that has, which is what
+                // the NOT SIGNED IN badge is for. A handful of accounts here are genuinely
+                // placeholders; the rest of the crew have arrived.
+                hasSignedIn = u.hasSignedIn,
+                // Read-only, and derived: the permission is per tier, so this reports which
+                // side of the tier cards an account falls on rather than a box somebody
+                // ticks for them. Toggling a card's agent switch moves this column.
+                isMcpAllowed = permitsAgents(tier),
+                isMcpEnabled = u.id == demoUserId && mcpEnabled,
                 projects = projects.map { p ->
                     val own = p.members[u.id]
+                    val floor = audienceFloor(p, tier)
+                    // The same max the server takes, so the People tab and a project's own
+                    // Access list cannot disagree about what somebody effectively holds.
+                    // This used to report the own row alone, on the belief that the demo
+                    // had no audience rows — it has had a members row on every project
+                    // since LNL-194, so every account with no own row read as "no access"
+                    // on a board that in fact admits them.
+                    val effective = if (tierReaches(tier, DemoTierKeys.ADMIN)) {
+                        DemoRungKeys.OWNER
+                    } else {
+                        higherRung(own, floor?.second)
+                    }
                     AdminProjectRights(
                         projectId = p.id,
                         projectName = p.name,
                         roleKey = own,
-                        // No audience rows in the demo's own-row-only world, so the effective
-                        // rung is simply the own row — and nothing to say about where it came
-                        // from. See projectAccessState, which is the same shape one level down.
-                        effectiveRoleKey = own,
+                        effectiveRoleKey = effective,
+                        viaAudience = floor
+                            ?.takeIf {
+                                !tierReaches(tier, DemoTierKeys.ADMIN) &&
+                                    demoRungRank(it.second) >= demoRungRank(own)
+                            }
+                            ?.let { "the ${audienceTitle(it.first).lowercase()} row" },
                     )
                 },
             )
         },
         projects = projects.map(::projectSummary),
-        // An unbranded install: no domain, so no staff tier and one tier card. Nothing is
-        // greyed on admission either. See the server's InstanceIdentity.
-        deployment = DeploymentFacts(waysIn = listOf("Google", "mailed code")),
+        // The facts the greying above is computed from, so a visitor can see why a choice
+        // is dead rather than guessing at a file they cannot read. The staff domain is the
+        // demo's own (LNL-199); no Google pin, because the demo configures no provider.
+        deployment = DeploymentFacts(
+            staffDomain = DEMO_STAFF_DOMAIN,
+            waysIn = listOf("Google", "mailed code"),
+        ),
+        // One card per tier that exists here, in the server's order. Guests never get one:
+        // a guest has no account to permit. Both cards' switches start off, which is a real
+        // fresh instance and is what makes them worth clicking — the People tab's MCP
+        // column and the You tab's agent switch both move when they do.
         tiers = listOf(
             TierCard(
-                key = "member",
+                key = DemoTierKeys.STAFF,
+                title = "Staff",
+                subtitle = "Accounts on $DEMO_STAFF_DOMAIN.",
+                accountCount = users.count { tierOf(it) == DemoTierKeys.STAFF },
+                mayCreateProjects = staffMayCreateProjects,
+                mayUseAgents = staffMayUseAgents,
+                createKey = InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS,
+                agentsKey = InstanceSettingKey.STAFF_MAY_USE_AGENTS,
+            ),
+            TierCard(
+                key = DemoTierKeys.MEMBER,
                 title = "Members",
-                subtitle = "Everybody with an account here. This deployment names no domain of " +
-                    "its own, so there is no staff tier to tell them from.",
-                accountCount = users.size,
+                subtitle = "Every other account — people from outside $DEMO_STAFF_DOMAIN.",
+                accountCount = users.count { tierOf(it) == DemoTierKeys.MEMBER },
                 mayCreateProjects = memberMayCreateProjects,
                 mayUseAgents = memberMayUseAgents,
                 createKey = InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
@@ -709,31 +1057,36 @@ internal class DemoWorld {
             ),
         ),
         newProjectAudiences = listOf(
-            AudienceRow("guest", "Guests", "Anybody at all, without signing in.", newProjectAudiences["guest"]),
             AudienceRow(
-                "member",
+                DemoAudienceKeys.GUEST,
+                "Guests",
+                "Anybody at all, without signing in.",
+                newProjectAudiences[DemoAudienceKeys.GUEST],
+                isSelectable = allowPublicProjects,
+                unavailableReason = if (allowPublicProjects) {
+                    null
+                } else {
+                    "This deployment does not allow a project to be made public, so a new " +
+                        "one cannot start out admitting guests. The Policy switch on the " +
+                        "Instance tab is what changes that."
+                },
+            ),
+            AudienceRow(
+                DemoAudienceKeys.MEMBER,
                 "Members",
                 "Everybody with an account on this deployment.",
-                newProjectAudiences["member"],
+                newProjectAudiences[DemoAudienceKeys.MEMBER],
+            ),
+            AudienceRow(
+                DemoAudienceKeys.STAFF,
+                "Staff",
+                "Accounts on $DEMO_STAFF_DOMAIN.",
+                newProjectAudiences[DemoAudienceKeys.STAFF],
             ),
         ),
         // The demo visitor owns the instance, so the order and the delete are theirs.
         canReorderProjects = true,
-        ownership = InstanceOwnership(
-            ownerName = demoUser.name,
-            ownerEmail = demoUser.email,
-            isOwnerSelf = true,
-            // Hand over… is live for the owner, and its picker is empty — because this
-            // world names no staff domain, so every account in it is a member and none of
-            // them may be handed a deployment (LNL-198). The reason is the server's own
-            // wording for that case; a demo that offered a picker here would be teaching a
-            // rule the server does not have. See DemoLunicleApi.handOverInstance.
-            canHandOver = true,
-            handOverEmptyReason = "There is nobody to hand this instance to. Only staff — accounts " +
-                "on the deployment's own domain — can own it, and this deployment names no domain, " +
-                "so every account here is a member. That is deploy-time configuration " +
-                "(brand.json), not a setting on this screen.",
-        ),
+        ownership = ownershipState(),
         admission = AdmissionState(
             selected = admission,
             options = AdmissionPolicy.entries.map { AdmissionOption(it) },
@@ -741,6 +1094,51 @@ internal class DemoWorld {
         allowPublicProjects = allowPublicProjects,
         hideDisplayName = hideDisplayName,
     )
+
+    /**
+     * Who owns this deployment, who administers it alongside them, and who it could go to.
+     *
+     * The picker is populated now, and that is the change LNL-199 makes here. It was empty
+     * on purpose while the demo named no staff domain: nobody was eligible, so the dialog
+     * showed the reason instead of a list, and [DemoLunicleApi.handOverInstance] could be
+     * an honest no-op because nothing could ever call it. Naming a domain removes that
+     * premise rather than papering over it — the crew who have signed in are genuinely
+     * staff, so the picker lists them and Confirm genuinely moves [ownerUserId].
+     *
+     * The empty-list wording is kept for the case it now covers: a deployment that has a
+     * domain and nobody on it who has arrived. Only the demo's placeholder accounts are in
+     * that state today, but the sentence is the one the server would send and the dialog
+     * should read the same in both.
+     */
+    private fun ownershipState(): InstanceOwnership {
+        val owner = users.firstOrNull { it.id == ownerUserId }
+        val isSelf = owner != null && owner.id == demoUserId
+        val candidates = if (isSelf) {
+            users.filter { mayBeHandedTheInstance(it) }
+                .map { OwnerCandidate(userId = it.id, name = it.name, email = it.email) }
+        } else {
+            emptyList()
+        }
+        return InstanceOwnership(
+            ownerName = owner?.name,
+            ownerEmail = owner?.email,
+            isOwnerSelf = isSelf,
+            // Everybody else who runs the place. Nobody, in this world: the demo has one
+            // account at the top and a plain administrator beside it would be a second
+            // story to tell.
+            adminNames = emptyList(),
+            canHandOver = isSelf,
+            handOverBlockedReason = "Only the instance owner can hand it over.".takeIf { !isSelf },
+            handOverCandidates = candidates,
+            handOverEmptyReason = if (isSelf && candidates.isEmpty()) {
+                "There is nobody to hand this instance to. Only an account on " +
+                    "$DEMO_STAFF_DOMAIN that somebody has actually signed in to can own it — " +
+                    "an address added ahead of time and never claimed cannot."
+            } else {
+                null
+            },
+        )
+    }
 
     // ── Notifications ─────────────────────────────────────────────────────────
 
