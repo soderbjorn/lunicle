@@ -311,9 +311,8 @@ private const val ELLIPSIS_SVG = """
  * [CLOSE_SVG] is the lightbox's dismiss button and reads as an action — "close
  * this" — so it is not reused here, where the cross is a *state*: this right is
  * not held. Same two crossing strokes, inset to sit on the same 24×24 grid as
- * [CHECK_SVG] so the tick and the cross are a matched pair down the column. An
- * element via [crossIcon], not a markup constant, because it goes in a real
- * mark span the way [CHECK_SVG] does through [checkIcon].
+ * [CHECK_SVG] so the two sit on one grid. An element via [crossIcon], not a markup
+ * constant, because it goes inside a real span rather than into an innerHTML.
  */
 private const val CROSS_SVG = """
 <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
@@ -325,16 +324,13 @@ private const val CROSS_SVG = """
 """
 
 /**
- * The green tick for a held permission — see [AdminSettingsDialog] and the
- * project dialog's member rows (LNL-68).
+ * The X, as an element.
  *
- * The same glyph the project picker marks its live row with ([CHECK_SVG]); the
- * green comes from the mark span's own colour, not from the drawing, so the tick
- * matches whatever accent the theme is on.
+ * `checkIcon()` stood beside this until LNL-195 and is gone with the tick-and-cross
+ * permission grid it drew — a person holds one *rung* per project now, which is a word and
+ * not a mark, so there is nothing left for a green tick to mean. [CHECK_SVG] itself stays:
+ * it is what a menu marks its live row with, which is a different job.
  */
-fun checkIcon(): HTMLElement = icon(CHECK_SVG, "icon-check")
-
-/** The red cross for a permission that is not held. Pairs with [checkIcon]. */
 fun crossIcon(): HTMLElement = icon(CROSS_SVG, "icon-cross")
 
 /** The cogwheel, for the project-settings button. */

@@ -3690,40 +3690,10 @@ body > .dt-pane-menu {
   margin-top: 4px;
 }
 
-/* Holds a tick or a cross (LNL-68), so it is sized to the mark rather than to a
-   word: a fixed-width slot the icon centres in, keeping the sentences on one
-   straight left edge down the pane so the list stays skimmable. The colour is
-   carried here and the icon inherits it through `currentColor` — red by
-   default (not held), green on a held row (below). */
-.admin-right-mark {
-  flex: none;
-  width: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--red);
-}
-
-.admin-right-mark .icon { width: 14px; height: 14px; }
-
-/* Held rows are the ones being looked for, so their mark goes positive; a
-   not-held row keeps the red cross above. Both stay fully legible — "does not
-   have" is half of what this screen answers, so a not-held row must not fade
-   into the background the way a disabled control would.
-
-   `--ok` maps to the toolkit's `--t-add` — the palette's own additive/positive
-   colour, the same hue it paints an inserted diff line. Not `--green-hi`, which
-   *reads* green by name but is the theme accent (teal on Lunamux Dark) and so
-   would come out the same hue as every other accented thing on screen — the
-   "green tick / red cross" LNL-68 asked NOT to have to squint at. And no longer
-   a fixed `#2ea043` hex, which ignored the theme entirely: `--t-add` tracks the
-   active palette (green on the green themes, teal on the cyan house look, amber
-   on Amber CRT), which is what LNL-89 asked for — a themed token, accepting that
-   "held" is not literally green on every palette. `--red` stays a themed token
-   too (`--t-danger`), so both marks now follow the active palette. */
-.admin-right-held .admin-right-mark {
-  color: var(--ok);
-}
+/* `.admin-right-mark` and its themed held/not-held colours were here, and went with
+   the tick-and-cross permission grid (LNL-195, following LNL-68 and LNL-89). A project
+   row on the People tab says which RUNG somebody reaches, which is a word rather than a
+   mark — see `.admin-rights` above, which styles it. */
 
 .admin-right-text {
   color: var(--body);

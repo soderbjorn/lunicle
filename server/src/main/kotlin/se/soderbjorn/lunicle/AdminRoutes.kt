@@ -3,12 +3,25 @@
  * directory, the deployment-wide switches, admission, what a new project starts with,
  * and the project order.
  *
- * Same shape as the rest — **parse, AUTHORIZE, respond** — and the authorization
- * here is the simplest in the codebase, because it is the only place where the
- * whole surface is admin-only. [ProjectSettingsRoutes] has to draw a line through
- * the middle of one response (an admin gets the vocabularies, a non-admin gets
- * their own notification toggle and nothing else); nothing in this file belongs to
- * a non-admin, so [adminCaller] refuses and there is no narrowed half to get wrong.
+ * Same shape as the rest — **parse, AUTHORIZE, respond** — and the whole surface belongs
+ * to whoever runs the instance, so there is no narrowed half of the response to get wrong:
+ * [ProjectSettingsRoutes] has to draw a line through the middle of one payload (an
+ * administrator gets the vocabularies, everybody else gets their own notification toggle
+ * and nothing else), where [adminCaller] simply refuses.
+ *
+ * ── Two gates, not one (LNL-195) ────────────────────────────────────────────
+ *
+ * [adminCaller] is an **instance administrator**, and every route here but two takes it:
+ * reading the directory, admission, the per-tier permissions, the policy switches and what
+ * a new project starts with are the job of the role. The two exceptions take
+ * [projectSetCaller], which is the **owner** — reordering every board on the deployment
+ * and deleting somebody else's are what LNL-191 narrowed on purpose, and the response says
+ * which of the two the caller is on `canReorderProjects` so the screen greys those controls
+ * rather than letting an administrator collect a 403.
+ *
+ * Every route here used the owner gate until LNL-195, which made the three instance tabs
+ * owner-only *by accident* — the client offers them to any administrator, so an
+ * administrator saw three tabs of empty headings and a refusal.
  *
  * ── The per-account MCP route that used to be here (LNL-192) ────────────────
  *
@@ -71,8 +84,7 @@ fun Route.adminRoutes(deps: BoardDependencies) {
 
     /**
      * Set one instance-wide switch: whether projects may be published, and what
-     * each tier of signed-in person may do (LNL-192). Admin only, like everything
-     * in this file.
+     * each tier of signed-in person may do (LNL-192). An instance administrator's.
      *
      * Names the switch and its desired state in the body — a value, not an
      * authorization decision, because every switch here answers to this same one
@@ -93,7 +105,7 @@ fun Route.adminRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Set who may hold an account on this deployment (LNL-192). Admin only.
+     * Set who may hold an account on this deployment (LNL-192). An administrator's.
      *
      * Its own route rather than a sixth switch, because it is the one thing on this
      * screen with a **refusal** to make. The deployment's configuration can leave a
@@ -123,8 +135,8 @@ fun Route.adminRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Say what one audience arrives as in a **newly created** project (LNL-195). Admin
-     * only.
+     * Say what one audience arrives as in a **newly created** project (LNL-195). An
+     * administrator's.
      *
      * ── The one refusal here, and why it is the same one a project makes ─────
      *
@@ -173,7 +185,9 @@ fun Route.adminRoutes(deps: BoardDependencies) {
     /**
      * Put the instance's projects in a given order.
      *
-     * Admin only, like everything in this file. The order is the whole list, not a
+     * **The instance owner's**, not an administrator's — see [projectSetCaller], and
+     * AccessControl.canMutateProjects for why the two are not the same trust. The order is
+     * the whole list, not a
      * delta, and [ProjectRepository.reorder] refuses one that does not name exactly
      * the projects that exist — a stale dialog that has lost or gained a project is
      * told so rather than half-applied. Answers with the refreshed directory so the
@@ -199,9 +213,13 @@ fun Route.adminRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Delete a project — the instance-settings home for a power that used to live in
-     * the project dialog (LNL-93). Admin only, and permanent: there is no trash, and
-     * everything in the project goes with it. Answers with the refreshed directory.
+     * Delete a project from the instance's own list (LNL-93).
+     *
+     * **The instance owner's**, like the order above: this is the cross-project delete, for
+     * a board the caller may hold nothing in. A board's *own* owner deletes it from its
+     * General section instead (LNL-194), which is a different gate on the same act — and
+     * both are permanent, with no trash, so both ask for a typed phrase first. Answers with
+     * the refreshed directory.
      */
     delete("${ApiRoutes.ADMIN_PROJECTS}/{id}") {
         val admin = call.projectSetCaller(deps, "delete any project on this instance") ?: return@delete
