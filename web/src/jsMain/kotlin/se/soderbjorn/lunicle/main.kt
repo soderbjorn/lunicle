@@ -609,21 +609,47 @@ private fun start() {
     notificationBell.addEventListener("click", { openNotifications() })
 
     /**
+     * Issues asked for by id whose board has not arrived yet, board project id by
+     * issue id. Drained by [reconcile]'s step 4. See [openIssueSomewhere].
+     */
+    val pendingIssueOpens = mutableMapOf<Long, Long>()
+
+    /**
      * Open an issue, wherever it belongs.
      *
-     * The one path every "show me this issue" takes that is not a card click: a
-     * notification, a ticket reference, the `?issue=` deep link. Two steps, and the
-     * order matters — the board has to be open before the window can be built, because
-     * the window's statuses, priorities and permissions all come from it.
+     * The one path a "show me this issue" that already knows the issue's *id*
+     * takes — today only a notification; a ticket reference and the `?issue=` deep
+     * link carry a number instead and go through [navigateToTicket].
+     *
+     * Two steps, and the order matters — the board has to be open before the window
+     * can be built, because the window's statuses, priorities and permissions all
+     * come from it.
      *
      * Opening the *board* is what makes the issue land next to its context: the
      * workspace's rule puts the issue pane in whichever tab already holds that
      * project's board (see [WorkspaceBackingViewModel.onIssueOpened]), and this is
-     * what guarantees there is one. `reconcile` does the rest when the board arrives.
+     * what guarantees there is one.
+     *
+     * The second step is opening the **window**, and it is the one LNL-200 was
+     * missing. Asking the workspace for a pane and stopping there produced a pane
+     * naming a window that did not exist, and `reconcile`'s mirror (step 5) exists
+     * precisely to delete those — so the pane appeared and was swept away again on
+     * the very next tick, which is the "window closing" flicker the ticket
+     * describes. A window is [MainScreenBackingViewModel]'s to open, and the mirror
+     * then gives it its pane; nothing here talks to the workspace about panes.
+     *
+     * That view model needs the board loaded — it reads the issue's number and its
+     * project's prefix off it, and silently does nothing without one — so an issue
+     * in a project whose board is not open yet is parked in [pendingIssueOpens] and
+     * opened by [reconcile] when the board `onBoardOpened` just asked for arrives.
      */
     fun openIssueSomewhere(projectId: Long, issueId: Long) {
         workspaceViewModel.onBoardOpened(projectId)
-        workspaceViewModel.onIssueOpened(issueId, projectId)
+        if (boardState.boards.containsKey(projectId)) {
+            mainViewModel.onIssueOpened(projectId, issueId)
+        } else {
+            pendingIssueOpens[issueId] = projectId
+        }
     }
 
     /**
@@ -729,7 +755,7 @@ private fun start() {
 
     /**
      * The issue whose window the app last raised, so a *change* of focus can be
-     * told from focus merely sitting where it already was. See step 5 of
+     * told from focus merely sitting where it already was. See step 6 of
      * [reconcile].
      *
      * Seeded from the state rather than from null: a workspace restored with an
@@ -800,7 +826,7 @@ private fun start() {
         // Opening a window focuses it, and a restored pane is the layout coming
         // back rather than a request to look at it. A deep link IS such a request
         // and it was made first, so it keeps focus — otherwise the stored layout's
-        // issue takes the address bar back and step 5 below hauls the reader over
+        // issue takes the address bar back and step 6 below hauls the reader over
         // to its tab, which is the second half of LNL-165.
         if (adopted && deepLinkOwnsFocus) mainViewModel.onIssueWindowFocused(deepLinkFocus)
 
@@ -825,12 +851,32 @@ private fun start() {
                 }
         }
 
-        // 4. Mirror: every window that exists has a pane, and every pane names a
+        // 4. A notification's issue, waiting on its board (LNL-200). Resolved by
+        //    ID, which is what a notification carries — so unlike step 3 there is
+        //    no number to look up and the window can be opened the moment the board
+        //    is there at all.
+        //
+        //    Dropped rather than retried for ever when the project turns out not to
+        //    be one this reader can see: its board will never arrive, and a stale
+        //    entry would open the issue if access were granted an hour later.
+        //    Gated on `isLoaded` so the wait for the project list is not read as an
+        //    empty one.
+        pendingIssueOpens.toList().forEach { (issueId, projectId) ->
+            if (state.isLoaded && state.projects.none { it.id == projectId }) {
+                pendingIssueOpens.remove(issueId)
+                return@forEach
+            }
+            if (!state.boards.containsKey(projectId)) return@forEach
+            pendingIssueOpens.remove(issueId)
+            mainViewModel.onIssueOpened(projectId, issueId)
+        }
+
+        // 5. Mirror: every window that exists has a pane, and every pane names a
         //    window that exists.
         //
-        //    Read LIVE rather than from the `state` captured above, because step 2
-        //    may have just opened a window and this pass has to see it. It did not,
-        //    once: a restored issue pane was spent out of `pendingRestoredIssues`
+        //    Read LIVE rather than from the `state` captured above, because steps 2
+        //    to 4 may have just opened a window and this pass has to see it. It did
+        //    not, once: a restored issue pane was spent out of `pendingRestoredIssues`
         //    in step 2, then found "not open" here against the pre-step-2 snapshot,
         //    and closed — so every reload dropped the issue pane and re-added it on
         //    the next tick, at the END of its tab. The panes came back but the
@@ -847,11 +893,11 @@ private fun start() {
             }
         }
 
-        // 5. Raise the window of the issue that has just taken focus.
+        // 6. Raise the window of the issue that has just taken focus.
         //
         //    Clicking the card of an issue that is ALREADY open creates nothing:
         //    onIssueOpened finds the window in openIssues and only moves
-        //    focusedIssueId. Step 4 above is a set difference, so it has nothing
+        //    focusedIssueId. Step 5 above is a set difference, so it has nothing
         //    to say about that click either — and the result was a card that did
         //    visibly nothing whenever its window was behind the board or in
         //    another tab. Handing the id to the workspace activates that pane, and
