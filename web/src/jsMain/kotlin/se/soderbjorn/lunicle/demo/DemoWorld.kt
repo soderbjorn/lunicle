@@ -231,19 +231,30 @@ internal fun demoAudienceCap(audienceKey: String, rungKey: String): String =
  * sentence says why. The wording mirrors `Audience.refusalFor` on the server, which is
  * where the real one lives.
  */
-internal fun demoAudienceRungs(audienceKey: String): List<RungOption> = DEMO_RUNGS.map { rung ->
-    if (demoAudiencePermits(audienceKey, rung.key)) {
-        rung
-    } else {
-        // One clause, because a rung picker puts the reason in the rung's label — the
-        // explanation lives on the row's subtitle instead, said once. Mirrors
-        // `Audience.refusalFor`.
-        rung.copy(
-            isSelectable = false,
-            unavailableReason = "Guests have no account, so there is nobody to attribute a write to.",
-        )
+internal fun demoAudienceRungs(audienceKey: String, vetoed: Boolean = false): List<RungOption> =
+    DEMO_RUNGS.map { rung ->
+        // The ceiling first where both apply: it is the refusal that would still stand if
+        // the switch were flipped. Mirrors the server's rungOptions.
+        val refusal = when {
+            !demoAudiencePermits(audienceKey, rung.key) ->
+                // One clause, because a rung picker puts the reason in the rung's label — the
+                // explanation lives on the row's subtitle instead, said once. Mirrors
+                // `Audience.refusalFor`.
+                "Guests have no account, so there is nobody to attribute a write to."
+            vetoed -> DEMO_PUBLIC_VETO_RUNG_REASON
+            else -> null
+        }
+        if (refusal == null) rung else rung.copy(isSelectable = false, unavailableReason = refusal)
     }
-}
+
+/**
+ * Why a guest rung is refused while the demo's publish switch is off (LNL-203).
+ *
+ * Mirrors the server's `PUBLIC_PROJECTS_VETO_RUNG_REASON`, and for the same reason it is
+ * one clause: it rides inside a rung's label.
+ */
+internal const val DEMO_PUBLIC_VETO_RUNG_REASON: String =
+    "This deployment does not allow a project to be made public."
 
 /**
  * The domain this demo deployment calls its own — which is what gives it a **staff**
@@ -912,21 +923,29 @@ internal class DemoWorld {
                 // Capped on the way out (LNL-202), so a row above the ceiling would show as
                 // the Viewer it effectively is rather than as a rung nothing honours.
                 p.audiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
-                // The publish veto, which the demo now honours here as well as on the
-                // instance's own default list. It applies to the guest row whoever asks,
-                // the owner included, so a demo that let the click through would be
-                // teaching a rule the server does not have — and would leave a board
-                // public while the switch that governs it reads off.
-                isSelectable = allowPublicProjects,
-                unavailableReason = if (allowPublicProjects) {
-                    null
-                } else {
-                    "This deployment does not allow a project to be made public. An " +
-                        "instance administrator decides that, in the instance settings."
+                // The row stays live under the publish veto (LNL-203) — the veto kills the
+                // rungs, not the row, so "No access" remains reachable and an owner whose
+                // board was published before the switch went off can still close it. A dead
+                // row here was the demo teaching the very bug LNL-203 fixed.
+                isSelectable = true,
+                unavailableReason = when {
+                    allowPublicProjects -> null
+                    // Stored and silenced: the demo says so out loud, exactly as the server
+                    // does, because a picker reading "Viewer" beside a board strangers cannot
+                    // read is the thing the ticket was filed about.
+                    p.audiences.containsKey(DemoAudienceKeys.GUEST) ->
+                        "Stored, but not in effect: this deployment does not allow a project to " +
+                            "be made public, so guests can read nothing here. The row is kept as " +
+                            "it is — an instance administrator turning public projects back on " +
+                            "would make this board public again."
+                    else ->
+                        "This deployment does not allow a project to be made public. An " +
+                            "instance administrator decides that, in the instance settings."
                 },
                 // Viewer only, with the rest greyed and the reason on them — the ceiling
-                // (LNL-202), which no switch lifts, unlike the veto above it.
-                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST),
+                // (LNL-202), which no switch lifts; and every rung dead while the veto is on
+                // (LNL-203), which one does.
+                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST, vetoed = !allowPublicProjects),
             ),
             AudienceRow(
                 DemoAudienceKeys.MEMBER,
@@ -978,6 +997,18 @@ internal class DemoWorld {
         },
         rungs = DEMO_RUNGS,
         canGrant = true,
+        // What those rows come to, from the ones in effect — so the demo cannot claim a
+        // board is public while its guest row is silenced (LNL-203). Mirrors the server's
+        // visibilityLine, widest audience only.
+        visibilityLine = when {
+            rowsInEffect(p).containsKey(DemoAudienceKeys.GUEST) ->
+                "Visible to anybody at all, signed in or not, and to the people listed below."
+            rowsInEffect(p).containsKey(DemoAudienceKeys.MEMBER) ->
+                "Visible to everybody with an account on this deployment, and to the people listed below."
+            rowsInEffect(p).containsKey(DemoAudienceKeys.STAFF) ->
+                "Visible to everybody with a $DEMO_STAFF_DOMAIN account, and to the people listed below."
+            else -> "Visible to the people listed below, and to nobody else."
+        },
         addressAdvice = "Nothing is sent. The address gets an account that can hold a role straight " +
             "away, and whoever owns it picks the role up the first time they sign in.",
         // What the add-a-person dialog notes beside an address from somewhere else, so
@@ -986,18 +1017,29 @@ internal class DemoWorld {
     )
 
     /**
+     * [p]'s audience rows as they actually stand — capped, and with a vetoed guest row
+     * dropped (LNL-203).
+     *
+     * The demo's `admitting`. It exists because the veto is a term in who reads what and
+     * not a guard on the editor, so the demo has to drop the row in every place that reads
+     * one or it is teaching a rule the server does not have.
+     */
+    private fun rowsInEffect(p: DemoProject): Map<String, String> = p.audiences
+        .filterKeys { allowPublicProjects || it != DemoAudienceKeys.GUEST }
+        .mapValues { demoAudienceCap(it.key, it.value) }
+
+    /**
      * The best rung [tier] gets from [p]'s audience rows, with the audience it came from.
      *
      * One comparison per row, by the rule `AccessControl.effectiveRole` uses: the instance
-     * ladder ascends, so "matches this audience" is "their tier reaches it".
+     * ladder ascends, so "matches this audience" is "their tier reaches it". Over
+     * [rowsInEffect] rather than the stored map, so a vetoed guest row gives nothing here
+     * either (LNL-203) — and a row above its ceiling gives what it is capped to (LNL-202).
      */
     private fun audienceFloor(p: DemoProject, tier: String): Pair<String, String>? =
-        p.audiences.entries
+        rowsInEffect(p).entries
             .filter { tierReaches(tier, it.key) }
-            // Capped per row before the max, like the server's `admitting` (LNL-202): a
-            // guest row can only ever carry Viewer, so it must not win a comparison it
-            // could not win on the real thing.
-            .map { it.key to demoAudienceCap(it.key, it.value) }
+            .map { it.key to it.value }
             .maxByOrNull { demoRungRank(it.second) }
 
     /** What to call an audience on screen. */
@@ -1148,7 +1190,9 @@ internal class DemoWorld {
                 "Guests",
                 DEMO_GUEST_SUBTITLE,
                 newProjectAudiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
-                isSelectable = allowPublicProjects,
+                // Live, so a stored default can still be cleared while the veto is on
+                // (LNL-203) — the veto kills the rungs, not the row.
+                isSelectable = true,
                 unavailableReason = if (allowPublicProjects) {
                     null
                 } else {
@@ -1156,7 +1200,7 @@ internal class DemoWorld {
                         "one cannot start out admitting guests. The Policy switch on the " +
                         "Instance tab is what changes that."
                 },
-                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST),
+                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST, vetoed = !allowPublicProjects),
             ),
             AudienceRow(
                 DemoAudienceKeys.MEMBER,

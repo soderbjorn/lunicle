@@ -45,6 +45,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.StatisticsState
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
@@ -514,8 +515,15 @@ class StatisticsTest {
 
     private suspend fun seed(prefix: String = "LMX", isPublic: Boolean = false): Fixture {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin-$prefix", "Admin", null))
-        val project = projectRepository.create("Lunamux", prefix)
-            .also { if (isPublic) roles.setAudienceRole(it.id, Audience.GUEST, ProjectRole.VIEWER) }
+        // Two facts since LNL-203, not one: a `guest → viewer` row grants nothing on a
+        // deployment that forbids public projects, and forbidding them is the default. See
+        // createOpenToAll, which is the same translation for the fixtures that take a name.
+        val project = projectRepository.create("Lunamux", prefix).also {
+            if (isPublic) {
+                instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+                roles.setAudienceRole(it.id, Audience.GUEST, ProjectRole.VIEWER)
+            }
+        }
         // Production seats the instance owner at boot (see InstanceLadder.kt), and
         // four rules — creating and managing projects, backfilling authorship, agent
         // mail, out-of-band attachment deletes — are the owner's alone rather than an

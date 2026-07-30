@@ -594,7 +594,7 @@ class ProjectVisibilityTest {
         assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
         assertFalse(outsider.isInstanceAdmin, "The fixture's outsider runs the instance.")
 
-        val public = projectRepository.createOpenToAll("Lunamux", "LMX", roles)
+        val public = projectRepository.createOpenToAll("Lunamux", "LMX", roles, instanceSettings)
         val private = projectRepository.create("Skunkworks", "SKW")
         // The middle read tier (LNL-138): readable by any signed-in account, no
         // membership granted on it — the outsider holds nothing here, which is what

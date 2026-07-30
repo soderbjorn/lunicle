@@ -10,6 +10,8 @@
  */
 package se.soderbjorn.lunicle
 
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
+import se.soderbjorn.lunicle.store.InstanceSettingsStore
 import se.soderbjorn.lunicle.store.ProjectProvisioning
 import se.soderbjorn.lunicle.store.RoleStore
 
@@ -27,10 +29,24 @@ import se.soderbjorn.lunicle.store.RoleStore
  * there, so a fixture handing it Contributor would seed a row the server refuses to write
  * and no longer honours on read — a shared way of building an impossible world. The tests
  * that want that row on purpose write it with `setAudienceRole` and say why.
+ *
+ * ── Two facts, not one, since LNL-203 ───────────────────────────────────────
+ *
+ * The row alone no longer publishes anything. "Allow projects to be public" is a term in
+ * the access rule now rather than a guard on the picker, so a `guest → viewer` row on a
+ * deployment that forbids public projects grants nothing — and forbidding them is the
+ * **default**. A board is public when the row says so *and* the deployment permits it, so
+ * this fixture writes both, and that is why [instanceSettings] is a parameter. A fixture
+ * that seeded only the row would build a board nobody outside it can read while calling
+ * itself the open-to-all one, which is exactly the sort of quietly wrong world this file
+ * exists to prevent.
  */
 internal suspend fun ProjectProvisioning.createOpenToAll(
     name: String,
     namePrefix: String,
     roles: RoleStore,
-): ProjectRecord =
-    create(name, namePrefix).also { roles.setAudienceRole(it.id, Audience.GUEST, ProjectRole.VIEWER) }
+    instanceSettings: InstanceSettingsStore,
+): ProjectRecord {
+    instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+    return create(name, namePrefix).also { roles.setAudienceRole(it.id, Audience.GUEST, ProjectRole.VIEWER) }
+}

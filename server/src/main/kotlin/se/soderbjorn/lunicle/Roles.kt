@@ -283,7 +283,8 @@ enum class Audience(val key: String, val instanceRole: InstanceRole, val ceiling
 
 /**
  * The audience rows somebody on [instanceRole] matches, each capped to what its
- * audience may hold (LNL-202).
+ * audience may hold (LNL-202) — and with the guest row **silenced entirely** where the
+ * deployment forbids public projects (LNL-203).
  *
  * ── One fold, four callers ──────────────────────────────────────────────────
  *
@@ -301,13 +302,66 @@ enum class Audience(val key: String, val instanceRole: InstanceRole, val ceiling
  * matches everybody, a `member` row matches members and staff, a `staff` row matches
  * staff.
  *
+ * ── The publish veto is a term in the rule, not a guard on the editor (LNL-203) ──
+ *
+ * "Allow projects to be public" used to be consulted in exactly one place —
+ * [AccessControl.canSetAudience] — which is to say when somebody tried to *edit* the
+ * guest row. That could not possibly change who reads what, because it was never in
+ * the sentence that decides who reads what: an administrator turning the switch off
+ * left every already-published board fully public, and the switch read like a control
+ * that did nothing.
+ *
+ * So it is here instead, where the reading is decided. While the switch is off a guest
+ * row **grants nothing** and is treated as absent. Turning it off makes every public
+ * board private on the next request; turning it on restores them exactly as they were,
+ * because **no row is ever rewritten** in either direction and nothing is lost. That
+ * reversibility is the reason this is a filter rather than a migration, and it is what
+ * lets the Access section go on showing the row that is stored while saying it is not
+ * in effect.
+ *
+ * The write gate still exists and is still worth having — see [AccessControl.canSetAudience],
+ * which now refuses only a *grant* — but it is an affordance, not the rule.
+ *
+ * @param publicProjectsAllowed [store.InstanceSettings.allowPublicProjects]. **Irrelevant
+ *   where this map has no [Audience.GUEST] row**, which is why a caller on the hot path
+ *   may pass anything rather than paying for a store read: most projects have no guest
+ *   row at all. See `AccessControl.admittedRows`, which is that skip written once.
  * @return the matching rows, keyed by audience so a caller can still say *which* row
  *   is carrying the weight — the Access list's "the members row here already gives
  *   Contributor" needs the key, not just the rung.
  */
-fun Map<Audience, ProjectRole>.admitting(instanceRole: InstanceRole): Map<Audience, ProjectRole> =
+fun Map<Audience, ProjectRole>.admitting(
+    instanceRole: InstanceRole,
+    publicProjectsAllowed: Boolean,
+): Map<Audience, ProjectRole> =
     filterKeys { instanceRole.atLeast(it.instanceRole) }
+        .filterKeys { publicProjectsAllowed || it != Audience.GUEST }
         .mapValues { (audience, role) -> audience.cap(role) }
+
+/**
+ * Why a guest rung cannot be handed out while this deployment forbids public projects
+ * (LNL-203).
+ *
+ * **One clause, and no advice** — [Audience.refusalFor]'s constraint for
+ * [Audience.refusalFor]'s reason: this rides *inside a rung's label* in the picker, which
+ * has no room for a second line. The advice ("an instance administrator decides that, in
+ * the instance settings") belongs on the row instead, said once — see the guest row's own
+ * sentence in `ProjectSettingsRoutes` and in `AdminRoutes`.
+ *
+ * Written here rather than in either screen because three surfaces refuse this rung — a
+ * project's Access list, the instance's new-project rows, and the two routes behind them —
+ * and a rule explained three ways is a rule nobody trusts.
+ */
+const val PUBLIC_PROJECTS_VETO_RUNG_REASON = "This deployment does not allow a project to be made public."
+
+/**
+ * Whether the publish veto has anything to say about these rows (LNL-203).
+ *
+ * False for a map with no [Audience.GUEST] row, which is the overwhelmingly common case
+ * and the reason [admitting]'s veto costs nothing on the read path: there is no point
+ * consulting an instance setting to decide the fate of a row that does not exist.
+ */
+val Map<Audience, ProjectRole>.hasGuestRow: Boolean get() = containsKey(Audience.GUEST)
 
 /**
  * Whether an account belongs to the deployment's own domain.

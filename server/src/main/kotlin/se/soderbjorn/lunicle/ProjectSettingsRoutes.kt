@@ -837,6 +837,7 @@ private suspend fun BoardDependencies.buildAccess(
     val settings = instanceSettings.current()
     val audienceRoles = roles.audienceRoles(project.id)
     val ownRows = roles.rolesForProject(project.id)
+    val allowPublic = settings.allowPublicProjects
 
     return ProjectAccessState(
         audiences = Audience.entries
@@ -845,7 +846,6 @@ private suspend fun BoardDependencies.buildAccess(
             // anything rather than a stricter setting. Two rows, not three.
             .filter { it != Audience.STAFF || identity.hasStaffTier }
             .map { audience ->
-                val refusal = audienceRefusal(audience, settings.allowPublicProjects, owns)
                 AudienceRow(
                     key = audience.key,
                     title = audience.title,
@@ -854,17 +854,40 @@ private suspend fun BoardDependencies.buildAccess(
                     // as the Viewer it now effectively is rather than as a rung the board
                     // is not honouring (LNL-202). The screen must not be the one surface
                     // still claiming the old row.
+                    //
+                    // Still sent **as stored** when the publish veto has silenced it
+                    // (LNL-203) rather than blanked to "No access": the row has not been
+                    // withdrawn and turning the switch back on restores it, so blanking it
+                    // would be the screen lying in the other direction. The row's own
+                    // sentence says it is not in effect, and visibilityLine below refuses to
+                    // count it.
                     roleKey = audienceRoles[audience]?.let { audience.cap(it).key },
-                    isSelectable = refusal == null,
-                    unavailableReason = refusal,
+                    // The row itself is live for whoever owns the project, veto or not
+                    // (LNL-203). The veto kills the *rungs*, not the row — otherwise the
+                    // owner of an already-published board could not close it, which is the
+                    // whole defect this ticket is about. See rungOptions.
+                    isSelectable = owns,
+                    unavailableReason = audienceRefusal(
+                        audience = audience,
+                        allowPublic = allowPublic,
+                        owns = owns,
+                        stored = audienceRoles[audience],
+                    ),
                     // This row's own menu, because what an audience may be handed is a fact
                     // about the audience — the guest row offers Viewer and greys the rest
                     // with the reason. See rungOptions.
-                    rungs = rungOptions(project, caller, rung, audience),
+                    rungs = rungOptions(project, caller, rung, audience, allowPublic),
                 )
             },
-        people = peopleRows(project, caller, ownRows, audienceRoles, settings.ownerUserId, canGrant),
-        rungs = rungOptions(project, caller, rung, audience = null),
+        // What all of that adds up to, from the rows that are actually in effect. See
+        // visibilityLine — the one line on this screen an owner reads to find out what a
+        // stranger can see.
+        visibilityLine = visibilityLine(
+            inEffect = audienceRoles.admitting(InstanceRole.STAFF, allowPublic),
+            domain = identity.domain,
+        ),
+        people = peopleRows(project, caller, ownRows, audienceRoles, settings, canGrant),
+        rungs = rungOptions(project, caller, rung, audience = null, allowPublic = allowPublic),
         canGrant = canGrant,
         // Parenthesised, and it matters: `"a" + "b".takeIf { … }` binds the takeIf to the
         // second literal alone, so a caller who CAN grant was handed "a" + "null" — a
@@ -879,23 +902,72 @@ private suspend fun BoardDependencies.buildAccess(
 }
 
 /**
+ * "Visible to …" — who can actually read this board, in one line (LNL-203).
+ *
+ * ── Why the screen needs a sentence and not just rows ───────────────────────
+ *
+ * The rows say what each audience was *given*; this says what that comes to. The two used
+ * to be the same thing, and stopped being it the moment the publish veto became a term in
+ * the access rule: a board can now carry a stored `guest → viewer` row and be readable by
+ * nobody outside its own people, and an owner staring at a picker that reads "Viewer" has
+ * no way to tell. So the summary is computed from the rows **in effect** — [inEffect] has
+ * already been through `admitting`, which drops a vetoed guest row — and a board whose
+ * guest row is silenced does not get counted as public here. An owner has to be able to
+ * read this screen and know what a stranger sees; that honesty is the point of the whole
+ * ticket, and a summary still saying "public" would leave the original complaint intact in
+ * a different place.
+ *
+ * Only the **widest** audience is named, because the ladder of audiences nests: anybody
+ * with an account is included in "anybody at all", and staff are accounts. Naming all
+ * three would be three sentences where the first one already answered the question.
+ *
+ * @param inEffect the audience rows that grant something, matched at [InstanceRole.STAFF]
+ *   — the top of the audience ladder, so every row that grants anything to anybody is in
+ *   the map. This is a statement about the *board*, not about the caller, so it is
+ *   deliberately not narrowed to who is looking at it.
+ * @param domain the deployment's own domain, or null where it has none — in which case
+ *   there is no staff tier and the staff clause is unreachable.
+ */
+private fun visibilityLine(inEffect: Map<Audience, ProjectRole>, domain: String?): String {
+    val widest = when {
+        inEffect.containsKey(Audience.GUEST) -> "anybody at all, signed in or not"
+        inEffect.containsKey(Audience.MEMBER) -> "everybody with an account on this deployment"
+        inEffect.containsKey(Audience.STAFF) && domain != null -> "everybody with a $domain account"
+        else -> null
+    }
+    return when (widest) {
+        null -> "Visible to the people listed below, and to nobody else."
+        else -> "Visible to $widest, and to the people listed below."
+    }
+}
+
+/**
  * The rung menu for one control in the Access section — a person row, or one audience
  * row (LNL-202).
  *
- * ── Two refusals, and why they are computed together ────────────────────────
+ * ── Three refusals, and why they are computed together ──────────────────────
  *
- * A rung can be out of reach for two unrelated reasons, and both have to arrive in the
- * same list because the picker draws one list:
+ * A rung can be out of reach for three unrelated reasons, and all of them have to arrive
+ * in the same list because the picker draws one list:
  *
  *  - **the caller may not hand it out** — an Admin may grant up to Maintainer, and the
  *    two senior rungs are an Owner's. A fact about the caller.
  *  - **this audience may not hold it** — the guest row stops at Viewer, because a guest
  *    has nobody to attribute a write to. A fact about the row, true for the deployment's
  *    own owner as much as for anybody.
+ *  - **this deployment forbids public projects** — every guest rung is refused while the
+ *    switch is off (LNL-203). A fact about the instance, and the only one of the three
+ *    somebody can go and change.
  *
- * The ceiling is stated **first** where both apply, for the reason
+ * The ceiling is stated **first** where more than one applies, for the reason
  * [audienceRefusal] states the publish veto first: it is the refusal that would still
- * stand if the other were lifted, so it is the one worth reading.
+ * stand if the others were lifted, so it is the one worth reading.
+ *
+ * **Every** guest rung dies under the veto and none of them is omitted, which is what
+ * leaves "No access" as the one live entry in the menu — see `rungPicker`, which always
+ * offers it. That is the shape LNL-203 needed: an owner whose board was published before
+ * the switch went off can still close it, and the only thing the picker will let them do
+ * is close it.
  *
  * Note what this replaces: one `rungs` list on the response, shared by every control.
  * That list could only ever express the caller's half, so the guest row offered
@@ -905,14 +977,18 @@ private suspend fun BoardDependencies.buildAccess(
  *
  * @param audience the audience row this menu belongs to, or null for a person row —
  *   a person has an account, so the only refusals that apply to them are the caller's.
+ * @param allowPublic the instance's publish switch, passed in rather than read here
+ *   because this is called once per row and the caller holds the settings snapshot.
  */
 private suspend fun BoardDependencies.rungOptions(
     project: ProjectRecord,
     caller: UserRecord,
     callerRung: ProjectRole,
     audience: Audience?,
+    allowPublic: Boolean,
 ): List<RungOption> = ProjectRole.entries.map { offered ->
-    val ceiling = audience?.refusalFor(offered)
+    val vetoed = audience == Audience.GUEST && !allowPublic
+    val onTheRow = audience?.refusalFor(offered) ?: PUBLIC_PROJECTS_VETO_RUNG_REASON.takeIf { vetoed }
     // The same question the write asks — canGrant — so a rung offered here cannot be
     // refused there and a rung greyed here is genuinely refused.
     val grantable = access.canGrant(caller, project.id, offered)
@@ -920,9 +996,9 @@ private suspend fun BoardDependencies.rungOptions(
         key = offered.key,
         label = offered.label,
         description = offered.description,
-        isSelectable = ceiling == null && grantable,
+        isSelectable = onTheRow == null && grantable,
         unavailableReason = when {
-            ceiling != null -> ceiling
+            onTheRow != null -> onTheRow
             grantable -> null
             // Names the caller's own rung, because the useful part of the refusal is who
             // to ask rather than that there was one.
@@ -933,21 +1009,44 @@ private suspend fun BoardDependencies.rungOptions(
 }
 
 /**
- * Why this audience row is dead, or null because it is live.
+ * The sentence beside this audience row, or null because there is nothing to say.
  *
- * Note this is about the row as a **whole** — whether its menu may be opened at all —
- * and not about any particular rung in it. The guest audience's ceiling is the other
- * shape and deliberately not here: it kills the rungs above Viewer while leaving the
- * row live, because setting a project's guest row *to* Viewer is exactly how a board is
- * published. See [rungOptions].
+ * Two things land here, and only the second one greys the row:
  *
- * The publish veto is checked **first and separately**, because it is the refusal that
- * would still stand if the other were fixed: it applies to the guest row whoever asks,
- * an instance administrator and the deployment's own owner included, and
- * [AccessControl.canSetAudience] enforces it on the write. Greying it with the reason
- * is the explanation, not the enforcement.
+ *  - **the publish veto** (LNL-192, reworded by LNL-203). It kills every *rung* on the
+ *    guest row while leaving the row itself live — see [rungOptions] — because setting a
+ *    guest row to "No access" is how a published board is closed, and refusing that was
+ *    the defect: an owner whose board was already public found the veto had taken away the
+ *    only in-app way to make it private again. So the sentence here explains rather than
+ *    forbids, and it has two forms: one for a row that is merely *unavailable*, and one for
+ *    a row that is **stored and not in effect**, which is a state the screen must not be
+ *    silent about.
+ *  - **not being the owner**, which does grey the row, and is the whole of the
+ *    [AudienceRow.isSelectable] answer for every audience.
+ *
+ * The veto is stated **first** where both apply, because it is the one that would still
+ * stand if the other were fixed: it applies to the guest row whoever asks, an instance
+ * administrator and the deployment's own owner included.
+ *
+ * The guest audience's ceiling is deliberately not here — it is a fact about particular
+ * rungs rather than about the row, and it lives in [rungOptions].
+ *
+ * @param stored the rung this row actually holds in the database, or null for none. Only
+ *   the veto's wording depends on it: a *stored* guest row under the veto is a board that
+ *   somebody published and that strangers can no longer read, and saying only "not
+ *   allowed" beside a picker reading "Viewer" would leave an owner unable to tell whether
+ *   their board is public.
  */
-private fun audienceRefusal(audience: Audience, allowPublic: Boolean, owns: Boolean): String? = when {
+private fun audienceRefusal(
+    audience: Audience,
+    allowPublic: Boolean,
+    owns: Boolean,
+    stored: ProjectRole?,
+): String? = when {
+    audience == Audience.GUEST && !allowPublic && stored != null ->
+        "Stored, but not in effect: this deployment does not allow a project to be made " +
+            "public, so guests can read nothing here. The row is kept as it is — an instance " +
+            "administrator turning public projects back on would make this board public again."
     audience == Audience.GUEST && !allowPublic ->
         "This deployment does not allow a project to be made public. An instance " +
             "administrator decides that, in the instance settings."
@@ -970,28 +1069,35 @@ private fun audienceRefusal(audience: Audience, allowPublic: Boolean, owns: Bool
  * keeps this list short enough to *be* the audit — a screen listing every account on
  * the instance answers "who can get in here" with a directory, which is not an answer,
  * and is what the old privileges table did.
+ *
+ * @param settings the instance snapshot the caller already read, for the owner's id
+ *   (LNL-201) and the publish veto (LNL-203). Both feed the same fold below, so a row here
+ *   cannot credit somebody with a rung the board is no longer honouring.
  */
 private suspend fun BoardDependencies.peopleRows(
     project: ProjectRecord,
     caller: UserRecord,
     ownRows: Map<Long, ProjectRole>,
     audienceRoles: Map<Audience, ProjectRole>,
-    instanceOwnerId: Long?,
+    settings: se.soderbjorn.lunicle.store.InstanceSettings,
     canGrant: Boolean,
 ): List<PersonRow> = users.selectAll()
-    .filter { it.id in ownRows.keys || it.instanceRoleWith(instanceOwnerId).atLeast(InstanceRole.ADMIN) }
+    .filter { it.id in ownRows.keys || it.instanceRoleWith(settings.ownerUserId).atLeast(InstanceRole.ADMIN) }
     .map { person ->
         val own = ownRows[person.id]
         // Where this person stands on the instance, ownership folded in from the id read
         // once above (LNL-201) — the whole ladder, so the two uses below cannot disagree
         // about who the owner is. It used to be `storedInstanceRole` for the audience match
         // and an inline `id == instanceOwnerId` for the rest.
-        val instanceRole = person.instanceRoleWith(instanceOwnerId)
+        val instanceRole = person.instanceRoleWith(settings.ownerUserId)
         // What their audience gives them anyway, through the same fold
-        // AccessControl.effectiveRole uses — matched by the ascending instance ladder and
-        // capped to what each audience may hold, so this cannot report a rung the board
-        // will not honour. See admitting().
-        val floor = audienceRoles.admitting(instanceRole).entries.maxByOrNull { it.value.rank }
+        // AccessControl.effectiveRole uses — matched by the ascending instance ladder,
+        // capped to what each audience may hold, and with a vetoed guest row dropped
+        // (LNL-203), so this cannot report a rung the board will not honour. See admitting().
+        val floor = audienceRoles
+            .admitting(instanceRole, settings.allowPublicProjects)
+            .entries
+            .maxByOrNull { it.value.rank }
         val runsInstance = instanceRole.atLeast(InstanceRole.ADMIN)
         val effective = when {
             runsInstance -> ProjectRole.OWNER
@@ -1026,7 +1132,7 @@ private suspend fun BoardDependencies.peopleRows(
                 (own == null || access.canGrant(caller, project.id, own)),
             note = when {
                 person.isInstanceAdmin -> "Runs this instance, so holds Owner on every project here."
-                person.id == instanceOwnerId -> "Owns this instance, so holds Owner on every project here."
+                person.id == settings.ownerUserId -> "Owns this instance, so holds Owner on every project here."
                 own != null && canGrant && !access.canGrant(caller, project.id, own) ->
                     // Second person for the caller's own row: "what Adi Admin holds" on the
                     // row labelled "Adi Admin (you)" reads as being about somebody else.

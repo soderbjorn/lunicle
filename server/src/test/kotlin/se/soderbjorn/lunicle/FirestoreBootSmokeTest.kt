@@ -83,7 +83,8 @@ class FirestoreBootSmokeTest {
 
         // A project — the row plus its five seeded vocabularies, through
         // FirestoreProjectRepository (the store.ProjectProvisioning impl).
-        val project = stores.projectRepository.createOpenToAll("Smoke Project", "SMK", stores.roles)
+        val project = stores.projectRepository
+            .createOpenToAll("Smoke Project", "SMK", stores.roles, stores.instanceSettings)
         assertEquals("Smoke Project", project.name)
         assertEquals("SMK", project.namePrefix)
 

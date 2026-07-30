@@ -268,7 +268,7 @@ class AdminSettingsTest {
     @Test
     fun `an audience row reaches somebody who holds nothing, and the row names it`(): Unit = runBlocking {
         val fixture = seed()
-        val open = projectRepository.createOpenToAll("Open", "OPN", roles)
+        val open = projectRepository.createOpenToAll("Open", "OPN", roles, instanceSettings)
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
         )

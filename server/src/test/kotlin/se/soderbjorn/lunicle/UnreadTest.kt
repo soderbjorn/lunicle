@@ -319,7 +319,7 @@ class UnreadTest {
     @Test
     fun `a signed-out visitor has no badges`(): Unit = runBlocking {
         val f = seed()
-        val public = projectRepository.createOpenToAll("Open", "OPN", roles)
+        val public = projectRepository.createOpenToAll("Open", "OPN", roles, instanceSettings)
         val publicForum = forums.create(public.id, "Lobby", null)
         withRoutes { client ->
             val id = forumPosts.createPostDraft(publicForum.id, Author.Account(f.adaId))
@@ -345,7 +345,7 @@ class UnreadTest {
     @Test
     fun `a signed-out visitor cannot mark a public post read`(): Unit = runBlocking {
         val f = seed()
-        val public = projectRepository.createOpenToAll("Open", "OPN", roles)
+        val public = projectRepository.createOpenToAll("Open", "OPN", roles, instanceSettings)
         val publicForum = forums.create(public.id, "Lobby", null)
         withRoutes { client ->
             val id = forumPosts.createPostDraft(publicForum.id, Author.Account(f.adaId))

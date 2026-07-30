@@ -219,13 +219,19 @@ class AdmissionRoutesTest {
     // ── The public-projects veto ────────────────────────────────────────────
 
     /**
-     * With "allow projects to be public" off — the default — a guest audience row is
-     * refused, whoever asks.
+     * With "allow projects to be public" off — the default — **granting** a guest audience
+     * row is refused, whoever asks.
      *
      * Asserted at [AccessControl], which is where the refusal lives and what every
      * future write will have to ask: the parameter is the audience, so a caller cannot
      * ask the general question and then write the guest row. The Access list that
      * greys it arrives in ticket 5; this is the half a POST cannot go around.
+     *
+     * Narrowed to a grant by LNL-203, and the withdrawal is asserted here beside it: this
+     * used to refuse *any* write to the row, which cannot tell handing public access out
+     * from taking it back — so the control meant to stop public projects removed the only
+     * in-app way to close one. What actually stops strangers reading is the access rule
+     * itself; see [se.soderbjorn.lunicle.store.PublicProjectVetoContract].
      */
     @Test
     fun `the public-projects veto refuses a guest audience row`(): Unit = runBlocking {
@@ -247,6 +253,16 @@ class AdmissionRoutesTest {
         // statement about strangers, not about the people who already have accounts.
         assertTrue(access.canSetAudience(owner, fixture.projectId, Audience.MEMBER, ProjectRole.CONTRIBUTOR))
         assertTrue(access.canSetAudience(owner, fixture.projectId, Audience.STAFF, ProjectRole.CONTRIBUTOR))
+
+        // And so is withdrawal, in the direction the policy is not about (LNL-203).
+        assertTrue(
+            access.canSetAudience(owner, fixture.projectId, Audience.GUEST, rung = null),
+            "The veto refused to let an owner close their own board.",
+        )
+        assertTrue(
+            access.canSetAudience(admin, fixture.projectId, Audience.GUEST, rung = null),
+            "The veto refused the instance owner the withdrawal too.",
+        )
 
         instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
         assertTrue(

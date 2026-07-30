@@ -160,6 +160,7 @@ class ProjectSections(
     private lateinit var notifyHint: HTMLElement
     private lateinit var accessReadOnly: HTMLElement
     private lateinit var audienceList: HTMLElement
+    private lateinit var visibilityElement: HTMLElement
     private lateinit var peopleList: HTMLElement
     private lateinit var peopleEmpty: HTMLElement
     private lateinit var adviceElement: HTMLElement
@@ -517,6 +518,11 @@ class ProjectSections(
 
         accessReadOnly = element("p", "admin-note")
         audienceList = element("div", "access-rows")
+        // The answer, under the rows that produce it. Its own element rather than part of
+        // the rebuilt list, because it is a statement about the section and not a row —
+        // and because the list is torn down and rebuilt on a signature change, which this
+        // must survive. Worded by the server; see ProjectAccessState.visibilityLine.
+        visibilityElement = element("p", "access-visibility")
         peopleList = element("div", "access-rows")
         peopleEmpty = element(
             "p",
@@ -537,6 +543,7 @@ class ProjectSections(
                     "audience arrives as.",
             ),
             audienceList,
+            visibilityElement,
             element("h3", "section-title", "People with something different"),
             element(
                 "p",
@@ -760,6 +767,10 @@ class ProjectSections(
         }
         accessReadOnly.setTextIfChanged(access.readOnlyReason ?: "")
         accessReadOnly.visible(access.readOnlyReason != null)
+        // Set on every render rather than inside renderAudiences' signature guard: it is
+        // cheap, and it must not be able to drift from the rows it summarises.
+        visibilityElement.setTextIfChanged(access.visibilityLine)
+        visibilityElement.visible(access.visibilityLine.isNotEmpty())
         adviceElement.setTextIfChanged(access.addressAdvice)
         adviceElement.visible(access.canGrant)
         addPersonButton.visible(access.canGrant, displayValue = "inline-flex")

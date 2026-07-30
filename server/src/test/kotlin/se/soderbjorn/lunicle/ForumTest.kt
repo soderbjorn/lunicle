@@ -402,7 +402,7 @@ class ForumTest {
 
         val project = projectRepository.create("Lunamux", "LMX")
         val other = projectRepository.create("Elsewhere", "ELS")
-        val public = projectRepository.createOpenToAll("Open", "OPN", roles)
+        val public = projectRepository.createOpenToAll("Open", "OPN", roles, instanceSettings)
         roles.setRole(projectAdmin.id, project.id, ProjectRole.ADMIN)
         roles.setRole(projectAdmin.id, other.id, ProjectRole.ADMIN)
         // Bare visibility, so the member's refusals below are about administering

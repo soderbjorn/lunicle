@@ -574,7 +574,12 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     // build wrote (LNL-202). What shows is what `seatNewProject` will
                     // actually give a new board, which is the whole claim this row makes.
                     roleKey = switches.newProjectAudiences[audience]?.let { audience.cap(it).key },
-                    isSelectable = !vetoed,
+                    // Live even when vetoed (LNL-203), because the veto kills the *rungs* and
+                    // not the row: an administrator who left a guest default stored and then
+                    // turned the switch off must still be able to clear it, and the route above
+                    // has always allowed that — only this greying stopped them. A dead row here
+                    // was the same withdrawal bug a project's own Access list had.
+                    isSelectable = true,
                     unavailableReason = if (vetoed) {
                         "This deployment does not allow a project to be made public, so a new " +
                             "one cannot start out admitting guests. The Policy switch on the " +
@@ -585,15 +590,18 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     // This row's own menu: the guest row offers Viewer and greys the rest
                     // with the reason, exactly as a project's Access list does. Every rung is
                     // grantable by this caller — they hold the instance, and there is no
-                    // project here to be junior on — so the ceiling is the only refusal.
+                    // project here to be junior on — so the ceiling and the veto are the only
+                    // refusals. The ceiling is stated first where both apply: it is the one
+                    // that would still stand if the switch were flipped.
                     rungs = ProjectRole.entries.map { offered ->
-                        val ceiling = audience.refusalFor(offered)
+                        val refusal = audience.refusalFor(offered)
+                            ?: PUBLIC_PROJECTS_VETO_RUNG_REASON.takeIf { vetoed }
                         RungOption(
                             key = offered.key,
                             label = offered.label,
                             description = offered.description,
-                            isSelectable = ceiling == null,
-                            unavailableReason = ceiling,
+                            isSelectable = refusal == null,
+                            unavailableReason = refusal,
                         )
                     },
                 )
@@ -680,10 +688,11 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     // What their audience gives them anyway, through the same fold
                     // AccessControl.effectiveRole uses — matched by the ascending instance
                     // ladder and capped to what each audience may hold, so this table cannot
-                    // credit somebody with a rung a guest row was never allowed to give.
-                    // See admitting().
+                    // credit somebody with a rung a guest row was never allowed to give —
+                    // nor one a guest row the deployment has vetoed is no longer giving
+                    // (LNL-203). See admitting().
                     val floor = audiencesByProject[project.id].orEmpty()
-                        .admitting(tier)
+                        .admitting(tier, switches.allowPublicProjects)
                         .entries
                         .maxByOrNull { it.value.rank }
                     // Computed off the two maps already in hand rather than a per-user

@@ -18,6 +18,12 @@
  *     every board, a guest audience reaches a caller with no session at all, and a
  *     staff audience does not reach a member.
  *
+ * A fifth since LNL-203: the **instance's publish veto is a term in that max**, not a
+ * guard on the editor. While "allow projects to be public" is off a guest row grants
+ * nothing, so the rule above is really `max(the rows they match *that are in effect*, their
+ * own row)` — and turning the switch back on restores the answer exactly, because nothing
+ * rewrites a row in either direction.
+ *
  * @see AccessControl.effectiveRole
  */
 package se.soderbjorn.lunicle
@@ -32,6 +38,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
 
 class AccessControlLadderTest {
@@ -119,6 +126,10 @@ class AccessControlLadderTest {
     @Test
     fun `the highest matching audience wins`(): Unit = runBlocking {
         val f = seed()
+        // Publishing takes two facts since LNL-203: the row, and a deployment that allows
+        // it. The guest half of this assertion is about the row, so the switch is turned on
+        // rather than left at its closed default.
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
         roles.setAudienceRole(f.project, Audience.GUEST, ProjectRole.VIEWER)
         roles.setAudienceRole(f.project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
         assertEquals(ProjectRole.CONTRIBUTOR, access.effectiveRole(f.member, f.project))
@@ -138,9 +149,83 @@ class AccessControlLadderTest {
     @Test
     fun `a guest audience reaches a caller with no session at all`(): Unit = runBlocking {
         val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
         roles.setAudienceRole(f.project, Audience.GUEST, ProjectRole.VIEWER)
         assertEquals(ProjectRole.VIEWER, access.effectiveRole(null, f.project))
         assertTrue(access.canReadProject(null, projects.findById(f.project)!!))
+    }
+
+    /**
+     * And it stops reaching them the moment the deployment says no (LNL-203).
+     *
+     * The compound failure the ticket describes, at the level of the rule: the row is
+     * untouched and the answer changes, both ways, because the veto is a *term* in the
+     * computation and not a guard on the picker. Asserted here as well as through the routes
+     * (see [ProjectVisibilityTest]) because this is the sentence every gate is built on —
+     * a route test would pass on a rule that read the switch in one path and forgot it in
+     * another.
+     */
+    @Test
+    fun `the publish veto silences a guest row and restores it, without rewriting it`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        roles.setAudienceRole(f.project, Audience.GUEST, ProjectRole.VIEWER)
+        val before = roles.audienceRoles(f.project)
+        assertEquals(ProjectRole.VIEWER, access.effectiveRole(null, f.project), "precondition: it was public")
+
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
+        assertNull(
+            access.effectiveRole(null, f.project),
+            "the switch went off and a stranger still reached the board",
+        )
+        assertFalse(access.canReadProject(null, projects.findById(f.project)!!))
+        assertEquals(before, roles.audienceRoles(f.project), "silencing the row rewrote it")
+
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        assertEquals(
+            ProjectRole.VIEWER,
+            access.effectiveRole(null, f.project),
+            "turning the switch back on did not restore the access the row still describes",
+        )
+        assertEquals(before, roles.audienceRoles(f.project), "restoring the access rewrote the row")
+    }
+
+    /** The veto is about strangers alone: a member row is unaffected by it. */
+    @Test
+    fun `the publish veto leaves the member and staff rows alone`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
+        roles.setAudienceRole(f.project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        roles.setAudienceRole(f.project, Audience.STAFF, ProjectRole.MAINTAINER)
+        assertEquals(ProjectRole.CONTRIBUTOR, access.effectiveRole(f.member, f.project))
+        assertEquals(ProjectRole.MAINTAINER, access.effectiveRole(f.staff, f.project))
+        assertNull(access.effectiveRole(null, f.project), "a stranger got in through a members row")
+    }
+
+    /**
+     * Withdrawal is allowed while the veto is on, and granting is not (LNL-203).
+     *
+     * The other half of the practical failure: refusing *any* write to the guest row could
+     * not tell granting from revoking, so the control meant to stop public projects took
+     * away the only in-app way to close one.
+     */
+    @Test
+    fun `the veto refuses a grant on the guest row and never a withdrawal`(): Unit = runBlocking {
+        val f = seed()
+        // The board's owner by way of owning the instance, which is the strongest caller
+        // there is — so a refusal here is the veto and not a rung.
+        instanceSettings.setOwnerUserId(f.member.id)
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
+        val owner = f.member
+
+        assertFalse(
+            access.canSetAudience(owner, f.project, Audience.GUEST, ProjectRole.VIEWER),
+            "a board was published on a deployment that forbids it",
+        )
+        assertTrue(
+            access.canSetAudience(owner, f.project, Audience.GUEST, rung = null),
+            "the veto refused a withdrawal, which is the one direction it has no business refusing",
+        )
     }
 
     @Test
@@ -425,5 +510,72 @@ class AccessControlLadderTest {
         assertFalse(member.isInstanceAdmin)
         val project = projectRepository.create("Lunamux", "LMX")
         return Fixture(admin, member, other, staff, project.id)
+    }
+
+    // ── What the veto costs, per read (LNL-203) ──────────────────────────────
+
+    /**
+     * A project with no guest row does **not** pay a settings read for the veto.
+     *
+     * [AccessControl.effectiveRole] is on the hot path for every read of every board, and
+     * the veto can only ever change the fate of an `Audience.GUEST` row — which most
+     * projects do not have. So the read is skipped where the answer could not change, the
+     * same shape ownership already uses, and this counts it rather than trusting the comment
+     * that says so. The signed-out caller is the one whose path has nothing else in it: a
+     * signed-in caller reads the settings anyway, for ownership.
+     */
+    @Test
+    fun `a project with no guest row costs no settings read`(): Unit = runBlocking {
+        val f = seed()
+        val counted = CountingInstanceSettings(instanceSettings)
+        val countedRoles = CountingRoles(roles)
+        val counting = AccessControl(countedRoles, counted)
+        roles.setAudienceRole(f.project, Audience.MEMBER, ProjectRole.VIEWER)
+
+        assertNull(counting.effectiveRole(null, f.project), "precondition: a stranger is not admitted here")
+        assertEquals(0, counted.reads, "the veto was consulted about a project with no guest row")
+        assertEquals(1, countedRoles.audienceReads, "the audience rows were read more than once")
+    }
+
+    /** And a project that *does* have one pays exactly one, which is what the veto is worth. */
+    @Test
+    fun `a guest row costs one settings read and no more`(): Unit = runBlocking {
+        val f = seed()
+        val counted = CountingInstanceSettings(instanceSettings)
+        val counting = AccessControl(roles, counted)
+        roles.setAudienceRole(f.project, Audience.GUEST, ProjectRole.VIEWER)
+
+        counting.effectiveRole(null, f.project)
+        assertEquals(1, counted.reads, "the veto cost more than the one read it needs")
+    }
+
+    /**
+     * A settings store that counts [current] and delegates everything else.
+     *
+     * Only the read is counted: the claim under test is about what one `effectiveRole` costs.
+     */
+    private class CountingInstanceSettings(
+        private val delegate: se.soderbjorn.lunicle.store.InstanceSettingsStore,
+    ) : se.soderbjorn.lunicle.store.InstanceSettingsStore by delegate {
+        var reads = 0
+            private set
+
+        override suspend fun current(): se.soderbjorn.lunicle.store.InstanceSettings {
+            reads++
+            return delegate.current()
+        }
+    }
+
+    /** The same, for the one role read `effectiveRole` makes before it decides anything. */
+    private class CountingRoles(
+        private val delegate: se.soderbjorn.lunicle.store.RoleStore,
+    ) : se.soderbjorn.lunicle.store.RoleStore by delegate {
+        var audienceReads = 0
+            private set
+
+        override suspend fun audienceRoles(projectId: Long): Map<Audience, ProjectRole> {
+            audienceReads++
+            return delegate.audienceRoles(projectId)
+        }
     }
 }

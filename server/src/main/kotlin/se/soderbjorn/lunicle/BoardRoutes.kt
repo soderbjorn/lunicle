@@ -498,10 +498,11 @@ internal suspend fun BoardDependencies.assignableUsers(projectId: Long): List<Us
     val audiences = roles.audienceRoles(projectId)
     // Three reads, not two, since LNL-201: the owner's id, so that this set and
     // AccessControl.canBeAssigned agree about them. Read once here rather than per
-    // candidate — see effectiveRungAmong.
-    val ownerUserId = instanceSettings.current().ownerUserId
+    // candidate — see effectiveRungAmong. The same snapshot carries the publish veto
+    // (LNL-203), so honouring that costs nothing extra here.
+    val switches = instanceSettings.current()
     return users.selectAll().filter { candidate ->
-        candidate.effectiveRungAmong(rungs, audiences, ownerUserId)?.atLeast(ProjectRole.CONTRIBUTOR) == true
+        candidate.effectiveRungAmong(rungs, audiences, switches)?.atLeast(ProjectRole.CONTRIBUTOR) == true
     }
 }
 
@@ -538,7 +539,7 @@ internal suspend fun BoardDependencies.mentionableUsers(projectId: Long): List<U
  * mentioned here" would be an autocomplete that suggests a name and a mailer
  * that then quietly declines to recognise it.
  *
- * @param instanceSettings read once, for the owner's id and nothing else — the third
+ * @param instanceSettings read once, for the owner's id and the publish veto — the third
  *   store, added by LNL-201. See [effectiveRungAmong] for why it cannot be left out.
  */
 internal suspend fun mentionableUsersIn(
@@ -549,9 +550,9 @@ internal suspend fun mentionableUsersIn(
 ): List<UserRecord> {
     val rungs = roles.rolesForProject(projectId)
     val audiences = roles.audienceRoles(projectId)
-    val ownerUserId = instanceSettings.current().ownerUserId
+    val switches = instanceSettings.current()
     return users.selectAll().filter { candidate ->
-        candidate.effectiveRungAmong(rungs, audiences, ownerUserId) != null
+        candidate.effectiveRungAmong(rungs, audiences, switches) != null
     }
 }
 
@@ -595,18 +596,30 @@ internal suspend fun mentionableUsersIn(
  * click, which is exactly the affordance-disagrees-with-the-rule failure the one-rung
  * model exists to make impossible.
  *
- * @param instanceOwnerId read **once** by the caller, not per row. Consulting the store
- *   inside this function would be the query-per-account these two sets exist to avoid;
- *   see [instanceRoleWith], which is this fold named. Null where nobody is seated.
+ * ── And so does the publish veto (LNL-203) ──────────────────────────────────
+ *
+ * Through the same [admitting], again because it has to be the same fold: a board whose
+ * guest row has been silenced by the instance switch must not go on offering **every
+ * account on the instance** in its assignee picker, when the row that put them there
+ * grants nothing. [switches] carries the answer, so this stays one read per set.
+ *
+ * @param switches the instance settings, read **once** by the caller, not per row.
+ *   Consulting the store inside this function would be the query-per-account these two
+ *   sets exist to avoid; see [instanceRoleWith], which is this fold named. Two things are
+ *   taken from it: who owns the deployment (LNL-201, null where nobody is seated) and
+ *   whether public projects are allowed (LNL-203).
  */
 private fun UserRecord.effectiveRungAmong(
     rungs: Map<Long, ProjectRole>,
     audiences: Map<Audience, ProjectRole>,
-    instanceOwnerId: Long?,
+    switches: se.soderbjorn.lunicle.store.InstanceSettings,
 ): ProjectRole? {
-    val instanceRole = instanceRoleWith(instanceOwnerId)
+    val instanceRole = instanceRoleWith(switches.ownerUserId)
     if (instanceRole.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
-    val fromAudience = audiences.admitting(instanceRole).values.maxByOrNull { it.rank }
+    val fromAudience = audiences
+        .admitting(instanceRole, switches.allowPublicProjects)
+        .values
+        .maxByOrNull { it.rank }
     val own = rungs[id]
     return listOfNotNull(fromAudience, own).maxByOrNull { it.rank }
 }
@@ -638,6 +651,12 @@ private fun UserRecord.effectiveRungAmong(
  * veto is on — the same refusal [AccessControl.canSetAudience] makes for a hand-written
  * write. The setting keeps its stored value, so lifting the veto starts honouring it
  * again for projects created afterwards.
+ *
+ * The row is **dropped rather than written and silenced**, and that is deliberate now that
+ * a vetoed guest row grants nothing anyway (LNL-203): writing it would mean that lifting
+ * the veto later published every board created while it was off, which nobody asked for.
+ * A board created under the veto simply has no guest row, and publishing it is a decision
+ * its owner makes afterwards.
  *
  * ── And the ceiling is applied rather than trusted (LNL-202) ────────────────
  *

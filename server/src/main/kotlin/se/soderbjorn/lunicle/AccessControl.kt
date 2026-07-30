@@ -136,6 +136,17 @@ class AccessControl(
      * [ProjectRole.CONTRIBUTOR] or above is closed to a caller with no session, by
      * construction rather than by each gate remembering to check.
      *
+     * ── And the publish veto is a term here too (LNL-203) ───────────────────
+     *
+     * While the instance's "allow projects to be public" switch is off, a guest row grants
+     * nothing — [admitting] drops it, so this function answers as if the row were absent.
+     * That is what makes the switch a control rather than a gesture: turning it off makes
+     * every published board private on the next request, and turning it back on restores
+     * them exactly, because no row is rewritten either way. It used to be consulted only
+     * by [canSetAudience], i.e. only when somebody tried to edit the row, which could not
+     * change who reads what. See [admittedRows] for why it costs no read on the common
+     * path.
+     *
      * @param projectId an id rather than a [ProjectRecord], deliberately: with
      *   visibility gone from the project row there is nothing on the record this
      *   depends on, and most callers reach here holding only an issue.
@@ -145,9 +156,9 @@ class AccessControl(
         if (stored.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
 
         // The audience rows this caller matches, each capped to what its audience may
-        // hold. See admitting(), which is the one place that filter and that cap live.
-        var best: ProjectRole? = roles.audienceRoles(projectId)
-            .admitting(stored)
+        // hold and with a vetoed guest row dropped. See admitting(), which is the one
+        // place that filter, that cap and that veto live.
+        var best: ProjectRole? = admittedRows(projectId, stored)
             .values
             .maxByOrNull { it.rank }
 
@@ -162,6 +173,30 @@ class AccessControl(
             }
         }
         return best
+    }
+
+    /**
+     * [projectId]'s audience rows as they stand **in effect** for somebody on
+     * [instanceRole] — matched, capped, and with a vetoed guest row dropped (LNL-203).
+     *
+     * ── Why the setting is read conditionally ───────────────────────────────
+     *
+     * This is on the hot path for every read of every board, and the publish veto can only
+     * ever change the fate of an [Audience.GUEST] row. Most projects have none, so the
+     * store read is skipped whenever there is nothing for the answer to change — the same
+     * shape [effectiveRole] uses for ownership, and for the same reason: the skip is the
+     * correct answer arriving early rather than an optimisation bolted on.
+     *
+     * `audienceRoles` was already being read here, so a project with no guest row costs
+     * exactly what it cost before this ticket: one read.
+     */
+    private suspend fun admittedRows(
+        projectId: Long,
+        instanceRole: InstanceRole,
+    ): Map<Audience, ProjectRole> {
+        val stored = roles.audienceRoles(projectId)
+        val publicProjectsAllowed = !stored.hasGuestRow || instanceSettings.current().allowPublicProjects
+        return stored.admitting(instanceRole, publicProjectsAllowed)
     }
 
     /** Does [user] reach [rung] in [projectId]? The shape every project rule below takes. */
@@ -190,6 +225,11 @@ class AccessControl(
      * can name is this one. "The world may read this" is expressible; "the world may
      * comment on this" is not, because a comment needs an author. See [Audience.GUEST]
      * for why that is a decision and not a gap.
+     *
+     * **And the deployment can take that back at any time** (LNL-203). While "allow
+     * projects to be public" is off the guest row grants nothing, so this says no to a
+     * stranger on a board whose row still reads Viewer — which is the point: the switch
+     * is what makes every published board private again, without touching a row.
      *
      * Takes the resolved [project] rather than an id because every caller has
      * already fetched it, and because taking one keeps the read gate looking like
@@ -375,14 +415,23 @@ class AccessControl(
      * `is_public`, which was an owner's too (LNL-107) — the power did not move, only
      * its spelling.
      *
-     * ── The one thing an owner cannot decide alone (LNL-192) ────────────────
+     * ── The one thing an owner cannot decide alone (LNL-192, narrowed by LNL-203) ──
      *
-     * [Audience.GUEST] is refused outright while the instance's
+     * **Granting** [Audience.GUEST] a rung is refused while the instance's
      * "allow projects to be public" switch is off, whoever asks — an owner, an
      * instance administrator, the owner of the deployment. It is the veto that
      * replaces the blanket the retired require-sign-in switch provided, and it is
      * enforced here rather than only greyed in the Access list for the obvious
      * reason: a rule that lives in a screen is a rule a POST goes around.
+     *
+     * **Withdrawal is never refused** ([rung] null). This used to refuse *any* write to
+     * the row, which cannot tell granting from revoking — so an owner whose board had
+     * already been published, on a deployment that then turned the switch off, was refused
+     * when they set Guests to "No access" and had no in-app way to close their own board.
+     * Refusing to hand out public access is a policy; refusing to take it back is only a
+     * bug. Note the veto no longer *needs* the write refused to be effective — the read
+     * path drops a vetoed guest row on its own (see [admittedRows]) — which is what leaves
+     * this free to be narrowed to the direction the policy is actually about.
      *
      * The other two audiences are unaffected. "Nothing may be published" is a
      * statement about strangers, not about whether a board may admit the people who
@@ -400,7 +449,7 @@ class AccessControl(
      * a sharper one: the picker is an affordance, and this row is the one that hands the
      * entire internet a rung. Note the refusal is on the **rung**, not the row — a guest
      * row at Viewer is still exactly how a project is published, and withdrawing one
-     * ([rung] null) is never refused on this account.
+     * ([rung] null) is never refused, on this account or on the veto's.
      *
      * @param audience which audience the write names. It is a parameter rather than
      *   a separate "may publish" question so that a caller cannot ask the general
@@ -417,7 +466,11 @@ class AccessControl(
         audience: Audience,
         rung: ProjectRole?,
     ): Boolean {
-        if (audience == Audience.GUEST && !instanceSettings.current().allowPublicProjects) return false
+        // `rung != null`, and that is the whole of LNL-203's second half: withdrawing
+        // public access is never the thing a "no public projects" policy wants to stop.
+        if (audience == Audience.GUEST && rung != null && !instanceSettings.current().allowPublicProjects) {
+            return false
+        }
         if (rung != null && !audience.permits(rung)) return false
         return canOwnProject(user, projectId)
     }

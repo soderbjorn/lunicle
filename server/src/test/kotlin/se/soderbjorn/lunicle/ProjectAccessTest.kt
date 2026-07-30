@@ -23,6 +23,10 @@
  *    offering a rung nothing refused.
  *  - **A rung is refused at both ends.** An Admin may hand out Maintainer and may not
  *    write Viewer over an Owner's row, which is the same escalation running downhill.
+ *  - **The veto refuses a grant and never a withdrawal** (LNL-203), and a guest row it has
+ *    silenced is reported as *stored but not in effect* with a "Visible to" line that agrees.
+ *    The board is published first in those tests, because a board with no guest row has
+ *    nothing to withdraw and cannot reach the bug.
  *
  * @see AccessControl.canGrant
  * @see AccessControl.canSetAudience
@@ -281,6 +285,12 @@ class ProjectAccessTest {
      * The case a screen-level rule would miss, and the reason the refusal is in
      * `canSetAudience` rather than only in the greying: a rule that lives in a screen is
      * a rule a POST goes around.
+     *
+     * Note what the greying now looks like (LNL-203). The **row** stays live and every
+     * **rung** in it is dead, which leaves "No access" as the one thing the picker will
+     * accept: refusing to hand out public access is the policy, and refusing to take it back
+     * was only a bug. A dead row here left the owner of an already-published board with no
+     * in-app way to close it.
      */
     @Test
     fun `the publish veto refuses a guest row for everybody`(): Unit = runBlocking {
@@ -304,12 +314,107 @@ class ProjectAccessTest {
             }
             assertEquals(HttpStatusCode.OK, members.status, "The publish veto also closed the members row.")
         }
-        val greyed = settingsFor(f.ownerCookie, f.projectId).access!!.audiences
+        val guests = settingsFor(f.ownerCookie, f.projectId).access!!.audiences
             .first { it.key == Audience.GUEST.key }
-        assertFalse(greyed.isSelectable)
         assertTrue(
-            greyed.unavailableReason.orEmpty().contains("public"),
-            "The greying did not name the deployment's veto as the reason.",
+            guests.isSelectable,
+            "The whole row was greyed, so nobody could set it to No access — which is LNL-203.",
+        )
+        assertTrue(
+            guests.rungs.none { it.isSelectable },
+            "A rung was offered on a deployment where every guest rung is refused.",
+        )
+        assertEquals(
+            ProjectRole.entries.map { it.key },
+            guests.rungs.map { it.key },
+            "A refused rung was omitted rather than greyed, which reads as a bug.",
+        )
+        assertTrue(
+            guests.rungs.all { it.unavailableReason != null },
+            "A dead rung crossed the wire with no sentence saying why.",
+        )
+        assertTrue(
+            guests.unavailableReason.orEmpty().contains("public"),
+            "The row did not name the deployment's veto as the reason.",
+        )
+    }
+
+    /**
+     * The withdrawal the veto used to refuse, through the route (LNL-203).
+     *
+     * The board is published first, then the deployment changes its mind — which is the
+     * order the ticket was filed in and the only order that reaches the bug: a board with no
+     * guest row has nothing to withdraw. Both halves are asserted, because they were one
+     * defect: the veto did not make the board private, *and* it took away the owner's way to.
+     */
+    @Test
+    fun `an owner can close a published board after the deployment forbids public ones`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        roles.setAudienceRole(f.projectId, Audience.GUEST, ProjectRole.VIEWER)
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
+
+        withRoutes { client ->
+            // Nobody outside the board reads it any more, cookie or no cookie — the veto is a
+            // term in the rule now rather than a guard on this route.
+            assertEquals(
+                HttpStatusCode.NotFound,
+                client.get(ApiRoutes.board(f.projectId)).status,
+                "The switch went off and a caller with no session still read the board.",
+            )
+            // And the owner is not stuck: "No access" lands.
+            val withdrawn = client.post(ApiRoutes.projectAudience(f.projectId)) {
+                cookie(SESSION_COOKIE, f.ownerCookie)
+                contentType(ContentType.Application.Json)
+                setBody(AudienceGrant(Audience.GUEST.key, roleKey = null))
+            }
+            assertEquals(
+                HttpStatusCode.OK,
+                withdrawn.status,
+                "The owner of a published board was refused the one write that closes it.",
+            )
+        }
+        assertNull(roles.audienceRoles(f.projectId)[Audience.GUEST], "The withdrawal did not land.")
+    }
+
+    /**
+     * A stored guest row the veto has silenced is reported as **stored but not in effect**,
+     * and the summary agrees (LNL-203).
+     *
+     * The screen half of the fix. An owner reading this section has to be able to tell what
+     * a stranger can actually see — a picker still reading "Viewer" beside a "Visible to
+     * anybody at all" line would leave the original complaint intact in a different place.
+     * So the rung is sent as stored (nothing withdrew it, and lifting the veto restores it),
+     * the row says out loud that it is not in effect, and the summary refuses to count it.
+     */
+    @Test
+    fun `a silenced guest row is reported as stored but not in effect`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        roles.setAudienceRole(f.projectId, Audience.GUEST, ProjectRole.VIEWER)
+
+        val published = settingsFor(f.ownerCookie, f.projectId).access!!
+        assertTrue(
+            published.visibilityLine.contains("anybody at all"),
+            "A genuinely public board did not say so: \"${published.visibilityLine}\".",
+        )
+
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
+        val silenced = settingsFor(f.ownerCookie, f.projectId).access!!
+        val guests = silenced.audiences.first { it.key == Audience.GUEST.key }
+        assertEquals(
+            ProjectRole.VIEWER.key,
+            guests.roleKey,
+            "The stored row was blanked, so an owner would think the board was already closed.",
+        )
+        assertTrue(
+            guests.unavailableReason.orEmpty().contains("not in effect"),
+            "The row claimed Viewer with nothing saying it is not in effect: " +
+                "\"${guests.unavailableReason}\".",
+        )
+        assertFalse(
+            silenced.visibilityLine.contains("anybody at all"),
+            "The summary still called a private board public: \"${silenced.visibilityLine}\".",
         )
     }
 

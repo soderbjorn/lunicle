@@ -65,7 +65,15 @@ abstract class GuestAudienceCeilingContract {
 
     private val access: AccessControl by lazy { AccessControl(roles, instanceSettings) }
 
-    /** A board, its owner, on a deployment that allows publishing. */
+    /**
+     * A board, its owner, on a deployment that allows publishing.
+     *
+     * The switch matters to the **read** path too since LNL-203, not only to the write
+     * gate: a guest row grants nothing while public projects are forbidden, so every
+     * assertion in this file about what a guest row *does* has to stand on a deployment
+     * that permits one — otherwise the file would pass by proving the veto rather than the
+     * ceiling. See [PublicProjectVetoContract], which is where the veto is pinned.
+     */
     private suspend fun publishableProject(): Pair<Long, UserRecord> {
         val project = newProject()
         val owner = newAccount()
@@ -188,7 +196,7 @@ abstract class GuestAudienceCeilingContract {
      */
     @Test
     fun `a member matching only an over-ceiling guest row is capped too`() = runBlocking {
-        val project = newProject()
+        val (project, _) = publishableProject()
         roles.setAudienceRole(project, Audience.GUEST, ProjectRole.CONTRIBUTOR)
         val member = newAccount()
 
@@ -203,7 +211,7 @@ abstract class GuestAudienceCeilingContract {
     /** An own row still raises somebody past what the guest row gives — the max rule holds. */
     @Test
     fun `an own row still raises somebody above the capped guest row`() = runBlocking {
-        val project = newProject()
+        val (project, _) = publishableProject()
         roles.setAudienceRole(project, Audience.GUEST, ProjectRole.CONTRIBUTOR)
         val member = newAccount()
         roles.setRole(member.id, project, ProjectRole.MAINTAINER)

@@ -5298,6 +5298,18 @@ body[data-lnl-notif="1"] .lnl-notif-bell {
   margin: 0;
 }
 
+/* "Visible to …" — the one line in this section an owner reads to find out what a
+   stranger can actually see (LNL-203). The heading colour at full opacity rather than
+   `.field-hint`'s muted grey, because it is the answer and not an aside: the rows above
+   say what each audience was given, this says what that comes to. The negative top margin
+   pulls it up under `.access-rows`' own 14px, so it reads as that list's conclusion
+   rather than as the next section's preamble. */
+.access-visibility {
+  margin: -8px 0 16px;
+  font-size: 12px;
+  color: var(--head);
+}
+
 /* The wrapper one project's sections mount into.
    It has to pass the flex chain through: `.project-rail-content` hides its own
    overflow so each `.project-pane` scrolls inside itself, and a plain block here

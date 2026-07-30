@@ -73,12 +73,27 @@ data class RungOption(
  * @property roleKey the rung they arrive at, or null for "no access" — the row is
  *   present either way, since the absence of a grant is a state worth being able to
  *   see and to change back.
- * @property isSelectable whether this caller may change this row, and
- *   [unavailableReason] why not. Two different refusals land here: the instance's
- *   "allow projects to be public" switch being off, which greys the **guest** row for
- *   everybody including the deployment's owner, and the caller not owning this
- *   project. The first is enforced server-side by `AccessControl.canSetAudience`
- *   regardless of what this says — the greying is the explanation, not the
+ *
+ *   **As stored**, capped, and not blanked when the instance's publish veto has silenced
+ *   it (LNL-203): nothing withdrew the row, and turning the switch back on restores it
+ *   exactly, so sending null would be the screen lying in the other direction — an owner
+ *   would think their board was already closed. What the row is *not doing* is said in
+ *   [unavailableReason] and in [ProjectAccessState.visibilityLine].
+ * @property isSelectable whether this caller may change this row at all. One refusal
+ *   reaches here and only one: the caller does not own this project.
+ *
+ *   The instance's "allow projects to be public" switch used to grey the guest row too,
+ *   and must not (LNL-203): a dead row is a row nobody can set to "No access", so an owner
+ *   whose board was published before the switch went off had no in-app way to close it.
+ *   The veto kills the **rungs** instead — every entry in [rungs] arrives dead with the
+ *   reason, which leaves "No access" as the one live choice in the menu. Refusing to grant
+ *   public access is a policy; refusing to withdraw it is only a bug.
+ * @property unavailableReason the sentence beside this row, or null when there is nothing
+ *   to say. Present on a **live** row as well as a dead one, which is not a contradiction:
+ *   a guest row that is stored while the deployment forbids public projects is live (so it
+ *   can be withdrawn) and needs saying out loud that it is *not in effect*. The refusals it
+ *   explains are enforced server-side by `AccessControl.canSetAudience` and by the access
+ *   rule itself regardless of what this says — the wording is the explanation, not the
  *   enforcement.
  * @property rungs what **this row** may be handed, in ladder order (LNL-202).
  *
@@ -157,6 +172,20 @@ data class PersonRow(
  * @property rungs what a **person** row may be handed. The audience rows carry their own
  *   narrowed lists — see [AudienceRow.rungs] — because a ceiling is a fact about an
  *   audience and a person has an account, so nothing narrows theirs but the caller.
+ * @property visibilityLine "Visible to …" — what the audience rows add up to, in one
+ *   sentence, computed from the rows that are **in effect** rather than the rows as
+ *   stored (LNL-203).
+ *
+ *   The two used to be the same thing. They stopped being it when the instance's "allow
+ *   projects to be public" switch became a term in the access rule: a board can carry a
+ *   stored `guest → viewer` row and still be readable by nobody outside its own people,
+ *   and an owner reading a picker that says "Viewer" cannot tell. So this line never
+ *   counts a guest row the deployment has vetoed, and the row itself says it is stored but
+ *   not in effect — see [AudienceRow.unavailableReason]. A screen that went on claiming
+ *   "public" would leave the original complaint intact in a different place.
+ *
+ *   Names only the **widest** audience in effect, because the audiences nest: everybody
+ *   with an account is included in "anybody at all".
  * @property canGrant whether this caller may change anything here at all — Admin and
  *   above. False renders every control dead rather than hiding the lists: a
  *   Maintainer who can see who is on the board and cannot change it is being told the
@@ -175,6 +204,7 @@ data class PersonRow(
 @Serializable
 data class ProjectAccessState(
     val audiences: List<AudienceRow> = emptyList(),
+    val visibilityLine: String = "",
     val people: List<PersonRow> = emptyList(),
     val rungs: List<RungOption> = emptyList(),
     val canGrant: Boolean = false,
