@@ -326,7 +326,7 @@ class WorkspaceBackingViewModel(
         if (index < 0) return
         val remaining = ws.tabs.filterNot { it.id == tabId }
         if (remaining.isEmpty()) {
-            val fresh = WorkspaceTab(id = freshTabId(), name = "New tab")
+            val fresh = WorkspaceTab(id = freshTabId(), name = INITIAL_TAB_NAME)
             commit(Workspace(tabs = listOf(fresh), activeTabId = fresh.id))
             return
         }
@@ -585,7 +585,23 @@ class WorkspaceBackingViewModel(
             )
             return
         }
-        commit(ws.mapTab(target.id) { it.withPane(pane) })
+        // The empty workspace's own tab takes the board's name with it. That tab is the
+        // whole of a fresh instance's window: the reader makes their first project and
+        // the strip above it still says "Workspace", naming the container rather than
+        // what is now in it — and [defaultWorkspace] would have named it after the
+        // project had it built the workspace itself, which is the shape this reaches by
+        // the other road.
+        //
+        // Only that one. A tab somebody asked for keeps "New tab" until they say
+        // otherwise, and a tab somebody has named keeps their name: renaming it would
+        // discard the one thing they have said about their own layout.
+        val takesTheName = target.name == INITIAL_TAB_NAME
+        commit(
+            ws.mapTab(target.id) { tab ->
+                val withBoard = tab.withPane(pane)
+                if (takesTheName) withBoard.copy(name = projectName(projectId)) else withBoard
+            },
+        )
     }
 
     /**
@@ -765,7 +781,7 @@ class WorkspaceBackingViewModel(
                     ?: workspace.tabs.first().id,
             )
         }
-        val fresh = WorkspaceTab(id = freshTabId(), name = "New tab")
+        val fresh = WorkspaceTab(id = freshTabId(), name = INITIAL_TAB_NAME)
         return Workspace(tabs = listOf(fresh), activeTabId = fresh.id)
     }
 
@@ -775,7 +791,7 @@ class WorkspaceBackingViewModel(
      * What to call a tab opened for a pane, when the pane names a project.
      *
      * Nullable since LNL-193 — the settings pane may name none — and the fallback
-     * is the same "New tab" an unknown id already got, because a tab holding only
+     * is the same default name an unknown id already got, because a tab holding only
      * settings has no project to be named after.
      */
     private fun projectName(projectId: Long?): String =
@@ -843,6 +859,22 @@ class WorkspaceBackingViewModel(
          * finds so a new tab cannot collide with a restored one — see [restore].
          */
         const val TAB_ID_PREFIX = "t"
+
+        /**
+         * What the ONE tab of an empty workspace is called.
+         *
+         * Narrowly this: the tab [ensureNotEmpty] puts under a reader who has nothing,
+         * and the one [onTabClosed] leaves behind when the last tab goes — the same
+         * state, reached the other way round. Every other tab keeps "New tab", which is
+         * the right name for a tab somebody has just asked for and is about to fill.
+         *
+         * The difference is that this one is not new, it is *all there is*. On a fresh
+         * instance it is the only thing in the strip, above an empty canvas, and naming
+         * it after the gesture that made it describes something the reader did not do.
+         * "Workspace" says what the thing is — and it is a name the tab keeps only until
+         * it holds something worth naming it after; see [onBoardOpened].
+         */
+        const val INITIAL_TAB_NAME = "Workspace"
     }
 }
 

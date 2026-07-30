@@ -452,12 +452,27 @@ private fun start() {
     val dialogHost = element("div", "dialog-host")
     document.body?.appendChild(dialogHost)
 
+    // Opening settings, and telling the address bar where it went (LNL-193). Vars for
+    // `refreshShell`'s reason: the board panes, the top bar's gear, the deep links and
+    // the project dialog all reach for them, and they are all built before the settings
+    // pane they need. No-ops until it exists, which is the honest answer for an entry
+    // point pressed before there is anything to enter. Declared here rather than further
+    // down because [Dialogs] is the earliest of those callers.
+    var openSettingsAt: (SettingsRoute) -> Unit = {}
+
     val dialogs = Dialogs(
         dialogHost,
         storage,
         mainViewModel,
         editorRegistry,
         ticketSource,
+        // Back to the front, and standing on the project that was just made — its
+        // General section, which is where the rest of the answers are. Every path to
+        // the dialog now runs through this pane (LNL-211), so it is always the surface
+        // the reader came from, and the board opening over it is always the interruption.
+        onProjectCreated = { projectId ->
+            openSettingsAt(SettingsRoute.project(projectId, SETTINGS_SECTION_GENERAL))
+        },
     )
 
     // One document-level listener for every rendered image there will ever be —
@@ -489,12 +504,6 @@ private fun start() {
     // honest answer for chrome that changes before there is a top bar to paint it.
     var refreshShell: () -> Unit = {}
 
-    // Opening settings, and telling the address bar where it went (LNL-193). Vars for
-    // `refreshShell`'s reason: the board panes, the top bar's gear and the deep links
-    // all reach for them, and they are all built before the settings pane they need.
-    // No-ops until it exists, which is the honest answer for an entry point pressed
-    // before there is anything to enter.
-    var openSettingsAt: (SettingsRoute) -> Unit = {}
     var syncSettingsAddress: () -> Unit = {}
 
     val boardWindows = BoardWindows(
@@ -2182,6 +2191,17 @@ private class Dialogs(
     private val editorRegistry: EditorDirtyRegistry,
     /** Ticket references for the comment editor — the `PREFIX-` autocomplete (LNL-139). */
     private val ticketSource: TicketSource,
+    /**
+     * A project was just created, and its board has already been opened.
+     *
+     * Raised so the settings pane can come back to the front and land on it. Making a
+     * project opens its board (see [MainScreenBackingViewModel.onDialogClosed]), and
+     * that board arrives on top of the pane the reader was standing in — so the surface
+     * they went to in order to configure the thing disappears behind the thing at the
+     * moment they most want it. The board still opens; it just does not get the last
+     * word. See main.kt's wiring, which routes to the new project's own sections.
+     */
+    private val onProjectCreated: (Long) -> Unit,
 ) {
     private var current: ActiveDialog = ActiveDialog.None
     private var dismiss: (() -> Unit)? = null
@@ -2361,9 +2381,14 @@ private class Dialogs(
             storage = storage,
             scope = dialogScope,
             // A project that has just been made should be on screen, so its
-            // board is opened in the tab you are on.
+            // board is opened in the tab you are on — and then the settings pane
+            // comes back over it, at the new project's own sections. Order
+            // matters and is the whole point: the board opens first so it is
+            // there when the reader closes settings, and the pane is raised
+            // second so it is what they are looking at now. See onProjectCreated.
             onFinished = { changed, saved ->
                 mainViewModel.onDialogClosed(changed, openProjectId = saved?.id)
+                saved?.id?.let { onProjectCreated(it) }
             },
             // A project that does not exist yet has no per-user view preference
             // to carry; the switch belongs to the settings pane, not here.

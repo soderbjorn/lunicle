@@ -63,8 +63,11 @@ import kotlin.js.Promise
  *   its headline, from `landingNote` in the manifest. What a deployment says about
  *   itself to somebody who has arrived and cannot get in — which instance this is,
  *   who runs it, what Lunicle is — and the only place a brand speaks in sentences
- *   rather than in colours. Bare `http(s)` URLs in it become links, so the text
- *   can be written as plain prose. Null on an unbranded instance, and on a branded
+ *   rather than in colours. Links may be written either way — `[the docs](https://…)`
+ *   for a labelled one, or a bare `http(s)` URL, which shows itself — and a blank
+ *   line starts a paragraph. That is the whole of the markup it understands, and
+ *   deliberately: see `noteParagraph`, which builds nodes rather than rendering
+ *   HTML from a config file. Null on an unbranded instance, and on a branded
  *   one with nothing to add: the landing then carries the headline and the way in,
  *   and nothing else. See EmptyTabSurface.
  */

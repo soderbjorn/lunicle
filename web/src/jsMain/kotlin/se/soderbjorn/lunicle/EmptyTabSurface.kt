@@ -142,39 +142,73 @@ private fun emptyTabCard(
 }
 
 /**
- * The brand's note, with bare `http(s)` URLs turned into links.
+ * The brand's note, with its links turned into anchors.
+ *
+ * Two spellings, and both are here because both are what somebody writing a
+ * sentence reaches for:
+ *
+ *  - `[the docs](https://lunicle.dev/)` — a labelled link, so an address does
+ *    not have to be read aloud in the middle of a sentence.
+ *  - a bare `https://…`, which becomes a link showing itself.
+ *
+ * One pattern rather than two passes, so the two cannot overlap: a bare-URL
+ * sweep run afterwards would find the address inside a labelled link and turn
+ * the label's own target into a second anchor.
  *
  * Built out of text nodes and anchors rather than assigned as HTML: the string
  * comes from a deployment's `brand.json`, and while that file is the operator's
  * own, a surface that renders arbitrary markup from a config file is one that
- * will eventually render markup from somewhere else. Trailing sentence
- * punctuation is left OUT of the link — "read more at https://lunicle.dev/."
- * ends in a full stop that belongs to the sentence, not the address.
+ * will eventually render markup from somewhere else. That is also why the
+ * scheme is in the pattern rather than checked afterwards — `[click](javascript:…)`
+ * simply is not a link here, it is the characters somebody typed.
+ *
+ * Trailing sentence punctuation is left OUT of a bare link — "read more at
+ * https://lunicle.dev/." ends in a full stop that belongs to the sentence, not
+ * the address. A labelled link needs none of that: its `)` says where it stops.
  */
 private fun noteParagraph(text: String): HTMLElement {
     val p = element("p", "empty-tab-note-line")
     var cursor = 0
-    for (match in URL_PATTERN.findAll(text)) {
-        val href = match.value.trimEnd('.', ',', ';', ':', ')')
+    for (match in NOTE_LINK_PATTERN.findAll(text)) {
+        // Group 1 is only set by the labelled branch, which is what tells the two
+        // apart — a bare URL matches the alternation's second half and fills neither.
+        val label = match.groupValues[1]
+        val isLabelled = label.isNotEmpty()
+        val href =
+            if (isLabelled) match.groupValues[2]
+            else match.value.trimEnd('.', ',', ';', ':', ')')
         val start = match.range.first
         if (start > cursor) p.appendChild(document.createTextNode(text.substring(cursor, start)))
-        val link = document.createElement("a") as HTMLAnchorElement
-        link.className = "empty-tab-note-link"
-        link.href = href
-        // Opened away from the app, and told not to hand the opener a window
-        // handle back — the standard pair for any link leaving Lunicle.
-        link.target = "_blank"
-        link.rel = "noopener noreferrer"
-        link.textContent = href
-        p.appendChild(link)
-        cursor = start + href.length
+        p.appendChild(noteLink(href = href, text = if (isLabelled) label else href))
+        // The labelled form consumes its closing bracket; the bare one gives back
+        // whatever punctuation was trimmed off above, as the prose it belongs to.
+        cursor = if (isLabelled) match.range.last + 1 else start + href.length
     }
     if (cursor < text.length) p.appendChild(document.createTextNode(text.substring(cursor)))
     return p
 }
 
-/** Bare URLs in prose: everything up to whitespace, trimmed of trailing punctuation above. */
-private val URL_PATTERN = Regex("""https?://\S+""")
+/** One anchor, opened away from the app. */
+private fun noteLink(href: String, text: String): HTMLAnchorElement {
+    val link = document.createElement("a") as HTMLAnchorElement
+    link.className = "empty-tab-note-link"
+    link.href = href
+    // Told not to hand the opener a window handle back — the standard pair for
+    // any link leaving Lunicle.
+    link.target = "_blank"
+    link.rel = "noopener noreferrer"
+    link.textContent = text
+    return link
+}
+
+/**
+ * A link in prose: `[label](url)` first, then a bare URL.
+ *
+ * The labelled branch is first so it wins at a `[`, and its label deliberately
+ * stops at a newline — an unclosed bracket is a typo, and one should not swallow
+ * the rest of the note looking for its partner.
+ */
+private val NOTE_LINK_PATTERN = Regex("""\[([^\]\n]+)\]\((https?://[^\s)]+)\)|https?://\S+""")
 
 /** A blank line — one or more newlines with only whitespace between them. */
 private val PARAGRAPH_BREAK = Regex("""\n\s*\n""")

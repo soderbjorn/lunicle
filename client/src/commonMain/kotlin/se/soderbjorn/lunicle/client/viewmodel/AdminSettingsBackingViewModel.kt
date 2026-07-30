@@ -236,9 +236,6 @@ const val PROJECT_ORDER_HINT: String =
 /** What to say instead of a list when there is nothing to arrange. */
 const val PROJECT_ORDER_EMPTY: String = "No projects on this instance yet."
 
-/** What to say when there is exactly one project and therefore no order. */
-const val PROJECT_ORDER_SINGLE: String = "One project, so there is no order to arrange."
-
 /** The heading over ownership. */
 const val OWNERSHIP_TITLE: String = "Ownership"
 
@@ -756,17 +753,17 @@ class AdminSettingsBackingViewModel(
             }
 
         /**
-         * The line shown instead of an order, or null when there is one to arrange.
+         * The line shown instead of an order, or null when there is a list to show.
          *
-         * Two different nothings: no projects at all, and exactly one — which has a list
-         * worth seeing and no order worth setting, so its arrows would both be dead with no
-         * explanation.
+         * Only the genuine nothing. A single project used to get a line of its own saying
+         * there was no order to arrange, which was true and not worth a sentence: the one
+         * row is on screen with both arrows plainly dead, and a paragraph explaining that
+         * is more chrome than the fact deserves.
          */
         val projectOrderEmptyMessage: String?
             get() = when {
                 !isLoaded -> null
                 settings?.projects.orEmpty().isEmpty() -> PROJECT_ORDER_EMPTY
-                settings?.projects.orEmpty().size == 1 -> PROJECT_ORDER_SINGLE
                 else -> null
             }
 

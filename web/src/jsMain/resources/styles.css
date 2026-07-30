@@ -392,6 +392,16 @@ code, pre, kbd, samp { font-family: var(--mono); }
   background: var(--panel);
 }
 
+/* The settings pane's top gap, which was being paid twice: the host above pads
+   14px and `.modal-body` (inherited from the modal these views were born as)
+   pads another 12 inside it. 26px of nothing between the pane's own title bar
+   and the tab strip read as the strip having come loose from the pane rather
+   than belonging to it. The bar above is already a hard divider — the strip
+   needs separating from it, not floating below it. Scoped to this pane: the
+   analytics pane has no fixed band under its title and wants its air. */
+.settings-pane-host { padding-top: 8px; }
+.settings-pane-host > .pane-shell > .pane-shell-body { padding-top: 0; }
+
 .board-pane .board {
   flex: 1;
   min-height: 0;
