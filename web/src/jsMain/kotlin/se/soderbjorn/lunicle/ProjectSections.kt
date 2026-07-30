@@ -50,6 +50,7 @@
  */
 package se.soderbjorn.lunicle
 
+import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLButtonElement
@@ -165,6 +166,7 @@ class ProjectSections(
     private lateinit var peopleEmpty: HTMLElement
     private lateinit var adviceElement: HTMLElement
     private lateinit var addPersonButton: HTMLButtonElement
+    private lateinit var addPeopleHost: HTMLElement
     private lateinit var accessAdminBlock: HTMLElement
 
     /** What the two rebuilt lists were last built from, so a busy tick does not tear them down. */
@@ -190,7 +192,24 @@ class ProjectSections(
     private var vocabularyConfirm: ConfirmDialog? = null
     private var completeSprintDialog: CompleteSprintDialog? = null
     private var deleteConfirm: ConfirmDialog? = null
-    private var addPersonDialog: AddPersonDialog? = null
+    /**
+     * The people picker, built on first open and then kept (LNL-204).
+     *
+     * Kept rather than rebuilt for the reason [sectionViews] is: it owns a search field
+     * that holds focus and a caret, and a panel rebuilt on a state tick is a panel you
+     * cannot type into. It is hidden when the view model reports no picker, not thrown
+     * away.
+     */
+    private var addPeoplePanel: AddPeoplePanel? = null
+
+    /**
+     * How many people the open picker had added as of the last render.
+     *
+     * Only so a *change* in it can scroll the panel back into view — see [renderPeoplePicker].
+     * -1 rather than 0 for "no picker has been open", so opening one that somehow starts with
+     * additions still counts as a change.
+     */
+    private var lastPickerAddedCount: Int = -1
     private var alert: AlertDialog? = null
     private var alertMessage: String? = null
 
@@ -224,6 +243,16 @@ class ProjectSections(
         panes.forEach { (which, pane) -> pane.visible(which == selected) }
     }
 
+    /**
+     * Re-fetch this project's settings, because instance configuration changed under them.
+     *
+     * Several answers in these sections are computed from instance settings rather than from
+     * the project row — whether a guest row is in effect, whether a new outside address may
+     * be added — so a switch flipped on the pane's instance tabs has to reach here or the
+     * section goes on describing the old policy. See EditProjectBackingViewModel.reloadSettings.
+     */
+    fun reloadSettings() = viewModel.reloadSettings()
+
     /** Which section is showing — what the address bar writes. */
     fun currentSection(): String = selected
 
@@ -232,7 +261,9 @@ class ProjectSections(
         vocabularyConfirm?.dismiss()
         completeSprintDialog?.dismiss()
         deleteConfirm?.dismiss()
-        addPersonDialog?.dismiss()
+        // The people picker needs no dismissal: it is a panel inside this view rather than a
+        // layer over it, so it goes when the view does. Its *state* is the view model's, and
+        // is dropped when the pane closes with it.
         alert?.dismiss()
     }
 
@@ -531,7 +562,12 @@ class ProjectSections(
                 "the short list this is meant to be.",
         )
         adviceElement = element("p", "field-hint")
-        addPersonButton = button("Add a person…", "btn btn-quiet btn-small") { openAddPerson() }
+        addPersonButton = button("Add people…", "btn btn-quiet btn-small") {
+            viewModel.onAddPeopleOpened()
+        }
+        // Where the picker mounts, between the button that opens it and the advice line.
+        // Empty until the first open; see renderAccess.
+        addPeopleHost = element("div", "add-people-host")
 
         accessAdminBlock = element("div", "").children(
             element("div", "settings-section-rule"),
@@ -556,6 +592,7 @@ class ProjectSections(
             peopleList,
             peopleEmpty,
             addPersonButton,
+            addPeopleHost,
             adviceElement,
             accessReadOnly,
         )
@@ -569,25 +606,25 @@ class ProjectSections(
         )
     }
 
-    /** Raise the add-a-person dialog. Torn down by its own callbacks. */
-    private fun openAddPerson() {
-        val access = viewModel.stateFlow.value.access ?: return
-        addPersonDialog?.dismiss()
-        addPersonDialog = AddPersonDialog(
-            rungs = access.rungs,
-            advice = access.addressAdvice,
-            staffDomain = access.staffDomain,
-            onAdd = { email, roleKey ->
-                viewModel.onPersonAdded(email, roleKey)
-                addPersonDialog?.dismiss()
-                addPersonDialog = null
-            },
-            onCancel = {
-                addPersonDialog?.dismiss()
-                addPersonDialog = null
-            },
-        ).also { it.mount(dialogHost) }
-    }
+    /**
+     * The people picker, mounted on its first open and thereafter shown or hidden.
+     *
+     * Every gesture goes straight to the view model — the panel decides nothing about who
+     * may be granted what. Built lazily because most visits to this section are to read it.
+     */
+    private fun addPeoplePanel(projectName: String): AddPeoplePanel =
+        addPeoplePanel ?: AddPeoplePanel(
+            projectName = projectName,
+            onQueryChanged = { viewModel.onAddPeopleQueryChanged(it) },
+            onRoleChanged = { viewModel.onAddPeopleRoleChanged(it) },
+            onPicked = { viewModel.onCandidatePicked(it) },
+            onNewAddressTaken = { viewModel.onNewAddressAdded() },
+            onUndo = { viewModel.onAddedPeopleUndone() },
+            onClose = { viewModel.onAddPeopleClosed() },
+        ).also {
+            addPeoplePanel = it
+            addPeopleHost.appendChild(it.mount())
+        }
 
     // ── Rendering ────────────────────────────────────────────────────────────
 
@@ -771,14 +808,93 @@ class ProjectSections(
         // cheap, and it must not be able to drift from the rows it summarises.
         visibilityElement.setTextIfChanged(access.visibilityLine)
         visibilityElement.visible(access.visibilityLine.isNotEmpty())
+        val picker = state.peoplePicker
+        // The advice line moves INTO the picker while it is open (it is the offer row's own
+        // note there), so showing it underneath as well would be the same sentence twice.
         adviceElement.setTextIfChanged(access.addressAdvice)
-        adviceElement.visible(access.canGrant)
-        addPersonButton.visible(access.canGrant, displayValue = "inline-flex")
+        adviceElement.visible(access.canGrant && picker == null)
+        // Either the button or the panel, never both: the panel is what the button became.
+        addPersonButton.visible(access.canGrant && picker == null, displayValue = "inline-flex")
         addPersonButton.disabled = state.isBusy
         peopleEmpty.visible(access.people.isEmpty())
 
-        renderAudiences(access, state.isBusy)
-        renderPeople(access, state.isBusy)
+        // Both lists are torn down and rebuilt when their signature moves, and clearing a
+        // seventeen-row list collapses the pane's scroll height for an instant — long
+        // enough for the browser to clamp scrollTop to the new maximum, which it then keeps
+        // when the rebuild makes the pane tall again. The reader is dumped at the top of the
+        // section every time anything is granted.
+        //
+        // Harmless-looking until the people picker, which is *built* to be used repeatedly:
+        // pick somebody, get thrown to the top, scroll back down, pick the next. Found by
+        // driving it. Restored around both rebuilds rather than inside one, because either
+        // can be the one that collapses the height.
+        preservingScroll {
+            renderAudiences(access, state.isBusy)
+            renderPeople(access, state.isBusy)
+        }
+        renderPeoplePicker(state, access)
+    }
+
+    /**
+     * Run [block], leaving the scrolling pane where it was.
+     *
+     * The scroller is the `.project-pane` a section is drawn into — see the stylesheet —
+     * which is [peopleList]'s ancestor rather than [peopleList] itself. Read back before
+     * restoring so a genuinely shorter list (somebody's row withdrawn) still settles at its
+     * own new maximum instead of being forced to a position that no longer exists.
+     */
+    private fun preservingScroll(block: () -> Unit) {
+        val scroller = peopleList.closest(".project-pane") as? HTMLElement
+        val before = scroller?.scrollTop
+        block()
+        if (scroller != null && before != null && scroller.scrollTop != before) {
+            scroller.scrollTop = before
+        }
+    }
+
+    /**
+     * The people picker, when the view model says it is open (LNL-204).
+     *
+     * Mounted on first open and thereafter shown or hidden — see [addPeoplePanel] for why it
+     * is not torn down. Focused on the open that creates it, so the panel can be typed at
+     * immediately; not on every open thereafter, which would steal the caret from somebody
+     * who had clicked into the list.
+     */
+    private fun renderPeoplePicker(state: EditProjectBackingViewModel.State, access: ProjectAccessState) {
+        val picker = state.peoplePicker
+        if (picker == null) {
+            addPeopleHost.visible(false)
+            return
+        }
+        val isFirstMount = addPeoplePanel == null
+        val panel = addPeoplePanel(state.name.ifEmpty { "this project" })
+        addPeopleHost.visible(true)
+        panel.render(picker, access, state.isBusy)
+        if (isFirstMount) panel.focus()
+
+        // Keep the panel in view when a pick lands, because a pick moves the ground under it:
+        // the person list above grows by a row, and the panel is at the very bottom of a long
+        // scrolling section. `preservingScroll` above holds the position steady for an
+        // ordinary rung edit, and is not enough here — the section is torn down and rebuilt
+        // through more than one path on a write, and a panel built to be used four times in a
+        // row must not scroll away after the first.
+        //
+        // Keyed on the added COUNT rather than on every render, so this cannot fight somebody
+        // who has deliberately scrolled up to read the list while the panel is open. Typing in
+        // the search field writes nothing and therefore never triggers it.
+        val added = picker.addedUserIds.size
+        if (!isFirstMount && added != lastPickerAddedCount) {
+            // On the NEXT frame, not now. A pick produces more than one render — the write's
+            // own emission, the candidate re-search behind it, and the board reload that
+            // `onSettingsWritten` triggers, which sends the rail through `showSection` and
+            // re-shows this pane. Scrolling during any of those is undone by the next one.
+            // Waiting a frame puts this after all of them, which is the only position from
+            // which it holds.
+            window.requestAnimationFrame {
+                panel.element.scrollIntoView(js("({ block: 'nearest' })"))
+            }
+        }
+        lastPickerAddedCount = added
     }
 
     /**

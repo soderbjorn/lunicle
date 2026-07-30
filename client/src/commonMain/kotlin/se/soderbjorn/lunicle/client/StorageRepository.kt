@@ -45,6 +45,7 @@ import se.soderbjorn.lunicle.clientserver.ForumListState
 import se.soderbjorn.lunicle.clientserver.ForumPostDetail
 import se.soderbjorn.lunicle.clientserver.ForumPostListState
 import se.soderbjorn.lunicle.clientserver.HttpLunicleApi
+import se.soderbjorn.lunicle.clientserver.PersonCandidates
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
@@ -533,6 +534,10 @@ class StorageRepository(
     /** Add an address holding a rung. Nothing is sent. */
     suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState =
         api.addProjectPerson(projectId, email, roleKey)
+
+    /** The accounts the people picker may offer, matched against [query] (LNL-204). */
+    suspend fun projectPeopleCandidates(projectId: Long, query: String): PersonCandidates =
+        api.projectPeopleCandidates(projectId, query)
 
     suspend fun setProjectNewIssueNotification(projectId: Long, subscribed: Boolean): ProjectSettingsState =
         api.setProjectNewIssueNotification(projectId, subscribed)

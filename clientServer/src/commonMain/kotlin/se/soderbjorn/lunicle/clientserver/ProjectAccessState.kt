@@ -200,6 +200,24 @@ data class PersonRow(
  *   add dialog says so when an address is not on it — not a refusal, a fact: adding
  *   an outside address is exactly what the gesture is for, and it is also exactly
  *   what the admission policy may go on to reject.
+ * @property newAddressRefusal why a **brand-new** address off [staffDomain] cannot be
+ *   added here, or null when any address may be. This is the admission policy's word,
+ *   not the domain's: **a pinned domain by itself restricts nothing** — pinning the
+ *   Google chooser is sign-in ergonomics, and it is the admission setting that decides
+ *   who may hold an account. So this is null under `anyone` even on a deployment with a
+ *   domain, and non-null under the two domain policies.
+ *
+ *   Scoped to a *new* address on purpose. An account that already exists is addable
+ *   whatever its domain and whatever the policy says — it is already through the door,
+ *   and admission is checked once at account creation. That is why the picker can offer
+ *   an off-domain colleague from the directory while refusing to invent one.
+ *
+ *   Sent as a sentence rather than as a flag plus a domain, for this file's standing
+ *   reason: the wording distinguishes the two domain policies ("admits X addresses only"
+ *   versus "outside X, only addresses that already have an account"), and a client
+ *   assembling that from parts would be re-deriving the policy. The route refuses
+ *   independently — see `ProjectSettingsRoutes`' people POST — so this is the
+ *   explanation, never the enforcement.
  */
 @Serializable
 data class ProjectAccessState(
@@ -211,6 +229,71 @@ data class ProjectAccessState(
     val readOnlyReason: String? = null,
     val addressAdvice: String = "",
     val staffDomain: String? = null,
+    val newAddressRefusal: String? = null,
+)
+
+/**
+ * One account the people picker may offer, as a row in its list.
+ *
+ * ── Why the picker is a search and not the whole list ────────────────────────
+ *
+ * [ProjectAccessState.people] is exceptions only, deliberately — a screen listing every
+ * account beside a rung answers "who can get in here" with a directory. But *granting*
+ * needs the directory, because the person you are about to add is by definition not an
+ * exception yet, and asking an administrator to retype the address of somebody the
+ * instance already knows is the defect this row exists to remove. So the directory
+ * arrives through its own request, narrowed, rather than riding on the access state:
+ * these carry addresses, and shipping every one of them to every project Admin on the
+ * chance they open the picker is not a narrowing anybody chose.
+ *
+ * @property userId what a grant names — see [RungGrant]. The whole point of the picker:
+ *   an account that exists is granted **by id**, so nobody has to know its address to
+ *   hand it a rung. The address is shown to tell two people of the same name apart, not
+ *   to be typed back in.
+ * @property name their display name.
+ * @property email their address, shown beneath the name. Sent only to a caller who may
+ *   grant here — the same narrowing [PersonRow.email] is sent under, for the same
+ *   reason.
+ * @property badge the instance tier, as a word: "STAFF", "MEMBER". Derived from the
+ *   address on the server (see `UserKind.forEmail`) and never re-derived here; a client
+ *   comparing domains would be a second copy of that rule.
+ * @property hasSignedIn false for an address added ahead of its owner's arrival. The row
+ *   wears NOT SIGNED IN, which is also the answer to a mistyped-but-valid address: it
+ *   never goes green, so a grant nobody claimed stays visible as one.
+ * @property heldRoleLabel what they already hold here, or null when they hold nothing.
+ *   Non-null makes the row **inert** rather than absent: silence reads as a broken
+ *   search, so somebody already on the board is shown, dimmed, saying so.
+ * @property inertReason why this row cannot be picked, or null when it can. Two cases
+ *   reach here and they read differently on screen — already on the board
+ *   ("Already Contributor"), and holding the instance ("Owner on every board"), which is
+ *   not a grant that could be withdrawn from this screen at all.
+ */
+@Serializable
+data class PersonCandidate(
+    val userId: Long,
+    val name: String,
+    val email: String,
+    val badge: String = "",
+    val hasSignedIn: Boolean = true,
+    val heldRoleLabel: String? = null,
+    val inertReason: String? = null,
+)
+
+/**
+ * The picker's answer: the rows to draw, and how much was left out.
+ *
+ * @property candidates the matches, already ordered and already truncated. Ordered as the
+ *   prototype orders them — people not yet on this project first, then staff before
+ *   member, then by name — because the top of the list should be who you are most likely
+ *   to be reaching for.
+ * @property totalMatches how many matched in total, so the footer can say "N more match
+ *   — keep typing to narrow it". A count rather than the rows themselves: the point of
+ *   the cap is not to send them.
+ */
+@Serializable
+data class PersonCandidates(
+    val candidates: List<PersonCandidate> = emptyList(),
+    val totalMatches: Int = 0,
 )
 
 /**

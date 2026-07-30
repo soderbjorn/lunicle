@@ -165,6 +165,17 @@ class ProjectsTab(
         placeholder.visible(selectedId == null)
     }
 
+    /**
+     * Re-fetch the open project's settings, because instance configuration changed.
+     *
+     * A no-op when no project's sections are mounted, which is the right answer: the next
+     * mount fetches anyway. Only the *open* project needs telling — the rail's other rows
+     * hold no loaded state to go stale.
+     */
+    fun reloadOpenProject() {
+        sections?.reloadSettings()
+    }
+
     /** Take everything down. Called when the pane closes. */
     fun dispose() {
         disposeSections()

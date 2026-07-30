@@ -46,6 +46,7 @@ import kotlinx.coroutines.launch
 import se.soderbjorn.lunicle.client.StorageRepository
 import se.soderbjorn.lunicle.client.formatTimestamp
 import se.soderbjorn.lunicle.client.userMessage
+import se.soderbjorn.lunicle.clientserver.PersonCandidate
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectSection
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
@@ -339,6 +340,91 @@ const val GITHUB_TOKEN_LITERAL_HINT: String =
         "Leave blank to keep the token already stored."
 
 /**
+ * The people picker's own state, while it is open (LNL-204).
+ *
+ * ── Why this replaced a form with an address field ───────────────────────────
+ *
+ * The Access section's person list is exceptions only, so somebody who is not an
+ * exception yet has no row to click — and the only way to give them one was to type their
+ * address into a dialog. For an account the instance already knows that is the wrong
+ * question: it asks an administrator to recall something the server is holding, and a
+ * typo silently makes a second never-signed-into account beside the real person. So the
+ * gesture is a search over the directory, and typing a whole address is the *fallback*
+ * for somebody who genuinely has no account yet.
+ *
+ * ── Every pick is written immediately, and that is why Undo exists ──────────
+ *
+ * There is no OK. Picking a row grants, at once, like every other control in this pane —
+ * which is what lets you add four people without four round trips through a dialog. The
+ * price is that a mistake is already saved, so [addedUserIds] remembers this session's
+ * grants and offers to take them back. It remembers **ids**, not rows, because the undo
+ * is "set these people back to no own row" and that is all it needs to know.
+ *
+ * @property query what has been typed into the search field. Matched server-side against
+ *   name and address; empty is the head of the directory rather than nothing, because
+ *   opening the picker should show who is there.
+ * @property roleKey the rung every pick grants, chosen once at the top of the panel. Null
+ *   only before the first list arrives — the panel picks the lowest rung this caller may
+ *   hand out as soon as it knows what those are, so a pick can never mean "at no rung".
+ * @property candidates the rows to draw, already ordered and truncated by the server.
+ * @property totalMatches how many matched in all, so the footer can say how many were
+ *   left out. Never a silent truncation; see the footer's wording.
+ * @property addedUserIds who this picker session has granted, oldest first. Drives both
+ *   the footer's count and [EditProjectBackingViewModel.onAddedPeopleUndone].
+ * @property isSearching whether a search is in flight. Only interesting for the very
+ *   first one — the list is deliberately left on screen while a later query resolves,
+ *   because blanking it on every keystroke is what makes a search feel broken.
+ * @property searchSequence which search the newest response must match to be believed.
+ *   Typing is faster than the network and responses can overtake each other; without
+ *   this, a slow answer for `ma` lands after the quick one for `markus` and the list
+ *   silently disagrees with the field above it.
+ */
+data class PeoplePicker(
+    val query: String = "",
+    val roleKey: String? = null,
+    val candidates: List<PersonCandidate> = emptyList(),
+    val totalMatches: Int = 0,
+    val addedUserIds: List<Long> = emptyList(),
+    val isSearching: Boolean = false,
+    val searchSequence: Int = 0,
+) {
+    /**
+     * Whether [query] is a **whole** address, and so whether to offer to add it as one.
+     *
+     * ── Nothing can tell when you have stopped typing ────────────────────────
+     *
+     * So this never guesses. `n`, `na`, `nadia`, `nadia@`, `nadia@vessel` are all somebody
+     * halfway through, and offering to create an account for any of them is offering to
+     * act on a fragment. The offer appears only for a structurally complete address —
+     * local part, domain, and a suffix of at least two letters — and even then it stays an
+     * *offer*: nothing is written until it is clicked or Enter is pressed, with the whole
+     * address printed back first.
+     *
+     * A complete-but-wrong address is beyond any check that can be made here. That is what
+     * the footer's undo and the NOT SIGNED IN badge are for: a grant nobody claimed stays
+     * visible as one, rather than being mistaken for somebody who has arrived.
+     *
+     * Deliberately **not** a validity check for the server to trust — the route normalises
+     * and re-checks with `isPlausibleEmail`, and it is the one that refuses. This decides
+     * whether to show a row.
+     */
+    val isWholeAddress: Boolean get() = WHOLE_ADDRESS.matches(query.trim())
+
+    private companion object {
+        /**
+         * A structurally complete address: something, `@`, a domain of at least two
+         * labels, and a final label of two or more letters.
+         *
+         * Not RFC 5322, and not trying to be — a full-fidelity address grammar accepts
+         * things no mail system here will ever see and would still not answer the question
+         * this asks, which is "has the person finished typing?". The two-letter floor on
+         * the last label is what stops `nadia@vessel.s` reading as done mid-keystroke.
+         */
+        val WHOLE_ADDRESS = Regex("""^[^\s@]+@[^\s@.]+(\.[^\s@.]+)*\.[a-zA-Z]{2,}$""")
+    }
+}
+
+/**
  * Owns the project dialog.
  *
  * @param existing the project being edited, or null when creating.
@@ -510,6 +596,16 @@ class EditProjectBackingViewModel(
          * the instance-settings copy of this power.
          */
         val pendingProjectDelete: ProjectDeletePrompt? = null,
+        /**
+         * The people picker, while it is open (LNL-204). Null when it is closed.
+         *
+         * A nested object rather than eight fields with a `isPickerOpen` beside them,
+         * because every one of them is meaningless while it is closed and "open" is
+         * exactly "this exists". Closing it is dropping it, which is also what
+         * guarantees the query, the picked-role and the just-added list cannot survive
+         * into the next open and quietly offer an undo for a session that ended.
+         */
+        val peoplePicker: PeoplePicker? = null,
     ) {
         val title: String get() = if (isNew) "New project" else "Project settings"
 
@@ -1636,6 +1732,227 @@ class EditProjectBackingViewModel(
         }
     }
 
+    // ── The people picker (LNL-204) ───────────────────────────────────────────
+
+    /**
+     * Open the picker and fetch the head of the directory.
+     *
+     * The rung defaults to the lowest one this caller may actually hand out, rather than
+     * to Viewer by name: on a board where somebody may grant nothing this list is empty
+     * and the picker opens with no rung, which is the honest state — and the panel's
+     * pick rows are inert without one, so nothing can be granted "at null".
+     */
+    fun onAddPeopleOpened() {
+        val offered = _stateFlow.value.settings?.access?.rungs.orEmpty()
+        _stateFlow.value = _stateFlow.value.copy(
+            peoplePicker = PeoplePicker(
+                roleKey = offered.firstOrNull { it.isSelectable }?.key,
+            ),
+        )
+        searchCandidates(query = "")
+    }
+
+    /** Close the picker and forget everything about this session, undo included. */
+    fun onAddPeopleClosed() {
+        _stateFlow.value = _stateFlow.value.copy(peoplePicker = null)
+    }
+
+    /**
+     * The search field changed.
+     *
+     * The query is stored immediately and the request goes out immediately — no debounce.
+     * That is a deliberate choice rather than an omission: the panel shows seven rows out
+     * of a directory read, so a keystroke is cheap, and a debounce is what makes a picker
+     * feel like it is thinking. Out-of-order answers are handled instead, by sequence; see
+     * [PeoplePicker.searchSequence].
+     */
+    fun onAddPeopleQueryChanged(query: String) {
+        val picker = _stateFlow.value.peoplePicker ?: return
+        _stateFlow.value = _stateFlow.value.copy(peoplePicker = picker.copy(query = query))
+        searchCandidates(query)
+    }
+
+    /** The rung every subsequent pick will grant. */
+    fun onAddPeopleRoleChanged(roleKey: String?) {
+        val picker = _stateFlow.value.peoplePicker ?: return
+        // Refused locally as well as at the route, matching every other rung control here:
+        // a rung this caller may not hand out is in the menu so it can say why, so a click
+        // on one must change nothing rather than arm the next pick with it.
+        val offered = _stateFlow.value.settings?.access?.rungs.orEmpty()
+        if (roleKey != null && offered.none { it.key == roleKey && it.isSelectable }) return
+        _stateFlow.value = _stateFlow.value.copy(peoplePicker = picker.copy(roleKey = roleKey))
+    }
+
+    /**
+     * A row in the list was picked: grant that account the chosen rung, by id.
+     *
+     * **By id, which is the whole point of the picker** — the address is on screen to tell
+     * two people of the same name apart, not to be sent back to the server. This is the
+     * ordinary [onPersonRungChanged] write with the picker's bookkeeping around it.
+     */
+    fun onCandidatePicked(userId: Long) {
+        val project = existing ?: return
+        val picker = _stateFlow.value.peoplePicker ?: return
+        val roleKey = picker.roleKey ?: return
+        // Recorded before the write rather than after it, so a second click on the same row
+        // while the first is still in flight cannot record it twice and offer to undo it
+        // twice. `isBusy` already refuses the overlapping write; this keeps the list honest.
+        if (userId in picker.addedUserIds) return
+        writePicker(
+            fallback = "Could not add that person.",
+            afterSuccess = { picked, _ -> picked.copy(addedUserIds = picked.addedUserIds + userId) },
+        ) {
+            storage.setProjectRole(project.id, userId, roleKey)
+        }
+    }
+
+    /**
+     * The "no account here yet" row was taken: create the account and grant it.
+     *
+     * Guarded on [PeoplePicker.isWholeAddress] as well as by the row only being drawn for
+     * one, because Enter reaches this from the field and the field does not know what is
+     * on screen beneath it.
+     *
+     * The new account's id is read back out of the response, which is the only place it
+     * appears — `addProjectPerson` answers with the whole fresh settings state, and the
+     * person it just created is now an exception on this board and so is in `access.people`.
+     * Matched on the normalised address rather than on "the row that was not there before",
+     * which would be wrong the moment two administrators add somebody at once.
+     */
+    fun onNewAddressAdded() {
+        val project = existing ?: return
+        val picker = _stateFlow.value.peoplePicker ?: return
+        val roleKey = picker.roleKey ?: return
+        if (!picker.isWholeAddress) return
+        val address = picker.query.trim()
+        writePicker(
+            fallback = "Could not add that address.",
+            // The field is cleared on success only — a refused address stays in it, because
+            // the reader's next move is to correct it rather than to retype it.
+            afterSuccess = { current, settings ->
+                val added = settings.access?.people
+                    ?.firstOrNull { it.email.equals(address, ignoreCase = true) }
+                    ?.userId
+                current.copy(
+                    query = "",
+                    addedUserIds = current.addedUserIds + listOfNotNull(added),
+                )
+            },
+        ) {
+            storage.addProjectPerson(project.id, address, roleKey)
+        }
+    }
+
+    /**
+     * Take back every grant this picker session made.
+     *
+     * Sets each of them to no own row, which is what "undo" means here — the grants were
+     * the only thing written, and nobody who already held a row could have been picked (the
+     * server sends those rows inert), so this cannot remove a grant somebody else made.
+     *
+     * The account a new address created is deliberately **left in place**. Undo is for the
+     * grant, not for the row: deleting an account is not this screen's power, the row is
+     * harmless without a rung, and it is the honest record that somebody was added here by
+     * mistake.
+     */
+    fun onAddedPeopleUndone() {
+        val project = existing ?: return
+        val picker = _stateFlow.value.peoplePicker ?: return
+        val ids = picker.addedUserIds
+        if (ids.isEmpty()) return
+        writePicker(
+            fallback = "Could not take those back.",
+            afterSuccess = { undone, _ -> undone.copy(addedUserIds = emptyList()) },
+        ) {
+            // Sequentially, and the last answer is the one kept: these are one write each
+            // and the route returns the whole state, so firing them together would leave
+            // the pane holding whichever response happened to land last while earlier ones
+            // were still in flight.
+            var latest: ProjectSettingsState? = null
+            ids.forEach { id -> latest = storage.setProjectRole(project.id, id, null) }
+            latest ?: storage.projectSettings(project.id)
+        }
+    }
+
+    /**
+     * One picker write: the ordinary [write], plus a fresh candidate search afterwards.
+     *
+     * The re-search is what makes the list agree with what was just done — a row that was
+     * pickable a moment ago now says "Already Contributor" and goes inert, which is the
+     * feedback that the pick landed. Doing it here rather than in each handler is what
+     * stops one of them forgetting.
+     */
+    private fun writePicker(
+        fallback: String,
+        afterSuccess: (PeoplePicker, ProjectSettingsState) -> PeoplePicker,
+        block: suspend () -> ProjectSettingsState,
+    ) {
+        if (_stateFlow.value.isBusy) return
+        _stateFlow.value = _stateFlow.value.copy(isBusy = true, settingsErrorMessage = null)
+        scope.launch {
+            runCatching { block() }.fold(
+                onSuccess = { settings ->
+                    val current = _stateFlow.value
+                    _stateFlow.value = current.copy(
+                        isBusy = false,
+                        settings = settings,
+                        hasWrittenSettings = true,
+                        canConfigure = settings.canMutateProject,
+                        canConfigureIdentity = settings.canMutateProjectIdentity,
+                        // Only if the picker is still open. Closing it mid-write is allowed
+                        // and must not resurrect it holding a stale undo.
+                        //
+                        // Handed the response rather than left to read the flow: at this point
+                        // `_stateFlow.value` is still the state BEFORE this write, so a hook
+                        // that went looking for what the write produced found nothing. That is
+                        // exactly how the new-address path lost the id it had just created, and
+                        // with it the undo.
+                        peoplePicker = current.peoplePicker?.let { afterSuccess(it, settings) },
+                    )
+                    _stateFlow.value.peoplePicker?.let { searchCandidates(it.query) }
+                },
+                onFailure = { t ->
+                    println("EditProject: picker write failed: ${t.message}")
+                    _stateFlow.value = _stateFlow.value.copy(
+                        isBusy = false,
+                        settingsErrorMessage = t.userMessage(fallback),
+                    )
+                },
+            )
+        }
+    }
+
+    /**
+     * Fetch the candidate rows for [query], discarding an answer that has been overtaken.
+     *
+     * A failure leaves the previous rows on screen and says nothing. That is the same
+     * judgement [loadSettings] makes: this is a search box, the reader's recourse is to
+     * type again, and an alert over a panel that is still perfectly usable would be worse
+     * than the empty result they can already see.
+     */
+    private fun searchCandidates(query: String) {
+        val project = existing ?: return
+        val opened = _stateFlow.value.peoplePicker ?: return
+        val sequence = opened.searchSequence + 1
+        _stateFlow.value = _stateFlow.value.copy(
+            peoplePicker = opened.copy(searchSequence = sequence, isSearching = true),
+        )
+        scope.launch {
+            val answer = runCatching { storage.projectPeopleCandidates(project.id, query) }.getOrNull()
+            val current = _stateFlow.value.peoplePicker ?: return@launch
+            // Overtaken, or the picker closed and reopened under us. Either way this answer
+            // describes a question nobody is asking any more.
+            if (current.searchSequence != sequence) return@launch
+            _stateFlow.value = _stateFlow.value.copy(
+                peoplePicker = current.copy(
+                    isSearching = false,
+                    candidates = answer?.candidates ?: current.candidates,
+                    totalMatches = answer?.totalMatches ?: current.totalMatches,
+                ),
+            )
+        }
+    }
+
     // ── The notification toggle (every signed-in caller, not just admins) ──────
 
     /**
@@ -1677,6 +1994,29 @@ class EditProjectBackingViewModel(
      * offer to. Shouting about it would put an alert over a form the user can
      * still legitimately use.
      */
+    /**
+     * Re-fetch the settings, because something outside this project changed what they say.
+     *
+     * ── Why this had to become reachable ─────────────────────────────────────
+     *
+     * The settings are fetched once, when a project is selected in the rail, and every
+     * later *write* returns a fresh state — so anything this pane changes stays current
+     * without help. What it could not see was a change made somewhere else in the same
+     * pane: the instance tabs. Several project answers are computed from instance
+     * configuration — whether a guest row is in effect at all, and whether a new outside
+     * address may be added (LNL-204) — so flipping a switch on Who gets in left the Access
+     * section confidently describing the old policy until the pane was closed and reopened.
+     *
+     * The same shape as LNL-137's display-name gate, which fixed it for the *session* by
+     * re-fetching that. This is the project half of the same hook; see main.kt's
+     * `onSessionAffectingWrite`.
+     *
+     * Silent about failure and about being in flight, like the load it delegates to: the
+     * pane is already showing usable (if slightly stale) answers, and an alert over that is
+     * worse than the delay.
+     */
+    fun reloadSettings() = loadSettings()
+
     private fun loadSettings() {
         val project = existing ?: return
         scope.launch {

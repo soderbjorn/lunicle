@@ -813,6 +813,18 @@ object ApiRoutes {
      */
     fun projectPeople(projectId: Long): String = "$PROJECTS/$projectId/people"
 
+    /**
+     * `GET` — the accounts the people picker may offer, as [PersonCandidates]. Takes `q`,
+     * matched against name and address; an empty `q` is the head of the directory rather
+     * than nothing, because opening the picker should show you who is there.
+     *
+     * Gated at the rung that may **grant** here, not the rung that may read the section:
+     * these rows carry addresses. That is also why it is its own route rather than a field
+     * on [ProjectSettingsState] — see the handler, which explains why the audit list stays
+     * exceptions-only while granting gets the directory.
+     */
+    fun projectPeopleCandidates(projectId: Long): String = "$PROJECTS/$projectId/people/candidates"
+
     /** `POST` — create a hidden draft issue, returning an [IssueDraft]. */
     fun issues(projectId: Long): String = "$PROJECTS/$projectId/issues"
 

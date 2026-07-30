@@ -2414,6 +2414,40 @@ private class SettingsPanes(
 
     private fun create() {
         val paneScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        // Hoisted out of the SettingsPane call rather than built inline, because the
+        // instance tabs below now need to reach it: a switch flipped there can change what a
+        // PROJECT's sections say, and the only way to tell them is to hold the tab. See
+        // instanceConfigurationChanged.
+        val projectsTab = ProjectsTab(
+            storage = storage,
+            // Read fresh on every render, like hasProjects and for its reason: the list
+            // is a flow this pane does not collect.
+            projects = { mainViewModel.stateFlow.value.projects },
+            dialogHost = dialogHost,
+            // The instance's per-tier creation setting, as the board state reports it —
+            // the same affordance the "+" menu's row rode on before it moved here.
+            canCreateProject = { mainViewModel.stateFlow.value.canCreateProject },
+            onNewProject = { mainViewModel.onNewProjectTapped() },
+            onRouteChanged = { onRouteChanged() },
+            // A rename, a display switch or a delete has to reach the boards and the
+            // project list — the rail's own names among them.
+            onProjectWritten = { mainViewModel.reload() },
+        )
+        // Instance configuration moved, so everything computed FROM it is now stale.
+        //
+        // Two consumers, and both were needed before either was obvious. The session,
+        // because this client took its own once at bootstrap and some switches gate a field
+        // drawn from that snapshot (LNL-137's display-name override). And the open project's
+        // settings, because several of its answers are the instance's rather than the
+        // project's — whether a guest row is in effect at all, and whether a new outside
+        // address may be added (LNL-204). Without the second, switching admission to
+        // domain-only left the people picker cheerfully offering to create an off-domain
+        // account that the route would then refuse: the screen and the write disagreeing,
+        // which is the failure this whole area keeps producing.
+        val instanceConfigurationChanged = {
+            onSessionAffectingWrite()
+            projectsTab.reloadOpenProject()
+        }
         val pane = SettingsPane(
             viewModel = ConnectionsBackingViewModel(storage, paneScope),
             sessionViewModel = sessionViewModel,
@@ -2426,21 +2460,7 @@ private class SettingsPanes(
             // Read fresh: a caller with no project has no Projects tab, and a
             // project arriving (or a sign-in) has to grow one.
             hasProjects = { mainViewModel.stateFlow.value.projects.isNotEmpty() },
-            projectsTab = ProjectsTab(
-                storage = storage,
-                // Read fresh on every render, like hasProjects and for its reason: the list
-                // is a flow this pane does not collect.
-                projects = { mainViewModel.stateFlow.value.projects },
-                dialogHost = dialogHost,
-                // The instance's per-tier creation setting, as the board state reports it —
-                // the same affordance the "+" menu's row rode on before it moved here.
-                canCreateProject = { mainViewModel.stateFlow.value.canCreateProject },
-                onNewProject = { mainViewModel.onNewProjectTapped() },
-                onRouteChanged = { onRouteChanged() },
-                // A rename, a display switch or a delete has to reach the boards and the
-                // project list — the rail's own names among them.
-                onProjectWritten = { mainViewModel.reload() },
-            ),
+            projectsTab = projectsTab,
             // Who gets in, People and Instance — three panes over one view model and one
             // request (LNL-195). Built here because it needs the API and the app's "the
             // project list changed" hook, and built ONCE so the three tabs cannot
@@ -2449,7 +2469,7 @@ private class SettingsPanes(
                 viewModel = AdminSettingsBackingViewModel(
                     storage = storage,
                     scope = paneScope,
-                    onInstanceSettingChanged = onSessionAffectingWrite,
+                    onInstanceSettingChanged = instanceConfigurationChanged,
                 ),
                 scope = paneScope,
                 dialogHost = dialogHost,

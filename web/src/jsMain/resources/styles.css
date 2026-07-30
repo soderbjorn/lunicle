@@ -5346,6 +5346,224 @@ body[data-lnl-notif="1"] .lnl-notif-bell {
   color: var(--head);
 }
 
+/* ── The people picker (LNL-204) ──
+   "Add people…" opens this in place, under the person list it adds to. In place and
+   not a modal, and that is the load-bearing part: every pick is written immediately
+   and lands in the list above, so covering the list would hide the panel's own
+   feedback.
+
+   The accent hairline and the lift are what say "this is a thing that is open" on a
+   surface that is otherwise flat rows — the same pairing `.lunicle-dropdown-menu`
+   uses, at a weight suited to something the width of the pane. */
+.add-people-host { margin-top: 4px; }
+
+.add-people-panel {
+  border: 1px solid var(--green-hi);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .14);
+  overflow: hidden;    /* so the footer's fill cannot square off the rounded corner */
+}
+
+.add-people-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 13px 14px 0;
+}
+
+.add-people-head-text { flex: 1; min-width: 0; }
+
+.add-people-head-role {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.add-people-title {
+  color: var(--head);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* The head's hint carries no bottom margin of its own: the search field below
+   brings the gap, so an empty hint cannot leave a hole. */
+.add-people-head-text .field-hint { margin: 2px 0 0; }
+
+/* The ceiling, said once beside the control rather than repeated inside its menu —
+   the rule LNL-202 settled for the audience rows. */
+.add-people-ceiling {
+  font-size: 10.5px;
+  color: var(--body);
+  opacity: .75;
+}
+
+.add-people-search { padding: 11px 14px 9px; }
+.add-people-search .field { width: 100%; }
+
+/* Ten rows and then it scrolls, matching the dropdowns' ceiling: the server sends
+   seven plus at most one trailing row, so this bites only if that ever grows. */
+.add-people-rows {
+  max-height: 268px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.add-people-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.add-people-row:last-child { border-bottom: 0; }
+
+/* Hover only on a row that can actually be picked. `.dt-disabled` is the toolkit's
+   marker and is on every inert row, so naming it here keeps this rule and the rung
+   pickers' agreeing about what "unpickable" looks like. */
+.add-people-row:hover:not(.dt-disabled):not(.add-people-row-refused) {
+  background: var(--panel-2);
+}
+
+/* Inert: already on this board, or running the instance. Shown rather than filtered
+   out, because a search that omits the person you searched for reads as broken.
+   0.72 rather than the toolkit's 0.4 for the reason the blocked rungs use it — the
+   trailing text is the explanation, and an explanation has to be readable. */
+.add-people-row-inert {
+  opacity: .72;
+  pointer-events: auto;    /* the fill is already gone; this buys the cursor */
+  cursor: not-allowed;
+}
+
+/* Just granted, this session. The accent as TYPE (`--green-hi-text`), not as a
+   fill: this is ink on the panel and needs a caption's contrast. Same trade as
+   `.icon-btn`. */
+.add-people-row-state-added { color: var(--green-hi-text); }
+
+.add-people-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--head);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* The two non-person rows' discs. Dashed for the offer — nothing exists yet — and
+   the warn token for the refusal, which is the same colour NOT SIGNED IN uses for
+   the same reason: neither is an error, both are something to notice. */
+.add-people-avatar-new { border-style: dashed; color: var(--body); }
+.add-people-avatar-refused { border-color: var(--yellow); color: var(--yellow); }
+
+.add-people-row-text { flex: 1; min-width: 0; }
+
+.add-people-name-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.add-people-name { color: var(--head); font-size: 13px; }
+
+/* The address in the mono face: it is an identifier, and it is here to tell two
+   people of the same name apart — which is a character-by-character comparison. */
+.add-people-email {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--body);
+  opacity: .75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-people-badge {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--body);
+  opacity: .8;
+}
+
+/* NOT SIGNED IN, on the warn token like `.access-row-badge`: a rung nobody has
+   collected looks exactly like one that has been unless something says otherwise. */
+.add-people-badge-pending { color: var(--yellow); opacity: 1; }
+
+.add-people-row-state {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--body);
+  opacity: .8;
+  text-align: right;
+}
+
+/* The offer and the refusal both wrap two lines of prose, so they align to the top
+   rather than centring a disc against a paragraph. */
+.add-people-row-offer,
+.add-people-row-refused { align-items: flex-start; }
+
+.add-people-row-offer { background: var(--panel-2); }
+
+.add-people-offer-title { font-size: 13px; color: var(--green-hi-text); }
+
+.add-people-offer-note,
+.add-people-refused-note {
+  font-size: 11px;
+  color: var(--body);
+  opacity: .8;
+  text-wrap: pretty;
+}
+
+/* A refusal is not an error and must not read as one: the warn wash, not the danger
+   one, and it is not clickable at all. */
+.add-people-row-refused {
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+  cursor: default;
+}
+
+/* `--yellow-text`, not `--yellow`: this is a 13px sentence and needs a caption's
+   contrast, where the token's fill half is free to be as pale as a theme likes. The
+   disc above may stay on the fill because nothing has to be read out of it. Same
+   split, and the same reason, as `--green-hi` / `--green-hi-text` (LNL-173). */
+.add-people-refused-title { font-size: 13px; color: var(--yellow-text); }
+
+.add-people-empty {
+  margin: 0;
+  padding: 15px 14px;
+  font-size: 12px;
+  color: var(--body);
+  opacity: .8;
+}
+
+.add-people-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.add-people-footer-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--body);
+  opacity: .8;
+  text-wrap: pretty;
+}
+
 /* The wrapper one project's sections mount into.
    It has to pass the flex chain through: `.project-rail-content` hides its own
    overflow so each `.project-pane` scrolls inside itself, and a plain block here

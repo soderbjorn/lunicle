@@ -67,6 +67,8 @@ import se.soderbjorn.lunicle.clientserver.OwnerCandidate
 import se.soderbjorn.lunicle.clientserver.ProjectPermissionsView
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
+import se.soderbjorn.lunicle.clientserver.PersonCandidate
+import se.soderbjorn.lunicle.clientserver.PersonCandidates
 import se.soderbjorn.lunicle.clientserver.PersonRow
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectSection
@@ -134,6 +136,13 @@ internal val DEMO_RUNGS: List<RungOption> = listOf(
 /** The rung label for a key, for the rows the demo renders. */
 internal fun demoRungLabel(key: String): String =
     DEMO_RUNGS.firstOrNull { it.key == key }?.label ?: key
+
+/**
+ * How many candidate rows the demo's people picker returns — the server's
+ * `CANDIDATE_LIMIT`, mirrored so the demo shows the same "N more match" footer at the same
+ * point rather than a list that never truncates.
+ */
+internal const val DEMO_CANDIDATE_LIMIT: Int = 7
 
 /** Where a rung sits on the ladder, so the demo can take the same max the server takes. */
 internal fun demoRungRank(key: String?): Int =
@@ -1043,7 +1052,101 @@ internal class DemoWorld {
         // What the add-a-person dialog notes beside an address from somewhere else, so
         // that adding an outsider is a visible decision rather than a typo.
         staffDomain = DEMO_STAFF_DOMAIN,
+        // Whether a **new** outside address may be invented here, which is the admission
+        // policy's answer and not the domain's (LNL-204). The demo names a domain and still
+        // defaults to ANYONE, so this is null until somebody switches admission on the Who
+        // gets in tab — which is exactly the pair of states worth being able to walk
+        // through: the same typed address offered on one setting and refused on the next.
+        newAddressRefusal = demoNewAddressRefusal(),
     )
+
+    /**
+     * The demo's copy of the server's `newAddressRefusal`.
+     *
+     * Kept as its own function beside [projectAccessState] rather than inlined, because the
+     * rule it mirrors is the one this feature is most likely to be got wrong twice: a
+     * pinned or configured domain restricts **nothing** by itself, and only the admission
+     * policy decides whether an address with no account can be added. A demo that greyed
+     * the row merely because a domain exists would be teaching the bug.
+     */
+    /**
+     * The accounts the people picker offers for [p], matched against [query] (LNL-204).
+     *
+     * The demo's copy of the candidates route, ordering included — people not yet on this
+     * project first, then staff before member, then whatever order [users] is in. The
+     * ordering is mirrored rather than left to chance because it is the thing a reader of
+     * the demo is most likely to take as the design: the top of the list should be who you
+     * are reaching for.
+     *
+     * Everybody who cannot be picked comes back anyway, dimmed and explained — see
+     * [PersonCandidate.inertReason]. A demo that filtered them out would be demonstrating
+     * the "silence reads as a broken search" failure the real route avoids.
+     */
+    internal fun projectCandidates(p: DemoProject, query: String): PersonCandidates {
+        val needle = query.trim()
+        val matching = users.filter { u ->
+            needle.isEmpty() ||
+                u.name.contains(needle, ignoreCase = true) ||
+                u.email.orEmpty().contains(needle, ignoreCase = true)
+        }
+        val ordered = matching.sortedWith(
+            compareBy(
+                { u -> if (u.id in p.members.keys) 1 else 0 },
+                { u -> if (u.isStaff) 0 else 1 },
+            ),
+        )
+        return PersonCandidates(
+            candidates = ordered.take(DEMO_CANDIDATE_LIMIT).map { u ->
+                val own = p.members[u.id]
+                val runsInstance = owns(u) || u.isSysAdmin
+                PersonCandidate(
+                    userId = u.id,
+                    name = u.name,
+                    email = u.email.orEmpty(),
+                    badge = if (runsInstance) "ADMIN" else if (u.isStaff) "STAFF" else "MEMBER",
+                    hasSignedIn = u.hasSignedIn,
+                    heldRoleLabel = when {
+                        runsInstance -> demoRungLabel(DemoRungKeys.OWNER)
+                        else -> own?.let { demoRungLabel(it) }
+                    },
+                    inertReason = when {
+                        runsInstance -> "${demoRungLabel(DemoRungKeys.OWNER)} on every board"
+                        own != null -> "Already ${demoRungLabel(own)}"
+                        else -> null
+                    },
+                )
+            },
+            totalMatches = matching.size,
+        )
+    }
+
+    /**
+     * May a **new** account be created for [email] here? The demo's `admitsNewAccount`.
+     *
+     * Asked by the add route rather than only by the screen, so the demo defends the rule
+     * at the write like the server does. [demoNewAddressRefusal] is the same rule turned
+     * into a sentence; these two must agree, and both are keyed on [admission] alone.
+     */
+    internal fun demoAdmitsNewAddress(email: String): Boolean {
+        val isStaff = email.trim().lowercase().endsWith("@$DEMO_STAFF_DOMAIN")
+        return when (admission) {
+            AdmissionPolicy.ANYONE -> true
+            // Neither policy admits a new outside address: the "plus added" half is about an
+            // address somebody already put here, which by definition has an account and so
+            // never reaches this function.
+            AdmissionPolicy.STAFF_DOMAIN_ONLY, AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED -> isStaff
+        }
+    }
+
+    private fun demoNewAddressRefusal(): String? = when (admission) {
+        AdmissionPolicy.ANYONE -> null
+        AdmissionPolicy.STAFF_DOMAIN_ONLY ->
+            "This instance admits $DEMO_STAFF_DOMAIN addresses only, so there is no account " +
+                "for it to hold."
+        AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED ->
+            "Outside $DEMO_STAFF_DOMAIN, only addresses that already have an account here " +
+                "can be added."
+    }
 
     /**
      * [p]'s audience rows as they actually stand — capped, and with a vetoed guest row

@@ -843,7 +843,14 @@ class AdminSettingsBackingViewModel(
     fun onAdmissionPicked(policy: AdmissionPolicy) {
         val option = _stateFlow.value.admissionOptions.firstOrNull { it.policy == policy } ?: return
         if (!option.isSelectable) return
-        write("Could not change who may have an account.") { storage.setAdmissionPolicy(policy) }
+        // Through the same hook the switches use, which it was missing: admission decides
+        // whether a project's people picker may add a new outside address at all (LNL-204),
+        // so a project's Access section that is already open is describing the old policy
+        // until it is told. It reads exactly like the switches' LNL-137 bug and had the same
+        // cause — this write simply never announced itself.
+        write("Could not change who may have an account.", afterSuccess = onInstanceSettingChanged) {
+            storage.setAdmissionPolicy(policy)
+        }
     }
 
     /**

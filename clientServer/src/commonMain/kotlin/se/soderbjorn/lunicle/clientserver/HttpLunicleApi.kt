@@ -977,6 +977,11 @@ class HttpLunicleApi(
             setBody(PersonAdd(email, roleKey))
         }.requireSuccess()
 
+    override suspend fun projectPeopleCandidates(projectId: Long, query: String): PersonCandidates =
+        httpClient.get(baseUrl + ApiRoutes.projectPeopleCandidates(projectId)) {
+            parameter("q", query)
+        }.requireSuccess()
+
     // ── The board ────────────────────────────────────────────────────────────
 
     /** One project's whole board. */

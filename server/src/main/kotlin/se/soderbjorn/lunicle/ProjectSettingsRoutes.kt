@@ -36,7 +36,10 @@ import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AudienceGrant
 import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.NotificationSubscriptionRequest
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.PersonAdd
+import se.soderbjorn.lunicle.clientserver.PersonCandidate
+import se.soderbjorn.lunicle.clientserver.PersonCandidates
 import se.soderbjorn.lunicle.clientserver.PersonRow
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectDisplaySettings
@@ -466,6 +469,45 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "That does not look like an e-mail address.")
             return@post
         }
+        // ── Admission, asked here as well as at the door ─────────────────────
+        //
+        // This route creates a `users` row, so it is a place an account comes into
+        // existence — and admission is the rule about exactly that. It was missing: the
+        // route would happily invent an off-domain account on a deployment whose
+        // admission policy refuses off-domain accounts, and whoever owned that address
+        // could then never sign in to claim the rung. A grant nobody can collect, written
+        // without a word of complaint.
+        //
+        // The same function sign-in asks (`admitsNewAccount`), with `isAlreadyAdded` keyed
+        // on whether the address already has a row — which is what makes
+        // STAFF_DOMAIN_PLUS_ADDED behave: an address already here is past the door and
+        // stays addable, a new outside one is not. An existing account is never refused,
+        // whatever its domain, because admission is asked once at creation and this is not
+        // that moment for them.
+        // Read off the directory rather than through a `findByEmail` the store does not
+        // have: `addByEmail` is idempotent and answers this question by side effect, which
+        // is no use *before* deciding whether to call it. One full read, which is what
+        // every other reader of the account table here already does (see peopleRows and
+        // ProjectAudience) — and cheaper than a store-interface change both backends would
+        // have to implement to serve one guard.
+        val alreadyHere = deps.users.selectAll().any { it.email == address }
+        val policy = deps.instanceSettings.current().admission
+        // Asked ONLY when this would create an account, which is the whole scope of
+        // admission — and not, as the first cut had it, asked always with `isAlreadyAdded`
+        // carrying the exception. That reading is wrong and a test caught it:
+        // `admitsNewAccount`'s flag only widens STAFF_DOMAIN_PLUS_ADDED, so under
+        // STAFF_DOMAIN_ONLY it refused an off-domain account that already exists here.
+        // Somebody past the door cannot be re-refused at it — there is no account to create
+        // — and refusing them would have made an existing colleague ungrantable on any
+        // domain-restricted deployment.
+        if (!alreadyHere && !policy.admitsNewAccount(address, deps.identity)) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                deps.newAddressRefusal(policy)
+                    ?: "This instance does not accept new accounts for that address.",
+            )
+            return@post
+        }
         // The staff/member answer from the same function sign-in derives it with, so a
         // row added ahead of time and the same row after its owner arrives agree.
         val person = deps.users.addByEmail(address, UserKind.forEmail(address, deps.identity.domain))
@@ -476,7 +518,116 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
         )
         call.respond(deps.buildSettings(scope.project, scope.user))
     }
+
+    /**
+     * The directory the people picker searches.
+     *
+     * ── Why granting needs a directory when the audit does not ──────────────
+     *
+     * `access.people` is exceptions only and must stay that way — a list of every account
+     * beside a rung answers "who can get in here" with a directory, which is not an
+     * answer. But the person you are about to add is by definition **not an exception
+     * yet**, so they are not on that list, and the only way to reach them was to type
+     * their address. For somebody the instance already knows, that is absurd: it asks an
+     * administrator to recall an address the server is holding, and a typo silently
+     * creates a second, never-signed-into account beside the real one.
+     *
+     * So this is the one place the account table is offered whole — narrowed, capped, and
+     * gated at the same rung as the grant it feeds.
+     *
+     * ── Its own request, not a field on the access state ────────────────────
+     *
+     * These rows carry addresses. Riding them along with every `buildSettings` would put
+     * every address on the instance on the wire each time anybody opened a project's
+     * General section, which is not a narrowing anybody chose. A search asked when the
+     * picker opens costs one read of a table the settings screen already reads several
+     * times, and sends [CANDIDATE_LIMIT] rows.
+     *
+     * ── Everything that cannot be picked is still shown ─────────────────────
+     *
+     * Somebody already on the board, and the instance's own owner and administrators,
+     * come back with [PersonCandidate.inertReason] set rather than filtered out: a search
+     * that silently omits the person you searched for reads as a broken search, and the
+     * reader's next move is to type the name again. Dimmed and explained is the same
+     * answer given usefully — the rule the rung pickers on this screen already follow.
+     */
+    get("${ApiRoutes.PROJECTS}/{id}/people/candidates") {
+        val scope = call.adminProject(deps, "see who can be added to this project") ?: return@get
+        val query = call.request.queryParameters["q"].orEmpty().trim()
+        val settings = deps.instanceSettings.current()
+        val ownRows = deps.roles.rolesForProject(scope.project.id)
+
+        val matching = deps.users.selectAll().filter { person ->
+            query.isEmpty() ||
+                person.resolvedName.contains(query, ignoreCase = true) ||
+                person.email.orEmpty().contains(query, ignoreCase = true)
+        }
+        // Who you are most likely to be reaching for, first: somebody not yet on this
+        // project (the whole point of the gesture), then staff before member, then by
+        // name. `selectAll` is already name-ordered, and `sortedWith` is stable, so the
+        // last clause is the order it arrived in rather than a second comparison.
+        val ordered = matching.sortedWith(
+            compareBy(
+                { person -> if (person.id in ownRows.keys) 1 else 0 },
+                { person -> if (person.kind == UserKind.STAFF) 0 else 1 },
+            ),
+        )
+        call.respond(
+            PersonCandidates(
+                candidates = ordered.take(CANDIDATE_LIMIT).map { person ->
+                    val instanceRole = person.instanceRoleWith(settings.ownerUserId)
+                    val runsInstance = instanceRole.atLeast(InstanceRole.ADMIN)
+                    val own = ownRows[person.id]
+                    PersonCandidate(
+                        userId = person.id,
+                        name = person.resolvedName,
+                        email = person.email.orEmpty(),
+                        // The instance tier. Sent rather than derived: a client comparing
+                        // the address against the domain would be a second copy of
+                        // UserKind.forEmail, and the two would part company the first time
+                        // a deployment changed its domain.
+                        //
+                        // Blank for an ordinary account on a deployment with no domain of
+                        // its own, where everybody is a member and the badge is a column of
+                        // the same word. Never blank for somebody who runs the instance:
+                        // that is worth saying whatever the deployment's domain situation,
+                        // and it is the badge that explains the inert row beside it.
+                        badge = when {
+                            runsInstance || deps.identity.hasStaffTier -> instanceRole.name
+                            else -> ""
+                        },
+                        hasSignedIn = person.hasSignedIn,
+                        heldRoleLabel = when {
+                            runsInstance -> ProjectRole.OWNER.label
+                            else -> own?.label
+                        },
+                        // Two refusals, worded apart because they are not the same fact. An
+                        // own row is a grant on this board that this screen can change (in
+                        // the list above the picker) — it just is not what the picker is
+                        // for. Running the instance is not a grant on this board at all,
+                        // and no rung written here could raise or lower it.
+                        inertReason = when {
+                            runsInstance -> "${ProjectRole.OWNER.label} on every board"
+                            own != null -> "Already ${own.label}"
+                            else -> null
+                        },
+                    )
+                },
+                totalMatches = matching.size,
+            ),
+        )
+    }
 }
+
+/**
+ * How many candidate rows one search returns.
+ *
+ * Seven, which is the prototype's number and is chosen to be *read* rather than scrolled:
+ * the panel says how many more matched and invites another letter, which is a better
+ * answer than a scrolling list of an entire organisation. The count comes back in full,
+ * so narrowing is a fact the reader is given rather than one they have to guess at.
+ */
+private const val CANDIDATE_LIMIT = 7
 
 /**
  * An authorized caller and the project they are configuring.
@@ -898,6 +1049,10 @@ private suspend fun BoardDependencies.buildAccess(
             ).takeIf { !canGrant },
         addressAdvice = addressAdvice(),
         staffDomain = identity.domain,
+        // Sent to every caller who can read this section, not only one who can grant: a
+        // Maintainer reading a read-only Access section is being told the truth about the
+        // board, and "an outside address cannot be added here" is part of that truth.
+        newAddressRefusal = newAddressRefusal(settings.admission),
     )
 }
 
@@ -1166,6 +1321,50 @@ private fun BoardDependencies.addressAdvice(): String {
     } else {
         "$nothingSent This deployment cannot mail a sign-in code, so only an address that can " +
             "sign in with Google will ever arrive — adding any other is a role nobody can claim."
+    }
+}
+
+/**
+ * Why a **brand-new** address off this deployment's domain cannot be added, or null when
+ * any address may be.
+ *
+ * ── The domain is not the rule; admission is ────────────────────────────────
+ *
+ * A configured `domain` decides who counts as *staff*, and `onlyHostedGoogleAccounts`
+ * decides which Google accounts the chooser offers. **Neither restricts who may be
+ * added**, and treating the domain's mere presence as a restriction is the mistake this
+ * function exists to not make: under [AdmissionPolicy.ANYONE] a deployment with a domain
+ * takes any address at all, and the picker must say so by saying nothing.
+ *
+ * Only a *new* address is at stake. An account that already exists is past the door —
+ * admission is asked once, at creation — so it stays addable at any rung whatever its
+ * domain, which is what lets the picker offer an off-domain colleague from the directory
+ * while refusing to invent one.
+ *
+ * Worded per policy rather than assembled from parts, because the two domain policies
+ * refuse for genuinely different reasons and the difference is the useful half: one
+ * admits nobody outside the domain at all, the other admits somebody already here. The
+ * sentence deliberately does **not** point at the setting — the reader of a project's
+ * Access section may well not be an instance administrator, and "go and change this
+ * elsewhere" is advice they cannot take.
+ *
+ * The enforcement is [AdmissionPolicy.admitsNewAccount], asked again by the people POST.
+ * This is the explanation; that is the guard, and they read the same function.
+ */
+private fun BoardDependencies.newAddressRefusal(policy: AdmissionPolicy): String? {
+    // Asked of a placeholder address that is definitely not on the domain, which is
+    // exactly the question the picker needs answered before anybody has typed anything:
+    // "would a new outside address be refused here?" Keyed on the policy's own rule
+    // rather than on a `when` over the policies, so a fourth policy cannot arrive and be
+    // silently treated as permissive.
+    val offDomain = "somebody@" + (identity.domain?.let { "not-$it" } ?: "example.invalid")
+    if (policy.admitsNewAccount(offDomain, identity, isAlreadyAdded = false)) return null
+    val domain = identity.domain ?: return "This instance does not accept new accounts for that address."
+    return when (policy) {
+        AdmissionPolicy.STAFF_DOMAIN_ONLY ->
+            "This instance admits $domain addresses only, so there is no account for it to hold."
+        else ->
+            "Outside $domain, only addresses that already have an account here can be added."
     }
 }
 

@@ -51,7 +51,9 @@ import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AudienceGrant
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.PersonAdd
+import se.soderbjorn.lunicle.clientserver.PersonCandidates
 import se.soderbjorn.lunicle.clientserver.ProjectDisplaySettings
 import se.soderbjorn.lunicle.clientserver.ProjectSectionKeys
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
@@ -690,6 +692,194 @@ class ProjectAccessTest {
         val accountsAtSeed: Int,
     )
 
+
+    // ── The people picker's directory (LNL-204) ──────────────────────────────
+
+    /**
+     * The picker searches the **directory**, not the exception list.
+     *
+     * The whole point of the feature: `access.people` is exceptions only, so somebody who
+     * is not an exception yet has no row to click and had to be reached by typing their
+     * address. `outsider` holds nothing on this board and is not in that list — and is
+     * exactly who this must offer.
+     *
+     * The two inert cases are asserted in the same test because they are the same rule and
+     * the interesting thing is that they are *present*: a search that silently omitted them
+     * would read as a broken search, and the reader's next move would be to type the name
+     * again.
+     */
+    @Test
+    fun `the candidate list offers the whole directory, with the unpickable shown and explained`(): Unit =
+        runBlocking {
+            val f = seed()
+            val state = settingsFor(f.adminCookie, f.projectId)
+            assertTrue(
+                state.access!!.people.none { it.userId == f.outsiderId },
+                "precondition: the outsider is not an exception, so the picker is the only way to them",
+            )
+
+            val answer = candidatesFor(f.adminCookie, f.projectId, query = "")
+            val outsider = answer.candidates.firstOrNull { it.userId == f.outsiderId }
+            assertNotNull(outsider, "The one person who needed adding was missing from the picker.")
+            assertNull(outsider.inertReason, "Somebody holding nothing here was offered as unpickable.")
+            assertNull(outsider.heldRoleLabel)
+
+            val maintainer = answer.candidates.firstOrNull { it.userId == f.maintainerId }
+            assertNotNull(maintainer, "Somebody already on the board was hidden rather than shown inert.")
+            assertEquals("Already Maintainer", maintainer.inertReason)
+
+            val runsInstance = answer.candidates.firstOrNull { it.userId == f.sysAdminId }
+            assertNotNull(runsInstance, "The instance owner was hidden from the picker.")
+            assertEquals("Owner on every board", runsInstance.inertReason)
+        }
+
+    /** Matched against the address as well as the name, which is how two Anns are told apart. */
+    @Test
+    fun `the candidate list matches on the address too`(): Unit = runBlocking {
+        val f = seed()
+        val answer = candidatesFor(f.adminCookie, f.projectId, query = "out@example.com")
+        assertEquals(
+            listOf(f.outsiderId),
+            answer.candidates.map { it.userId },
+            "Searching a whole address did not find the account holding it.",
+        )
+    }
+
+    /**
+     * People not yet on this project come first.
+     *
+     * The order is the feature, not decoration: the top of the list should be who you are
+     * reaching for, and everybody already on the board is by definition not that.
+     */
+    @Test
+    fun `the candidate list puts people who are not here yet first`(): Unit = runBlocking {
+        val f = seed()
+        val answer = candidatesFor(f.adminCookie, f.projectId, query = "")
+        val firstHolder = answer.candidates.indexOfFirst { it.inertReason != null }
+        val lastFree = answer.candidates.indexOfLast { it.inertReason == null }
+        assertTrue(firstHolder >= 0 && lastFree >= 0, "precondition: the fixture has both kinds")
+        assertTrue(
+            lastFree < firstHolder,
+            "Somebody already on the board sorted above somebody who could be added.",
+        )
+    }
+
+    /**
+     * Gated at the rung that may **grant**, not the rung that may read the section.
+     *
+     * These rows carry addresses. A Maintainer can see the Access section (their own line)
+     * and must not receive the instance's account directory through it.
+     */
+    @Test
+    fun `only somebody who may grant can search the directory`(): Unit = runBlocking {
+        val f = seed()
+        withRoutes { client ->
+            val refused = client.get("${ApiRoutes.projectPeopleCandidates(f.projectId)}?q=") {
+                cookie(SESSION_COOKIE, f.maintainerCookie)
+            }
+            assertEquals(HttpStatusCode.Forbidden, refused.status)
+        }
+    }
+
+    // ── Admission, at the add route (LNL-204) ────────────────────────────────
+
+    /**
+     * A **new** off-domain address is refused when admission enforces the domain — and the
+     * route is what refuses it, not only the screen.
+     *
+     * This was missing outright: the route wrote a `users` row for any address at all, so on
+     * a domain-only deployment it would invent an account whose owner could then never sign
+     * in to claim the rung. A grant nobody can collect, written without complaint.
+     *
+     * Asserted with the refusal's own wording, because the screen shows the same sentence
+     * from `access.newAddressRefusal` and the two must not drift.
+     */
+    @Test
+    fun `a new off-domain address is refused when admission enforces the domain`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_ONLY)
+        val before = users.selectAll().size
+        withRoutes(domain = STAFF_DOMAIN) { client ->
+            val refused = client.post(ApiRoutes.projectPeople(f.projectId)) {
+                cookie(SESSION_COOKIE, f.ownerCookie)
+                contentType(ContentType.Application.Json)
+                setBody(PersonAdd("stranger@elsewhere.test", ProjectRole.VIEWER.key))
+            }
+            assertEquals(HttpStatusCode.Conflict, refused.status)
+            assertTrue(
+                refused.bodyAsText().contains("addresses only"),
+                "The refusal did not say why: ${refused.bodyAsText()}",
+            )
+        }
+        assertEquals(before, users.selectAll().size, "A refused address still created an account.")
+    }
+
+    /**
+     * …and an address that already has an account is never refused, whatever its domain.
+     *
+     * Admission is asked once, at creation. Somebody already through the door stays addable,
+     * which is what lets the picker offer an off-domain colleague from the directory while
+     * refusing to invent one — and is the difference between the two domain policies.
+     */
+    @Test
+    fun `an existing off-domain account stays addable under a domain policy`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_ONLY)
+        withRoutes(domain = STAFF_DOMAIN) { client ->
+            val accepted = client.post(ApiRoutes.projectPeople(f.projectId)) {
+                cookie(SESSION_COOKIE, f.ownerCookie)
+                contentType(ContentType.Application.Json)
+                // The outsider from the fixture: off-domain, and already an account here.
+                setBody(PersonAdd("out@example.com", ProjectRole.VIEWER.key))
+            }
+            assertEquals(HttpStatusCode.OK, accepted.status)
+        }
+        assertEquals(ProjectRole.VIEWER, roles.roleFor(f.outsiderId, f.projectId))
+    }
+
+    /**
+     * The screen's copy of that rule: a sentence only when the policy enforces the domain.
+     *
+     * **A configured domain restricts nothing by itself** — that is the mistake this asserts
+     * against. Under `anyone` a deployment with a domain takes any address, so the picker
+     * must say nothing rather than grey the row.
+     */
+    @Test
+    fun `the access state names a new-address refusal only when admission enforces it`(): Unit = runBlocking {
+        val f = seed()
+        assertNull(
+            settingsFor(f.ownerCookie, f.projectId, domain = STAFF_DOMAIN).access!!.newAddressRefusal,
+            "A refusal was claimed on a deployment that admits anyone.",
+        )
+        instanceSettings.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)
+        val refusal = settingsFor(f.ownerCookie, f.projectId, domain = STAFF_DOMAIN)
+            .access!!.newAddressRefusal
+        assertNotNull(refusal, "A domain policy said nothing about a new outside address.")
+        assertTrue(
+            refusal.contains("already have an account"),
+            "The plus-added policy borrowed the domain-only wording: $refusal",
+        )
+    }
+
+    private companion object {
+        /**
+         * A domain the fixture's accounts are all OFF, deliberately.
+         *
+         * Every seeded address is `@example.com`, so naming a different domain here makes
+         * all of them off-domain — which is the state the admission tests need: an existing
+         * outside account (addable) beside a new outside address (refused).
+         */
+        const val STAFF_DOMAIN = "corp.test"
+    }
+
+    /** One candidate search, as a given caller. */
+    private fun candidatesFor(cookie: String, projectId: Long, query: String): PersonCandidates =
+        withRoutesResult<PersonCandidates> { client ->
+            client.get("${ApiRoutes.projectPeopleCandidates(projectId)}?q=$query") {
+                cookie(SESSION_COOKIE, cookie)
+            }.body()
+        }
+
     private suspend fun seed(): Fixture {
         // The first account is the instance administrator — and, once seated below, its
         // owner — and deliberately holds none of the four rungs written below: every
@@ -736,9 +926,9 @@ class ProjectAccessTest {
     }
 
     /** One settings read, as a given caller. The response is this ticket's whole contract. */
-    private fun settingsFor(cookie: String, projectId: Long): ProjectSettingsState {
+    private fun settingsFor(cookie: String, projectId: Long, domain: String? = null): ProjectSettingsState {
         lateinit var state: ProjectSettingsState
-        withRoutes { client ->
+        withRoutes(domain) { client ->
             state = client.get(ApiRoutes.projectSettings(projectId)) {
                 cookie(SESSION_COOKIE, cookie)
             }.body()
@@ -746,12 +936,21 @@ class ProjectAccessTest {
         return state
     }
 
-    private fun withRoutes(block: suspend (io.ktor.client.HttpClient) -> Unit) = testApplication {
+    /**
+     * @param domain the deployment's own domain, for the tests that need a staff tier or an
+     *   off-domain address to exist at all (LNL-204). Null by default, because most of this
+     *   file is about rungs rather than about identity and a domain would grow every
+     *   project a third audience row.
+     */
+    private fun withRoutes(
+        domain: String? = null,
+        block: suspend (io.ktor.client.HttpClient) -> Unit,
+    ) = testApplication {
         application {
             install(ServerContentNegotiation) { json() }
             routing {
-                boardRoutes(dependencies())
-                projectSettingsRoutes(dependencies())
+                boardRoutes(dependencies(domain))
+                projectSettingsRoutes(dependencies(domain))
             }
         }
         val client = createClient {
@@ -761,13 +960,17 @@ class ProjectAccessTest {
     }
 
     /** [withRoutes], for the tests that want the response body rather than only its status. */
-    private fun <T : Any> withRoutesResult(block: suspend (io.ktor.client.HttpClient) -> T): T {
+    private fun <T : Any> withRoutesResult(
+        domain: String? = null,
+        block: suspend (io.ktor.client.HttpClient) -> T,
+    ): T {
         var held: T? = null
-        withRoutes { client -> held = block(client) }
+        withRoutes(domain) { client -> held = block(client) }
         return held ?: error("The block never ran, which means testApplication changed shape.")
     }
 
-    private fun dependencies() = BoardDependencies(
+    private fun dependencies(domain: String? = null) = BoardDependencies(
+        identity = InstanceIdentity(domain = domain),
         access = access,
         projects = projects,
         projectRepository = projectRepository,

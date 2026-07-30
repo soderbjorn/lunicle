@@ -46,6 +46,7 @@ import se.soderbjorn.lunicle.clientserver.LunicleApi
 import se.soderbjorn.lunicle.clientserver.McpState
 import se.soderbjorn.lunicle.clientserver.NotificationCountState
 import se.soderbjorn.lunicle.clientserver.NotificationListState
+import se.soderbjorn.lunicle.clientserver.PersonCandidates
 import se.soderbjorn.lunicle.clientserver.ProjectListState
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
@@ -448,6 +449,14 @@ internal class DemoLunicleApi(
     override suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState {
         val p = requireProject(projectId)
         val existing = world.users.firstOrNull { it.email.equals(email, ignoreCase = true) }
+        // Admission, which the real route now asks here too (LNL-204). An address that
+        // already has an account is past the door and stays addable whatever its domain;
+        // only inventing a new outside one is refused. Refused by returning the state
+        // unchanged, which is this file's idiom for "the server would not have done that" —
+        // and the picker has already said why, from `newAddressRefusal`.
+        if (existing == null && !world.demoAdmitsNewAddress(email)) {
+            return world.projectSettingsState(p)
+        }
         val person = existing ?: DemoUser(
             id = world.allocId(),
             name = email.substringBefore('@'),
@@ -461,6 +470,16 @@ internal class DemoLunicleApi(
         p.members[person.id] = roleKey
         return world.projectSettingsState(p)
     }
+
+    /**
+     * The directory the people picker searches (LNL-204).
+     *
+     * The demo's whole point for this feature: `?demo=1` signs you in as somebody who can
+     * grant, against a world with a dozen accounts on two domains, so the picker can be
+     * driven — searched, picked from, refused — with no server, no database and no sign-in.
+     */
+    override suspend fun projectPeopleCandidates(projectId: Long, query: String): PersonCandidates =
+        world.projectCandidates(requireProject(projectId), query)
 
     // ── Forums (stubbed — the tab is off) ─────────────────────────────────────
 

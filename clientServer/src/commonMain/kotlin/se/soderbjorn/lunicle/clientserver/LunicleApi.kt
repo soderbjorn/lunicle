@@ -195,9 +195,23 @@ interface LunicleApi {
      * Add an address, holding a rung. Nothing is sent — see [PersonAdd].
      *
      * @throws ApiFailure 400 for an address that is not one, 403 for a rung this caller
-     *   may not hand out.
+     *   may not hand out, 409 for a new address this deployment's admission policy will
+     *   not accept an account for.
      */
     suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState
+
+    /**
+     * The accounts the people picker may offer, matched against [query].
+     *
+     * An empty [query] is the head of the directory rather than an empty answer: opening
+     * the picker should show who is there. Read-only, and the one call here that does not
+     * return a [ProjectSettingsState] — it answers a question about the instance's
+     * accounts rather than changing this project.
+     *
+     * @throws ApiFailure 403 for a caller who may not grant here. These rows carry
+     *   addresses, so the gate is the granting rung and not the reading one.
+     */
+    suspend fun projectPeopleCandidates(projectId: Long, query: String): PersonCandidates
 
     // ── The board ────────────────────────────────────────────────────────────
 
