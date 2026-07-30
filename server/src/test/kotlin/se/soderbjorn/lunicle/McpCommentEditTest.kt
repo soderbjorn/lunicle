@@ -211,12 +211,12 @@ class McpCommentEditTest {
      * An ordinary owner may edit, but not re-attribute.
      *
      * The two rules pulled apart: this user CAN edit the comment (it is theirs), so
-     * the refusal here is not canEditComment — it is the admin-only attribution
-     * gate, refusing `author` for a non-admin exactly as it does on add_comment.
-     * Nothing is written.
+     * the refusal here is not canEditComment — it is the attribution gate, which is
+     * the instance OWNER's alone, refusing `author` exactly as it does on
+     * add_comment. Nothing is written.
      */
     @Test
-    fun `a non-admin owner cannot re-attribute their comment`(): Unit = runBlocking {
+    fun `a comment's author cannot re-attribute it without owning the instance`(): Unit = runBlocking {
         val fixture = seed()
         val issueId = published(fixture)
         val commentId = commentBy(issueId, Author.Account(fixture.ordinaryId), body = "mine")
@@ -228,8 +228,8 @@ class McpCommentEditTest {
                 "update_comment",
                 """{"comment_id":$commentId,"body":"mine still","author":"Admin"}""",
             )
-            assertTrue(result.isError, "A non-admin set an author on a comment edit.")
-            assertTrue(result.text.contains("admin"), "The refusal must name the gate. Got: ${result.text}")
+            assertTrue(result.isError, "Somebody who does not own the instance set an author on a comment edit.")
+            assertTrue(result.text.contains("owner"), "The refusal must name the gate. Got: ${result.text}")
         }
 
         val comment = comments.findById(commentId)!!

@@ -442,7 +442,7 @@ class McpHistoryTest {
         }
     }
 
-    // ── Correcting attribution, admin-only ───────────────────────────────────
+    // ── Correcting attribution, the instance owner's ─────────────────────────
 
     /**
      * The job update_history_event exists for: an imported entry gets reattached
@@ -530,7 +530,7 @@ class McpHistoryTest {
             )
             assertTrue(refused.isError, "A non-admin was allowed to edit history: ${refused.text}")
             assertTrue(
-                refused.text.contains("system administrator"),
+                refused.text.contains("instance owner"),
                 "The refusal did not say who may do this. Got: ${refused.text}",
             )
 
@@ -655,7 +655,7 @@ class McpHistoryTest {
             val theirs = client.callTool(ordinaryToken, "watch_issue", """{"issue_id":$issueId,"user":"otto@example.com"}""")
             assertTrue(theirs.isError, "An ordinary user changed somebody else's watch.")
             assertTrue(
-                theirs.text.contains("system administrator"),
+                theirs.text.contains("instance owner"),
                 "The refusal did not say who may do this. Got: ${theirs.text}",
             )
             assertTrue(!subscriptions.isSubscribedToIssueUpdates(otto.id, issueId), "A refused watch still subscribed the other user.")

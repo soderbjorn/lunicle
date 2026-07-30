@@ -25,29 +25,29 @@
  * ── The one exception, and its shape ────────────────────────────────────────
  *
  * Someone asked. `create_issue`, `add_comment` and `update_comment` take an optional
- * `author`, `author_external` and `created_at`, so that an admin importing another
- * tracker's history ends up with a board that says who wrote what and when — rather
- * than one where every issue was filed by the admin, today. §3 of the plan says
+ * `author`, `author_external` and `created_at`, so that the instance owner importing
+ * another tracker's history ends up with a board that says who wrote what and when —
+ * rather than one where every issue was filed by them, today. §3 of the plan says
  * admin operations are not exposed over MCP and that there is one flat `mcp` scope;
  * both still hold, and this is deliberately not a counterexample to either:
  *
- *  - **No new scope**, and the one new tool is not an admin tool — see below.
+ *  - **No new scope**, and the one new tool is not the owner's — see below.
  *    The token still says only who you are.
  *  - **The gate is [AccessControl.canAttributeWrites]**, asked of the *token's*
  *    user on every call, server-side. Never of anything in the arguments.
- *  - **Refused, never ignored.** A non-admin who sends any of them gets an
+ *  - **Refused, never ignored.** Anyone but the owner who sends any of them gets an
  *    error. Silently dropping them would be the worst outcome available: the agent
  *    would report that it had backfilled history under Ada's name having actually
  *    written it under its own, and the person reading that report has no way to
  *    know. A refusal is a fact; a quiet substitution is a lie.
- *  - **Creation only for everyone but an admin.** A non-admin can never rewrite an
+ *  - **Creation only for everyone but the owner.** Anybody else can never rewrite an
  *    existing row's author or timestamps — those are set once, at creation, and no
- *    tool here lets an ordinary editor near them. An admin can: `update_issue` and
+ *    tool here lets an ordinary editor near them. The owner can: `update_issue` and
  *    `update_comment` let one re-attribute and re-date an existing issue or comment
  *    in place, an external author included. They earn the exception the way
  *    `start_attachment_upload` does — this surface offers no deletion, so an import
  *    that put the wrong name or date on a row could otherwise never be repaired at
- *    all. The gate is unchanged ([AccessControl.canAttributeWrites]); what an admin
+ *    all. The gate is unchanged ([AccessControl.canAttributeWrites]); what the owner
  *    may fix is the existing row, not only the new one.
  *
  * `author_external` is the same exception widened by exactly one case: an imported
@@ -68,9 +68,10 @@
  * through the web app, gated by the same [AccessControl.canEditIssue] and
  * [AccessControl.canEditComment] the HTTP routes use.
  *
- * It is deliberately **not** admin-only. Attaching a file is an ordinary thing an
- * ordinary user does; attaching one *as somebody else* is the admin-only part, and
- * that is [resolveAttribution]'s job here exactly as it is on `create_issue`.
+ * It is deliberately **not** the instance owner's alone. Attaching a file is an
+ * ordinary thing an ordinary user does; attaching one *as somebody else* is the part
+ * only the owner may do, and that is [resolveAttribution]'s job here exactly as it is
+ * on `create_issue`.
  *
  * The bytes do not come through this tool, and that is the whole design rather
  * than an optimisation. See [AttachmentTicketStore] for why base64-through-context
@@ -110,8 +111,8 @@
  * mail path has a deliverability problem nobody chose. The three bounds above
  * still stand and are still what keeps this from being a relay — the check is
  * about who may make the instance send at all, not about where a message goes.
- * See [AccessControl.canSendAgentMail] for why that answer is admin and what a
- * non-admin who wants it should get instead.
+ * See [AccessControl.canSendAgentMail] for why that answer is the instance owner
+ * and what anybody else who wants it should get instead.
  *
  * It is gated in two places, and the second is the one that enforces: the tool
  * is left out of `tools/list` for a caller who cannot use it, so an agent is not
@@ -137,18 +138,21 @@
  * two new targets on `start_attachment_upload`, without which an imported
  * discussion arrives with every image broken.
  *
- * They are **system administrator only**, which is the ticket's own decision and
- * makes them the largest departure in this file from "an agent gets what the
- * person driving it has in the web app". An ordinary user posts in forums; their
- * agent does not. See [AccessControl.canUseForumTools] for the argument — briefly,
- * a forum is a room full of other people's words that records no history, and
- * posting in one mails everybody watching it.
+ * LNL-78 gave them to the system administrator alone, which made them the largest
+ * departure in this file from "an agent gets what the person driving it has in the
+ * web app". An ordinary user posts in forums; their agent does not. That audience
+ * was never restated in rungs, because there is nobody to restate it for: see
+ * [AccessControl.canUseForumTools], which answers false for every caller, the
+ * instance owner included. The argument for keeping it narrow when discussions come
+ * back is still the one it gives — a forum is a room full of other people's words
+ * that records no history, and posting in one mails everybody watching it.
  *
  * Two consequences worth stating out loud rather than discovering:
  *
  *  - **Gated twice, and the second one enforces.** The thirteen are filtered out
- *    of `tools/list` for a non-admin, exactly as `send_email` is — and every one
- *    of them asks again, because `tools/call` never consults that list.
+ *    of `tools/list` for everybody, exactly as `send_email` is for anyone but the
+ *    instance owner — and every one of them asks again, because `tools/call` never
+ *    consults that list.
  *  - **A backfilled write announces nothing.** `create_forum_post` and
  *    `create_forum_comment` fire the same notifications the web routes fire, so
  *    an agent starting a genuine thread reaches the forum's watchers — *unless*
@@ -281,16 +285,20 @@ internal val MCP_INSTRUCTIONS = """
         the field entirely to leave it alone.
 
     Permissions, and why a refusal is final: you are acting as a specific Lunicle
-    user, and you have exactly their rights — no more. A tool that returns an
-    error saying you cannot do something is not a transient failure and retrying
-    it will not help; the user you are acting as genuinely lacks that permission.
-    Tell the person what happened rather than working around it. Reading is
-    filtered the same way: a project you cannot see does not appear in
+    user, and you have exactly their rights — no more. Those rights in a project
+    are one rung on a ladder — viewer, contributor, maintainer, administrator,
+    owner — and each rung contains the ones below it, so a refusal means the
+    account you are acting as stands below the rung that action needs. A tool that
+    returns an error saying you cannot do something is not a transient failure and
+    retrying it will not help; the user you are acting as genuinely lacks that
+    permission. Tell the person what happened rather than working around it.
+    Reading is filtered the same way: a project you cannot see does not appear in
     list_projects, and there is no way to ask about it.
 
     What is deliberately not here: you cannot create, rename or delete projects,
-    grant roles, or delete an attachment on its own. Those tools do not exist. If
-    a task needs one, say so — do not approximate it.
+    or grant anybody a rung on one. Those tools do not exist, and deleting a
+    stored attachment on its own exists only for the instance owner. If a task
+    needs one of them, say so — do not approximate it.
 
     Deleting, which you CAN do: delete_issue and delete_comment are permanent and
     there is no trash. Both are gated on the same rights the web app applies, so a
@@ -308,15 +316,15 @@ internal val MCP_INSTRUCTIONS = """
     not put the file into any text: the tool tells you the url to use, and writing
     the markdown that points at it is a separate edit you make yourself.
 
-    Backfilling history, if and only if you are acting as a system administrator: create_issue,
-    add_comment, update_issue and update_comment take an optional `author`, an
-    optional `author_external` and an optional `created_at`, for importing issues
-    from somewhere else so that they keep the name and date they had — and, on the
-    two update tools, for fixing one after the fact. All three are admin-only and
-    are refused outright — not ignored — for anyone else, so do not send them
-    speculatively: a refusal costs a round-trip, and the alternative you might
-    imagine (it silently files under your own name) is exactly what the refusal
-    exists to prevent.
+    Backfilling history, if and only if you are acting as the instance owner:
+    create_issue, add_comment, update_issue and update_comment take an optional
+    `author`, an optional `author_external` and an optional `created_at`, for
+    importing issues from somewhere else so that they keep the name and date they
+    had — and, on the two update tools, for fixing one after the fact. All three
+    are the owner's alone and are refused outright — not ignored — for anyone
+    else, so do not send them speculatively: a refusal costs a round-trip, and the
+    alternative you might imagine (it silently files under your own name) is
+    exactly what the refusal exists to prevent.
 
     Which author parameter to use is a question about the person, not a fallback
     chain. `author` is for somebody who has a Lunicle account: name them by their
@@ -327,10 +335,10 @@ internal val MCP_INSTRUCTIONS = """
     account at all, which is the ordinary case when importing from another tracker:
     it records the name as written, creates nothing, and grants nobody anything.
     Passing both is refused. `created_at` is epoch milliseconds and cannot be in
-    the future. As a system administrator you can also correct all three after the fact —
-    update_issue on an issue, update_comment on a comment — so a name or date that
-    came in wrong is fixable in place rather than only at creation; for anyone else
-    they are set once, when the row is written.
+    the future. As the instance owner you can also correct all three after the fact
+    — update_issue on an issue, update_comment on a comment — so a name or date
+    that came in wrong is fixable in place rather than only at creation; for anyone
+    else they are set once, when the row is written.
 
     `created_at` also sets the issue's last-touched time, which is what the board
     sorts on — but only at creation. Every later edit re-stamps that column with
@@ -338,19 +346,23 @@ internal val MCP_INSTRUCTIONS = """
     be attached once the issue exists, so the description has to be rewritten
     afterwards to point at the uploaded file. Done naively that lands a years-old
     issue at the top of the board dated today. `update_issue` therefore takes an
-    admin-only `updated_at` — pass the date the imported history actually ended.
+    owner-only `updated_at` — pass the date the imported history actually ended.
     It cannot be in the future, and cannot precede the issue's own `created_at`.
 
-    An issue or comment filed under `author_external` is unowned: nobody can edit
-    it afterwards except a system administrator. That is a consequence of there being no account
-    to own it, not an oversight, and it applies to imported attachments too.
+    An issue or comment filed under `author_external` is unowned: nobody inherits
+    it by sharing the name it was filed under, so editing it afterwards takes a
+    rung rather than authorship — a maintainer in its project for an issue, an
+    instance administrator for a comment. That is a consequence of there being no
+    account to own it, not an oversight, and it applies to imported attachments
+    too.
 
     Saying you are an agent: create_issue and add_comment take an optional
     `agent_name`, and unlike the backfill parameters above this is one you should
     NORMALLY SEND. Put your own name in it — the assistant or product you are — so
     that the board shows clearly an agent filed the issue or wrote the comment
-    rather than a human typing it by hand. It is not admin-only and does not change
-    who the issue belongs to: it rides alongside the user's own account as a label.
+    rather than a human typing it by hand. Sending it needs no standing of any kind
+    and does not change who the issue belongs to: it rides alongside the user's own
+    account as a label.
     Leave it out only when the user has explicitly asked you to act purely as them
     with no agent attribution — that is the override, and it is the only reason to
     omit it.
@@ -365,15 +377,15 @@ internal val MCP_INSTRUCTIONS = """
  * The `send_email` paragraph, appended to [MCP_INSTRUCTIONS] only for a caller
  * who may actually send — see [McpTools.instructionsFor].
  *
- * Conditional rather than a sentence saying "system administrators only", which
- * is how the backfill parameters above handle the same problem. The difference is
- * that those parameters live on tools everybody is offered, so a non-admin's
- * agent has to be told they exist in order to be told not to reach for them.
- * `send_email` is not in a non-admin's `tools/list` at all, and a paragraph
+ * Conditional rather than a sentence saying "the instance owner only", which is
+ * how the backfill parameters above handle the same problem. The difference is
+ * that those parameters live on tools everybody is offered, so an ordinary
+ * caller's agent has to be told they exist in order to be told not to reach for
+ * them. `send_email` is not in their `tools/list` at all, and a paragraph
  * explaining a tool that is not in the list is worse than silence: the model's
  * options are to hallucinate the call or to tell the person about a capability
  * they do not have. This text is also paid for on every conversation — see
- * [MCP_INSTRUCTIONS] — and most of them are not an admin's.
+ * [MCP_INSTRUCTIONS] — and almost none of them are the owner's.
  */
 internal val MCP_AGENT_MAIL_INSTRUCTIONS = """
     E-mailing the user: send_email writes to the person you are acting as, and to
@@ -396,6 +408,11 @@ internal val MCP_AGENT_MAIL_INSTRUCTIONS = """
  * every ordinary user's conversation in exchange for teaching their model to
  * hallucinate calls.
  */
+// The text below predates LNL-191 and still speaks in system administrators — its
+// first line tells the reader they reach forums by being one. It is appended for no
+// caller at all, so nothing reads it, and it is left whole rather than
+// half-corrected: whoever puts discussions back has to decide which rung they
+// belong to first, and then this needs rewording to that rung.
 @Suppress("unused")
 internal val MCP_FORUM_INSTRUCTIONS = """
     Discussion forums, which you can reach because you are acting as a system
@@ -443,9 +460,9 @@ private fun JsonObject.string(name: String): String? =
  * Whether the agent said anything about [name] at all.
  *
  * Presence, deliberately, rather than "did it parse" — and the distinction is the
- * whole of the permission check in [McpTools.resolveAttribution]. A non-admin
- * sending `"created_at": "last Tuesday"` must be refused for having asked, not
- * quietly given today's date because the value happened to be unreadable. Asking
+ * whole of the permission check in [McpTools.resolveAttribution]. A caller who may
+ * not backfill, sending `"created_at": "last Tuesday"`, must be refused for having
+ * asked, not quietly given today's date because the value was unreadable. Asking
  * `long()` instead would collapse "absent" and "garbage" into one null and hand
  * that caller the silent substitution this feature exists to prevent.
  *
@@ -608,8 +625,8 @@ class McpTools(private val deps: BoardDependencies) {
                 "it stood afterwards in `values`, not a delta. A status, label or component is " +
                 "named as it was AT THE TIME, so a column renamed since reads by its old name. " +
                 "Priority and resolution changes are not recorded, so a STATUS_CHANGED into a " +
-                "closing column does not say why it was closed. Newer builds may add kinds. A " +
-                "system administrator can correct an entry's author or date — but never what it " +
+                "closing column does not say why it was closed. Newer builds may add kinds. The " +
+                "instance owner can correct an entry's author or date — but never what it " +
                 "records — with update_history_event, addressing it by that `id`.",
             inputSchema = schema(
                 "issue_id" to integerProp("The issue's id, from get_board."),
@@ -650,11 +667,11 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this issue was written, in epoch " +
+                    "INSTANCE OWNER ONLY, for backfilling. When this issue was written, in epoch " +
                         "milliseconds. Cannot be in the future. Also becomes the issue's " +
                         "last-touched time, which is what the board sorts on — the two are one " +
-                        "value and cannot be set apart. Refused, not ignored, if you are not an " +
-                        "admin. Defaults to now.",
+                        "value and cannot be set apart. Refused, not ignored, if you are not the " +
+                        "instance owner. Defaults to now.",
                 ),
                 required = listOf("project_id", "title"),
             ),
@@ -696,17 +713,18 @@ class McpTools(private val deps: BoardDependencies) {
                 "agent_name" to stringProp(
                     "Set or change the agent label on this issue — your own name as the agent " +
                         "making the edit. Omitting it leaves whatever is already there. Not " +
-                        "admin-only, and it does not change who the issue belongs to. To REMOVE " +
-                        "the badge — so a purely-human or migrated issue wears none — a system " +
-                        "administrator sends an empty string; a non-admin who tries is refused.",
+                        "restricted to the instance owner, and it does not change who the issue " +
+                        "belongs to. To REMOVE the badge — so a purely-human or migrated issue " +
+                        "wears none — the instance owner sends an empty string; anyone else who " +
+                        "tries is refused.",
                 ),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for correcting backfilled history. When this issue should claim " +
+                    "INSTANCE OWNER ONLY, for correcting backfilled history. When this issue should claim " +
                         "to have been written, in epoch milliseconds. Cannot be in the future, and " +
-                        "cannot land after `updated_at`. Refused, not ignored, if you are not an " +
-                        "admin. Leaves the existing date if omitted.",
+                        "cannot land after `updated_at`. Refused, not ignored, if you are not the " +
+                        "instance owner. Leaves the existing date if omitted.",
                 ),
                 "updated_at" to integerProp(UPDATED_AT_PROP_DESCRIPTION),
                 required = listOf("issue_id"),
@@ -742,7 +760,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "By default this is about YOU — it adds or removes your own watch, which any " +
                 "signed-in user who can see the issue may do (you need an e-mail address on your " +
                 "account to actually receive anything). Name someone else in `user` to watch or " +
-                "unwatch ON THEIR BEHALF; that is SYSTEM ADMINISTRATOR ONLY, since it decides " +
+                "unwatch ON THEIR BEHALF; that is INSTANCE OWNER ONLY, since it decides " +
                 "another person's inbox. Idempotent either way — watching what you already watch, " +
                 "or unwatching what you do not, changes nothing and still reports where it left " +
                 "things. get_issue lists an issue's current watchers.",
@@ -752,9 +770,9 @@ class McpTools(private val deps: BoardDependencies) {
                 "user" to stringProp(
                     "Whose watch to change: a display name exactly as the board shows it, or the " +
                         "email address on their account. Omit it to change your own. Naming " +
-                        "somebody else is SYSTEM ADMINISTRATOR ONLY — refused, not ignored, if you " +
-                        "are not one — and an ambiguous name is refused rather than guessed at; use " +
-                        "the email address to settle it.",
+                        "somebody else is INSTANCE OWNER ONLY — refused, not ignored, if you are " +
+                        "not the owner — and an ambiguous name is refused rather than guessed at; " +
+                        "use the email address to settle it.",
                 ),
                 required = listOf("issue_id"),
             ),
@@ -769,9 +787,9 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this comment was written, in epoch " +
+                    "INSTANCE OWNER ONLY, for backfilling. When this comment was written, in epoch " +
                         "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
-                        "not a system administrator. Defaults to now.",
+                        "not the instance owner. Defaults to now.",
                 ),
                 required = listOf("issue_id", "body"),
             ),
@@ -780,30 +798,30 @@ class McpTools(private val deps: BoardDependencies) {
             name = "update_comment",
             description = "Change an existing comment. Every field is optional; omit one to " +
                 "leave it as it is. You may edit a comment that is your own, or any comment if " +
-                "you are acting as a system administrator — the same rule the web app applies.",
+                "you are acting as an instance administrator — the same rule the web app applies.",
             inputSchema = schema(
                 "comment_id" to integerProp("The comment to change."),
                 "body" to stringProp("A new body, in markdown. Replaces the old one entirely."),
                 "agent_name" to stringProp(
                     "Set or change the agent label on this comment — your own name as the agent " +
                         "making the edit. Omitting it leaves whatever is already there. Not " +
-                        "admin-only, and it does not change who the comment belongs to — it only " +
-                        "labels the row. To REMOVE the badge, a system administrator sends an " +
-                        "empty string; a non-admin who tries is refused.",
+                        "restricted to the instance owner, and it does not change who the comment " +
+                        "belongs to — it only labels the row. To REMOVE the badge, the instance " +
+                        "owner sends an empty string; anyone else who tries is refused.",
                 ),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this comment should claim to have been written, in epoch " +
+                    "INSTANCE OWNER ONLY. When this comment should claim to have been written, in epoch " +
                         "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
-                        "not a system administrator. Leaves the existing date if omitted.",
+                        "not the instance owner. Leaves the existing date if omitted.",
                 ),
                 required = listOf("comment_id"),
             ),
         ),
         McpTool(
             name = "update_history_event",
-            description = "SYSTEM ADMINISTRATOR ONLY. Correct who made one history entry, or when — and " +
+            description = "INSTANCE OWNER ONLY. Correct who made one history entry, or when — and " +
                 "nothing else about it. Each entry in an issue's `history` (from get_issue) carries " +
                 "an `id`; pass that here to re-attribute that one entry.\n\n" +
                 "This exists for one job. History imported from another tracker lands under a " +
@@ -812,7 +830,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "stranger forever. WHAT happened — the `kind` of change and the value or values it " +
                 "carries — cannot be edited here or by any tool; only the entry's author, its date " +
                 "and its agent label can. A history whose events you could re-word would not be one. " +
-                "Refused, not ignored, if you are not a system administrator.",
+                "Refused, not ignored, if you are not the instance owner.",
             inputSchema = schema(
                 "event_id" to integerProp(
                     "The history entry to change — its `id`, from get_issue's `history` array.",
@@ -824,13 +842,13 @@ class McpTools(private val deps: BoardDependencies) {
                         "already there. It does not change who the entry belongs to — it only " +
                         "labels the row. Send an empty string to REMOVE the badge, which is what a " +
                         "migrated entry wants: it was not an agent's, so it should wear no badge. " +
-                        "(Clearing is admin-only, but this whole tool already is.)",
+                        "(Clearing is the instance owner's, but this whole tool already is.)",
                 ),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this entry should claim to have happened, in epoch " +
+                    "INSTANCE OWNER ONLY. When this entry should claim to have happened, in epoch " +
                         "milliseconds. Cannot be in the future. The history is ordered by entry, not " +
                         "by date, so re-dating an entry does not move it. Refused, not ignored, if " +
-                        "you are not a system administrator. Leaves the existing date if omitted.",
+                        "you are not the instance owner. Leaves the existing date if omitted.",
                 ),
                 required = listOf("event_id"),
             ),
@@ -858,11 +876,11 @@ class McpTools(private val deps: BoardDependencies) {
                 "issue_id" to integerProp("Attach to this issue's description. Give exactly one target."),
                 "comment_id" to integerProp("Attach to this comment. Give exactly one target."),
                 "forum_post_id" to integerProp(
-                    "Attach to this forum post's body. System administrator only, like the rest of " +
-                        "the forum tools. Give exactly one target.",
+                    "Attach to this forum post's body. RETIRED (LNL-190), like the rest of the " +
+                        "forum targets, and refused for everybody. Give exactly one target.",
                 ),
                 "forum_comment_id" to integerProp(
-                    "Attach to this forum comment. System administrator only. Give exactly one target.",
+                    "Attach to this forum comment. RETIRED (LNL-190) and refused. Give exactly one target.",
                 ),
                 "filename" to stringProp(
                     "The name to store it under, as it should appear to someone downloading it. " +
@@ -871,16 +889,16 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this file was uploaded, in epoch " +
+                    "INSTANCE OWNER ONLY, for backfilling. When this file was uploaded, in epoch " +
                         "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
-                        "not a system administrator. Defaults to whenever the bytes land.",
+                        "not the instance owner. Defaults to whenever the bytes land.",
                 ),
                 required = listOf("filename"),
             ),
         ),
         McpTool(
             name = "delete_attachment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete one stored attachment — its row and the " +
+            description = "INSTANCE OWNER ONLY. Delete one stored attachment — its row and the " +
                 "bytes on disk both — by the id in its URL. Permanent, and there is no trash.\n\n" +
                 "This is a cleanup tool for a file nothing points at any more: the ordinary way an " +
                 "attachment dies is with the issue, comment or post it hangs on, which takes its " +
@@ -903,7 +921,7 @@ class McpTools(private val deps: BoardDependencies) {
             description = "Create a sprint in a project. It lands at the end of the project's sprint " +
                 "list and is NOT activated — creating next quarter's sprint in advance must not " +
                 "point the board at it. Start it separately with set_active_sprint.\n\n" +
-                "A PROJECT-ADMINISTRATOR action: you can do this only in a project you administer, " +
+                "A PROJECT-MAINTAINER action: you can do this only in a project you maintain, " +
                 "exactly as in the web app. A sprint's name must be unique within its project.",
             inputSchema = schema(
                 "project_id" to integerProp("Which project to make it in."),
@@ -914,8 +932,8 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "set_active_sprint",
-            description = "Point a project's board at a sprint, or at none. A PROJECT-ADMINISTRATOR " +
-                "action, in a project you administer.\n\n" +
+            description = "Point a project's board at a sprint, or at none. A PROJECT-MAINTAINER " +
+                "action, in a project you maintain.\n\n" +
                 "Pass `sprint` as a sprint name to activate it — this is starting the sprint. Pass " +
                 "`sprint` as null to leave the project with no active sprint, which is a real state " +
                 "between sprints and not the same as completing one. A completed sprint cannot be " +
@@ -931,8 +949,8 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "complete_sprint",
-            description = "Finish a sprint and roll its unfinished work forward. A PROJECT-ADMINISTRATOR " +
-                "action, in a project you administer. Permanent: a completed sprint cannot be " +
+            description = "Finish a sprint and roll its unfinished work forward. A PROJECT-MAINTAINER " +
+                "action, in a project you maintain. Permanent: a completed sprint cannot be " +
                 "reopened, activated, or planned into.\n\n" +
                 "Its unfinished issues — everything not in a closing column — move to " +
                 "`move_unfinished_to`: another sprint's name to carry them into the next one, or " +
@@ -954,11 +972,11 @@ class McpTools(private val deps: BoardDependencies) {
             description = "Delete an issue, permanently. Its comments, its attachments and its " +
                 "history go with it — this is not a status change and there is no trash to " +
                 "recover it from.\n\n" +
-                "You may delete an issue that is your own, or any issue if you hold " +
-                "change_unowned_issues in its project, or anything at all as a system administrator — the same " +
-                "rule the web app's Delete button applies, which is also the rule for editing " +
-                "one. Nothing here is deletable that you could not already have emptied of every " +
-                "word it said.\n\n" +
+                "You may delete an issue that is your own, or any issue in a project you " +
+                "administer — the same rule the web app's Delete button applies. It is STRICTER " +
+                "than the rule for editing one: a maintainer may rewrite anybody's issue here " +
+                "and still not make it stop existing. Nothing here is deletable that you could " +
+                "not already have emptied of every word it said.\n\n" +
                 "CONFIRM WITH THE PERSON FIRST unless they have already asked for this exact " +
                 "issue to go. \"Tidy up the board\" is not that. If what they want is to record " +
                 "that the work will not be done, move_issue to a closing status with a " +
@@ -974,9 +992,9 @@ class McpTools(private val deps: BoardDependencies) {
             description = "Delete a comment, permanently, along with any files attached to it. " +
                 "There is no trash to recover it from.\n\n" +
                 "You may delete a comment that is your own, or any comment if you are acting as " +
-                "a system administrator — the same rule that governs editing one. Note this is NARROWER than " +
-                "delete_issue: holding change_unowned_issues lets you delete somebody's issue " +
-                "but never their words.\n\n" +
+                "an instance administrator — the same rule that governs editing one. Note this " +
+                "is NARROWER than delete_issue: a project administrator may delete anybody's " +
+                "issue there, and still not a word anybody wrote here.\n\n" +
                 "CONFIRM WITH THE PERSON FIRST unless they have already asked for this exact " +
                 "comment to go. If the point is to correct something rather than erase it, " +
                 "update_comment keeps the thread readable.",
@@ -986,14 +1004,14 @@ class McpTools(private val deps: BoardDependencies) {
             ),
         ),
 
-        // ── Forums, system administrator only ────────────────────────────────
+        // ── Forums, retired (LNL-190) ────────────────────────────────────────
         //
-        // Thirteen tools, filtered out of tools/list for everybody else — see
+        // Thirteen tools, filtered out of tools/list for everybody — see
         // toolsFor, canUseForumTools, and this file's fourth exception.
 
         McpTool(
             name = "list_forums",
-            description = "SYSTEM ADMINISTRATOR ONLY. List a project's discussion forums, in the order " +
+            description = "RETIRED (LNL-190). List a project's discussion forums, in the order " +
                 "its administrator put them. Start here for anything to do with the Discussion " +
                 "tab: a forum's id is what list_forum_posts takes.",
             inputSchema = schema(
@@ -1003,7 +1021,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "create_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Make a new forum in a project. It lands at the end " +
+            description = "RETIRED (LNL-190). Make a new forum in a project. It lands at the end " +
                 "of the project's list — use reorder_forums to move it. A forum's name must be " +
                 "unique within its project.",
             inputSchema = schema(
@@ -1021,7 +1039,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "update_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Rename a forum or change its description. Omit a " +
+            description = "RETIRED (LNL-190). Rename a forum or change its description. Omit a " +
                 "field to leave it alone; send `description` as null to remove it. A forum cannot " +
                 "be moved to another project — that would carry its posts into a project whose " +
                 "members never agreed to read them.",
@@ -1034,7 +1052,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "delete_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete a forum AND EVERYTHING IN IT: every post, " +
+            description = "RETIRED (LNL-190). Delete a forum AND EVERYTHING IN IT: every post, " +
                 "every comment on every post, and every file attached to any of them. Permanent, " +
                 "and there is no trash.\n\n" +
                 "This is the most destructive tool on this server. Forums record no history, so " +
@@ -1050,7 +1068,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "reorder_forums",
-            description = "SYSTEM ADMINISTRATOR ONLY. Put a project's forums in a given order, 0 first. " +
+            description = "RETIRED (LNL-190). Put a project's forums in a given order, 0 first. " +
                 "`forum_ids` must name EXACTLY this project's forums — all of them, none twice, " +
                 "and none from anywhere else. Anything short of that is refused rather than " +
                 "partly applied, so read the current order from list_forums and send it back " +
@@ -1067,7 +1085,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "list_forum_posts",
-            description = "SYSTEM ADMINISTRATOR ONLY. A forum's posts, newest first, with each one's " +
+            description = "RETIRED (LNL-190). A forum's posts, newest first, with each one's " +
                 "author, date, comment count and who last replied. Bodies are NOT included — this " +
                 "is the index. Use get_forum_post for one post in full.\n\n" +
                 "Unpublished drafts never appear here; a draft is somebody's unsent text.",
@@ -1078,7 +1096,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "get_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. One post in full — its whole markdown body — with " +
+            description = "RETIRED (LNL-190). One post in full — its whole markdown body — with " +
                 "every comment on it, in order, also in full. This is the unit to export: a post " +
                 "and its thread come back in one call.\n\n" +
                 "Note there is no history and no `updatedAt`: a post carries when it was written " +
@@ -1091,7 +1109,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "watch_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Watch a forum, or stop — the notification bell on " +
+            description = "RETIRED (LNL-190). Watch a forum, or stop — the notification bell on " +
                 "the forum. A watcher is e-mailed when a new post appears in it.\n\n" +
                 "By default this is about YOU: it adds or removes your own watch. Name someone in " +
                 "`user` to change theirs instead, on their behalf. Idempotent — watching what you " +
@@ -1109,7 +1127,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "watch_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Watch a single post's thread, or stop. A watcher is " +
+            description = "RETIRED (LNL-190). Watch a single post's thread, or stop. A watcher is " +
                 "e-mailed when a new comment is added to the post.\n\n" +
                 "By default about YOU; name someone in `user` to change theirs. Idempotent, exactly " +
                 "as watch_forum. get_forum_post reports whether you are watching the post.",
@@ -1125,7 +1143,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "create_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Start a new post in a forum. Written and published " +
+            description = "RETIRED (LNL-190). Start a new post in a forum. Written and published " +
                 "in one call — there is no draft left behind if it fails.\n\n" +
                 "THIS E-MAILS PEOPLE. Everybody watching the forum is notified, exactly as if a " +
                 "person had posted — unless the call carries `author`, `author_external` or " +
@@ -1145,15 +1163,15 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "update_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Rewrite an existing post: its title, its body, and " +
+            description = "RETIRED (LNL-190). Rewrite an existing post: its title, its body, and " +
                 "— because this is the import-repair path — who is recorded as having written it " +
                 "and when. Omit a field to leave it as it is.\n\n" +
                 "This is also how an uploaded image gets into a post: start_attachment_upload " +
                 "hands you a url, and putting it into the body is this call.\n\n" +
                 "Nothing is notified by an update, and nothing records that it happened. The web " +
                 "app has no edit button for a post at all, so an edit here is invisible to " +
-                "everyone — which is exactly why it is limited to a system administrator and " +
-                "should be used to correct imports rather than to change what somebody said.",
+                "everyone — which is exactly why it was kept to a narrow audience and is for " +
+                "correcting imports rather than for changing what somebody said.",
             inputSchema = schema(
                 "post_id" to integerProp("The post to change."),
                 "title" to stringProp("A new title."),
@@ -1165,7 +1183,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this post should claim to have been written, in epoch " +
+                    "INSTANCE OWNER ONLY. When this post should claim to have been written, in epoch " +
                         "milliseconds. Cannot be in the future. Leaves the existing date if omitted.",
                 ),
                 required = listOf("post_id"),
@@ -1173,7 +1191,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "delete_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete a post, every comment on it, and every file " +
+            description = "RETIRED (LNL-190). Delete a post, every comment on it, and every file " +
                 "attached to any of them. Permanent, with no trash and no history that it " +
                 "happened.\n\n" +
                 "CONFIRM WITH THE PERSON FIRST unless they have already named this exact post. " +
@@ -1186,7 +1204,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "create_forum_comment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Comment on a forum post. Comments are flat — there " +
+            description = "RETIRED (LNL-190). Comment on a forum post. Comments are flat — there " +
                 "is no replying to a comment, only to the post.\n\n" +
                 "THIS E-MAILS PEOPLE: everybody watching the post, including its author, unless " +
                 "the call is a backfill carrying `author`, `author_external` or `created_at`. See " +
@@ -1203,7 +1221,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "update_forum_comment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Rewrite a comment on a forum post — its body, and " +
+            description = "RETIRED (LNL-190). Rewrite a comment on a forum post — its body, and " +
                 "its author and date. Omit a field to leave it alone. Notifies nobody and records " +
                 "nothing; see update_forum_post.",
             inputSchema = schema(
@@ -1216,7 +1234,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this comment should claim to have been written, in " +
+                    "INSTANCE OWNER ONLY. When this comment should claim to have been written, in " +
                         "epoch milliseconds. Cannot be in the future. Leaves the existing date if " +
                         "omitted.",
                 ),
@@ -1225,7 +1243,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "delete_forum_comment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete one comment on a forum post, and any files " +
+            description = "RETIRED (LNL-190). Delete one comment on a forum post, and any files " +
                 "attached to it. Permanent, and nothing records that it happened. If the point is " +
                 "to correct something rather than erase it, update_forum_comment keeps the thread " +
                 "readable.",
@@ -1288,18 +1306,18 @@ class McpTools(private val deps: BoardDependencies) {
     suspend fun toolsFor(user: UserRecord): List<McpTool> = tools.filter { tool ->
         when (tool.name) {
             "send_email" -> deps.access.canSendAgentMail(user)
-            // Whole-tool admin-only, exactly as send_email and the forum tools:
-            // editing history is an act nobody but an admin can perform, so a
-            // non-admin is not offered it rather than shown a tool that will only
-            // refuse them. See updateHistoryEvent, and the ordinary-vs-admin tool
-            // list assertion in McpSendEmailTest.
+            // Whole-tool owner-only, exactly as send_email: editing history is an
+            // act nobody but the instance owner can perform, so everybody else is
+            // not offered it rather than shown a tool that will only refuse them.
+            // See updateHistoryEvent, and the ordinary-vs-owner tool list
+            // assertion in McpSendEmailTest.
             "update_history_event" -> deps.access.canAttributeWrites(user)
-            // Deleting a stored attachment out of band is admin cleanup — the web
-            // gives no one a standalone attachment delete, so this is offered only
-            // to the account that could be trusted with a brand-new destructive
-            // power. See AccessControl.canDeleteAttachment and deleteAttachment.
+            // Deleting a stored attachment out of band is the owner's cleanup —
+            // the web gives no one a standalone attachment delete, so this is
+            // offered only to the one account answerable for the deployment. See
+            // AccessControl.canDeleteAttachment and deleteAttachment.
             "delete_attachment" -> deps.access.canDeleteAttachment(user)
-            // Offered to nobody, not even a system administrator: discussions are
+            // Offered to nobody, the instance owner included: discussions are
             // retired (LNL-190), so the fifteen forum tools are off every caller's
             // list. The tools themselves still stand — their definitions above, their
             // handlers below and their canUseForumTools refusals all untouched — so
@@ -1749,7 +1767,7 @@ class McpTools(private val deps: BoardDependencies) {
             .getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
 
         // Orthogonal to attribution and not gated by it: an agent labelling its own
-        // writes is the ordinary case, not the admin-only act of writing as someone
+        // writes is the ordinary case, not the owner-only act of writing as someone
         // else. See [resolveAgentName].
         val agentName = resolveAgentName(arguments)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
@@ -1847,7 +1865,7 @@ class McpTools(private val deps: BoardDependencies) {
                 // even when they attribute the write to an imported external author.
                 actorId = user.id,
                 // The attributed author rather than the acting user, which differs
-                // only when an admin is backfilling — and there the whole point is
+                // only when the owner is backfilling — and there the whole point is
                 // that the imported issue was filed by somebody else. See
                 // IssueRepository.save's `actor`.
                 actor = attribution.author,
@@ -1878,10 +1896,10 @@ class McpTools(private val deps: BoardDependencies) {
         val issue = readableIssue(user, arguments) ?: return noSuchIssue()
         if (!deps.access.canEditIssue(user, issue)) return refuse("You cannot edit this issue.")
 
-        // author / author_external / created_at are the admin-only levers, defaulted
+        // author / author_external / created_at are the owner-only levers, defaulted
         // to the issue's current values so an ordinary edit leaves attribution exactly
         // as it was. The same gate and the same function as create and update_comment —
-        // this is where "a system administrator may change everything" lands for an issue.
+        // this is where "the instance owner may change everything" lands for an issue.
         val attribution = resolveAttribution(
             user,
             arguments,
@@ -1890,14 +1908,14 @@ class McpTools(private val deps: BoardDependencies) {
         ).getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
         val createdAt = attribution.at ?: issue.createdAt
 
-        // updated_at is the issue's second stamp, admin-only like the rest but kept its
+        // updated_at is the issue's second stamp, owner-only like the rest but kept its
         // own check because it is validated against the RESULTING created_at, not the
-        // old one: a system administrator may move both in a single call, and "edited before it
+        // old one: the owner may move both in a single call, and "edited before it
         // existed" has to be judged on where created_at ends up.
         val updatedAt = if (arguments.isPresent(UPDATED_AT_ARGUMENT)) {
             if (!deps.access.canAttributeWrites(user)) {
                 return refuse(
-                    "Only a system administrator can set $UPDATED_AT_ARGUMENT, and you are not acting as one. " +
+                    "Only the instance owner can set $UPDATED_AT_ARGUMENT, and you are not acting as the owner. " +
                         "Nothing was written. Remove $UPDATED_AT_ARGUMENT and the edit will be " +
                         "stamped now — but that is a different thing from what you asked for, so " +
                         "decide rather than assume.",
@@ -1928,9 +1946,9 @@ class McpTools(private val deps: BoardDependencies) {
             null
         }
 
-        // Absent leaves the badge untouched; a real name sets it, neither admin-gated
-        // — self-labelling is the norm. An empty value clears it, which is admin-only.
-        // See resolveAgentNameEdit.
+        // Absent leaves the badge untouched; a real name sets it, neither of them the
+        // owner's — self-labelling is the norm. An empty value clears it, which only
+        // the owner may do. See resolveAgentNameEdit.
         val agentName = resolveAgentNameEdit(user, arguments, issue.agentName)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
 
@@ -1949,7 +1967,7 @@ class McpTools(private val deps: BoardDependencies) {
         //
         // So the event gets what actually happened in THIS call: the caller, and
         // the badge this call carried. Exactly what move_issue has always recorded.
-        // The one deliberate exception is an admin naming an `author` — that is the
+        // The one deliberate exception is the owner naming an `author` — that is the
         // backfill the parameter exists for, where the imported edit really does
         // belong to somebody else. A lone `created_at` re-authors nothing and so
         // does not count.
@@ -2068,7 +2086,7 @@ class McpTools(private val deps: BoardDependencies) {
             agentName = eventAgentName,
         )
         // The columns publish() does not reach — author, creation date, agent label.
-        // Written after the content save, gated above: admin-only for the author and
+        // Written after the content save, gated above: owner-only for the author and
         // date, open for the label, and idempotent for an ordinary edit that moved
         // none of the three.
         deps.issues.editAttribution(issue.id, createdAt, attribution.author, agentName)
@@ -2117,7 +2135,7 @@ class McpTools(private val deps: BoardDependencies) {
     }
 
     /**
-     * Watch an issue, or stop — for yourself, or (as an admin) for somebody else.
+     * Watch an issue, or stop — for yourself, or (as the owner) for somebody else.
      *
      * ── Why the gate is "readable", not "editable" ────────────────────────────
      *
@@ -2127,11 +2145,11 @@ class McpTools(private val deps: BoardDependencies) {
      * may *see* an issue may ask to hear about it. So there is no `canEditIssue`
      * here — a watcher who cannot edit is the ordinary case, not an anomaly.
      *
-     * ── The two subjects, and why one of them is admin-only ───────────────────
+     * ── The two subjects, and why one of them is the owner's ──────────────────
      *
      * Absent `user` means the caller's own watch, which is the whole of the web
      * feature and needs no more right than reading. Naming somebody else is a
-     * different act — a decision about *their* inbox — and admin-only for
+     * different act — a decision about *their* inbox — and the owner's alone for
      * [resolveAttribution]'s reason: acting as or for another person is exactly
      * what [AccessControl.canAttributeWrites] guards. The parallel is `assignee`
      * naming somebody else on an edit, and the refusal is by name rather than
@@ -2149,15 +2167,15 @@ class McpTools(private val deps: BoardDependencies) {
 
         // Whose inbox. Absent → the caller's own. Naming somebody else resolves to
         // an account — refusing unknown and ambiguous, as resolveAuthor does — and
-        // is admin-only when it is not the caller.
+        // is the owner's alone when it is not the caller.
         val subject: UserRecord = if (arguments.isPresent(USER_ARGUMENT)) {
             val named = arguments.string(USER_ARGUMENT)
                 ?: return refuse("`$USER_ARGUMENT` was given as an empty name.")
             val id = resolveAuthor(named).getOrElse { return refuse(it.message ?: "No such person.") }
             if (id != user.id && !deps.access.canAttributeWrites(user)) {
                 return refuse(
-                    "Only a system administrator can change somebody else's watch, and you are not " +
-                        "acting as one. Omit `$USER_ARGUMENT` to change your own. Nothing was written.",
+                    "Only the instance owner can change somebody else's watch, and you are not " +
+                        "acting as the owner. Omit `$USER_ARGUMENT` to change your own. Nothing was written.",
                 )
             }
             // Resolved to a live record for its address and name below. It exists —
@@ -2186,10 +2204,11 @@ class McpTools(private val deps: BoardDependencies) {
     /**
      * Delete one stored attachment — its row and its bytes — by the id in its URL.
      *
-     * System-administrator only (see [toolsFor] and [AccessControl.canDeleteAttachment]):
-     * the web app gives nobody a standalone attachment delete, so this is a new
-     * destructive power rather than a mirror of an existing web right, and it is
-     * offered only to the account trusted with the rest of the instance-wide ones.
+     * The instance owner's alone (see [toolsFor] and
+     * [AccessControl.canDeleteAttachment]): the web app gives nobody a standalone
+     * attachment delete, so this is a new destructive power rather than a mirror of an
+     * existing web right, and it is offered only to the account answerable for the
+     * deployment, as the rest of the instance-wide ones are.
      *
      * [AttachmentRepository.delete] takes the row first and the file second, so the
      * failure this can leave is a collectable orphaned file, never a row pointing at
@@ -2198,8 +2217,8 @@ class McpTools(private val deps: BoardDependencies) {
     private suspend fun deleteAttachment(user: UserRecord, arguments: JsonObject): McpToolResult {
         if (!deps.access.canDeleteAttachment(user)) {
             return refuse(
-                "Deleting a stored attachment is a system-administrator action, and you are not " +
-                    "acting as one. Nothing was deleted.",
+                "Deleting a stored attachment is an instance-owner action, and you are not " +
+                    "acting as the owner. Nothing was deleted.",
             )
         }
         val raw = arguments.string("attachment")
@@ -2395,17 +2414,17 @@ class McpTools(private val deps: BoardDependencies) {
      * The comment counterpart to [updateIssue], and the same two-part permission
      * the web app's `PUT /api/comments/{id}` uses: [AccessControl.canEditComment]
      * decides whether you may touch this comment at all — your own, or anyone's if
-     * you are an admin — and only then does the admin-only backfill gate decide
-     * whether you may also re-attribute or re-date it.
+     * you are an instance administrator — and only then does the owner-only backfill
+     * gate decide whether you may also re-attribute or re-date it.
      *
      * ── Why this rewrites author and timestamp at all ────────────────────────
      *
      * The rest of this file holds that backfill is creation-only (see the preamble).
-     * `update_comment` is the deliberate exception: a system administrator may change everything
-     * about a comment, an external author included, so an import that got a name or
-     * a date wrong can be corrected in place rather than deleted and refiled — and
-     * deletion is the one thing this surface does not offer. It is admin-only for
-     * exactly the reason create-time attribution is, gated by the same
+     * `update_comment` is the deliberate exception: the instance owner may change
+     * everything about a comment, an external author included, so an import that got
+     * a name or a date wrong can be corrected in place rather than deleted and
+     * refiled — and deletion is the one thing this surface does not offer. It is the
+     * owner's for exactly the reason create-time attribution is, gated by the same
      * [AccessControl.canAttributeWrites] through [resolveAttribution].
      */
     private suspend fun updateComment(user: UserRecord, arguments: JsonObject): McpToolResult {
@@ -2414,7 +2433,7 @@ class McpTools(private val deps: BoardDependencies) {
             return refuse("That is not your comment.")
         }
 
-        // author / author_external / created_at are the admin-only backfill levers,
+        // author / author_external / created_at are the owner-only backfill levers,
         // exactly as on add_comment — but defaulted to what the comment already has,
         // because an edit that does not mention them must not silently re-author or
         // re-date the row. resolveAttribution carries the whole gate; passing the
@@ -2426,9 +2445,9 @@ class McpTools(private val deps: BoardDependencies) {
             removalOutcome = "the comment keeps its current author and date",
         ).getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
 
-        // Absent leaves the badge untouched and a real name sets it, neither
-        // admin-gated — self-labelling is the norm, see resolveAttribution's
-        // preamble. An empty value clears it, which is admin-only. See
+        // Absent leaves the badge untouched and a real name sets it, neither of them
+        // the owner's — self-labelling is the norm, see resolveAttribution's
+        // preamble. An empty value clears it, which only the owner may do. See
         // resolveAgentNameEdit.
         val agentName = resolveAgentNameEdit(user, arguments, comment.agentName)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
@@ -2456,13 +2475,13 @@ class McpTools(private val deps: BoardDependencies) {
      * has only the second half, widened into the whole: there is no such thing as
      * editing your own history entry, because nobody writes history by hand. The
      * only reason to reach a row here is to fix attribution on imported history,
-     * which is an administrative act start to finish.
+     * which is the deployment owner's job start to finish.
      *
-     * So the admin gate IS the gate, and it is asked first — before the row is even
-     * resolved — so that a non-admin who somehow reached this tool (it is absent
+     * So the owner gate IS the gate, and it is asked first — before the row is even
+     * resolved — so that anybody else who somehow reached this tool (it is absent
      * from their tool list) cannot use an `event_id` to probe which entries, and so
      * which private boards, exist. The readable-project chain below is then
-     * belt-and-braces, since an admin can read every board anyway.
+     * belt-and-braces, since the owner can read every board anyway.
      *
      * WHAT the entry records is never touched: `kind`, its `value` and its `values`
      * are not parameters, here or in the store. Only who, when, and the agent label
@@ -2472,13 +2491,13 @@ class McpTools(private val deps: BoardDependencies) {
     private suspend fun updateHistoryEvent(user: UserRecord, arguments: JsonObject): McpToolResult {
         if (!deps.access.canAttributeWrites(user)) {
             return refuse(
-                "Only a system administrator can edit an issue's history, and you are not acting " +
-                    "as one. A history is append-only for everyone else — its entries record what " +
-                    "happened and are not yours to rewrite. Nothing was written.",
+                "Only the instance owner can edit an issue's history, and you are not acting " +
+                    "as the owner. A history is append-only for everyone else — its entries record " +
+                    "what happened and are not yours to rewrite. Nothing was written.",
             )
         }
         // Null only in test deployments that wire up no history; a production
-        // server always has one. An admin who reached here on such a deployment is
+        // server always has one. An owner who reached here on such a deployment is
         // told plainly rather than met with "no such event", which would be a lie
         // about the id they sent.
         val history = deps.history ?: return refuse("This deployment keeps no issue history to edit.")
@@ -2495,7 +2514,7 @@ class McpTools(private val deps: BoardDependencies) {
         // author / author_external / created_at through the same gate and the same
         // function as every other backfill, defaulted to what the entry already
         // records so a call that names only one of them leaves the rest exactly as
-        // they were. The admin gate above has already passed, so resolveAttribution's
+        // they were. The owner gate above has already passed, so resolveAttribution's
         // own check is a no-op here — but it is the check, and going around it would
         // be the one copy that could drift.
         val attribution = resolveAttribution(
@@ -2506,7 +2525,7 @@ class McpTools(private val deps: BoardDependencies) {
         ).getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
 
         // Absent leaves the badge as it is; a real name sets it; an empty value
-        // clears it. Clearing is admin-only — but this whole tool already is, so
+        // clears it. Clearing is the owner's alone — but this whole tool already is, so
         // here it is simply available: a migrated entry that was never an agent's
         // can shed the badge in the same call that reattaches it. See
         // resolveAgentNameEdit.
@@ -2534,12 +2553,14 @@ class McpTools(private val deps: BoardDependencies) {
      * driving it would get through the web app, which is the rule for this whole
      * surface — deleting is not the place to start inventing a second one.
      *
-     * Note what is deliberately NOT here: no admin-only gate, and no "are you
-     * sure" argument. The first because deletion is not an administrative act —
-     * `canDeleteIssue` is `canEditIssue`, on the reasoning AccessControl gives:
-     * anyone who can open the editor can already empty the issue of everything it
-     * said, so guarding the row and not its contents is ceremony. The second
-     * because a confirmation flag a caller sets itself confirms nothing; the
+     * Note what is deliberately NOT here: no instance-wide gate, and no "are you
+     * sure" argument. The first because deletion is a rung on the project rather
+     * than a fact about the deployment — `canDeleteIssue` asks for
+     * [ProjectRole.ADMIN], or authorship, which is one rung ABOVE the
+     * [ProjectRole.MAINTAINER] `canEditIssue` takes. LNL-191 split the two on the
+     * reasoning AccessControl gives: a maintainer can already empty an issue of
+     * every word it said, and what they cannot do is make it stop existing. The
+     * second because a confirmation flag a caller sets itself confirms nothing; the
      * asking belongs in the tool description, where the agent reads it, and that
      * is where it is.
      *
@@ -2576,10 +2597,12 @@ class McpTools(private val deps: BoardDependencies) {
      *
      * [AccessControl.canEditComment] rather than a rule of its own, which is what
      * the HTTP route's `editableComment` uses for exactly this — and it is
-     * NARROWER than [deleteIssue]'s gate on purpose. `change_unowned_issues` is a
-     * grant over issues; it has never meant "and you may also delete what other
-     * people wrote", and reading it that way here would quietly widen a role that
-     * every project has handed out already.
+     * NARROWER than [deleteIssue]'s gate on purpose. A project rung is a grant over
+     * the board's issues; it has never meant "and you may also delete what other
+     * people wrote", and reading it that way here would quietly widen every
+     * [ProjectRole.ADMIN] a project has handed out already. Somebody else's words go
+     * on the comment author's say, or an instance administrator's, and on nobody's by
+     * way of a board.
      */
     private suspend fun deleteComment(user: UserRecord, arguments: JsonObject): McpToolResult {
         val comment = readableComment(user, arguments) ?: return noSuchComment()
@@ -2603,9 +2626,9 @@ class McpTools(private val deps: BoardDependencies) {
      * Read the order the way [resolveAttribution] asks to be read: may you write
      * here at all, and only then whose name goes on it. The two are separate
      * questions and the second is strictly narrower — anyone who can edit an
-     * issue may attach to it, and only an admin may attach *as somebody else*.
-     * That is the same split `create_issue` already has, and it is why this tool
-     * is not admin-only despite carrying admin-only parameters.
+     * issue may attach to it, and only the instance owner may attach *as somebody
+     * else*. That is the same split `create_issue` already has, and it is why this
+     * tool is offered to everybody despite carrying the owner's parameters.
      *
      * The permission is the one the equivalent HTTP route uses, not a new one:
      * [AccessControl.canEditIssue] for an issue, [AccessControl.canEditComment]
@@ -2665,11 +2688,12 @@ class McpTools(private val deps: BoardDependencies) {
 
             // The two forum targets are gated by canUseForumTools rather than by
             // canEditForumContent, and that is not this tool going soft. The
-            // forum surface is admin-only as a whole — see canUseForumTools — so
-            // the caller who reaches these two branches is the caller who could
-            // rewrite the post's body outright with update_forum_post. A
-            // narrower check here would refuse nobody and would imply the forum
-            // tools have a permission model they do not.
+            // forum surface is refused as a whole — canUseForumTools answers
+            // false for everybody since LNL-190 — so nobody reaches these two
+            // branches at all, and whoever does when discussions come back is
+            // whoever could rewrite the post's body outright with
+            // update_forum_post. A narrower check here would refuse nobody and
+            // would imply the forum tools have a permission model they do not.
             "forum_post_id" -> {
                 val scope = forumPostScope(user, arguments, "forum_post_id")
                     .getOrElse { return refuse(it.message ?: "No such post.") }
@@ -2743,10 +2767,10 @@ class McpTools(private val deps: BoardDependencies) {
         // here, and the refusal has to be the same one whether it is or not.
         if (!deps.access.canSendAgentMail(user)) {
             return refuse(
-                "Sending e-mail over MCP is restricted to system administrators on this Lunicle " +
-                    "server, and this account is not one. This is not a missing setting the user " +
-                    "can turn on themselves — tell them what you would have written instead, and " +
-                    "do not try again.",
+                "Sending e-mail over MCP is restricted to the owner of this Lunicle server, and " +
+                    "this account is not the owner. This is not a missing setting the user can " +
+                    "turn on themselves — tell them what you would have written instead, and do " +
+                    "not try again.",
             )
         }
         val sender = deps.agentMail ?: return refuse(
@@ -2804,8 +2828,8 @@ class McpTools(private val deps: BoardDependencies) {
      * it was never shown is exactly the caller this surface assumes, and this is
      * the half that enforces.
      *
-     * It runs before anything is resolved, so a refusal costs no query and tells a
-     * non-admin nothing about which projects have forums.
+     * It runs before anything is resolved, so a refusal costs no query and tells the
+     * caller nothing about which projects have forums.
      */
     private fun forumGate(user: UserRecord): McpToolResult? =
         if (deps.access.canUseForumTools(user)) null else refuse(FORUM_REFUSAL)
@@ -3158,11 +3182,11 @@ class McpTools(private val deps: BoardDependencies) {
      * Watch a forum's new posts, or stop — for yourself, or (named) somebody else.
      *
      * The forum counterpart of [watchIssue], reachable only through the forum gate
-     * [forumScope] enforces, so every caller here is already a system administrator.
-     * The subject rule is still [watchSubject]'s — the caller's own inbox by
-     * default, another's admin-only — because "these tools are admin" and "changing
-     * another person's subscription is an attribution" are two rules, and the second
-     * should read the same here as it does on an issue.
+     * [forumScope] enforces — which since LNL-190 lets nobody through at all. The
+     * subject rule is still [watchSubject]'s — the caller's own inbox by default,
+     * another's the instance owner's — because "who may reach the forum tools" and
+     * "changing another person's subscription is an attribution" are two rules, and
+     * the second should read the same here as it does on an issue.
      */
     private suspend fun watchForum(user: UserRecord, arguments: JsonObject): McpToolResult {
         val scope = forumScope(user, arguments).getOrElse { return refuse(it.message ?: "No such forum.") }
@@ -3195,10 +3219,10 @@ class McpTools(private val deps: BoardDependencies) {
      * Whose inbox a watch call is about — the caller, or a named other person.
      *
      * The subject half of [watchIssue], lifted out so the forum watch tools resolve
-     * it identically: absent `user` is the caller; a named user is admin-only via
-     * [AccessControl.canAttributeWrites] and refused by name if unknown; and a
-     * subscribe onto an address-less account is refused, since it would notify
-     * nobody. Unwatching needs no address.
+     * it identically: absent `user` is the caller; a named user is the instance
+     * owner's alone via [AccessControl.canAttributeWrites], refused by name if
+     * unknown; and a subscribe onto an address-less account is refused, since it
+     * would notify nobody. Unwatching needs no address.
      */
     private suspend fun watchSubject(
         user: UserRecord,
@@ -3213,7 +3237,7 @@ class McpTools(private val deps: BoardDependencies) {
             if (id != user.id && !deps.access.canAttributeWrites(user)) {
                 return Result.failure(
                     ResolutionRefusal(
-                        "Only a system administrator can change somebody else's watch. Omit " +
+                        "Only the instance owner can change somebody else's watch. Omit " +
                             "`$USER_ARGUMENT` to change your own. Nothing was written.",
                     ),
                 )
@@ -3274,8 +3298,8 @@ class McpTools(private val deps: BoardDependencies) {
      * Resolve a forum, having first established that this caller may reach forums
      * at all.
      *
-     * The gate comes before the lookup so that a non-admin's refusal is about the
-     * surface rather than about the id, and cannot be used to learn whether a
+     * The gate comes before the lookup so that a refused caller's answer is about
+     * the surface rather than about the id, and cannot be used to learn whether a
      * forum exists.
      */
     private suspend fun forumScope(
@@ -3405,10 +3429,10 @@ class McpTools(private val deps: BoardDependencies) {
      *     caller made up.
      *  3. **Only then**, what did they mean.
      *
-     * A non-admin who asked is refused with the parameter named, rather than served
-     * as if they had not asked. See this file's preamble for why that is the whole
-     * feature: the alternative is an agent truthfully reporting a backfill that
-     * silently went in under the wrong name.
+     * Anybody but the owner who asked is refused with the parameter named, rather
+     * than served as if they had not asked. See this file's preamble for why that
+     * is the whole feature: the alternative is an agent truthfully reporting a
+     * backfill that silently went in under the wrong name.
      *
      * ── Why `author` and `author_external` are two parameters ─────────────────
      *
@@ -3435,8 +3459,8 @@ class McpTools(private val deps: BoardDependencies) {
      * differ on an edit are the answers when nothing was asked: [default] carries
      * the row's *current* author and timestamp, so an untouched edit re-writes what
      * was already there instead of re-authoring to the token user and re-stamping
-     * to now. [removalOutcome] is the tail of the not-admin refusal, since "remove
-     * these and it files under you, now" is only true at creation.
+     * to now. [removalOutcome] is the tail of the not-the-owner refusal, since
+     * "remove these and it files under you, now" is only true at creation.
      */
     private suspend fun resolveAttribution(
         user: UserRecord,
@@ -3463,9 +3487,9 @@ class McpTools(private val deps: BoardDependencies) {
             ).joinToString(" and ")
             return Result.failure(
                 ResolutionRefusal(
-                    "Only a system administrator can set $asked, and you are not acting as one. Nothing was " +
-                        "written. Remove $asked and $removalOutcome — but that is a different thing " +
-                        "from what you asked for, so decide rather than assume.",
+                    "Only the instance owner can set $asked, and you are not acting as the owner. " +
+                        "Nothing was written. Remove $asked and $removalOutcome — but that is a " +
+                        "different thing from what you asked for, so decide rather than assume.",
                 ),
             )
         }
@@ -3515,7 +3539,7 @@ class McpTools(private val deps: BoardDependencies) {
      * a permission and asks no question of [AccessControl]. An agent naming itself
      * on the row it writes is the ordinary, encouraged case — the whole point is
      * that a reader can see a human did not type this — where writing *as somebody
-     * else* is the admin-only act that [resolveAttribution] guards. So there is no
+     * else* is the owner-only act that [resolveAttribution] guards. So there is no
      * "did they ask, may they" here; there is only a value, trimmed, with an upper
      * bound so a runaway string cannot become a row nobody can read past.
      *
@@ -3538,14 +3562,14 @@ class McpTools(private val deps: BoardDependencies) {
     }
 
     /**
-     * The agent label for an EDIT: set it, leave it, or — for an admin — clear it.
+     * The agent label for an EDIT: set it, leave it, or — as the owner — clear it.
      *
      * A create can only ever ADD a badge, so [resolveAgentName] is all it needs:
      * absent, null and blank alike mean "no badge", and there is nothing yet to
      * remove. An edit is the one place a badge can already exist and need to *go* —
      * a migration forces the case, because a row imported from another tracker was
      * not made by an agent and must not wear one. So the edit tools carry one state
-     * more than a create does, and it is admin-only for [resolveAttribution]'s
+     * more than a create does, and it is the owner's alone for [resolveAttribution]'s
      * reason: the badge is the mark that says "an agent did this", and removing it
      * rewrites the record of who did, which is [AccessControl.canAttributeWrites]'s
      * gate and no lighter an act than re-authoring the row.
@@ -3555,11 +3579,12 @@ class McpTools(private val deps: BoardDependencies) {
      *  - **Absent, or explicit null → leave [current] alone.** Null counts as absent
      *    for [isPresent]'s reason: models null-fill fields they have nothing to say
      *    about, and that must not silently strip a badge.
-     *  - **Present and blank (`""` or whitespace) → CLEAR the badge.** Admin-only: a
-     *    non-admin who asks is refused with the parameter named, never quietly left
-     *    as-is — the silent substitution this whole surface refuses to make.
+     *  - **Present and blank (`""` or whitespace) → CLEAR the badge.** The instance
+     *    owner's alone: anybody else who asks is refused with the parameter named,
+     *    never quietly left as-is — the silent substitution this whole surface
+     *    refuses to make.
      *  - **Present and a real name → set it,** length-checked by [resolveAgentName].
-     *    Not admin-only; labelling a row you are already allowed to edit is the
+     *    Open to everybody; labelling a row you are already allowed to edit is the
      *    ordinary case.
      */
     private suspend fun resolveAgentNameEdit(
@@ -3571,14 +3596,14 @@ class McpTools(private val deps: BoardDependencies) {
         // Absent, or an explicit null: say nothing, change nothing.
         if (element == null || element is JsonNull) return Result.success(current)
         // Present and non-null. A blank value is a request to REMOVE the badge —
-        // string() reports blank as null — and only a system administrator may.
+        // string() reports blank as null — and only the instance owner may.
         if (arguments.string(AGENT_NAME_ARGUMENT) == null) {
             if (!deps.access.canAttributeWrites(user)) {
                 return Result.failure(
                     ResolutionRefusal(
-                        "Only a system administrator can clear an agent label, and you are not " +
-                            "acting as one. An empty `$AGENT_NAME_ARGUMENT` asks to remove the " +
-                            "badge; omit the parameter entirely to leave it exactly as it is. " +
+                        "Only the instance owner can clear an agent label, and you are not " +
+                            "acting as the owner. An empty `$AGENT_NAME_ARGUMENT` asks to remove " +
+                            "the badge; omit the parameter entirely to leave it exactly as it is. " +
                             "Nothing was written.",
                     ),
                 )
@@ -3596,12 +3621,13 @@ class McpTools(private val deps: BoardDependencies) {
      *
      * Because an agent has no way to learn an id. Nothing on this surface exposes
      * the user table — `get_board` and `get_issue` report an author's
-     * [UserRecord.resolvedName] and nothing more — and the alternative was an
-     * admin-only `list_users` tool. Rejected: §3's instinct is that a capability
-     * with no tool cannot be abused, and "every account on this instance, on
-     * request" is exactly the kind of tool that gets called for no reason once it
-     * exists. Matching the name already on the board costs nothing and adds no
-     * enumeration primitive — the agent can only confirm names it was told.
+     * [UserRecord.resolvedName] and nothing more — and the alternative was a
+     * `list_users` tool for the instance owner. Rejected: §3's instinct is that a
+     * capability with no tool cannot be abused, and "every account on this
+     * instance, on request" is exactly the kind of tool that gets called for no
+     * reason once it exists. Matching the name already on the board costs nothing
+     * and adds no enumeration primitive — the agent can only confirm names it was
+     * told.
      *
      * It also matches the file's existing rule: statuses, priorities, resolutions,
      * labels and components are all addressed by name for the same reason. An
@@ -3617,9 +3643,9 @@ class McpTools(private val deps: BoardDependencies) {
      * somebody else's email address is not a case worth ranking above that.
      *
      * The ambiguous refusal deliberately does NOT list the candidates' addresses.
-     * It could — the caller is an admin — but an error message is a bad place to
-     * decide to start disclosing emails, and the sentence is just as actionable
-     * without: the human driving this import knows which Anna they mean.
+     * It could — the caller is the instance owner — but an error message is a bad
+     * place to decide to start disclosing emails, and the sentence is just as
+     * actionable without: the human driving this import knows which Anna they mean.
      */
     private suspend fun resolveAuthor(named: String): Result<Long> {
         val wanted = named.trim()
@@ -3695,11 +3721,11 @@ class McpTools(private val deps: BoardDependencies) {
      * may they be assigned here? See [AccessControl.canBeAssigned] for why those
      * are two questions about two different people. Membership of [assignableUsers]
      * is that check, applied to the caller naming themselves too — being able to
-     * edit an issue is not the same as being assignable on the project, and an
-     * admin qualifies either way.
+     * edit an issue is not the same as being assignable on the project, and a
+     * project administrator qualifies either way.
      *
      * So MCP assignment is strictly the editor's path: it needs write rights, where
-     * the web app's button needs only `be_assigned_issue`. Deliberate. The button
+     * the web app's button needs only the contributor rung. Deliberate. The button
      * exists so somebody who cannot edit can still pick up work by hand; an agent
      * filing or editing an issue on your behalf is already doing more than that.
      */
@@ -3895,8 +3921,8 @@ class McpTools(private val deps: BoardDependencies) {
      * A negative value is nonsense outright. A far-future one is worse than
      * nonsense: a comment stamped in the year 3000 sits at the bottom of its
      * thread forever (Comments.sq orders by `created_at`), and both columns render
-     * as a date nobody can explain from the UI. A bad value is admin-only to reach
-     * — at creation, or through `update_comment` and `update_issue` — and every
+     * as a date nobody can explain from the UI. A bad value is the owner's alone to
+     * reach — at creation, or through `update_comment` and `update_issue` — and every
      * path comes through here, so one set of bounds keeps it out at every door.
      * Refusing costs a round-trip; storing it costs somebody an afternoon with a
      * SQLite shell.
@@ -4141,10 +4167,10 @@ private const val MAX_AGENT_MAIL_BODY_LENGTH = 20_000
  *
  * The one write parameter here that an agent is meant to send on the ordinary
  * path rather than avoid — so the description leads with *do*, and names the
- * override rather than leaving the model to infer there is one. Unlike `author`,
- * it is not admin-only and changes nothing about ownership, which the last line
- * says out loud so a model does not lump it in with the backfill parameters above
- * and shy away from it.
+ * override rather than leaving the model to infer there is one. Unlike `author`, it
+ * is not the instance owner's and changes nothing about ownership, which the last
+ * line says out loud so a model does not lump it in with the backfill parameters
+ * above and shy away from it.
  */
 /**
  * The half of the `assignee` description both tools share. Each appends what its
@@ -4190,29 +4216,30 @@ private const val AGENT_NAME_PROP_DESCRIPTION =
         "or product you are. NORMALLY SET IT: it is how the board shows, clearly, that an agent " +
         "filed this rather than a human typing by hand, and that is the expected default for a " +
         "write made through this MCP server. Omit it only when you have been explicitly asked to " +
-        "act purely as the user with no agent attribution. This is NOT admin-only and does not " +
-        "change who the issue or comment belongs to — it rides alongside the user's own account " +
-        "as a label, nothing more."
+        "act purely as the user with no agent attribution. This is NOT restricted to the instance " +
+        "owner and does not change who the issue or comment belongs to — it rides alongside the " +
+        "user's own account as a label, nothing more."
 
 /** Shared by every tool that takes it: one description of `author`, not several that drift. */
 private const val AUTHOR_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling imported history. Who this should belong to: their " +
+    "INSTANCE OWNER ONLY, for backfilling imported history. Who this should belong to: their " +
         "display name exactly as get_board and get_issue report it, or the email address on " +
         "their account when two people share a name. They must already have a Lunicle " +
         "account — naming somebody does not create one — and an ambiguous name is refused " +
         "rather than guessed at. If they have no account, use author_external instead; do not " +
-        "pass both. Refused, not ignored, if you are not a system administrator. Defaults to you."
+        "pass both. Refused, not ignored, if you are not the instance owner. Defaults to you."
 
 /** As [AUTHOR_PROP_DESCRIPTION]: one description of `author_external`, shared. */
 private const val AUTHOR_EXTERNAL_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling imported history written by somebody with no Lunicle " +
+    "INSTANCE OWNER ONLY, for backfilling imported history written by somebody with no Lunicle " +
         "account — a GitHub handle, say, from a tracker being migrated. Recorded as the name " +
         "itself and rendered as the author; it creates no account and grants nobody anything, " +
-        "so the row is unowned and only a system administrator can edit it afterwards. Use `author` instead " +
-        "when the person does have an account, and never pass both — they are two answers to " +
-        "one question and the pair is refused. Not checked against existing accounts: if you " +
-        "pass a name somebody here happens to share, you get an author who is not them. " +
-        "Refused, not ignored, if you are not a system administrator."
+        "so the row is unowned: afterwards it is editable by a rung rather than by its author — " +
+        "a project maintainer for an issue, an instance administrator for a comment. Use " +
+        "`author` instead when the person does have an account, and never pass both — they are " +
+        "two answers to one question and the pair is refused. Not checked against existing " +
+        "accounts: if you pass a name somebody here happens to share, you get an author who is " +
+        "not them. Refused, not ignored, if you are not the instance owner."
 
 /**
  * As [AUTHOR_PROP_DESCRIPTION]: one description of `updated_at`, shared.
@@ -4223,13 +4250,13 @@ private const val AUTHOR_EXTERNAL_PROP_DESCRIPTION =
  * there at all is easy to miss.
  */
 private const val UPDATED_AT_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this issue was last touched, in epoch milliseconds. " +
+    "INSTANCE OWNER ONLY, for backfilling. When this issue was last touched, in epoch milliseconds. " +
         "Cannot be in the future, and cannot be before the issue's own created_at — an issue " +
         "edited before it existed is not a history anyone can read. Every edit stamps this " +
         "column, so an import that uploads an attachment and then rewrites the description to " +
         "point at it would otherwise drag a years-old issue to the top of the board, dated " +
         "today: pass the date the history actually ended. Refused, not ignored, if you are not " +
-        "a system administrator. Defaults to now."
+        "the instance owner. Defaults to now."
 
 /**
  * How far past this server's clock a backfilled timestamp may still land.
@@ -4246,7 +4273,7 @@ private const val MAX_MCP_BACKFILL_SKEW_MILLIS = 24L * 60 * 60 * 1000
  * A set rather than a prefix test on the tool name, deliberately: `list_forums`
  * and `create_forum_post` share no prefix, `delete_comment` and
  * `delete_forum_comment` differ by a word in the middle, and a filter that got
- * either wrong would silently offer an admin-only tool to everybody. It is
+ * either wrong would silently offer a retired tool to everybody. It is
  * checked against [McpTools.tools] by the test suite, so a tool added to one and
  * forgotten in the other fails there rather than in production.
  */
@@ -4269,20 +4296,20 @@ private val FORUM_TOOL_NAMES = setOf(
 )
 
 /**
- * The one refusal every forum tool gives a caller who is not a system
- * administrator.
+ * The one refusal every forum tool gives, to every caller — the instance owner
+ * included.
  *
- * It says the capability does not exist for this account rather than that
- * something went wrong, and it says not to retry — an agent that reads "you
- * cannot" as "not yet" will spend a conversation rediscovering the same answer.
- * It also says what to do instead, because the person driving very often *can*
- * do this in the Discussion tab themselves.
+ * It says the capability does not exist at all rather than that something went
+ * wrong, and it says not to retry: an agent that reads "you cannot" as "not yet"
+ * will spend a conversation rediscovering the same answer. It no longer offers the
+ * Discussion tab as the thing to do instead, because LNL-190 took that away too —
+ * there is nowhere to send the person, and saying so is the honest answer.
  */
 private const val FORUM_REFUSAL =
-    "The discussion forums are not reachable over MCP by this account. They are restricted to " +
-        "system administrators on this Lunicle server, and this is not a setting the user can " +
-        "turn on themselves. Tell them what you would have done — they can do it in the " +
-        "Discussion tab in Lunicle's web app — and do not try again."
+    "The discussion forums are gone. LNL-190 retired them, so these tools are offered to " +
+        "nobody at all — this is not a permission the account lacks and not a setting anybody " +
+        "can turn on, and there is no Discussion tab left to do it in either. Tell the person " +
+        "what you would have done, and do not try again."
 
 /**
  * "No such forum", for both "there isn't one" and "you may not see its project".
@@ -4317,7 +4344,7 @@ private val ATTACHMENT_TARGET_ARGUMENTS =
  * everybody.
  */
 private const val FORUM_CREATED_AT_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling imported discussions. When this was written, in epoch " +
+    "INSTANCE OWNER ONLY, for backfilling imported discussions. When this was written, in epoch " +
         "milliseconds. Cannot be in the future. NOTE THE SIDE EFFECT: sending this — or `author`, " +
         "or `author_external` — marks the write as imported history, so nobody is e-mailed about " +
         "it. Omit all three and the post or comment is announced to watchers exactly as a " +

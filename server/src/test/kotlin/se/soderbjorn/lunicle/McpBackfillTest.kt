@@ -1,5 +1,5 @@
 /**
- * The admin-only backfill parameters on `create_issue`, `add_comment` and
+ * The owner-only backfill parameters on `create_issue`, `add_comment` and
  * `update_issue`.
  *
  * ── Why these are worth a file ──────────────────────────────────────────────
@@ -165,7 +165,7 @@ class McpBackfillTest {
             )
             assertTrue(result.isError, "A non-admin's `author` was accepted or silently ignored.")
             assertTrue(
-                result.text.contains("Only a system administrator"),
+                result.text.contains("Only the instance owner"),
                 "The refusal must say who may do this. Got: ${result.text}",
             )
         }
@@ -238,7 +238,7 @@ class McpBackfillTest {
                 """{"project_id":${fixture.projectId},"title":"Imported","created_at":"last Tuesday"}""",
             )
             assertTrue(result.isError, "A bad `created_at` from a non-admin was quietly ignored.")
-            assertTrue(result.text.contains("Only a system administrator"), result.text)
+            assertTrue(result.text.contains("Only the instance owner"), result.text)
         }
         assertEquals(emptyList(), issues.forProject(fixture.projectId))
     }
@@ -371,7 +371,7 @@ class McpBackfillTest {
             )
             assertTrue(result.isError, "A non-admin wrote an issue under an invented author.")
             assertTrue(
-                result.text.contains("Only a system administrator"),
+                result.text.contains("Only the instance owner"),
                 "The refusal must say why. Got: ${result.text}",
             )
         }
@@ -739,7 +739,7 @@ class McpBackfillTest {
             )
             assertTrue(result.isError, "A non-admin backdated an edit.")
             assertTrue(
-                result.text.contains("Only a system administrator"),
+                result.text.contains("Only the instance owner"),
                 "The refusal must say who may do this. Got: ${result.text}",
             )
         }

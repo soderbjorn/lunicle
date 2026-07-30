@@ -7,8 +7,8 @@
  * like a third of them — but it is the opposite kind of thing, and the tests are
  * here to hold that difference in place:
  *
- *  - **Backfill is admin-only and exceptional; agent_name is nobody's privilege
- *    and the norm.** `author` lets an admin write history under a name that is not
+ *  - **Backfill is the owner's and exceptional; agent_name is nobody's exclusive
+ *    and the norm.** `author` lets the owner write history under a name that is not
  *    the token's; `agent_name` lets any caller truthfully label the row with the
  *    name of the agent that wrote it. So the load-bearing assertion here is the
  *    inverse of that file's: an *ordinary* user sets it and is NOT refused. A
@@ -300,10 +300,10 @@ class McpAgentNameTest {
         )
     }
 
-    // ── Clearing a badge, admin-only ─────────────────────────────────────────
+    // ── Clearing a badge, the instance owner's ───────────────────────────────
 
     /**
-     * A system administrator can strip an agent badge with an empty agent_name.
+     * The instance owner can strip an agent badge with an empty agent_name.
      *
      * The case a migration forces: an issue imported under a placeholder was never
      * an agent's, and once reattributed to a real person it must not still read as
@@ -359,7 +359,7 @@ class McpAgentNameTest {
             val refused = client.callTool(token, "update_issue", """{"issue_id":$issueId,"agent_name":""}""")
             assertTrue(refused.isError, "A non-admin cleared an agent badge.")
             assertTrue(
-                refused.text.contains("system administrator"),
+                refused.text.contains("instance owner"),
                 "The refusal did not say who may do this. Got: ${refused.text}",
             )
         }

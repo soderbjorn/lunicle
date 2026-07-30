@@ -16,11 +16,11 @@
  * uses, and it is why this transport adds no capability. The agent is just
  * another caller.
  *
- * A consequence worth noticing rather than rebuilding: **role changes propagate
+ * A consequence worth noticing rather than rebuilding: **rung changes propagate
  * instantly.** Because every request re-derives permissions through AccessControl
- * rather than baking them into the token, an admin removing someone's role
- * immediately narrows their agent too. No token invalidation is needed and none
- * exists.
+ * rather than baking them into the token, a project administrator lowering
+ * somebody's rung immediately narrows their agent too. No token invalidation is
+ * needed and none exists.
  *
  * @see OAuthServer
  * @see McpTools
@@ -79,7 +79,7 @@ private const val SERVER_VERSION = "1.0.0"
  *
  * Honouring an impersonation here would be incoherent in both directions.
  * Impersonation is keyed by session id and this request has no session — but more
- * to the point, an admin who starts impersonating in their browser must not
+ * to the point, an owner who starts impersonating in their browser must not
  * silently redirect an agent that a *different* human approved days ago. The
  * effective user is a property of a browser tab; a token is a property of a
  * grant. See Impersonations, whose whole subject is that the client never says

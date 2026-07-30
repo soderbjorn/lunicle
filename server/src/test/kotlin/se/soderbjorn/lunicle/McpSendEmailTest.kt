@@ -13,10 +13,11 @@
  * — on the wire, by capturing what the sender was handed, and on the schema, by
  * asserting there is no recipient property to send.
  *
- * The second claim, from LNL-67, is that only a system administrator can make
- * this instance send at all — see [AccessControl.canSendAgentMail] for why that
- * is the answer. It is pinned in three places because it is enforced in two and
- * described in a third: the tool is absent from a non-admin's `tools/list`, the
+ * The second claim, from LNL-67 and narrowed by LNL-191, is that only the instance
+ * OWNER can make this instance send at all — see [AccessControl.canSendAgentMail]
+ * for why that is the answer, and note it is the owner rather than any instance
+ * administrator. It is pinned in three places because it is enforced in two and
+ * described in a third: the tool is absent from a non-owner's `tools/list`, the
  * call is refused even when the name is sent anyway, and the instructions do not
  * describe a tool the caller was not offered.
  *
@@ -203,7 +204,7 @@ class McpSendEmailTest {
         )
     }
 
-    // ── Only a system administrator can make the instance send ───────────────
+    // ── Only the instance owner can make the instance send ───────────────────
 
     /**
      * The LNL-67 test: an ordinary user's agent is refused, and nothing leaves.
@@ -222,7 +223,7 @@ class McpSendEmailTest {
             val result = client.callTool(token, "send_email", """{"subject":"Hi","body":"There"}""")
             assertTrue(result.isError, "An ordinary user's agent sent e-mail.")
             assertTrue(
-                result.text.contains("system administrators"),
+                result.text.contains("restricted to the owner"),
                 "The refusal did not say who may do this. Got: ${result.text}",
             )
         }
@@ -250,17 +251,17 @@ class McpSendEmailTest {
                 "send_email" in client.listTools(admin),
                 "An admin was not offered send_email at all.",
             )
-            // The filter must take exactly the admin-gated tools away, not narrow
-            // the surface any further. Since LNL-78 that is send_email AND the
-            // forum tools, which are gated the same way — and update_history_event,
-            // which is whole-tool admin-only for the same reason. So the two lists
+            // The filter must take exactly the owner-gated tools away, not narrow
+            // the surface any further. That is send_email, update_history_event and
+            // delete_attachment — plus the forum tools, which since LNL-190 are
+            // offered to nobody at all rather than to the owner. So the two lists
             // differ by exactly that set and nothing else. A build that dropped an
             // ordinary tool for an ordinary user would fail here.
             assertEquals(
                 client.listTools(admin) - "send_email" - "update_history_event" -
                     "delete_attachment" - forumToolNames,
                 client.listTools(ordinary),
-                "Filtering the admin-only tools changed something else about the tool list.",
+                "Filtering the owner-only tools changed something else about the tool list.",
             )
         }
     }

@@ -152,11 +152,12 @@ class McpIssueEditTest {
     /**
      * An ordinary owner may edit, but not re-attribute.
      *
-     * This user CAN edit the issue — it is theirs — so the refusal is the admin-only
-     * attribution gate turning down `author`, not canEditIssue. Nothing is written.
+     * This user CAN edit the issue — it is theirs — so the refusal is the attribution
+     * gate turning down `author`, which is the instance OWNER's alone, and not
+     * canEditIssue. Nothing is written.
      */
     @Test
-    fun `a non-admin owner cannot re-attribute their issue`(): Unit = runBlocking {
+    fun `an issue's author cannot re-attribute it without owning the instance`(): Unit = runBlocking {
         val fixture = seed()
         val issueId = issueBy(fixture, Author.Account(fixture.ordinaryId), title = "mine")
         val token = tokenFor(fixture.ordinaryId)
@@ -167,8 +168,8 @@ class McpIssueEditTest {
                 "update_issue",
                 """{"issue_id":$issueId,"title":"mine still","author":"Admin"}""",
             )
-            assertTrue(result.isError, "A non-admin set an author on an issue edit.")
-            assertTrue(result.text.contains("admin"), "The refusal must name the gate. Got: ${result.text}")
+            assertTrue(result.isError, "Somebody who does not own the instance set an author on an issue edit.")
+            assertTrue(result.text.contains("owner"), "The refusal must name the gate. Got: ${result.text}")
         }
 
         val issue = issues.findById(issueId)!!
