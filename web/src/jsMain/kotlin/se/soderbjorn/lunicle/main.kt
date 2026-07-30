@@ -1738,8 +1738,9 @@ private fun start() {
             // whether or not a board tick happens to follow, and a board tick must
             // not wait on one.
             // The pane the focus ring was last moved to by the APP rather than by
-            // a press. See below.
+            // a press, and the pane set it was standing in at the time. See below.
             var raisedPane: String? = null
+            var raisedPaneSet: List<String>? = null
             workspaceViewModel.stateFlow.collect { ws ->
                 workspaceState = ws
                 // The board registry follows the panes: a board pane that has just
@@ -1771,11 +1772,30 @@ private fun start() {
                 //
                 // Only on a genuine change, so a plain workspace tick cannot steal
                 // focus back from wherever the user has since clicked.
-                val active = ws.workspace.activeTab?.activePaneId
-                if (active != null && active != raisedPane && active != lastUserFocusedPane) {
+                //
+                // ...and a pane appearing or disappearing IS one, even when the active
+                // pane has not moved. Both tests below ask "is this already on top",
+                // and a new window invalidates both answers: the toolkit puts one it
+                // has just been handed above everything, so neither "we raised this
+                // last time" nor "the user pressed it" is still true of the z-order.
+                //
+                // Conflation makes that the ordinary case rather than a corner. Making
+                // a project opens its board AND points the active pane back at the
+                // settings pane, in one synchronous block — so this collector never
+                // observes the board being active. It sees the settings pane it raised
+                // a moment ago, pressed by a reader who clicked New project… inside it,
+                // and by both tests has nothing to do — while the board sits on top of
+                // the surface they went there to use.
+                val activeTab = ws.workspace.activeTab
+                val active = activeTab?.activePaneId
+                val paneSet = activeTab?.panes?.map { it.paneId }
+                val reshuffled = paneSet != raisedPaneSet
+                val unraised = active != raisedPane && active != lastUserFocusedPane
+                if (active != null && (reshuffled || unraised)) {
                     handle.bringPaneToFront(active)
                 }
                 raisedPane = active
+                raisedPaneSet = paneSet
                 syncUrl(
                     mainViewModel.stateFlow.value.openIssueTicket,
                     focusedBoardProjectId(ws.workspace),
