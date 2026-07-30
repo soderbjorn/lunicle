@@ -258,16 +258,19 @@ enum class Audience(val key: String, val instanceRole: InstanceRole, val ceiling
      * surfaces show it: a project's Access list, the instance's new-project rows, and
      * the two routes that refuse the write. A rule explained four ways is a rule
      * nobody trusts, and the publish veto beside it is already spelled twice.
+     *
+     * **One clause, deliberately.** A rung picker puts the reason *in the rung's label*
+     * — see `rungPicker`, which has no room for a second line — so a sentence of advice
+     * here becomes the same paragraph repeated on four greyed rows, which is what it was
+     * on the first pass and what a browser showed immediately. The advice belongs on the
+     * row instead, said once: see the Guests subtitle in `ProjectSettingsRoutes`.
      */
     fun refusalFor(role: ProjectRole): String? {
         if (permits(role)) return null
         // A `when` rather than an `else`, so that giving MEMBER or STAFF a ceiling one
         // day has to say why here rather than inheriting a sentence about guests.
         return when (this) {
-            GUEST ->
-                "A guest has not signed in, so there is nobody to attribute a write to — " +
-                    "which is what every rung above ${ceiling.label} is. Guests can only read. " +
-                    "To let people file issues, give the members row ${ProjectRole.CONTRIBUTOR.label}."
+            GUEST -> "Guests have no account, so there is nobody to attribute a write to."
             MEMBER, STAFF -> "This audience cannot hold more than ${ceiling.label} here."
         }
     }

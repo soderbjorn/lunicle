@@ -801,7 +801,12 @@ private val Audience.adminTitle: String
     }
 
 private fun Audience.adminSubtitle(domain: String?): String = when (this) {
-    Audience.GUEST -> "Anybody at all, without signing in."
+    // The ceiling said once on the row, for the reason a project's own Guests subtitle
+    // gives (LNL-202): the greyed rungs inside the menu carry one clause each, and the
+    // explanation belongs somewhere it is read once.
+    Audience.GUEST ->
+        "Anybody at all, without signing in. A guest can only ever read: there is nobody " +
+            "to attribute a write to."
     Audience.MEMBER -> "Everybody with an account on this deployment."
     Audience.STAFF -> domain?.let { "Accounts on $it." } ?: "Accounts on this organisation's domain."
 }

@@ -1079,7 +1079,13 @@ private val Audience.title: String
  * not hold configuration.
  */
 private fun Audience.subtitle(domain: String?): String = when (this) {
-    Audience.GUEST -> "Anybody at all, without signing in."
+    // The ceiling said once, on the row, rather than four times inside the menu
+    // (LNL-202): a rung picker has room for a reason per rung and no room for advice, so
+    // the greyed rungs carry the one-clause `refusalFor` and the way to get what somebody
+    // actually wanted lives here — beside the Members row it points at.
+    Audience.GUEST ->
+        "Anybody at all, without signing in. A guest can only ever read: there is nobody " +
+            "to attribute a write to. To let people file issues, give Members Contributor."
     Audience.MEMBER -> "Everybody with an account on this deployment."
     Audience.STAFF -> domain?.let { "Accounts on $it." } ?: "Accounts on this organisation's domain."
 }

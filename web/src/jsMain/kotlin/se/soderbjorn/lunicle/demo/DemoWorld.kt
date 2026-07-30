@@ -203,6 +203,17 @@ internal fun demoAudienceCeiling(audienceKey: String): String = when (audienceKe
     else -> DemoRungKeys.OWNER
 }
 
+/**
+ * What the Guests row says about itself, on both screens that draw one.
+ *
+ * The ceiling stated **once, on the row** rather than inside the menu (LNL-202): a rung
+ * picker puts its reason in each rung's label, so advice repeated across four greyed rungs
+ * is a paragraph shown four times. Mirrors the server's `Audience.subtitle`.
+ */
+internal const val DEMO_GUEST_SUBTITLE: String =
+    "Anybody at all, without signing in. A guest can only ever read: there is nobody to " +
+        "attribute a write to. To let people file issues, give Members Contributor."
+
 /** May this audience be handed [rungKey]? See [demoAudienceCeiling]. */
 internal fun demoAudiencePermits(audienceKey: String, rungKey: String): Boolean =
     demoRungRank(demoAudienceCeiling(audienceKey)) >= demoRungRank(rungKey)
@@ -224,11 +235,12 @@ internal fun demoAudienceRungs(audienceKey: String): List<RungOption> = DEMO_RUN
     if (demoAudiencePermits(audienceKey, rung.key)) {
         rung
     } else {
+        // One clause, because a rung picker puts the reason in the rung's label — the
+        // explanation lives on the row's subtitle instead, said once. Mirrors
+        // `Audience.refusalFor`.
         rung.copy(
             isSelectable = false,
-            unavailableReason = "A guest has not signed in, so there is nobody to attribute a " +
-                "write to — which is what every rung above Viewer is. Guests can only read. To " +
-                "let people file issues, give the members row Contributor.",
+            unavailableReason = "Guests have no account, so there is nobody to attribute a write to.",
         )
     }
 }
@@ -896,7 +908,7 @@ internal class DemoWorld {
             AudienceRow(
                 DemoAudienceKeys.GUEST,
                 "Guests",
-                "Anybody at all, without signing in.",
+                DEMO_GUEST_SUBTITLE,
                 // Capped on the way out (LNL-202), so a row above the ceiling would show as
                 // the Viewer it effectively is rather than as a rung nothing honours.
                 p.audiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
@@ -1134,7 +1146,7 @@ internal class DemoWorld {
             AudienceRow(
                 DemoAudienceKeys.GUEST,
                 "Guests",
-                "Anybody at all, without signing in.",
+                DEMO_GUEST_SUBTITLE,
                 newProjectAudiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
                 isSelectable = allowPublicProjects,
                 unavailableReason = if (allowPublicProjects) {
