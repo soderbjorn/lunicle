@@ -672,6 +672,45 @@ class EditProjectBackingViewModel(
                 "What a ticket must carry is an administrator of this project's."
             }
 
+        /**
+         * The line under the fixed-version switch: why it is currently doing nothing, or
+         * what it asks for (LNL-196).
+         *
+         * Said where the switch is rather than left to be discovered, because a switch
+         * that is *on* and has no effect is the thing people file bugs about. The rule
+         * needs two things — a version to pick, and a resolution that means the work was
+         * done — and naming which half is missing is the difference between an
+         * explanation and "it needs setting up".
+         *
+         * Decided here rather than in the view, and the reason is the one thing that is
+         * easy to get wrong: **a Maintainer is not sent the resolutions.** They are an
+         * administrator's list, so [hasDoneResolution] would read false for a project that
+         * has one and the line would state something untrue — and then point at a
+         * Structure section that caller does not have. So the resolution half is only
+         * asserted by somebody who can see it, and the version half, which travels to
+         * everybody who reaches this section, is asserted either way.
+         */
+        val fixedVersionCaveat: String get() {
+            val knowsResolutions = canSetRequirements
+            return when {
+                !hasVersions && knowsResolutions && !hasDoneResolution ->
+                    "Ignored for now: this project has no versions to pick and no resolution " +
+                        "ticked \"means done\". Add a version above and tick one in Structure."
+                !hasVersions ->
+                    "Ignored for now: this project has no versions to pick. Add one above."
+                knowsResolutions && !hasDoneResolution ->
+                    "Ignored for now: no resolution is ticked \"means done\", so no close counts " +
+                        "as done. Tick one in Structure."
+                knowsResolutions ->
+                    "Asks only for resolutions ticked \"means done\" in Structure, and only for " +
+                        "the versions above."
+                // No Structure section to point at, and no resolutions to have read.
+                else ->
+                    "Asks only for resolutions that mean the work was done, and only for the " +
+                        "versions above."
+            }
+        }
+
         /** Whether the board shows each card's author on a muted footer line (LNL-157). */
         val showIssueAuthor: Boolean get() = settings?.showIssueAuthor ?: false
 
@@ -799,9 +838,13 @@ class EditProjectBackingViewModel(
                     loaded,
                     VocabularyKind.RESOLUTION,
                     title = "Resolutions",
+                    // "…below" until LNL-196, when the switch it points at moved to the
+                    // Versions section. A hint that says "below" about something two
+                    // sections away is worse than no hint: it sends the reader scrolling.
                     hint = "Why an issue was closed. Offered when an issue moves into a column " +
                         "that needs a resolution. Tick \"means done\" on the ones that finish " +
-                        "the work — that is what \"require a fixed version\" below asks about.",
+                        "the work — that is what \"closing as done must have a fixed version\", " +
+                        "in the Versions section, asks about.",
                 ),
                 section(
                     loaded,

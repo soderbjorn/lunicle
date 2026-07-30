@@ -704,23 +704,9 @@ class ProjectSections(
             // Said under the switch rather than left to be discovered: with no version
             // above, or no resolution ticked "means done", the rule is quietly ignored —
             // and a switch that is on and does nothing is the thing people file bugs
-            // about. Which half is missing is named, because "it needs setting up" is not
-            // an instruction.
-            fixedVersionCaveat.setTextIfChanged(
-                when {
-                    !state.hasVersions && !state.hasDoneResolution ->
-                        "Ignored for now: this project has no versions to pick and no resolution " +
-                            "ticked \"means done\". Add a version above and tick one in Structure."
-                    !state.hasVersions ->
-                        "Ignored for now: this project has no versions to pick. Add one above."
-                    !state.hasDoneResolution ->
-                        "Ignored for now: no resolution is ticked \"means done\", so no close counts " +
-                            "as done. Tick one in Structure."
-                    else ->
-                        "Asks only for resolutions ticked \"means done\" in Structure, and only for " +
-                            "the versions above."
-                },
-            )
+            // about. Worded by the view model, which is the half that knows what this
+            // caller was actually sent; see State.fixedVersionCaveat.
+            fixedVersionCaveat.setTextIfChanged(state.fixedVersionCaveat)
         }
 
         // The maintainer half first, so a Maintainer's two sections fill even though the
