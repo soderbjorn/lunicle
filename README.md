@@ -10,16 +10,18 @@ Lunicle is a web-based issue tracker that supports the usual features you would 
 
 Lunicle is delivered via Docker. For persistence it uses either an embedded database or Google Cloud Firestore. Personally I use (and recommend) [Railway](https://railway.com/). The vanilla distribution can be adapted to some extent with custom themes and some settings.
 
-This is a fast-moving, agent-first software development project. If I put too much detail here, it would quickly become obsolete. If you want specifics about the features, source code and the architecture, ask your agent!
+If you want information about installation / deployment, usage or features, check out the comprehensive [manual](https://www.lunicle.dev/#/docs).
 
-## Tech stack
+## Architecture
 
-I will mention just a few words about tech choices.
-
-I use Kotlin anywhere I can, because I really like the language, and Kotlin Multiplatform makes it easy to share code across both the server and web (and mobile apps later, too, if I should decide to make them). I however do **not** use Compose Multiplatform because I want each platform to have a native UI. For web (primarily), I use a dedicated UI toolkit ([Lunula](https://github.com/soderbjorn/lunula)) which I use also for other apps.
+I use Kotlin for this project because I really like the language, and Kotlin Multiplatform makes it easy to share code across components. I however do **not** use Compose Multiplatform because I generally want platforms to have a native UI (which is not to say that there are no situations where that might be appropriate -- decide on a case-by-case basis, not religiously). For a web experience like this one, Compose feels foreign, so I use Kotlin's DOM APIs.
 
 In projects on multiple platforms, I try to have common view models across all clients that expose a single state object per screen/view, with thin
-wrappers where needed on each platform. I also re-use the Kotlin networking layer across all platforms.
+wrappers where needed on each platform. I also re-use the Kotlin networking and serialisation layer across platforms and components wherever possible. If you want to know more about how I'm thinking about architecture in a Kotlin Multiplatform world, you can check out [my KMP principles](https://www.soderbjorn.se/#/kmp-sharing-architecture).
+
+In addition, I provide a dedicated UI toolkit called [Lunula](https://github.com/soderbjorn/lunula) which I use for this app and other personal apps as well so that they all gain the same look and feel, customisable theming and flexible tab and window layouts.
+
+I have deliberately not manually documented anything more than the above guidance and the [manual](https://www.lunicle.dev/#/docs) itself, although I instruct my agents to write code comments in-line. This is a fast-moving, agent-first software development project. If I put too much detail here, it would really quickly become obsolete. If you want more implementation details, ask your agent! :)
 
 ## Author
 
