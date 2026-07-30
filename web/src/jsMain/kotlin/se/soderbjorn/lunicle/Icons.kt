@@ -154,6 +154,38 @@ const val CHECK_SVG = """
 """
 
 /**
+ * The forbidden mark — a circle struck through — for a menu row that is shown and
+ * cannot be chosen.
+ *
+ * ── Why a row says this rather than being left out ──────────────────────────
+ *
+ * A permission picker lists every rung, including the ones this caller may not
+ * hand out, because the reason rides in the row's own label and an omitted rung
+ * explains nothing. What was missing is that such a row still *looked* pressable:
+ * it took the accent fill on hover and swallowed the click, so choosing one read
+ * as a selection that instantly reverted. This is the mark that says so before the
+ * click instead of after it. See [CHECK_SVG]'s slot, which this shares — a row is
+ * either live and checked, or blocked and struck, never both.
+ *
+ * Sits on the same 24×24 grid at the same 2.2 weight as [CHECK_SVG], because the
+ * two alternate in one gutter and a lighter stroke beside it would read as a
+ * different icon set. The slash runs corner-to-corner of the circle's box rather
+ * than edge-to-edge of the grid, so it is a `⊘` and not a circle with a line
+ * through the whole cell.
+ *
+ * Markup rather than an element, for [CHECK_SVG]'s reason: the row's icon slot IS
+ * the span, so this goes in as `innerHTML`.
+ */
+const val FORBIDDEN_SVG = """
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="2.2"
+     stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="8.5"/>
+  <line x1="6" y1="6" x2="18" y2="18"/>
+</svg>
+"""
+
+/**
  * The agent mark — a robot's head — flagging an issue or comment an agent made.
  *
  * Hand-drawn to this file's rule rather than an emoji robot, for exactly the

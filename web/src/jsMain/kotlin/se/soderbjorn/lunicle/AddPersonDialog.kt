@@ -132,6 +132,11 @@ class AddPersonDialog(
             DropdownItem(
                 index.toLong(),
                 if (rung.isSelectable) rung.label else "${rung.label} — ${rung.unavailableReason}",
+                // Struck through and inert, exactly as the Access section's own picker
+                // draws one — see rungPicker. No "or it is the one already held" clause
+                // here, unlike there: this dialog starts with nothing chosen, so a rung
+                // out of this caller's reach is never the current value.
+                isEnabled = rung.isSelectable,
             )
         }
         val selected = chosenKey?.let { key -> rungs.indexOfFirst { it.key == key }.takeIf { i -> i >= 0 }?.toLong() }

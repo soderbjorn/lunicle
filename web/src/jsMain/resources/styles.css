@@ -734,6 +734,42 @@ body > .dt-pane-menu {
   overflow-y: auto;
 }
 
+/* A row that is shown and cannot be chosen — a permission rung this caller may
+   not hand out, listed WITH its reason because the point of the list is that the
+   ladder is legible. See Dom.kt's DropdownItem.isEnabled.
+
+   The row also carries the toolkit's `dt-disabled`, which is what actually kills
+   the accent fill: lunula writes its hover as `:hover:not(.dt-disabled)`, so the
+   suppression happens in the toolkit's own rule rather than in a Lunicle rule
+   racing it for specificity — the trap this file hits twice above with
+   `.dt-hover-menu`'s runtime <style>. Everything here is the part the toolkit
+   cannot know about.
+
+   BOTH classes, for that same reason: `dt-disabled` sets `opacity: 0.4` and
+   `pointer-events: none`, and this rule has to beat both.
+
+   Legibility first: 0.4 is right for a menu row whose label is one word, and
+   wrong for one carrying a whole sentence explaining a refusal — at that opacity
+   the explanation is the least readable text on screen, which defeats showing it.
+   0.72 keeps it plainly secondary and plainly readable.
+
+   And the pointer comes back on, deliberately. The fill is already gone via the
+   toolkit's selector, so re-enabling hit-testing costs nothing visually and buys
+   `not-allowed` under the cursor — the answer arriving on approach rather than
+   after a click. Safe because a blocked row has no click handler at all (Dom.kt),
+   so there is nothing for the recovered pointer to fire. */
+.lunicle-dropdown-rows .dt-hover-menu-item.lunicle-dropdown-row-blocked {
+  opacity: 0.72;
+  pointer-events: auto;
+  cursor: not-allowed;
+}
+
+/* The struck circle in the gutter the check would otherwise hold. Dimmer than the
+   label it sits beside: the mark is a flag, and the sentence is the message. */
+.lunicle-dropdown-rows .dt-hover-menu-item.lunicle-dropdown-row-blocked .dt-hover-menu-icon {
+  opacity: 0.8;
+}
+
 /* The two remaining icon buttons in the content zone: a board column's ⋮ and
    the lightbox's close X. Both draw a stroked/filled GLYPH, which is why the
    colour below is the accent's TYPE half.
