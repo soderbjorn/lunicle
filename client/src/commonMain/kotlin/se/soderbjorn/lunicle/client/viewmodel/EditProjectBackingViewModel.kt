@@ -760,9 +760,13 @@ class EditProjectBackingViewModel(
         /**
          * Whether the project has any versions to pick, and any resolution marked
          * done — the two things the fix-version requirement needs to be satisfiable
-         * (LNL-134). Like [hasLabels], a toggle with neither would be a trap: the
-         * view uses this to explain, next to the switch, that making a version and
-         * marking a resolution done is what turns it on in practice.
+         * (LNL-134). Like [hasLabels], a toggle with neither would be a trap, so
+         * [fixedVersionCaveat] says so beside the switch.
+         *
+         * [hasDoneResolution] is only **answerable** for an administrator: the resolutions
+         * are their list, and a Maintainer is sent none — so it reads false for a project
+         * that has one, and only [fixedVersionCaveat]'s `knowsResolutions` guard keeps that
+         * from becoming a sentence stating something untrue (LNL-196).
          */
         val hasVersions: Boolean get() = settings?.versions?.isNotEmpty() ?: false
         val hasDoneResolution: Boolean get() = settings?.resolutions?.any { it.isDone } ?: false
