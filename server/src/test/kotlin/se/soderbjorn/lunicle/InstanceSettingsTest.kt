@@ -485,6 +485,50 @@ class InstanceSettingsTest {
         assertEquals(ProjectRole.VIEWER, roles.audienceRoles(published.id)[Audience.GUEST])
     }
 
+    /**
+     * The session says an owner **runs the instance**, even with no administrator row of
+     * their own (LNL-198).
+     *
+     * The settings pane gates all three instance tabs on `session.user.isSysAdmin`, and that
+     * flag is derived from `users.instance_role` — which cannot see ownership, because
+     * ownership is a setting and 33.sqm deliberately leaves the owner's row null rather than
+     * stating one authority twice.
+     *
+     * So two entirely ordinary deployments would hide the settings pane from the person who
+     * owns them: **every migrated volume** (33.sqm nulls the column for everybody), and any
+     * instance whose ownership has been handed over. This asserts the seam that folds the two
+     * facts together — see AuthRoutes' `sessionStateFor` — and asserts the negative beside
+     * it, because a fix that simply returned true for everybody would pass the first half
+     * alone.
+     */
+    @Test
+    fun `the session reports an owner with no admin row as running the instance`(): Unit = runBlocking {
+        seed()
+        // Not the first account, so `upsert` does not hand them the administrator row, and
+        // not promoted afterwards: an owner whose only authority is the setting. Exactly the
+        // state a handover and a migrated volume leave behind.
+        val handedTo = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-heir", "Heir", "heir@example.com"))
+        val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-plain", "Plain", "plain@example.com"))
+        assertFalse(handedTo.isInstanceAdmin, "Precondition: the heir holds no administrator row.")
+        instanceSettings.setOwnerUserId(handedTo.id)
+
+        withAuthAndBoard { client ->
+            val owner: SessionState = client.get("/api/session") {
+                cookie(SESSION_COOKIE, sessions.create(handedTo.id))
+            }.body()
+            assertTrue(
+                owner.user?.isSysAdmin == true,
+                "The owner's own session says they do not run the instance, so the settings " +
+                    "pane would hide all three instance tabs from them.",
+            )
+
+            val plain: SessionState = client.get("/api/session") {
+                cookie(SESSION_COOKIE, sessions.create(ordinary.id))
+            }.body()
+            assertFalse(plain.user?.isSysAdmin == true, "An ordinary account was told it runs the instance.")
+        }
+    }
+
     // ── Fixture ──────────────────────────────────────────────────────────────
 
     private class Fixture(val adminId: Long, val projectId: Long)

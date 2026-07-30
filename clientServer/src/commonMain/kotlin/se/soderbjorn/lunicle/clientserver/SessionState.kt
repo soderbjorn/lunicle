@@ -58,7 +58,15 @@ enum class AuthProvider {
  *   every client renders the same name by the same rule.
  * @property provider which provider authenticated them, so the sidebar can say
  *   "Signed in via GitHub as …".
- * @property isSysAdmin whether this is the instance admin.
+ * @property isSysAdmin whether this account **runs the instance** — an instance
+ *   administrator, or the owner above them.
+ *
+ *   Both, and it has to be both: `users.instance_role` cannot see ownership (that is
+ *   `instance_settings.owner_user_id`, and 33.sqm deliberately leaves the owner's row
+ *   null rather than stating one authority twice), so a flag taken off the record alone
+ *   says "no" about the person who owns the deployment — and the settings pane gates all
+ *   three instance tabs on this. The server folds the two together where the state is
+ *   built; see AuthRoutes' `sessionStateFor` (LNL-198).
  *
  *   **An affordance, not a grant.** It exists so the UI does not offer "New
  *   project…" to someone the server will refuse. Setting it to `true` in a

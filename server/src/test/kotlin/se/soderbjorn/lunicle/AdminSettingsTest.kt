@@ -39,6 +39,7 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -50,6 +51,7 @@ import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
+import se.soderbjorn.lunicle.clientserver.HandOverInstanceRequest
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.ProjectOrder
 import se.soderbjorn.lunicle.clientserver.SetAdmissionPolicyRequest
@@ -706,6 +708,310 @@ class AdminSettingsTest {
             assertTrue(instanceSettings.current().allowPublicProjects, "The administrator's switch did not persist.")
         }
 
+    // ── Handing the instance over (LNL-198) ──────────────────────────────────
+
+    /**
+     * The owner is offered **staff who have signed in**, and nobody else.
+     *
+     * Three accounts that are not eligible, each for a different reason, and each a real
+     * account somebody would expect to see: a member (signed in, but from outside the
+     * domain), a staff address added ahead of time and never claimed, and the owner
+     * themselves. A picker that offered any of them would be offering a route that refuses.
+     *
+     * The never-signed-in row is the one worth being explicit about. It holds rungs, it is
+     * somebody's deliberate act, and it looks exactly like a claimed account on every other
+     * screen — so "ownership can land on an address that was typed once into a dialog" is a
+     * bug that would ship looking perfectly reasonable.
+     */
+    @Test
+    fun `the picker offers signed-in staff and nobody else`(): Unit = runBlocking {
+        val fixture = seed()
+        users.setKind(fixture.adminId, UserKind.STAFF)
+        val staff = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-staff", "Staff Signedin", "staff@example.com"),
+            kind = UserKind.STAFF,
+        )
+        val member = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-member", "Outside Member", "outside@elsewhere.test"),
+            kind = UserKind.MEMBER,
+        )
+        // An address somebody added and nobody has ever arrived at: staff by domain, and
+        // `signed_in_at` is deliberately left null by addByEmail. See Users.sq.
+        val unclaimed = users.addByEmail("never@example.com", kind = UserKind.STAFF)
+        assertFalse(unclaimed.hasSignedIn, "Precondition: the added address has never been signed in to.")
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes(identity = InstanceIdentity(domain = "example.com")) { client ->
+            val body = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                .body<AdminSettingsState>()
+            assertTrue(body.ownership.isOwnerSelf, "Precondition: the caller is the owner.")
+            assertTrue(body.ownership.canHandOver, "The owner was not offered Hand over…")
+            assertNull(body.ownership.handOverBlockedReason, "The owner was given a reason they may not.")
+            assertEquals(
+                listOf(staff.id),
+                body.ownership.handOverCandidates.map { it.userId },
+                "The picker offered somebody other than the signed-in staff account.",
+            )
+            assertNull(
+                body.ownership.handOverEmptyReason,
+                "A populated picker also carried the sentence for an empty one.",
+            )
+            // Named individually so a failure says which of the three leaked.
+            val offered = body.ownership.handOverCandidates.map { it.userId }
+            assertFalse(member.id in offered, "A member was offered the deployment.")
+            assertFalse(unclaimed.id in offered, "An address nobody has signed in to was offered the deployment.")
+            assertFalse(fixture.adminId in offered, "The owner was offered their own instance.")
+        }
+    }
+
+    /**
+     * The handover itself: one owner before, one owner after, and the outgoing owner left
+     * administering rather than demoted out of the building.
+     *
+     * Checked in the **stores** rather than only in the response, for the reason the refusal
+     * tests give in reverse: a response that reported the right thing while having written
+     * something else would look identical. Four separate claims, and each of them is a way
+     * this could ship broken:
+     *
+     *  - the setting names the successor, and *only* one account can be named, because it is
+     *    one field (see `InstanceSettings.ownerUserId`);
+     *  - the outgoing owner holds `instance_role = 'admin'`, so they did not fall out of
+     *    administration by handing over;
+     *  - the projects they owned are still theirs — nothing about a project rung is touched
+     *    by an instance-ladder write, and it would be very easy to "tidy up" that way;
+     *  - the response the caller reads describes an instance they no longer own, which is
+     *    what puts the button away.
+     */
+    @Test
+    fun `the owner hands the instance over and stays an administrator`(): Unit = runBlocking {
+        val fixture = seed()
+        users.setKind(fixture.adminId, UserKind.STAFF)
+        val successor = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-successor", "Ada Lovelace", "ada@example.com"),
+            kind = UserKind.STAFF,
+        )
+        // A rung the outgoing owner holds on their own board. It must survive: giving up the
+        // instance is not giving up your projects.
+        roles.setRole(fixture.adminId, fixture.projectId, ProjectRole.OWNER)
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes(identity = InstanceIdentity(domain = "example.com")) { client ->
+            val response = client.post("/api/admin/ownership") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(HandOverInstanceRequest(successor.id))
+            }
+            assertEquals(HttpStatusCode.OK, response.status, "The owner was refused their own handover.")
+            val body = response.body<AdminSettingsState>()
+            assertEquals(
+                "Ada Lovelace",
+                body.ownership.ownerName,
+                "The response still named the old owner, so the screen would not have moved.",
+            )
+            assertFalse(body.ownership.isOwnerSelf, "The caller was still reported as the owner.")
+            assertFalse(body.ownership.canHandOver, "The button would have stayed live for a non-owner.")
+            assertTrue(
+                body.ownership.handOverCandidates.isEmpty(),
+                "A successor list was sent to somebody who can no longer use it.",
+            )
+        }
+
+        assertEquals(successor.id, instanceSettings.current().ownerUserId, "Ownership did not move.")
+        // Exactly one, and structurally so: ownership is one field, so this asserts the
+        // invariant by counting the accounts the whole store agrees are the owner.
+        val ownerId = instanceSettings.current().ownerUserId
+        assertEquals(
+            listOf(successor.id),
+            users.selectAll().map { it.id }.filter { it == ownerId },
+            "The instance has other than exactly one owner.",
+        )
+        assertTrue(
+            users.findById(fixture.adminId)?.isInstanceAdmin == true,
+            "The outgoing owner was left with no administration at all.",
+        )
+        assertFalse(
+            users.findById(successor.id)?.isInstanceAdmin == true,
+            "The incoming owner was flagged an administrator too; ownership is senior, so " +
+                "that would pre-decide what they fall back to.",
+        )
+        assertEquals(
+            ProjectRole.OWNER,
+            roles.roleFor(fixture.adminId, fixture.projectId),
+            "The outgoing owner lost a project they owned.",
+        )
+    }
+
+    /**
+     * An instance **administrator** cannot hand the instance over, and the route says so —
+     * not merely the button being absent.
+     *
+     * The affordance and the enforcement are asserted separately on purpose. The screen
+     * hides the button on `canHandOver`, which is JavaScript on somebody else's machine; the
+     * property that matters is that a hand-written POST from the same session is refused,
+     * and that nothing was written on the way to refusing. An administrator who could hand
+     * the instance over could hand it to *themselves*, which would make administrator and
+     * owner the same rung and quietly undo every narrowing this rework made.
+     */
+    @Test
+    fun `an instance administrator sees the row, gets no button, and is refused the route`(): Unit = runBlocking {
+        val fixture = seed()
+        users.setKind(fixture.adminId, UserKind.STAFF)
+        val second = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-second", "Second Admin", "second@example.com"),
+            kind = UserKind.STAFF,
+        )
+        users.setInstanceAdmin(second.id, true)
+        val cookie = sessions.create(second.id)
+
+        withRoutes(identity = InstanceIdentity(domain = "example.com")) { client ->
+            val body = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                .body<AdminSettingsState>()
+            assertFalse(body.ownership.isOwnerSelf, "An administrator was reported as the owner.")
+            assertFalse(body.ownership.canHandOver, "An administrator was offered Hand over…")
+            assertNotNull(body.ownership.handOverBlockedReason, "No sentence said whose the handover is.")
+            assertTrue(
+                body.ownership.handOverCandidates.isEmpty(),
+                "A successor list was sent to somebody who may not use it.",
+            )
+
+            // The enforcement, called directly — twice, because handing it to the owner's
+            // account and to their own are different mistakes and both must be refused.
+            listOf(second.id, fixture.adminId).forEach { target ->
+                assertEquals(
+                    HttpStatusCode.Forbidden,
+                    client.post("/api/admin/ownership") {
+                        cookie(SESSION_COOKIE, cookie)
+                        contentType(ContentType.Application.Json)
+                        setBody(HandOverInstanceRequest(target))
+                    }.status,
+                    "An instance administrator handed the deployment to $target.",
+                )
+            }
+        }
+
+        assertEquals(fixture.adminId, instanceSettings.current().ownerUserId, "A refused handover moved ownership.")
+    }
+
+    /**
+     * A member and a never-claimed address are refused at the route as well as absent from
+     * the picker, and the refusal carries the reason the screen would have shown.
+     *
+     * The greying-is-not-a-rule test this file already makes about admission, made again
+     * here because the consequence is heavier: an ineligible account that the route accepted
+     * would be a deployment owned by an address nobody has ever proved they control.
+     */
+    @Test
+    fun `an ineligible account is refused with the sentence the screen would show`(): Unit = runBlocking {
+        val fixture = seed()
+        users.setKind(fixture.adminId, UserKind.STAFF)
+        val member = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-member", "Outside Member", "outside@elsewhere.test"),
+            kind = UserKind.MEMBER,
+        )
+        val unclaimed = users.addByEmail("never@example.com", kind = UserKind.STAFF)
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes(identity = InstanceIdentity(domain = "example.com")) { client ->
+            val toMember = client.post("/api/admin/ownership") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(HandOverInstanceRequest(member.id))
+            }
+            assertEquals(HttpStatusCode.Conflict, toMember.status, "A member was handed the deployment.")
+            assertTrue(
+                toMember.bodyAsText().contains("member here rather than staff"),
+                "The refusal did not say why, so the reader learns nothing: ${toMember.bodyAsText()}",
+            )
+
+            val toUnclaimed = client.post("/api/admin/ownership") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(HandOverInstanceRequest(unclaimed.id))
+            }
+            assertEquals(
+                HttpStatusCode.Conflict,
+                toUnclaimed.status,
+                "An address nobody has signed in to was handed the deployment.",
+            )
+            assertTrue(
+                toUnclaimed.bodyAsText().contains("Nobody has ever signed in"),
+                "The refusal did not name the unclaimed address as the reason: ${toUnclaimed.bodyAsText()}",
+            )
+
+            // And the two that are not about eligibility at all.
+            assertEquals(
+                HttpStatusCode.Conflict,
+                client.post("/api/admin/ownership") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(HandOverInstanceRequest(fixture.adminId))
+                }.status,
+                "Handing the instance to yourself was accepted as a no-op.",
+            )
+            assertEquals(
+                HttpStatusCode.NotFound,
+                client.post("/api/admin/ownership") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(HandOverInstanceRequest(9_999L))
+                }.status,
+                "An account that does not exist was not reported as missing.",
+            )
+        }
+
+        assertEquals(fixture.adminId, instanceSettings.current().ownerUserId, "A refused handover moved ownership.")
+    }
+
+    /**
+     * On a deployment that names **no domain**, there is nobody to hand it to — and the
+     * screen is told why rather than shown an empty menu.
+     *
+     * This is the default configuration, not an edge case: `brand.json` is optional, and
+     * `UserKind.forEmail` makes every account a member without a domain, so an unbranded
+     * install has an empty picker by construction. An owner looking at one needs to be sent
+     * to the deployment's configuration, which is the one place that can change the answer —
+     * so the sentence says `brand.json` out loud.
+     */
+    @Test
+    fun `a deployment with no domain has nobody to hand the instance to`(): Unit = runBlocking {
+        val fixture = seed()
+        val other = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-other", "Somebody Else", "else@example.com"),
+        )
+        val cookie = sessions.create(fixture.adminId)
+
+        // No identity argument: the unbranded default, which is what an install with no
+        // brand directory runs as.
+        withRoutes { client ->
+            val body = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                .body<AdminSettingsState>()
+            assertTrue(
+                body.ownership.canHandOver,
+                "Hand over… was hidden from the owner, so the reason has nowhere to be read.",
+            )
+            assertTrue(body.ownership.handOverCandidates.isEmpty(), "Somebody was eligible with no staff tier.")
+            val reason = assertNotNull(
+                body.ownership.handOverEmptyReason,
+                "An empty picker with no sentence beside it reads as a bug.",
+            )
+            assertTrue(reason.contains("brand.json"), "The reason did not point at what could change it: $reason")
+
+            // And the route agrees, so the empty picker is a rule and not a rendering.
+            val refused = client.post("/api/admin/ownership") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(HandOverInstanceRequest(other.id))
+            }
+            assertEquals(HttpStatusCode.Conflict, refused.status, "An ownerless-tier deployment handed itself over.")
+            assertTrue(
+                refused.bodyAsText().contains("names no domain"),
+                "The refusal blamed the account rather than the deployment: ${refused.bodyAsText()}",
+            )
+        }
+
+        assertEquals(fixture.adminId, instanceSettings.current().ownerUserId, "A refused handover moved ownership.")
+    }
+
     private class Fixture(val adminId: Long, val projectId: Long)
 
     /**
@@ -734,14 +1040,22 @@ class AdminSettingsTest {
         return Fixture(admin.id, project.id)
     }
 
-    /** Mount the real routes and hand back a client. See VocabularyTest.withRoutes. */
+    /**
+     * Mount the real routes and hand back a client. See VocabularyTest.withRoutes.
+     *
+     * @param identity the deployment's own configuration. Defaulted to the unbranded one —
+     *   no domain, so every account is a member — because that is what most of this file
+     *   wants. The handover tests pass one that names a domain, because "staff" does not
+     *   exist without it and the whole eligibility rule is about staff (LNL-198).
+     */
     private fun withRoutes(
         impersonations: Impersonations = Impersonations(),
+        identity: InstanceIdentity = InstanceIdentity(),
         block: suspend (io.ktor.client.HttpClient) -> Unit,
     ) = testApplication {
         application {
             install(ServerContentNegotiation) { json() }
-            routing { boardRoutes(dependencies(impersonations)) }
+            routing { boardRoutes(dependencies(impersonations, identity)) }
         }
         val client = createClient {
             install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) { json() }
@@ -749,7 +1063,11 @@ class AdminSettingsTest {
         block(client)
     }
 
-    private fun dependencies(impersonations: Impersonations) = BoardDependencies(
+    private fun dependencies(
+        impersonations: Impersonations,
+        identity: InstanceIdentity = InstanceIdentity(),
+    ) = BoardDependencies(
+        identity = identity,
         access = access,
         projects = projects,
         projectRepository = projectRepository,

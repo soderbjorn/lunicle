@@ -187,6 +187,28 @@ private fun ApplicationCall.clearSessionCookie() {
  * `instanceSettings` and hand the snapshot down, which keeps the one read per
  * request and this function a pure assembly of what it is given. See
  * [instanceSettingsOrDefault].
+ *
+ * ── Why `isSysAdmin` is rewritten here (LNL-198) ────────────────────────────
+ *
+ * [UserRecord.toSignedInUser] answers it off `users.instance_role`, which **cannot see
+ * ownership**: the owner is `instance_settings.owner_user_id`, and 33.sqm deliberately
+ * leaves the owner's `instance_role` null rather than stating one authority twice. So the
+ * record alone says "no" about the one person who most certainly does run the instance —
+ * and `SettingsPane.renderTabs` gates all three instance tabs on this flag, so an owner
+ * who does not separately hold the administrator row finds them missing.
+ *
+ * Two ways to be in that state, and the second is why this is fixed here rather than
+ * papered over at the handover: **every migrated volume** is in it already (33.sqm nulls
+ * the column for everybody and seats the owner from `is_sys_admin`), and LNL-198's
+ * handover seats an owner who never held the flag. The other repair — writing
+ * `instance_role = 'admin'` onto the owner as well — is the one 33.sqm's own comment
+ * rejects, on the grounds that two records of a single authority are two records that can
+ * disagree after a transfer.
+ *
+ * So the flag means what its documentation on [SignedInUser] and
+ * [se.soderbjorn.lunicle.clientserver.AdminUser] already claims: **runs the instance** —
+ * an administrator, or the owner. Fixed in one place, at the seam that already holds the
+ * settings snapshot.
  */
 private fun sessionStateFor(
     user: SignedInUser?,
@@ -194,7 +216,11 @@ private fun sessionStateFor(
     settings: se.soderbjorn.lunicle.store.InstanceSettings,
 ): SessionState =
     SessionState(
-        user = user,
+        // Never widened for an impersonated caller: `user` is the *effective* one, so an
+        // owner wearing somebody else's face is compared as that somebody and comes back
+        // false. That is the whole point of impersonation and is the answer this has to
+        // keep giving — see impersonationAwareState.
+        user = user?.let { it.copy(isSysAdmin = it.isSysAdmin || settings.ownerUserId == it.id) },
         isGoogleAvailable = config.google != null,
         googleClientId = config.google?.clientId,
         // Told to the client rather than compiled into the bundle, for the reason
