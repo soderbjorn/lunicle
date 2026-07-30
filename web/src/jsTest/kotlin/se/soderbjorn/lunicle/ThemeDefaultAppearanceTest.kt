@@ -3,6 +3,9 @@ package se.soderbjorn.lunicle
 import se.soderbjorn.lunula.core.Appearance
 import se.soderbjorn.lunula.core.DEFAULT_DARK_THEME
 import se.soderbjorn.lunula.core.ThemeSnapshotV2
+import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_APPEARANCE
+import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_DARK_THEME
+import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_LIGHT_THEME
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -67,6 +70,29 @@ class ThemeDefaultAppearanceTest {
         // An un-embedded load sends nothing, and must be unchanged by this feature.
         assertEquals(LUNICLE_DEFAULT_DARK_THEME, resolve(null, null).darkThemeName)
         assertEquals(LUNICLE_DEFAULT_LIGHT_THEME, resolve(null, null).lightThemeName)
+    }
+
+    // ── the demo's own look ──────────────────────────────────────────────────
+    //
+    // ?demo=1 has no brand dir to read a default off, so DemoWorld declares one and
+    // main.kt feeds it through the same tier as the embed parameters, one rung below
+    // them. Asserted here because the constants are only meaningful if they survive
+    // that tier: a name it mistook for "unset" would be swung to GitHub.
+
+    @Test
+    fun the_demo_defaults_to_the_classic_lunamux_pair_dark_side_up() {
+        val snap = resolve(null, DEMO_DEFAULT_DARK_THEME, DEMO_DEFAULT_LIGHT_THEME)
+        assertEquals("Lunamux Classic Dark", snap.darkThemeName)
+        assertEquals("Lunamux Classic Light", snap.lightThemeName)
+        assertEquals(Appearance.Dark, DEMO_DEFAULT_APPEARANCE)
+    }
+
+    @Test
+    fun a_theme_picked_in_the_demo_beats_the_demos_default() {
+        // Demo edits live in the in-memory world until reload, theme included — so a
+        // stored selection must still win, exactly as a signed-in user's does.
+        val stored = ThemeSnapshotV2(darkThemeName = "Solarized Dark").selectionJson()
+        assertEquals("Solarized Dark", resolve(stored, DEMO_DEFAULT_DARK_THEME).darkThemeName)
     }
 
     @Test

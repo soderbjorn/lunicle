@@ -13,7 +13,9 @@
 # world seeded by seedDemoWorld(), living entirely in the tab. Nothing is
 # fetched and nothing is stored. You arrive signed in as Captain Janeway —
 # instance admin and project owner, so every affordance is unlocked — your edits
-# last until you reload, and a reload starts the same story over.
+# last until you reload, and a reload starts the same story over. The look is the
+# demo's own (DEMO_DEFAULT_* in DemoWorld.kt): Lunamux Classic Dark, with Lunamux
+# Classic Light in the other slot, so this run matches what lunicle.dev frames.
 #
 # That is why this script starts no JVM and touches no database: the only thing
 # demo mode needs is *something serving the JS bundle*. Hence python3 over the

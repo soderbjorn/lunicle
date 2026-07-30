@@ -66,6 +66,9 @@ import se.soderbjorn.lunula.web.shell.TopbarAction
 import se.soderbjorn.lunula.web.shell.mountAppShell
 import se.soderbjorn.lunula.web.settings.closeNotificationsSidebar
 import se.soderbjorn.lunicle.client.StorageRepository
+import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_APPEARANCE
+import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_DARK_THEME
+import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_LIGHT_THEME
 import se.soderbjorn.lunicle.demo.DemoLunicleApi
 import se.soderbjorn.lunicle.client.nextSearch
 import se.soderbjorn.lunicle.client.queryValue
@@ -1429,7 +1432,18 @@ private fun start() {
         // rather than flashing Lunicle's GitHub Light. Set after the brand above,
         // which it outranks, and before start(), which is where the seed happens —
         // and beneath any stored user choice, which still wins.
-        persister.setEmbedDefaults(preferredAppearance(), preferredDarkTheme(), preferredLightTheme())
+        //
+        // The demo declares its own look in the same slots, one tier below the URL:
+        // it has no brand dir to read a default off, so DemoWorld says what a
+        // brand.json would have (DEMO_DEFAULT_*). That is what makes a bare `?demo=1`
+        // open on the Classic Lunamux dark palette the site's demo tab shows, rather
+        // than on GitHub Light. A host page naming a look still overrides it.
+        val demo = demoEnabled()
+        persister.setEmbedDefaults(
+            preferredAppearance() ?: DEMO_DEFAULT_APPEARANCE.takeIf { demo },
+            preferredDarkTheme() ?: DEMO_DEFAULT_DARK_THEME.takeIf { demo },
+            preferredLightTheme() ?: DEMO_DEFAULT_LIGHT_THEME.takeIf { demo },
+        )
 
         // The caller's stored theme and layout — or Lunicle's defaults — fetched
         // *before* the shell mounts, because the shell reads the persister as part
