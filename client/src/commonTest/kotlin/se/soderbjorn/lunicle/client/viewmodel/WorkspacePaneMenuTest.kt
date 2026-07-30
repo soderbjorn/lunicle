@@ -34,8 +34,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val PROJECTS = listOf(
-    ProjectSummary(id = 1, name = "Lunamux", namePrefix = "LMX", isPublic = true),
-    ProjectSummary(id = 2, name = "Lunicle", namePrefix = "LNL", isPublic = true),
+    ProjectSummary(id = 1, name = "Lunamux", namePrefix = "LMX"),
+    ProjectSummary(id = 2, name = "Lunicle", namePrefix = "LNL"),
 )
 
 /**
