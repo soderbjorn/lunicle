@@ -944,7 +944,7 @@ class HttpLunicleApi(
             setBody(MessageEdit(body))
         }.requireSuccess()
 
-    /** Delete a message. The author, or a system administrator. */
+    /** Delete a message. Nobody may: private messages are retired (LNL-190). */
     override suspend fun deleteMessage(conversationId: Long, messageId: Long): ConversationDetail =
         httpClient.delete(baseUrl + ApiRoutes.conversationMessage(conversationId, messageId))
             .requireSuccess()

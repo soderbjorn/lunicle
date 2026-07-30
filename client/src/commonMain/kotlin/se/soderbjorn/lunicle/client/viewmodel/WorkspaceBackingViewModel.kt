@@ -281,8 +281,8 @@ class WorkspaceBackingViewModel(
     /**
      * Throw the arrangement away and start again from the default.
      *
-     * Offered in the profile dialog, because a window model with splits, hidden
-     * panes and eight tabs has a state you can get lost in, and "put it back"
+     * Offered in the settings pane's You tab, because a window model with splits,
+     * hidden panes and eight tabs has a state you can get lost in, and "put it back"
      * should not require finding every one of them. Stored immediately rather
      * than debounced: this is a deliberate, confirmed act, and a reload a beat
      * later must not find the layout it was just used to discard.

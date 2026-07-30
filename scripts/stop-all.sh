@@ -14,10 +14,10 @@
 # There are three ways to have a Lunicle listening on the tracker's port, and
 # they are stopped in three different ways:
 #
-#   * ./scripts/run-dev-*.sh        → a JVM forked by the Gradle *daemon*. Ctrl-C
+#   * ./scripts/run-dev.sh          → a JVM forked by the Gradle *daemon*. Ctrl-C
 #                                     on the script does not always take it with
 #                                     it, because it was never the script's child.
-#   * ./scripts/run-container-*.sh  → a Docker container, which outlives your
+#   * ./scripts/run-container.sh    → a Docker container, which outlives your
 #     (or container-up.sh)            terminal entirely and is still there after
 #                                     a reboot if Docker starts on login.
 #   * a site preview (preview-*-embedded.sh, run from a site repo)
@@ -102,7 +102,7 @@ echo "==> Looking for a local Lunicle…"
 
 found=0
 
-# ---- 1. The dev server (run-dev-*.sh) ----
+# ---- 1. The dev server (run-dev.sh) ----
 if pgrep -f "$DEV_SERVER_MARKER" > /dev/null 2>&1; then
   found=1
   pids="$(pgrep -f "$DEV_SERVER_MARKER" | tr '\n' ' ')"
@@ -138,7 +138,7 @@ fi
 # ---- 3. The embedded site's python server ----
 # Matched on the port as well as the command, because a bare `python3 -m
 # http.server` is a thing people run for all sorts of reasons and this must only
-# take the one a sites/run-dev-*.sh started.
+# take the one a site's preview script started.
 if pgrep -f "http.server $SITE_PORT" > /dev/null 2>&1; then
   found=1
   if [[ "$status_only" -eq 1 ]]; then

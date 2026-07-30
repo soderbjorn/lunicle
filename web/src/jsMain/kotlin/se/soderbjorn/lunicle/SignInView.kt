@@ -352,10 +352,10 @@ class SignInView(
     /**
      * Open or close the picker to match the state.
      *
-     * Built fresh per opening and torn down on dismissal, the shape
-     * [renderProfileDialog] uses — and for a simpler version of its reason: the
-     * dialog holds a half-typed address and a half-typed code, and a instance kept
-     * across openings would show the last visitor's attempt to the next one.
+     * Built fresh per opening and torn down on dismissal, the shape every modal
+     * this file raises uses — and for a simple reason: the dialog holds a half-typed
+     * address and a half-typed code, and an instance kept across openings would show
+     * the last visitor's attempt to the next one.
      *
      * Mounted on `dialogHost` so it stacks with the other modals and Modal's
      * topmost-wins Escape handling keeps working.

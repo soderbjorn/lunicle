@@ -144,24 +144,24 @@ class ProjectAdminTest {
         assertEquals(sprint.id, projects.activeSprintId(f.projectId))
     }
 
-    /** And the ordinary issue work, which the role bundles rather than requiring four more boxes. */
+    /** And the ordinary issue work, which the rung contains rather than requiring four more grants. */
     @Test
     fun `a project administrator may file issues without holding create_issue`(): Unit = runBlocking {
         val f = seed()
         val admin = users.findById(f.projectAdminId)!!
         assertFalse(
             setOfNotNull(roles.roleFor(f.projectAdminId, f.projectId)).contains(ProjectRole.CONTRIBUTOR),
-            "The fixture granted create_issue outright, so this proves nothing.",
+            "The fixture seated them as a contributor outright, so this proves nothing.",
         )
-        assertTrue(access.canCreateIssue(admin, f.projectId), "The bundle does not reach create_issue.")
-        assertTrue(access.canComment(admin, f.projectId), "The bundle does not reach comment_on_issue.")
-        assertTrue(access.canBeAssigned(admin, f.projectId), "The bundle does not reach be_assigned_issue.")
+        assertTrue(access.canCreateIssue(admin, f.projectId), "The bundle does not reach filing an issue.")
+        assertTrue(access.canComment(admin, f.projectId), "The bundle does not reach commenting.")
+        assertTrue(access.canBeAssigned(admin, f.projectId), "The bundle does not reach being assigned.")
 
-        // change_unowned_issues, asked the way the routes ask it: about an issue.
+        // Editing somebody else's issue, asked the way the routes ask it: about an issue.
         val (issueId, _) = issueRepository.createDraft(f.projectId, Author.Account(f.sysAdminId))
         assertTrue(
             access.canEditIssue(admin, issues.findById(issueId)!!),
-            "The bundle does not reach change_unowned_issues.",
+            "The bundle does not reach editing somebody else's issue.",
         )
     }
 
@@ -279,12 +279,12 @@ class ProjectAdminTest {
     }
 
     /**
-     * The bundle reaches roles, not authorship.
+     * The bundle reaches rungs, not authorship.
      *
-     * `canEditComment` is about who wrote it, and the four roles this role
-     * implies are all grants. Running a board does not make somebody else's words
-     * yours to rewrite — the same line McpDeleteTest draws for
-     * `change_unowned_issues`, and for the same reason.
+     * `canEditComment` is about who wrote it, and everything the admin rung contains
+     * is a rung. Running a board does not make somebody else's words yours to
+     * rewrite — the same line McpDeleteTest draws for the maintainer rung, and for
+     * the same reason.
      */
     @Test
     fun `a project administrator cannot edit someone elses comment`(): Unit = runBlocking {

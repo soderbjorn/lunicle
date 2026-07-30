@@ -541,7 +541,7 @@ body > .dt-pane-menu {
   font-family: var(--dt-font-sidebar, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif);
 }
 
-/* The "Restore default layout" block in the profile dialog (LNL-160). A clear
+/* The "Restore default layout" block in the settings pane's You tab (LNL-160). A clear
    step down from the e-mail field's hint above it, so the three things this tab
    holds — name, address, layout — read as three and not as one run-on column. */
 .profile-layout-section { margin-top: 22px; }
@@ -3070,24 +3070,25 @@ body > .dt-pane-menu {
 }
 
 /* ============================================================
-   The project dialog's settings sections — vocabularies and
-   privileges.
+   A project's settings sections — vocabularies and Access.
 
    These only appear when EDITING a project, which is why they
-   share the dialog rather than getting one of their own: what an
-   admin actually wants is "configure this project", and a name,
-   its board columns and who may post on it are all that one
-   thing. The panel is .modal-large in that mode — see
-   .settings-body below for the one thing that borrows from the
-   issue modal and must not.
+   used to share the new-project dialog rather than getting a
+   surface of their own. They have one now: LNL-194 moved them
+   under the Projects rail in the settings pane, and these rules
+   travelled with them. What an administrator wants is still
+   "configure this project", and a name, its board columns and
+   who it admits are all that one thing. See .settings-body
+   below for the one thing that borrows from the issue modal and
+   must not.
    ============================================================ */
 
 /* This dialog's body scrolls as ONE column, and has to say so.
    `.modal-large .modal-body` above is `overflow: hidden` on purpose — the issue
    modal is a three-band split whose MIDDLE band scrolls, so a scrolling body
    there would scroll the title out from over the description. This dialog has no
-   inner band to hand the job to: it is a form, then five vocabularies, then a
-   privileges table, all of it one continuous read.
+   inner band to hand the job to: it is a form, then five vocabularies, then an
+   Access section, all of it one continuous read.
 
    Without this rule the body inherits that `overflow: hidden` and simply clips.
    Found by opening the dialog and finding the privileges section unreachable —
@@ -3256,12 +3257,16 @@ body > .dt-pane-menu {
    section end on a straight edge. */
 .vocab-add-btn { width: 100%; }
 
-/* ── Privileges ─────────────────────────────────────────────────────────────
-   One block per account rather than a grid with role columns. A grid is the
-   obvious shape and the wrong one here: the roles are sentences ("Edit issues
-   they did not create"), not words, so a header row would either truncate them
-   or be three columns wide on a phone. Stacked, each checkbox carries its own
-   explanation and the row reads as a person. */
+/* ── What is left of the privileges table ───────────────────────────────────
+   One block per account rather than a grid with role columns. A grid was the
+   obvious shape and the wrong one there: the privileges were sentences ("Edit
+   issues they did not create"), not words, so a header row would either have
+   truncated them or been three columns wide on a phone.
+
+   The table is gone (LNL-194). A person holds one rung now, and Access renders a
+   row per exception with a rung menu on it, so nothing in the bundle carries
+   `.member-row`, `.member-name` or `.role-row` any more. Left here rather than
+   swept out with the markup; a sweep is safe. */
 
 .member-row {
   border-top: 1px solid var(--border);
@@ -3277,16 +3282,16 @@ body > .dt-pane-menu {
 
 .role-row { margin-top: 4px; }
 
-/* Tighter than a standalone .toggle-row: these come in threes under one name,
-   and the default 18px would make one person's privileges a screenful. */
+/* Tighter than a standalone .toggle-row: these came in threes under one name,
+   and the default 18px would have made one person's rights a screenful. */
 .role-row .toggle-row { margin-top: 6px; }
 
 /* ── The settings modals' tabs and master-detail ────────────────────────────
    Born with the instance settings modal — the first dialog here that was a
-   master-detail rather than a scrolling column — and now shared: the project
-   settings dialog reuses this whole block for its own tab strip (`.admin-tabs`)
-   and its Privileges tab (`.admin-split` and the account list), so the two
-   settings surfaces read as one family (LNL-102). The `admin-` prefix is
+   master-detail rather than a scrolling column — and now shared: the settings
+   pane reuses this whole block for its own tab strip (`.admin-tabs`) and the
+   People tab's master-detail (`.admin-split` and the account list), so every
+   settings surface reads as one family (LNL-102). The `admin-` prefix is
    historical; the rules are not admin-only.
 
    Note what is NOT here: `.settings-body`. Every other large modal adds that

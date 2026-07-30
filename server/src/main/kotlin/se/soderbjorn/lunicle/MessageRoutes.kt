@@ -179,9 +179,10 @@ fun Route.messageRoutes(deps: BoardDependencies) {
      * thread's window rather than behind it.
      *
      * Note the gate is `conversationScope` and nothing more — reading, not writing.
-     * A system administrator reading somebody else's thread may therefore mark it
-     * read, which is correct and invisible to everybody: a read mark is per-user
-     * bookkeeping and appears in no response but their own.
+     * Anybody who may read somebody else's thread may therefore mark it read, which
+     * is correct and invisible to everybody: a read mark is per-user bookkeeping and
+     * appears in no response but their own. Nobody may read one at all since LNL-190
+     * retired private messages; see `AccessControl.canReadConversation`.
      */
     post(CONVERSATION_READ_PATTERN) {
         val scope = call.conversationScope(deps) ?: return@post
@@ -264,7 +265,9 @@ fun Route.messageRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Delete a message. The author, or a system administrator.
+     * Delete a message. Reachable by nobody: private messages are retired (LNL-190)
+     * and `AccessControl.canDeleteMessage` answers false for every caller. It was
+     * the author's, or whoever ran the instance.
      *
      * Answers with the refreshed conversation, not the list: the thread is still
      * there and whoever deleted the message is still reading it.

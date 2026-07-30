@@ -6,8 +6,11 @@
  *
  * These are not per-user preferences ([UiSettings] is that) and they are not a
  * per-project setting ([ProjectSettingsState] is that). They are facts about the
- * deployment, the same for everyone who asks, and only a system administrator may
- * change them. They ride on [AdminSettingsState], which is admin-only — except
+ * deployment, the same for everyone who asks, and only an instance administrator may
+ * change them — `AccessControl.canAdministerInstance`. What is *not* here is the one
+ * thing narrower than that: managing the set of projects across the whole instance
+ * belongs to the instance owner alone, one rung above. They ride on
+ * [AdminSettingsState], which is administrator-only — except
  * [InstanceSettingKey.HIDE_DISPLAY_NAME], which also reaches every client on
  * [SessionState] because the field it hides is one every signed-in user has.
  *
@@ -107,12 +110,13 @@ enum class InstanceSettingKey(val storageKey: String) {
     MEMBER_MAY_USE_AGENTS("member_may_use_agents"),
 
     /**
-     * `hide_display_name` — when on, the display-name override in the profile dialog
-     * is hidden, so every user's name is the one their sign-in provider gives and
-     * cannot be overridden here (LNL-137). Off (the default) leaves the override
-     * offered, which is what it has always been. Alone among these switches it
-     * reaches every client, not only the admin, because the field it hides is one
-     * every signed-in user has — it rides on [SessionState.isDisplayNameHidden].
+     * `hide_display_name` — when on, the display-name override in the settings
+     * pane's You tab is hidden, so every user's name is the one their sign-in
+     * provider gives and cannot be overridden here (LNL-137). Off (the default)
+     * leaves the override offered, which is what it has always been. Alone among
+     * these switches it reaches every client, not only the administrator, because the
+     * field it hides is one every signed-in user has — it rides on
+     * [SessionState.isDisplayNameHidden].
      */
     HIDE_DISPLAY_NAME("hide_display_name"),
 }

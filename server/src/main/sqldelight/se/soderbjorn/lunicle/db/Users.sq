@@ -154,7 +154,7 @@ CREATE TABLE users (
     signed_in_at INTEGER,
 
     -- Whether this user HAS TURNED ON agent access. Their own choice, made from
-    -- the MCP tab of their profile dialog.
+    -- the Connections half of the settings pane's You tab.
     --
     -- Off by default: MCP is a capability nobody gets until they ask for it, so
     -- every account starts closed.
@@ -178,10 +178,16 @@ CREATE TABLE users (
 
     -- `mcp_allowed` was here, and 33.sqm dropped it (LNL-191). It was an admin's
     -- per-account permission to hold agent access at all, paired with mcp_enabled
-    -- above — the user's own switch. The pairing survives in spirit and returns in
-    -- LNL-192 as a per-tier permission on the instance ladder rather than a column
-    -- somebody ticks per person; until then every account is permitted and only
-    -- mcp_enabled decides. See UserRecord.isMcpPermitted, which is where the TODO is.
+    -- above — the user's own switch. The pairing survived: LNL-192 brought the
+    -- permission back as one switch per rung of the instance ladder rather than a
+    -- column somebody ticks per person, so the tier's half is a setting on the
+    -- instance and no longer a fact about this row. See
+    -- InstanceSettingsStore.permitsAgentsFor and InstanceSettings.permitsAgents.
+    --
+    -- This comment used to say the permission "returns in LNL-192" and that until
+    -- then every account was permitted and only mcp_enabled decided. It has
+    -- returned, and it pointed at a `UserRecord.isMcpPermitted` holding a TODO that
+    -- never existed under that name.
 
 
     -- How this row was created, and — for a row with no verified address — still

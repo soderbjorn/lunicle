@@ -70,7 +70,7 @@ SELECT role FROM project_roles WHERE user_id = ? AND project_id = ?;
 rolesForUser:
 SELECT project_id, role FROM project_roles WHERE user_id = ?;
 
--- Every own-row grant in one project, for the settings dialog's privileges table.
+-- Every own-row grant in one project, for the settings pane's Access section.
 --
 -- Note the direction this is read in: it answers "who holds what here", which is an
 -- administrative question, never a permission one. See AccessControl's preamble.

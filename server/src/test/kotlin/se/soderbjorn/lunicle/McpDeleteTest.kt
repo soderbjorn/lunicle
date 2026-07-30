@@ -5,13 +5,14 @@
  * back, so what is pinned here is narrower and stricter than "it works":
  *
  *  - **The two gates are NOT the same, and must not converge.** Deleting an issue
- *    is [AccessControl.canDeleteIssue], which is `canEditIssue`, which
- *    `change_unowned_issues` satisfies. Deleting a comment is
- *    [AccessControl.canEditComment], which it does not — that role is a grant
- *    over issues and has never meant "and you may erase what other people
- *    wrote". Every project that has handed the role out would be widened by a
- *    build that used one function for both, silently and retroactively. The pair
- *    of tests in "the roles diverge" is the whole point of this file.
+ *    is [AccessControl.canDeleteIssue], which a project administrator satisfies —
+ *    a rung above the maintainer who edits anybody's issue, since LNL-191 split the
+ *    two. Deleting a comment is [AccessControl.canEditComment], which no project
+ *    rung satisfies at all: it is authorship, and running a board has never meant
+ *    "and you may erase what other people wrote". Every project that has handed a
+ *    senior rung out would be widened by a build that used one function for both,
+ *    silently and retroactively. The pair of tests in "the roles diverge" is the
+ *    whole point of this file.
  *  - **A refusal must not destroy anything.** Asserted on both sides of every
  *    refusal: the tool said no *and* the row is still there. A check that runs
  *    after the write refuses just as convincingly.
@@ -349,9 +350,9 @@ class McpDeleteTest {
             val result = client.callTool(tokenFor(f.ordinaryId), "delete_comment", """{"comment_id":$commentId}""")
             assertTrue(
                 result.isError,
-                "change_unowned_issues reached someone else's COMMENT. That role is a grant over " +
+                "The maintainer rung reached someone else's COMMENT. That rung is a grant over " +
                     "issues; widening it to other people's words is retroactive for every project " +
-                    "that has already granted it.",
+                    "that has already handed it out.",
             )
         }
         assertEquals(

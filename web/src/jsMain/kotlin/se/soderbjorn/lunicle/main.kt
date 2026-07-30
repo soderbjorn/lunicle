@@ -1898,7 +1898,7 @@ private class IssueWindows(
     }
 
     /**
-     * Ask every open window to close — the profile dialog's "Restore default
+     * Ask every open window to close — the You tab's "Restore default
      * layout" (LNL-160).
      *
      * Through each window's own close, not a bulk drop, so unsaved work still

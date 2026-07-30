@@ -63,7 +63,7 @@ interface RoleStore {
     /**
      * Every own-row grant in [projectId], as user id → rung.
      *
-     * For the settings dialog's privileges table, and never to decide a permission:
+     * For the settings pane's Access section, and never to decide a permission:
      * that is an administrative question with a different audience, and the day this
      * map is used to gate a write is the day permissions live in two places.
      */

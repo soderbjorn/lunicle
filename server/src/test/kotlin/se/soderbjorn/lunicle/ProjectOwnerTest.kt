@@ -11,8 +11,8 @@
  *    administrator ([ProjectAdminTest]), all granted here. Through the real routes,
  *    because those are gates in routes and a test against [AccessControl] alone
  *    would pass on a route that never called it.
- *  - **It may promote.** An owner hands out `project_admin` and `project_owner`,
- *    the two the administrator's [AccessControl.canGrant] tier refuses. That the
+ *  - **It may promote.** An owner hands out `admin` and `owner`, the two rungs
+ *    the administrator's [AccessControl.canGrant] tier refuses. That the
  *    escalation stops with the owner rather than the administrator is the decision
  *    LNL-107 made, so it is asserted from the grant route.
  *  - **It is per-project.** An owner of one board is an ordinary user on every
@@ -217,7 +217,7 @@ class ProjectOwnerTest {
         val owner = access.permissionsFor(users.findById(f.ownerId)!!, f.projectId)
         assertTrue(owner.canMutateProject, "An owner lost the settings sections.")
         assertTrue(owner.canMutateProjectIdentity, "An owner lost the rename/delete half.")
-        assertTrue(owner.canGrantSeniorRoles, "An owner lost the promote boxes.")
+        assertTrue(owner.canGrantSeniorRoles, "An owner lost the two senior rungs.")
 
         // The same owner, elsewhere, is nobody in particular.
         val elsewhere = access.permissionsFor(users.findById(f.ownerId)!!, f.otherProjectId)

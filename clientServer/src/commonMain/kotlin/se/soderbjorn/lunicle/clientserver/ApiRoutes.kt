@@ -365,10 +365,12 @@ object ApiRoutes {
      * or re-save it, from a [ForumPostEdit]. `DELETE` — remove it, and everything
      * under it.
      *
-     * Reading needs only what reading the project needs. Writing is the author's
-     * or a system administrator's; deleting is either of those **or** the project
-     * administrator's. That asymmetry is LNL-30's decision rather than an
-     * oversight — see `AccessControl.canDeleteForumContent`.
+     * Every one of the three is reachable by nobody: discussions are retired
+     * (LNL-190) and the checks behind them answer false for every caller. Reading
+     * needed only what reading the project needed; writing was the author's or
+     * whoever ran the instance's; deleting was either of those **or** the project
+     * administrator's. That asymmetry was LNL-30's decision rather than an oversight
+     * — see `AccessControl.canDeleteForumContent`.
      */
     fun forumPost(projectId: Long, forumId: Long, postId: Long): String =
         "$PROJECTS/$projectId/forums/$forumId/posts/$postId"
@@ -633,8 +635,8 @@ object ApiRoutes {
      * administrator only (LNL-96).
      *
      * Its own route rather than a field on the identity `PUT` [project], because
-     * that write is system-administrator only and these two flags are a project
-     * administrator's to set — folding them in would gate them on the wrong role.
+     * that write is the project owner's and these two flags are a project
+     * administrator's to set — folding them in would gate them on the wrong rung.
      */
     fun projectFeatures(id: Long): String = "$PROJECTS/$id/features"
 

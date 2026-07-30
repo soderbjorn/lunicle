@@ -1,15 +1,16 @@
 -- What happened to an issue, and when, and who did it.
 --
--- Append-only in all but one narrow, admin-only respect. Nothing here is ever
+-- Append-only in all but one narrow, owner-only respect. Nothing here is ever
 -- deleted except by the cascade when the issue itself goes, and *what happened*
 -- — `kind`, `value_text`, the child values — is never rewritten by anyone. That
 -- is the whole point of the table: a history whose events you can re-word is not
 -- a history.
 --
--- The one exception is `reattribute` below. A system administrator, and only
--- one, may correct *who and when* a row records — its author, its date and its
--- agent label — never its content. It exists for the reason update_issue and
--- update_comment carry admin-only backfill parameters: history imported from
+-- The one exception is `reattribute` below. The instance owner, and only them
+-- (LNL-191 — it was any system administrator), may correct *who and when* a row
+-- records — its author, its date and its agent label — never its content. It
+-- exists for the reason update_issue and update_comment carry owner-only
+-- backfill parameters: history imported from
 -- another tracker lands under a placeholder author, and the day that person gets
 -- a real account the CREATED and STATUS_CHANGED events they left behind have to
 -- be reattachable to it, or the audit trail names a stranger forever. See

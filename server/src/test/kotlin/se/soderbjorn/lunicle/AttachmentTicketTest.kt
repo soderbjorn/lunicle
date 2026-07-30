@@ -14,10 +14,10 @@
  *  - **Expiry not being checked.** Same: every test that mints and immediately
  *    redeems passes against a store that never expires anything.
  *  - **The redeem route learning to read attribution from the request.** The one
- *    that matters most. `author_external` is admin-only because the *mint* asks
- *    [AccessControl.canAttributeWrites]; if the upload ever accepts a query
- *    parameter or a signed-in user's identity, that check stops being the last
- *    word and the admin-only capability is admin-only in name.
+ *    that matters most. `author_external` is the instance owner's alone because the
+ *    *mint* asks [AccessControl.canAttributeWrites]; if the upload ever accepts a
+ *    query parameter or a signed-in user's identity, that check stops being the
+ *    last word and the owner-only capability is owner-only in name.
  *  - **The mint skipping the edit check.** An upload endpoint gated on "do you
  *    hold a token" and nothing else is an open file host with our name on it —
  *    the thing BoardRoutes' own comment warns about on the session routes.
@@ -139,7 +139,8 @@ class AttachmentTicketTest {
     fun `a user who cannot edit an issue cannot mint a ticket for it`(): Unit = runBlocking {
         val fixture = seed()
         val (issueId, _) = published(fixture)
-        // The admin's issue; `ordinary` holds create_issue but not change_unowned_issues.
+        // The admin's issue; `ordinary` is a contributor, so they may file their own
+        // but not edit somebody else's — that is the maintainer rung.
         val token = tokenFor(fixture.ordinaryId)
 
         withServer { client ->
@@ -170,7 +171,7 @@ class AttachmentTicketTest {
         assertEquals(0, tickets.size())
     }
 
-    /** `author_external` is admin-only here exactly as it is on create_issue. */
+    /** `author_external` is the owner's alone here exactly as it is on create_issue. */
     @Test
     fun `a non-admin cannot mint a ticket claiming an external author`(): Unit = runBlocking {
         val fixture = seed()
@@ -184,12 +185,12 @@ class AttachmentTicketTest {
                 """{"issue_id":$issueId,"filename":"x.png","author_external":"octocat"}""",
             )
             assertTrue(result.isError, "A non-admin minted a ticket attributing a file to an invented author.")
-            assertTrue(result.text.contains("Only a system administrator"), "Wrong refusal: ${result.text}")
+            assertTrue(result.text.contains("Only the instance owner"), "Wrong refusal: ${result.text}")
         }
         assertEquals(0, tickets.size(), "A ticket was minted despite the refusal.")
     }
 
-    /** Its own issue is fine — this is not an admin-only tool. */
+    /** Its own issue is fine — the tool itself is nobody's exclusive. */
     @Test
     fun `an ordinary user can mint a ticket for their own issue`(): Unit = runBlocking {
         val fixture = seed()

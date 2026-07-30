@@ -148,7 +148,7 @@ class ConversationStore(
      * Is [userId] in [conversationId]?
      *
      * An indexed existence check rather than `participantIds(...).contains(...)`,
-     * for [RoleStore.isMember]'s reason: this is asked on every read of every
+     * for [RoleStore.roleFor]'s reason: this is asked on every read of every
      * conversation, and `EXISTS` stops at the first row where the other builds a
      * set the caller then searches once and discards.
      */

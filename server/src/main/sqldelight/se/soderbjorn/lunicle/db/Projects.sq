@@ -212,18 +212,21 @@ update:
 UPDATE projects SET name = ?, name_prefix = ? WHERE id = ?;
 
 -- The two forum feature flags, together, project-administrator only (LNL-96).
--- Its own query rather than folded into `update`, because that one is the
--- system-administrator identity write (name, prefix, visibility) and these are a
--- narrower role's — keeping them apart keeps a project administrator's toggle
--- from having to carry the identity fields it may not change. See
--- ProjectStore.setFeatures.
+-- Its own query rather than folded into `update`, because that one is the project
+-- OWNER's identity write (name, prefix) and these sit one rung below it — keeping
+-- them apart keeps an administrator's toggle from having to carry the identity
+-- fields they may not change. See ProjectStore.setFeatures.
+--
+-- This said "system-administrator identity write (name, prefix, visibility)", and
+-- neither half survived LNL-191: the write asks `canOwnProject`, and visibility
+-- left this table altogether for the audience rows in `project_audience_roles`.
 setFeatures:
 UPDATE projects SET discussions_enabled = ?, messages_enabled = ? WHERE id = ?;
 
 -- The two new-ticket requirement flags, together, project-administrator only
 -- (LNL-106). Its own query rather than folded into `update` for setFeatures'
--- reason: `update` is the system-administrator identity write (name, prefix,
--- visibility), and these are a project administrator's, who may not touch those.
+-- reason: `update` is the project owner's identity write (name, prefix), and these
+-- are a project administrator's, who may not touch those.
 -- See ProjectStore.setRequirements.
 setRequirements:
 UPDATE projects SET require_label = ?, require_component = ?, require_fixed_version_on_resolve = ? WHERE id = ?;
@@ -269,7 +272,7 @@ FROM projects WHERE name = ?;
 
 -- Every project, for the picker and for the Unicode-fold uniqueness check.
 --
--- Ordered by the position a system administrator arranged (LNL-93), 0 first, and
+-- Ordered by the position the instance owner arranged (LNL-93), 0 first, and
 -- no longer by name: the picker shows projects in the chosen order, and the
 -- uniqueness check does not care which order it reads them in. Ties — which the
 -- non-UNIQUE `position` column permits transiently mid-reorder — break by id so

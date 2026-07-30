@@ -40,7 +40,7 @@
  *
  * The instance ladder is the same shape: guest, member, staff, administrator,
  * owner. An instance administrator holds [ProjectRole.OWNER] on every project
- * without a row, exactly as the system administrator used to — but the handful of
+ * without a row, exactly as `isSysAdmin` used to — but the handful of
  * powers that are about the *deployment* rather than about a board narrowed to the
  * instance **owner** alone. Those are named where they occur.
  *
@@ -86,7 +86,7 @@ class AccessControl(
      * The short-circuit is not an optimisation so much as the correct answer
      * arriving early: an administrator is already senior to every audience there is,
      * so nothing about ownership could raise them further within a project, and only
-     * only the instance-scoped rules below care which of the two they are.
+     * the instance-scoped rules below care which of the two they are.
      */
     suspend fun instanceRole(user: UserRecord?): InstanceRole {
         if (user == null) return InstanceRole.GUEST
@@ -483,8 +483,8 @@ class AccessControl(
      *
      * Writing under someone else's name is indistinguishable from them having
      * written it, forever, and it is not scoped to a board — no project rung can
-     * express it, which is why it is on the instance ladder at all. It sat with the
-     * system administrator and now sits one rung higher, with the same reasoning
+     * express it, which is why it is on the instance ladder at all. It sat with
+     * anybody flagged `isSysAdmin` and now sits one rung higher, with the same reasoning
      * that moved [canMutateProjects]: this is a power over the deployment's record
      * of what happened, and the person answerable for that is its owner.
      *
@@ -547,17 +547,38 @@ class AccessControl(
      * May [user] change or delete [comment]?
      *
      * Authorship, not a rung: reaching [ProjectRole.MAINTAINER] grants editing
-     * anyone's *issue*, never their words. An instance administrator overrides, as
-     * they do everywhere. A comment whose author is deleted is theirs alone, which
-     * is correct.
+     * anyone's *issue*, never their words. An instance administrator overrides. A
+     * comment whose author is deleted is theirs alone, which is correct.
      *
-     * An imported comment is administrator-only too, and falls out of the same line
+     * An imported comment is the administrator's too, and falls out of the same line
      * rather than needing a case: an [Author.External] is a name, and a name is never
      * equal to an account. Nobody can inherit an imported comment by happening to
      * share the name it was filed under.
      *
-     * Not suspend, and that is a fact worth keeping: this needs nothing but the
-     * caller's record and the comment the route is already holding.
+     * ── The one instance-scoped gate the OWNER does not clear (LNL-199) ──────
+     *
+     * This asks [storedInstanceRole], which reads the account's own row and therefore
+     * **can never answer [InstanceRole.OWNER]** — ownership is a setting, not a column.
+     * Every other instance-scoped rule in this file goes through [instanceRole], which
+     * reads that setting, so the owner is above all of them. This one is the exception,
+     * and it is not a deliberate one: it says "an instance administrator overrides"
+     * and means it literally.
+     *
+     * That gap is reachable rather than theoretical. On a volume migrated by 33.sqm
+     * every `instance_role` is left NULL — including the seated owner's, deliberately,
+     * because that migration makes no grants — so on such a deployment the owner
+     * cannot edit or delete anybody else's comment while an administrator can. A
+     * hand-over reaches it the same way: the successor is seated as owner and their
+     * own row is untouched.
+     *
+     * It is left alone here rather than quietly changed, because closing it is a
+     * change to who may edit whose words and that is the epic author's call, not a
+     * tidy-up's. Closing it means reading the owner setting, which means becoming
+     * `suspend` and touching all seven call sites — or being handed the owner's id.
+     *
+     * Not suspend, and that was a fact worth keeping: this needs nothing but the
+     * caller's record and the comment the route is already holding. It is also
+     * exactly what makes the paragraph above true.
      */
     fun canEditComment(user: UserRecord?, comment: CommentRecord): Boolean =
         user != null && (
@@ -704,7 +725,7 @@ data class ProjectPermissions(
      *
      * Strictly narrower than [canMutateProject]: an administrator hands out the
      * rungs up to maintainer but may promote neither a peer nor an owner. Sent
-     * separately because the privileges table renders a row per rung and needs to
+     * separately because the Access section renders a row per rung and needs to
      * disable exactly the two senior ones. See [AccessControl.canGrant].
      */
     val canGrantSeniorRoles: Boolean = false,

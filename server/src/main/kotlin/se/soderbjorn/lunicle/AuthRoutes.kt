@@ -257,7 +257,7 @@ private suspend fun instanceSettingsOrDefault(
  * even mail one.
  *
  * Read on every session fetch rather than remembered anywhere, which is what
- * makes a pending change survive the profile dialog being closed — see
+ * makes a pending change survive the settings pane being closed — see
  * `SessionState.pendingEmail`. One indexed lookup on a table with at most one row
  * per user, on a query the session endpoint already pays for a user lookup in.
  */
@@ -815,8 +815,8 @@ fun Route.authRoutes(
         }
         // An admin wearing somebody's face has no business changing where that
         // person's mail goes — and, once e-mail is the account key, redirecting it
-        // is redirecting the account. Consistent with how the profile dialog
-        // treats other self-only actions, and stated here rather than inherited
+        // is redirecting the account. Consistent with how the settings pane's You
+        // tab treats other self-only actions, and stated here rather than inherited
         // from `caller.effective` by accident, which is what the old route did.
         if (caller.isImpersonating) {
             call.respond(
@@ -1010,8 +1010,9 @@ fun Route.authRoutes(
      * address that can receive mail can end up with an account. That is exactly as
      * open as Google sign-in already is, so it is consistent rather than new. On a
      * genuinely fresh instance it does mean the first person to redeem a code
-     * becomes the system administrator, which is the same rule Google sign-in has
-     * always had; see `Users.sq`.
+     * becomes the instance administrator, and is seated as its owner at the next
+     * boot — the same rule Google sign-in has always had; see `Users.sq` and
+     * [seatInstanceOwner].
      */
     post(ApiRoutes.AUTH_EMAIL_REQUEST) {
         // Read and normalized before anything else, because every branch from here

@@ -97,7 +97,7 @@ class BoardDependencies(
     val projects: se.soderbjorn.lunicle.store.ProjectStore,
     val projectRepository: se.soderbjorn.lunicle.store.ProjectProvisioning,
     /**
-     * The grants table, for the settings dialog's privileges section.
+     * The grants table, for the settings pane's Access section.
      *
      * Here as well as inside [access] on purpose, and it is worth being explicit
      * about why that is not a duplicate: AccessControl holds it to answer
@@ -869,12 +869,12 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Bad project id.")
             return@put
         }
-        // Ownership, not the old system-administrator gate: renaming, re-scoping
-        // and repository configuration are the owner's tier now (LNL-107). Asked
+        // Ownership, not the old instance-wide gate: renaming, re-scoping
+        // and repository configuration are the project owner's rung (LNL-107). Asked
         // with the id in hand, since the answer is per-project. A 403 here rather
         // than the create route's, because the project exists to be owned.
         if (!deps.access.canOwnProject(user, id)) {
-            call.respond(HttpStatusCode.Forbidden, "Only a project owner or system administrator can change a project.")
+            call.respond(HttpStatusCode.Forbidden, "Only a project owner can change a project.")
             return@put
         }
         val body = call.receiveOrNull<ProjectUpdate>() ?: run {
@@ -908,10 +908,10 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             return@delete
         }
         // An owner may destroy their own board (LNL-107); the instance-settings
-        // delete that only a system administrator reaches is a separate route, over
+        // delete that only the instance owner reaches is a separate route, over
         // in AdminRoutes. Both end in the same ProjectRepository.delete.
         if (!deps.access.canOwnProject(user, id)) {
-            call.respond(HttpStatusCode.Forbidden, "Only a project owner or system administrator can delete a project.")
+            call.respond(HttpStatusCode.Forbidden, "Only a project owner can delete a project.")
             return@delete
         }
         val project = deps.projects.findById(id) ?: run {
@@ -1413,10 +1413,10 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
      *
      * Dragging is a `status_id` write: the same column the editor writes, so the
      * same rule. Taking an issue is a write to a column the editor's rule was
-     * never about — and the whole point of `be_assigned_issue` is that it names
-     * people who are expected to pick work up *without* being able to rewrite it.
-     * A shared check would collapse the two rights back into one and make the new
-     * grant do nothing on its own.
+     * never about — and the whole point of [ProjectRole.CONTRIBUTOR] is that it names
+     * people who are expected to pick work up *without* being able to rewrite
+     * anybody else's. A shared check would collapse the two back into one and leave
+     * the contributor rung unable to take an issue on its own.
      *
      * So there are two rules, and which applies depends on **who ends up holding
      * it**:
@@ -1438,8 +1438,8 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
      *
      * Note the second rule's second half is checked even for an admin, and that is
      * not redundant: `canBeAssigned` says yes to an admin, so an admin naming
-     * another admin passes, while an admin naming an ordinary account with no
-     * grant is refused. The refusal is the useful one — it is the typo case.
+     * another admin passes, while an admin naming an account that reaches no rung
+     * here is refused. The refusal is the useful one — it is the typo case.
      */
     post("/api/issues/{id}/assignee") {
         val user = call.caller(deps)
@@ -1874,8 +1874,8 @@ private suspend fun BoardDependencies.projectBehind(record: AttachmentRecord): P
  *
  * Note the message branch asks [AccessControl.canReadConversation] rather than
  * comparing ids here, so the file that owns permissions still owns this one —
- * including the system administrator clause, which a hand-written `user.id in
- * participants` would silently have dropped.
+ * including whatever that function says about who runs the instance, which a
+ * hand-written `user.id in participants` would silently have dropped.
  *
  * @return false for an owner this build does not recognise, which is the only safe
  *   reading of "the CHECK says exactly one owner and none of the five matched".
@@ -2094,8 +2094,8 @@ private fun Route.attachmentRoutes(deps: BoardDependencies) {
      * independent of that decision rather than quietly relying on it. Membership
      * alone would let one participant put bytes into another's unsent draft.
      *
-     * Note this is deliberately *not* the delete rule: a system administrator may
-     * remove a message and may not add a file to somebody's unsent one. Same line
+     * Note this is deliberately *not* the delete rule: whoever may remove a message
+     * may still not add a file to somebody's unsent one. Same line
      * `writableForumPost` draws, and for the same reason.
      */
     post("/api/messages/{id}/attachments") {

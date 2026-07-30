@@ -14,10 +14,10 @@
  * catches the case this cannot see (someone else creating "Lunamux" while this
  * dialog was open).
  *
- * ── Two dialogs in one, and why the halves behave differently ────────────────
+ * ── Two screens in one, and why the halves behave differently ────────────────
  *
- * Editing an existing project also shows its **vocabularies** and its
- * **privileges**, and those sections do not obey the form around them. The form
+ * Editing an existing project also shows its **vocabularies** and its **Access**
+ * section, and those sections do not obey the form around them. The form
  * is a draft: nothing is written until OK, and Cancel throws it away. The
  * sections are not — adding a status writes a status, immediately, and there is
  * no OK to press and nothing for Cancel to undo. That is not an inconsistency to
@@ -83,9 +83,9 @@ const val DELETE_PROJECT_CONFIRMATION_PHRASE = "i really want to delete this pro
  * Carries the sentence and the phrase the owner must type, rather than a boolean
  * the view branches on, so the view renders a confirmation while deciding nothing
  * — the counterpart to AdminSettingsBackingViewModel.PendingProjectDelete, which
- * the instance-settings dialog uses for the system administrator's copy of this
- * same power. Named apart from that one because they live in the same package and
- * carry different fields: this dialog already knows its project, so it needs no id.
+ * the instance tabs use for the instance owner's copy of this same power. Named
+ * apart from that one because they live in the same package and carry different
+ * fields: this dialog already knows its project, so it needs no id.
  */
 data class ProjectDeletePrompt(
     val title: String,
@@ -405,8 +405,8 @@ class EditProjectBackingViewModel(
      * @property settingsErrorMessage a refusal from one of the sections, shown as
      *   a modal over this dialog rather than as text inside it. Separate from
      *   [errorMessage], which belongs to the *form* and sits under the fields it
-     *   is about: a "3 issues are in that status" printed under the public
-     *   checkbox would be nowhere near the button that caused it, and would sit
+     *   is about: a "3 issues are in that status" printed under the name and prefix
+     *   would be nowhere near the row whose delete caused it, and would sit
      *   there afterwards describing something that already happened.
      */
     data class State(
@@ -477,15 +477,17 @@ class EditProjectBackingViewModel(
          */
         val canConfigure: Boolean = true,
         /**
-         * Whether they may also rename the project, change its prefix or
-         * visibility, or delete it.
+         * Whether they may also rename the project, change its prefix, or delete it.
          *
          * Narrower than [canConfigure] and held separately because exactly one
          * kind of caller sits between them: a PROJECT administrator, who
          * administers the board and does not own the project's identity in the
          * instance. Defaults to [canConfigure] so every existing caller of this
-         * view model — and the new-project path, which is system-administrator
-         * only anyway — behaves as it did.
+         * view model — and the new-project path, whose creator is seated as the
+         * new board's owner and so holds this anyway — behaves as it did.
+         *
+         * Visibility is no longer among these. It left the project row for the
+         * audience rows in the Access section (LNL-191), which the owner sets there.
          */
         val canConfigureIdentity: Boolean = true,
         /**
@@ -522,23 +524,24 @@ class EditProjectBackingViewModel(
         val showDelete: Boolean get() = !isNew && canConfigureIdentity
 
         /**
-         * Whether to show the name/prefix/public form and the OK button.
+         * Whether to show the name/prefix form and the OK button.
          *
-         * The form IS the project's identity — name, prefix, visibility — so this
+         * The form IS the project's identity — its name and its prefix — so this
          * follows [canConfigureIdentity] rather than [canConfigure]. Three
-         * outcomes, and LNL-107 widened the top one from the system administrator
-         * to the owner:
+         * outcomes, and LNL-107 widened the top one from the instance administrator
+         * to the project owner:
          *
-         *  - **Owner or system administrator** — the form, OK, Delete, and the
-         *    sections. Identity, repository and deletion are the owner's tier now.
+         *  - **Project owner** — the form, OK, Delete, and the sections. Identity,
+         *    repository and deletion are the owner's rung now, and an instance
+         *    administrator reaches it by holding that rung everywhere.
          *  - **Project administrator** — the sections and the notification toggle,
          *    no form and no OK. They administer the board; the project's name and
          *    existence are senior to running it (LNL-37, LNL-107). Showing them a
          *    name field that 403s on save is precisely what this flag prevents.
          *  - **Anyone else** — the notification toggle alone. Unchanged.
          *
-         * A new project is always this caller's to fill in, since only a system
-         * administrator can create one at all.
+         * A new project is always this caller's to fill in: they would not have been
+         * offered the dialog unless the instance permits their tier to create one.
          */
         val showForm: Boolean get() = isNew || canConfigureIdentity
 
@@ -580,7 +583,7 @@ class EditProjectBackingViewModel(
         // ── The settings half ────────────────────────────────────────────────
 
         /**
-         * Whether to render the vocabulary and privilege sections at all.
+         * Whether to render the vocabulary and Access sections at all.
          *
          * Both halves matter now that the dialog opens for non-admins: the
          * settings must have loaded, *and* this caller must be an admin. A
@@ -804,7 +807,7 @@ class EditProjectBackingViewModel(
 
         /**
          * Whether the caller has an e-mail at all. Without one the toggle is
-         * replaced by a hint pointing at the profile dialog — a switch that
+         * replaced by a hint pointing at the settings pane's You tab — a switch that
          * promises mail we cannot send is a dead control.
          */
         val canReceiveEmailNotifications: Boolean get() = settings?.canReceiveEmailNotifications == true
@@ -1315,7 +1318,7 @@ class EditProjectBackingViewModel(
     //
     // Back in this dialog since LNL-107, for the caller LNL-93 could not serve: an
     // owner may delete their own project but cannot open the instance-settings
-    // dialog where LNL-93 had put the power. The system administrator's copy still
+    // tabs where LNL-93 had put the power. The instance owner's copy still
     // lives there too, over projects at large; this one is one owner deleting one
     // board they hold. Both go through DELETE /api/projects and both are guarded by
     // the typed-phrase confirmation the ticket asked for.

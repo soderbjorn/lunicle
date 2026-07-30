@@ -332,7 +332,7 @@ class EmailCodeService(
     /**
      * The address [userId] is currently waiting to confirm, or null.
      *
-     * What makes a pending address change survive the profile dialog being closed
+     * What makes a pending address change survive the settings pane being closed
      * and reopened: the pending state is a row rather than a field in a view
      * model, so re-fetching the session is all "did I ask for this?" needs. See
      * `SessionState.pendingEmail`.

@@ -24,9 +24,9 @@ import se.soderbjorn.lunicle.db.LunicleDatabase
  *   on nobody's board — see `forProject`.
  * @property author who wrote it: an account, an imported name, or nobody — see
  *   [Author]. Nobody is what a deleted account leaves behind, and an imported
- *   name is unowned for the same purposes, so both are issues only an admin or
- *   a `change_unowned_issues` holder can edit. That is correct in both cases —
- *   see [AccessControl.canEditIssue].
+ *   name is unowned for the same purposes, so both are issues only a maintainer
+ *   can edit, there being no authorship clause left for anybody to satisfy. That
+ *   is correct in both cases — see [AccessControl.canEditIssue].
  */
 data class IssueRecord(
     val id: Long,

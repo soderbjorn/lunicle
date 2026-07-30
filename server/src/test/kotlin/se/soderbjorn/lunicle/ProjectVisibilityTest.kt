@@ -13,22 +13,23 @@
  *    the seventh here is whichever one nobody thought of — historically the
  *    attachment stream, which is why AttachmentTest has guarded it since before
  *    this change and why it is asserted again below.
- *  - **Membership is "holds something", not "holds `view_project`".** The
- *    narrower reading is the one an implementation drifts towards, and it would
- *    reintroduce exactly the incoherence this change fixes: somebody granted
- *    `create_issue` on a private project who cannot see the project they may file
- *    in. Asserted directly, because nothing else in the suite would catch it —
- *    every other fixture grants `view_project` too.
+ *  - **Membership is "reaches any rung", not "is exactly a Viewer".** The narrower
+ *    reading is the one an implementation drifts towards, and it would reintroduce
+ *    exactly the incoherence this change fixes: somebody seated as a Contributor on
+ *    a private project who cannot see the project they may file in. Asserted
+ *    directly, because nothing else in the suite would catch it — every other
+ *    fixture seats its caller at the bottom rung too.
  *  - **The refusal is 404, never 403.** A 403 confirms that a project by that id
  *    exists, which is the thing being withheld. Asserted by status code rather
  *    than by "it failed".
  *  - **Public projects did not move.** The whole risk of narrowing a read rule is
  *    that it narrows further than intended, and the caller who would notice first
  *    is the signed-out one who has no session to fall back on.
- *  - **A system administrator holds no rows.** `isSysAdmin` short-circuits here as
- *    it does everywhere else in [AccessControl]; a build that made admins grant
- *    themselves membership would lock the instance's owner out of a project on
- *    the day they made it private.
+ *  - **An instance administrator holds no rows.** Reaching [InstanceRole.ADMIN]
+ *    short-circuits [AccessControl.effectiveRole] to [ProjectRole.OWNER], here as
+ *    everywhere else; a build that made administrators grant themselves a row
+ *    instead would lock whoever runs the instance out of a project on the day they
+ *    made it private.
  *
  * Through the real routes with real session cookies, for ProjectAdminTest's
  * reason: a test against [AccessControl] alone would pass on a route that never
@@ -36,7 +37,7 @@
  *
  * @see AccessControl.canReadProject
  * @see ProjectRole.VIEWER
- * @see RoleStore.isMember
+ * @see RoleStore.roleFor
  */
 package se.soderbjorn.lunicle
 
@@ -303,7 +304,7 @@ class ProjectVisibilityTest {
         }
     }
 
-    /** And a signed-in non-member reads it too — `is_public` did not change meaning. */
+    /** And a signed-in non-member reads it too — the guest audience row did not narrow. */
     @Test
     fun `a public project is readable by a signed-in non-member`(): Unit = runBlocking {
         val f = seed()

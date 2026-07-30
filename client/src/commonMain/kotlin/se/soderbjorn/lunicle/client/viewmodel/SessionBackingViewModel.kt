@@ -86,8 +86,8 @@ class SessionBackingViewModel(
      *   confirmed, or null. Straight from the server, like [isImpersonating] and
      *   for a stronger version of the same reason: the pending change is a row in
      *   the database, and holding it here instead would lose it the moment the
-     *   profile dialog closed — which LNL-71 explicitly forbids, because closing
-     *   the dialog to go and read the mail is the *expected* thing to do.
+     *   settings pane closed — which LNL-71 explicitly forbids, because closing it
+     *   to go and read the mail is the *expected* thing to do.
      * @property isEmailSignInAvailable whether the server can sign somebody in
      *   with a mailed code. From the server, like [isGoogleAvailable], so a method
      *   the deployment cannot perform is never rendered at all — a dead button
@@ -99,8 +99,8 @@ class SessionBackingViewModel(
      *
      *   Held here and not on the server, unlike [pendingEmail] — the opposite
      *   choice for what looks like the same problem, and the difference is who is
-     *   asking. A pending address change belongs to an account, has to survive a
-     *   dialog closing, and has a row to live in. A signed-out visitor has no
+     *   asking. A pending address change belongs to an account, has to survive the
+     *   pane closing, and has a row to live in. A signed-out visitor has no
      *   account and no session, so there is nowhere to put this; losing it costs
      *   one retyped address, which is the right price for not inventing a
      *   pre-session cookie to hold it in.
@@ -133,8 +133,8 @@ class SessionBackingViewModel(
         /**
          * Whether this deployment hides the display-name override (LNL-137).
          * Straight from the server, like [isSignInRequired] — the client cannot know
-         * this and must not guess. When true the profile dialog omits the override
-         * field; see ProfileDialog.render.
+         * this and must not guess. When true the settings pane's You tab omits the
+         * override field; see SettingsPane.
          */
         val isDisplayNameHidden: Boolean = false,
     ) {

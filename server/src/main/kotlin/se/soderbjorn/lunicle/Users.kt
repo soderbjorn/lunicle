@@ -60,11 +60,11 @@ private val logger = LoggerFactory.getLogger("Users")
  *   [AccessControl.instanceRole] can see it. See [storedInstanceRole], which is
  *   what this record can honestly answer on its own.
  * @property isMcpEnabled whether this user has **turned on** agent access. Their
- *   own choice, made from the MCP tab of their profile dialog. Global for the same
- *   reason [isInstanceAdmin] is, and — unlike it — not an affordance: it is checked
- *   server-side, so switching it off cuts live agents off mid-conversation. Never
- *   crosses the wire on this type; the Connections section reads it from its own
- *   endpoint. See McpRoutes.
+ *   own choice, made from the Connections half of the settings pane's You tab.
+ *   Global for the same reason [isInstanceAdmin] is, and — unlike it — not an
+ *   affordance: it is checked server-side, so switching it off cuts live agents off
+ *   mid-conversation. Never crosses the wire on this type; the Connections section
+ *   reads it from its own endpoint. See McpRoutes.
  */
 data class UserRecord(
     val id: Long,

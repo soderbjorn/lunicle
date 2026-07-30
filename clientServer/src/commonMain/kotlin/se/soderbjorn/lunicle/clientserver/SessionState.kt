@@ -82,8 +82,8 @@ enum class AuthProvider {
  *   This is the one place an email crosses the wire, and it is deliberately
  *   narrow: [SignedInUser] is only ever the *effective* caller's own record — the
  *   person looking at the screen (or, under impersonation, the account an admin is
- *   deliberately wearing). It is never a directory. The profile dialog renders it
- *   in the User tab and lets its owner edit it, and the notification toggles are
+ *   deliberately wearing). It is never a directory. The settings pane's You tab
+ *   renders it and lets its owner edit it, and the notification toggles are
  *   hidden without it — a toggle that promises an e-mail we have no address to
  *   send is a lie. Other people's addresses still never cross as part of the
  *   ordinary app: [UserOption] and `ProjectMember` remain a name and an id, and the
@@ -113,9 +113,9 @@ enum class AuthProvider {
  *   crossing is not the directory leak this comment used to forbid.
  * @property isEmailVerified whether [email] was ever proved, rather than merely
  *   typed. An affordance like every other flag here — the server decides what an
- *   unverified address may be used for — and it exists so the profile dialog can
- *   say which of the two it is showing. Before LNL-71 there was no difference to
- *   report, because nothing was ever checked.
+ *   unverified address may be used for — and it exists so the settings pane's You
+ *   tab can say which of the two it is showing. Before LNL-71 there was no
+ *   difference to report, because nothing was ever checked.
  * @property isStaff whether this account belongs to the deployment's own domain —
  *   the upper of the two signed-in rungs on the instance ladder (LNL-192's
  *   `UserKind`). It crosses the wire since LNL-193 for the settings pane's You
@@ -201,11 +201,11 @@ data class SignedInUser(
  *   stops a signed-out visitor being dropped onto an empty-looking app rather than
  *   the thing that keeps private data private. See [InstanceSettingKey].
  * @property isDisplayNameHidden whether this deployment hides the display-name
- *   override in the profile dialog (LNL-137). An instance-wide switch, the same for
- *   everyone who asks, and it rides here — rather than only on the admin-only
- *   [AdminSettingsState] — because the field it hides is one every signed-in user
- *   has, so every client must know whether to draw it. When true the profile
- *   dialog omits the override entirely and each user's name is the one their
+ *   override in the settings pane's You tab (LNL-137). An instance-wide switch, the
+ *   same for everyone who asks, and it rides here — rather than only on the
+ *   admin-only [AdminSettingsState] — because the field it hides is one every
+ *   signed-in user has, so every client must know whether to draw it. When true the
+ *   You tab omits the override entirely and each user's name is the one their
  *   sign-in provider gives. See [InstanceSettingKey.HIDE_DISPLAY_NAME].
  */
 @Serializable

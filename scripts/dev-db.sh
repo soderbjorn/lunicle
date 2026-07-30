@@ -38,7 +38,7 @@
 # lunicle.db and attachments/ inside it (see Database.kt). Locally there is no
 # Railway, so a local run takes the `lunicle.databasePath` branch instead —
 # defaulted to ~/.lunicle by server/build.gradle.kts, or pointed elsewhere with
-# LUNICLE_LOCAL_DATA, which this script and the run-dev-*.sh scripts both read. Same directory layout, same create and
+# LUNICLE_LOCAL_DATA, which this script and run-dev.sh both read. Same directory layout, same create and
 # migrate paths, same orphan sweep — a real directory on your disk rather than a
 # mount. That is the whole trick, and it is why you can test all of this without
 # building a container.

@@ -35,8 +35,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/probe.sh"
 # needs what it defines. stop-all.sh sources this file too — only for
 # DEV_SERVER_MARKER — and sourcing env.sh from here would make every `stop-all.sh`
 # read your .env and warn about its permissions, for credentials it will never
-# use. So the two run-dev-* scripts source env.sh themselves, symmetrically with
-# the run-container-* pair, and start_dev_server checks below that they did.
+# use. So run-dev.sh sources env.sh itself, symmetrically with run-container.sh
+# and container-up.sh, and start_dev_server checks below that it did.
 
 LUNICLE_REPO_ROOT="${LUNICLE_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 LUNICLE_PORT="${LUNICLE_PORT:-8080}"

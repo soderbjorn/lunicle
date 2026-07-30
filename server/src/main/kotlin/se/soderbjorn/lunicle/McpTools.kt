@@ -2274,9 +2274,10 @@ class McpTools(private val deps: BoardDependencies) {
     /**
      * The project for a sprint-lifecycle write, or a refusal.
      *
-     * Readable first and administrable second, exactly as [adminSprintScope]: an id
-     * the caller cannot see answers "no such project" rather than confirming it
-     * exists by refusing on rights.
+     * Readable first and maintainable second, exactly as SprintRoutes' `sprintScope`
+     * (which was `adminSprintScope` until LNL-199 renamed it to match the rung it
+     * actually asks for): an id the caller cannot see answers "no such project"
+     * rather than confirming it exists by refusing on rights.
      */
     private suspend fun sprintAdminProject(user: UserRecord, arguments: JsonObject): Result<ProjectRecord> {
         val project = resolveProject(user, arguments)

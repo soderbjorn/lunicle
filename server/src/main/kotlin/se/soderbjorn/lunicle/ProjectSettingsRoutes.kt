@@ -207,14 +207,19 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
      * Answers "off" whatever it is asked for, since LNL-190 retired both features:
      * it still writes the columns, but every read of a project fills the two flags
      * from [PROJECT_FORUM_FEATURES_ENABLED], so the response says off. Left standing
-     * with nothing calling it — the Features section is gone from the settings
-     * dialog — because a re-enable wants this route exactly as it is.
+     * with nothing calling it — the Features section is gone from the settings pane
+     * — because a re-enable wants this route exactly as it is.
      *
-     * Project administrator only, via [adminProject] — a narrower gate than the
-     * `canMutateProjects` the identity PUT uses, because turning a forum off is a
-     * project administrator's call, not only the instance owner's. The pair is
+     * Project administrator only, via [adminProject] — one rung below the
+     * `canOwnProject` the identity PUT asks for, because turning a forum off is a
+     * project administrator's call and renaming the board is not. The pair is
      * written together; the response re-reads the project so [buildSettings] sees
      * the new flags rather than the stale record the gate captured.
+     *
+     * This named `canMutateProjects` as the identity PUT's gate. It never was, and
+     * that function has since become the *instance owner* — managing the project set
+     * across the whole deployment — so the sentence was measuring this route against
+     * the wrong rung on the wrong ladder.
      */
     post("${ApiRoutes.PROJECTS}/{id}/features") {
         val scope = call.adminProject(deps, "change this project's features") ?: return@post
@@ -494,7 +499,7 @@ private data class AdminScope(
  * which reveals nothing about which projects there are.
  *
  * @param action what the caller was trying to do, dropped into the 403. "Only an
- *   admin can change this project's privileges" is worth the parameter: a bare
+ *   admin can change this project's access" is worth the parameter: a bare
  *   "Forbidden" makes a legitimate admin who is signed in as the wrong account go
  *   looking for a bug.
  */
@@ -516,7 +521,7 @@ private suspend fun ApplicationCall.adminProject(
     // The project is resolved BEFORE the permission is asked, which is the
     // reverse of how this read until the check became per-project — it has to
     // be, since there is no per-project answer without a project. It also puts
-    // the 404 ahead of the 403, matching adminSprintScope: an id the caller
+    // the 404 ahead of the 403, matching sprintScope: an id the caller
     // cannot see answers "no such project" rather than confirming one exists by
     // that id.
     val id = longParam("id") ?: run {

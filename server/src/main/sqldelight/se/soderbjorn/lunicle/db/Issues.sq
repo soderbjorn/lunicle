@@ -99,8 +99,9 @@ CREATE TABLE issues (
     -- Nullable + SET NULL: deleting a user must not delete their issues. The
     -- issue outlives the account; the board would otherwise lose history every
     -- time someone left. AccessControl reads this for ownership, so a null
-    -- author is an issue only an admin or a change_unowned_issues holder can
-    -- edit — which is correct.
+    -- author is an issue nobody can claim as their own: a maintainer edits it, a
+    -- project administrator deletes it, and nothing else reaches it — which is
+    -- correct.
     created_by INTEGER,
 
     -- The author when there is no account to point at: history imported from
@@ -113,9 +114,9 @@ CREATE TABLE issues (
     --
     -- Exclusive with created_by — see the CHECK below. So an imported issue is
     -- unowned as far as AccessControl is concerned, landing on the same rule as
-    -- a deleted author above: admin, or a change_unowned_issues holder. That is
-    -- the correct answer rather than a shortfall. An imported author cannot
-    -- edit their own issue because there is no "they" here to be.
+    -- a deleted author above: a maintainer to edit it, a project administrator to
+    -- delete it. That is the correct answer rather than a shortfall. An imported
+    -- author cannot edit their own issue because there is no "they" here to be.
     created_by_external TEXT,
 
     -- The agent that filed this on the author's behalf, or NULL when a human did
@@ -138,11 +139,12 @@ CREATE TABLE issues (
     -- NOT composite-keyed against project_id, unlike every other reference on
     -- this table, and the difference is that users are not project-scoped: there
     -- is no `users(id, project_id)` to point at, because an account belongs to
-    -- the instance. What makes an assignee legitimate *here* is the
-    -- be_assigned_issue role, which is a row in project_roles rather than a
+    -- the instance. What makes an assignee legitimate *here* is reaching
+    -- contributor on this project, which they may do by their own row in
+    -- project_roles or by one of the project's audience rows — neither of them a
     -- shape the schema can express — so it is checked by AccessControl on every
-    -- write instead. The consequence worth naming: revoking that role later does
-    -- NOT retroactively unassign the issues someone already holds. That is
+    -- write instead. The consequence worth naming: lowering somebody later does
+    -- NOT retroactively unassign the issues they already hold. That is
     -- correct — the work is still theirs until somebody says otherwise — but it
     -- means this column can hold a user who could not be assigned today.
     --
@@ -389,11 +391,12 @@ UPDATE issues SET description = ? WHERE id = ?;
 -- "Assign to me", and its undo. The read-mode button's only write.
 --
 -- Its own statement rather than a trip through `publish`, because it is reached
--- under a DIFFERENT permission: taking an issue needs be_assigned_issue, not the
--- canEditIssue that publish's route demands. Routing it through publish would
--- mean either widening that route — letting anyone who may be assigned rewrite
--- the title — or refusing the button to the very people it is for. So the
--- narrow write gets a narrow statement, and it touches exactly one column.
+-- under a DIFFERENT permission: taking an issue needs canBeAssigned, which is
+-- contributor, not the canEditIssue that publish's route demands. Routing it
+-- through publish would mean either widening that route — letting anyone who may
+-- be assigned rewrite the title — or refusing the button to the very people it is
+-- for. So the narrow write gets a narrow statement, and it touches exactly one
+-- column.
 --
 -- It bumps updated_at, on setStatus's reasoning: picking up an issue is an edit,
 -- and one people watch a board for.

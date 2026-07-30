@@ -146,15 +146,18 @@ class ConnectionsBackingViewModel(
         /**
          * Whether this user has a Connections section at all.
          *
-         * False when an admin has not permitted agent access — and the whole
-         * section is then not rendered, not merely disabled. A user who is not
-         * allowed has nothing here they can act on: the switch that would appear is
-         * one only an admin can flip, so showing it greyed out would send them
-         * looking for a control they do not have. The dialog drops the tab
-         * entirely; see ProfileDialog.
+         * False when the instance has not permitted agent access for this user's
+         * tier. **No longer what decides whether the section renders** (LNL-193):
+         * the settings pane's You tab always draws Connections now, with a dead
+         * switch and a sentence naming the tier beside it, because the permission
+         * used to be per-person and invisible — so a control that vanished was the
+         * only honest thing to show — and it is per tier now, so the refusal can say
+         * who to ask. See SettingsPane's `buildConnectionsSection`. Nothing reads
+         * this today; it is the question a view would ask if the section ever hides
+         * again.
          *
-         * Gated on [isLoaded] so the tab does not flicker in and then out before
-         * the first fetch says whether it belongs there.
+         * Gated on [isLoaded] so the answer does not flip before the first fetch
+         * says whether it belongs there.
          */
         val isSectionAvailable: Boolean get() = isLoaded && isAllowed
 

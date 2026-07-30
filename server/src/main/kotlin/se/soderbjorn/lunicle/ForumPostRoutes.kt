@@ -128,9 +128,11 @@ fun Route.forumPostRoutes(deps: BoardDependencies) {
     /**
      * Publish a post, or re-save one.
      *
-     * The author's own, or a system administrator's. **Not** the project
-     * administrator's — see [AccessControl.canEditForumContent], and the
-     * deliberate asymmetry with `delete` below.
+     * Reachable by nobody: discussions are retired (LNL-190) and
+     * [AccessControl.canEditForumContent] answers false for every caller, the
+     * instance owner included. It was the author's own and deliberately **not** the
+     * project administrator's — the asymmetry with `delete` below is a decision to
+     * re-make rather than a rung to restore.
      */
     put(POST_PATTERN) {
         val scope = call.postReadScope(deps) ?: return@put
@@ -157,9 +159,11 @@ fun Route.forumPostRoutes(deps: BoardDependencies) {
     /**
      * Delete a post, its comments, and every file under it.
      *
-     * The author, a project administrator, or a system administrator. Answers
-     * with the refreshed *list*, not the post — the post is gone, and whoever
-     * deleted it is looking at a forum next.
+     * Reachable by nobody, like the `PUT` above: [AccessControl.canDeleteForumContent]
+     * answers false for every caller since LNL-190. It was the author, a project
+     * administrator, or whoever ran the instance. Answers with the refreshed *list*,
+     * not the post — the post is gone, and whoever deleted it is looking at a forum
+     * next.
      */
     delete(POST_PATTERN) {
         val scope = call.postReadScope(deps) ?: return@delete
@@ -183,7 +187,7 @@ fun Route.forumPostRoutes(deps: BoardDependencies) {
         call.respond(ForumDraftRef(id))
     }
 
-    /** Publish a comment. The author's own, or a system administrator's. */
+    /** Publish a comment. Reachable by nobody since LNL-190; see the post `PUT` above. */
     put(COMMENT_PATTERN) {
         val scope = call.commentScope(deps) ?: return@put
         if (!deps.access.canEditForumContent(scope.user, scope.comment.author)) {

@@ -208,19 +208,17 @@ data class VocabularyEntry(
 /**
  * The one rung key both halves of the wire have to know by name.
  *
- * The rest of the ladder the client renders blindly — a key it does not recognise
- * is just a row it draws from [RoleDescription.description] without knowing what it
- * means, which is the point of sending descriptions at all. This one is the
- * exception: `viewer` does not mean what "holds this rung" means.
- * [se.soderbjorn.lunicle.AccessControl.effectiveRole] says an audience row can put
- * somebody on a rung without their holding one, and every rung above viewer
- * contains it — so the admin dialog's "see this project" row is driven off an
- * effective flag, not the raw grant, and both sides need the same string to agree
- * on which row that is.
+ * The rest of the ladder the client renders blindly — a key it does not recognise is
+ * just a row it draws from [RungOption.description] without knowing what it means,
+ * which is the point of sending descriptions at all. This one is the exception
+ * because it is a *default*: [ProjectSummary.roleKey] falls back to it, so a summary
+ * from a server that said nothing about a rung claims the bottom of the ladder
+ * rather than the top.
  *
- * Hoisted here, and referenced by the server's
- * [se.soderbjorn.lunicle.ProjectRole] enum rather than restated, so the two
- * literally cannot drift.
+ * One constant, deliberately (LNL-194). This held a key per privilege while there
+ * were seven independent ones to name; the rungs are the server's
+ * [se.soderbjorn.lunicle.ProjectRole] now and travel as [RungOption], so restating
+ * them here would be a second list to keep in step with the first.
  */
 object RoleKeys {
     const val VIEWER: String = "viewer"
@@ -246,25 +244,12 @@ object TokenModes {
     const val LITERAL: String = "literal"
 }
 
-/**
- * One role this instance has, and what holding it grants.
- *
- * Sent rather than compiled into the bundle, for the reason the provider flags
- * are: the roles are the server's [se.soderbjorn.lunicle.Role] enum, and a client
- * that hardcoded the list would offer a checkbox for a role a rolled-back server
- * does not have — or, worse, quietly stop offering one it does.
- *
- * @property description the enum's own sentence, shown under the checkbox. Written
- *   once, on the server, so the dialog cannot describe a grant differently from
- *   the thing granting it.
- */
-@Serializable
-data class RoleDescription(
-    val key: String,
-    val description: String,
-)
-
-// `ProjectMember` stood here — a row per account on the instance with the roles it
+// `RoleDescription` stood here — one row of the old tick-box table, a key and the
+// sentence shown under its checkbox. It is gone (LNL-194) along with the table: a
+// person holds one rung now, and the rung vocabulary travels as [RungOption], which
+// carries a label and a per-caller "may you hand this out" beside the sentence.
+//
+// `ProjectMember` stood here too — a row per account on the instance with the roles it
 // held, which is what the old privileges table rendered. It is gone (LNL-194),
 // replaced by [PersonRow]: the Access list shows the *exceptions*, not a directory of
 // everybody who has ever signed in beside a mostly-empty rung.
@@ -277,7 +262,7 @@ data class RoleDescription(
  * a dialog that is missing a section.
  *
  * @property canMutateProject whether the caller may write the admin half — the
- *   vocabularies, the sprints and the grants. True for a system administrator and
+ *   vocabularies, the sprints and the grants. True for an instance administrator and
  *   for a project administrator *of this project* (LNL-37); it used to mean the
  *   former alone. For everyone else the server sends this false **and omits those
  *   sections entirely**: the dialog is openable by everyone (the issue's "what is

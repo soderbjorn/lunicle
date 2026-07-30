@@ -193,7 +193,7 @@ class FirestoreProjectStore(
         collection().whereEqualTo(NAME_FOLD, name.lowercase()).limit(1).get().await()
             .documents.firstOrNull()?.toRecord()
 
-    /** Every project, in the order a system administrator arranged (position, 0 first). */
+    /** Every project, in the order the instance owner arranged (position, 0 first). */
     override suspend fun selectAll(): List<ProjectRecord> =
         collection().get().await().documents
             .sortedBy { it.getLong(POSITION) ?: 0L }

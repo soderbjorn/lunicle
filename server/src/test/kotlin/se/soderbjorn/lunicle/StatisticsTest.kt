@@ -406,9 +406,9 @@ class StatisticsTest {
      * A project administrator does not receive the repository fields.
      *
      * The gate LNL-37 made subtle. Everything else in the settings response opened
-     * up to project administrators when that role arrived; these two did not,
+     * up to project administrators when that rung arrived; these two did not,
      * because the token field names an environment variable on the deployment and
-     * the route that writes it is still system-administrator-only. Narrowing the
+     * the route that writes it is the project owner's alone. Narrowing the
      * read on `canAdministerProject` — the obvious thing, and what the section
      * around it does — would send a project administrator a field they can see,
      * cannot change, and would be shown as editable until the save 403'd.
