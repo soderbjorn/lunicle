@@ -412,7 +412,6 @@ class AttachmentTicketTest {
         assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
         val project = projectRepository.create("Lunamux", "LMX")
         roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
-        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
         // Production seats the instance owner at boot (see InstanceLadder.kt), and
         // four rules — creating and managing projects, backfilling authorship, agent
         // mail, out-of-band attachment deletes — are the owner's alone rather than an
