@@ -505,6 +505,12 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
         // One card per tier that exists here. Members always; Staff only where a domain
         // makes the tier real — a card for a tier nobody can be in is two switches over
         // an empty set. Guests never: a guest has no account to permit.
+        //
+        // Both counts below ask `storedInstanceRole` and are meant to: these are TIER
+        // reads, not authority reads (LNL-201). Ownership is orthogonal to a tier — the
+        // owner is also staff or a member, and which one is exactly what these two cards
+        // are counting. Folding ownership in here would take the owner out of the card
+        // whose per-tier switches still govern them.
         tiers = buildList {
             if (identity.hasStaffTier) {
                 add(
@@ -611,8 +617,10 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
         // would be a hierarchy nobody asked that menu to express.
         users = allUsers.sortedWith(compareByDescending { it.isInstanceAdmin }).map { user ->
             // Ownership is a setting rather than a column, so no UserRecord carries it —
-            // which is why the owner's tier is resolved here and not in storedInstanceRole.
-            val tier = if (switches.ownerUserId == user.id) InstanceRole.OWNER else user.storedInstanceRole
+            // which is why the owner's tier is folded in here rather than in
+            // storedInstanceRole. This was the inline spelling of instanceRoleWith and is
+            // now the function (LNL-201); `switches` is the read it needs, already done.
+            val tier = user.instanceRoleWith(switches.ownerUserId)
             AdminUser(
                 userId = user.id,
                 name = user.resolvedName,

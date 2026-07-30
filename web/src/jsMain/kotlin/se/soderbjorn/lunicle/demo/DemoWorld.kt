@@ -243,6 +243,16 @@ internal class DemoUser(
      * for the same reason that one does — no account carries ownership, so nothing derived
      * from an account alone can report it.
      *
+     * ── Which kind of caller this is for (LNL-201) ───────────────────────────────
+     *
+     * The same split the server's `storedInstanceRole` now spells out, because the demo
+     * teaches the model as much as the code states it: this is the **tier** — "is this
+     * account staff, or a member?" — and ownership is orthogonal to that answer, since the
+     * owner is also one or the other. Every question of the form "is this account senior
+     * enough to do X" must go through [DemoWorld.tierOf] instead, which folds ownership in.
+     * Reading this one for an authority question is how the real server came to have one
+     * gate the owner could not clear while an ordinary administrator could.
+     *
      * The staff/member half is derived from the address against [DEMO_STAFF_DOMAIN] rather
      * than stored per fixture, which is the rule the real server applies: `users.kind` is
      * re-derived from one function on every boot and is never written by hand, so storing
@@ -475,10 +485,16 @@ internal class DemoWorld {
     fun owns(user: DemoUser): Boolean = user.id == ownerUserId
 
     /**
-     * Where [user] stands, ownership included.
+     * Where [user] stands, ownership included — the demo's `AccessControl.instanceRole`.
      *
      * [DemoUser.tier] cannot answer this on its own for the same reason the server's
      * `storedInstanceRole` cannot: ownership is a setting, so no account carries it.
+     *
+     * **Every authority question in this file asks this one**, and the two per-tier
+     * questions — which card an account is counted on, and whether their tier permits
+     * agents — ask [DemoUser.tier]. That is the split LNL-201 made explicit on the server
+     * after finding a gate that had picked the wrong side of it; the demo has to state it
+     * too, or it teaches a model with the inversion still in it.
      */
     fun tierOf(user: DemoUser): String =
         if (owns(user)) DemoTierKeys.OWNER else user.tier

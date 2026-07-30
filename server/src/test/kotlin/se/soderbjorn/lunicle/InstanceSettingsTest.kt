@@ -28,6 +28,7 @@ import io.ktor.client.call.body
 import io.ktor.client.request.cookie
 import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -39,6 +40,7 @@ import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.CommentUpdate
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.ProjectListState
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
@@ -527,6 +529,72 @@ class InstanceSettingsTest {
             }.body()
             assertFalse(plain.user?.isSysAdmin == true, "An ordinary account was told it runs the instance.")
         }
+    }
+
+    /**
+     * The owner edits somebody else's comment **through the route** (LNL-201).
+     *
+     * Beside the session test above because it is the same deployment: an owner whose only
+     * authority is the setting, holding no administrator row, which is the state a
+     * hand-over leaves and the state **every volume 33.sqm migrated** is in — that
+     * migration nulls `instance_role` for everybody including the account it seats.
+     *
+     * At the route rather than at [AccessControl] because that is this file's standard, and
+     * here it earns it twice: `PUT /api/comments/{id}` runs two gates in order, and a caller
+     * who cannot *read* the project is refused by the first with a 404 before the comment
+     * gate is asked at all. The owner has to clear both, and clears the first only by owning
+     * the instance — the project admits nobody — so only the route shows the whole answer.
+     * The body is read back afterwards, because a 204 over an unchanged row is exactly what a
+     * half-fix would produce.
+     *
+     * The account beside them is a **Contributor**, not a stranger, and that is the whole of
+     * why: a stranger is refused by the read gate with a 404 and never reaches the comment
+     * gate, so it would assert nothing about the rule under test. A contributor may comment
+     * here and still may not touch somebody else's words — which is the 403 that says the fix
+     * is the ladder rather than a gate that stopped asking.
+     */
+    @Test
+    fun `the instance owner edits somebody elses comment with no admin row of their own`(): Unit = runBlocking {
+        val f = seed()
+        val heir = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-heir", "Heir", "heir@example.com"))
+        val contributor = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-str", "Str", "str@example.com"))
+        assertFalse(heir.isInstanceAdmin, "Precondition: the owner holds no administrator row.")
+        instanceSettings.setOwnerUserId(heir.id)
+        roles.setRole(contributor.id, f.projectId, ProjectRole.CONTRIBUTOR)
+
+        // Somebody else's published comment, on the seeded project.
+        val (issueId, _) = issueRepository.createDraft(f.projectId, Author.Account(f.adminId))
+        val commentId = issueRepository.createCommentDraft(issueId, Author.Account(f.adminId))
+        issueRepository.saveComment(commentId, "not the owner's words")
+
+        withAuthAndBoard { client ->
+            val theirs = client.put("/api/comments/$commentId") {
+                cookie(SESSION_COOKIE, sessions.create(heir.id))
+                contentType(ContentType.Application.Json)
+                setBody(CommentUpdate("the owner tidied this up"))
+            }
+            assertEquals(
+                HttpStatusCode.NoContent,
+                theirs.status,
+                "The instance owner was refused another account's comment. Every other " +
+                    "instance-scoped gate lets them through; this was the one that did not.",
+            )
+
+            // …and a contributor on the same board still cannot, so the fix is the ladder
+            // rather than a gate that stopped asking.
+            val refused = client.put("/api/comments/$commentId") {
+                cookie(SESSION_COOKIE, sessions.create(contributor.id))
+                contentType(ContentType.Application.Json)
+                setBody(CommentUpdate("mine now"))
+            }
+            assertEquals(HttpStatusCode.Forbidden, refused.status, "A contributor edited another person's comment.")
+        }
+
+        assertEquals(
+            "the owner tidied this up",
+            comments.findById(commentId)?.body,
+            "The route answered 204 and wrote nothing.",
+        )
     }
 
     // ── Fixture ──────────────────────────────────────────────────────────────

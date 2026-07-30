@@ -326,10 +326,11 @@ fun UserRecord.wrote(author: Author): Boolean = author == asAuthor()
 suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.permitsAgentsFor(user: UserRecord?): Boolean {
     if (user == null) return false
     val settings = current()
-    // The owner is a setting rather than a column, so it is read here rather than
-    // taken off the record — see storedInstanceRole, which cannot see it.
-    val role = if (settings.ownerUserId == user.id) InstanceRole.OWNER else user.storedInstanceRole
-    return settings.permitsAgents(role)
+    // The owner is a setting rather than a column, so it is folded in here rather than
+    // taken off the record — see storedInstanceRole, which cannot see it. This was the
+    // inline spelling of instanceRoleWith and is now the function (LNL-201); `settings`
+    // is the read it needs, already done.
+    return settings.permitsAgents(user.instanceRoleWith(settings.ownerUserId))
 }
 
 /**

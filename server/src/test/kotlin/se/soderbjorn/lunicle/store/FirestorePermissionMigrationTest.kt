@@ -31,9 +31,15 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
+import se.soderbjorn.lunicle.AccessControl
 import se.soderbjorn.lunicle.Audience
+import se.soderbjorn.lunicle.Author
+import se.soderbjorn.lunicle.CommentRecord
+import se.soderbjorn.lunicle.FirestoreInstanceSettingsStore
 import se.soderbjorn.lunicle.FirestoreMigrations
 import se.soderbjorn.lunicle.FirestoreRoleStore
+import se.soderbjorn.lunicle.FirestoreUserStore
+import se.soderbjorn.lunicle.InstanceRole
 import se.soderbjorn.lunicle.ProjectRole
 import se.soderbjorn.lunicle.UserKind
 import se.soderbjorn.lunicle.await
@@ -185,6 +191,65 @@ class FirestorePermissionMigrationTest {
 
         assertEquals(mapOf(99L to ProjectRole.OWNER), roles.rolesForProject(1))
         assertEquals(mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR), roles.audienceRoles(1))
+    }
+
+    /**
+     * The migrated owner clears the comment gate on a document volume too (LNL-201).
+     *
+     * The one test in this file that asks a *rule* rather than reading a document back,
+     * and it is here rather than beside its SQLite twin because "on both backends" is a
+     * claim about the two stores `AccessControl` reads through, not about the rule: the
+     * gate resolves ownership out of `instanceSettings`, and the whole bug was a gate
+     * that read the account's own row instead — a row this migration leaves NULL, on
+     * either backend, deliberately.
+     *
+     * So this runs the real gate over [FirestoreRoleStore] and
+     * [FirestoreInstanceSettingsStore], against exactly the documents the migration
+     * produced, with `instanceRole` unset for the owner — asserted, because an owner who
+     * also carried the administrator row would pass against the broken code.
+     *
+     * The [CommentRecord] is built rather than stored: the gate reads its `author` and
+     * nothing else, so a comment store here would be plumbing that proves nothing.
+     */
+    @Test
+    fun `the migrated instance owner may edit somebody elses comment`() = runBlocking {
+        oldUser(1, "sys", isSysAdmin = true)
+        oldUser(2, "ada")
+
+        migration.apply(db)
+
+        assertNull(
+            db.collection("users").document("1").get().await().getString("instanceRole"),
+            "Precondition: the seated owner's row must say nothing, which is the state this " +
+                "migration leaves and the state the bug needed.",
+        )
+
+        val users = FirestoreUserStore(db)
+        val access = AccessControl(FirestoreRoleStore(db), FirestoreInstanceSettingsStore(db))
+        val owner = users.findById(1)!!
+        val ada = users.findById(2)!!
+        assertEquals(InstanceRole.OWNER, access.instanceRole(owner), "the migration did not seat the owner")
+
+        val adasComment = CommentRecord(
+            id = 1,
+            issueId = 1,
+            body = "not the owner's words",
+            createdAt = 0,
+            author = Author.Account(ada.id),
+            agentName = null,
+            isDraft = false,
+        )
+        assertTrue(
+            access.canEditComment(owner, adasComment),
+            "The instance owner of a migrated Firestore volume could not edit another " +
+                "account's comment.",
+        )
+        assertFalse(
+            access.canEditComment(ada, adasComment.copy(author = Author.Account(owner.id))),
+            "An ordinary migrated account reached the owner's words; the fix is the ladder, " +
+                "not a gate that stopped asking.",
+        )
+        assertTrue(access.canEditComment(ada, adasComment), "the author lost their own comment")
     }
 
     // ── The old document shape, written by hand ──────────────────────────────

@@ -1105,6 +1105,11 @@ object NoNotifications : IssueNotifier {
  * @param roles with [users], the answer to "who may be mentioned on this
  *   project". Read through [mentionableUsersIn] rather than queried here, so this
  *   resolves against exactly the set the browser's autocomplete offered.
+ * @param instanceSettings the third store [mentionableUsersIn] needs, for the owner's
+ *   id (LNL-201). Here only to be passed through: an owner reads every project, so a
+ *   mailer that could not see ownership would decline to resolve `@them` on a board
+ *   they hold no row on — while the autocomplete, reading the same function, offered
+ *   the name. Which is the disagreement that function exists to prevent.
  * @param dispatch the shared plumbing: naming the actor, and sending or logging.
  *   Was an [EmailTransport] and two private methods here until LNL-60 needed the
  *   same three things for a feature that is not about issues; see
@@ -1118,6 +1123,7 @@ class NotificationService(
     private val projects: se.soderbjorn.lunicle.store.ProjectStore,
     private val users: se.soderbjorn.lunicle.store.UserStore,
     private val roles: se.soderbjorn.lunicle.store.RoleStore,
+    private val instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore,
     private val dispatch: NotificationDispatcher,
     private val baseUrl: String = resolvePublicBaseUrl() ?: "",
 ) : IssueNotifier {
@@ -1292,7 +1298,7 @@ class NotificationService(
         // Cheapest possible early out, and the common one: most text has no "@"
         // in it at all, and this spares every ordinary save two store reads.
         if (!body.contains('@')) return
-        val candidates = mentionableUsersIn(issue.projectId, users, roles)
+        val candidates = mentionableUsersIn(issue.projectId, users, roles, instanceSettings)
         if (candidates.isEmpty()) return
         val names = candidates.map { it.resolvedName }
 

@@ -300,8 +300,10 @@ fun Application.module() {
         projects = projects,
         users = users,
         // For @mentions: the notifier resolves a typed name against the same
-        // per-project membership the editor's autocomplete offered.
+        // per-project membership the editor's autocomplete offered — which since
+        // LNL-201 includes whoever owns the deployment, so the settings ride along.
         roles = roles,
+        instanceSettings = instanceSettings,
         dispatch = notificationDispatcher,
         baseUrl = emailBaseUrl,
     )

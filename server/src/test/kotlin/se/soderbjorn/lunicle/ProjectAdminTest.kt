@@ -26,7 +26,8 @@
  *  - **The bundle stops at authorship.** The rung contains every rung below it,
  *    deliberately — that is what cumulative means. It does not imply owning other
  *    people's words: `canEditComment` is authorship, not a rung, and running a
- *    board is not a licence to rewrite what somebody said on it.
+ *    board is not a licence to rewrite what somebody said on it. Running the
+ *    *instance* is (LNL-201), which is the line this file's rung sits below.
  *
  * Through the real routes with real session cookies, for VocabularyTest's
  * reason: a test against [AccessControl] alone would pass on a route that never

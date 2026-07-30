@@ -215,6 +215,93 @@ class AccessControlLadderTest {
         assertFalse(access.canAdministerInstance(null), "a caller with no session was let through.")
     }
 
+    /**
+     * The comment gate is the ladder too, and was the one place it inverted (LNL-201).
+     *
+     * `canEditComment` is authorship plus "whoever runs the instance", and it used to ask
+     * the account's own row for the second half — which structurally cannot say Owner,
+     * because ownership is `instance_settings.owner_user_id` and not a column. So the
+     * person who owns the deployment was refused something an ordinary administrator was
+     * allowed, at exactly one gate.
+     *
+     * **The fixture's owner holds `instance_role` NULL**, asserted below, because that is
+     * the state the bug needs and the state every volume 33.sqm migrated is in: the
+     * migration leaves the column null for everybody *including* the account it seats as
+     * owner. An owner who also carried the administrator row would pass this test against
+     * the broken code, which is why the assertion above the interesting one is here.
+     *
+     * All four rungs of the answer, so a fix in either direction is a visible diff: the
+     * owner and the administrator through, an ordinary account and no session refused, and
+     * the author of the comment through regardless of any of it.
+     */
+    @Test
+    fun `the instance owner edits anybody's comment, on a row that says nothing`(): Unit = runBlocking {
+        val f = seed()
+        val comments = CommentStore(database)
+        val repository = IssueRepository(
+            IssueStore(database),
+            comments,
+            StatusStore(database),
+            PriorityStore(database),
+            attachments,
+            attachmentStore,
+        )
+        val (issueId, _) = repository.createDraft(f.project, Author.Account(f.other.id))
+        val commentId = repository.createCommentDraft(issueId, Author.Account(f.other.id))
+        repository.saveComment(commentId, "somebody else's words")
+        val theirs = comments.findById(commentId)!!
+
+        instanceSettings.setOwnerUserId(f.member.id)
+        assertFalse(
+            f.member.isInstanceAdmin,
+            "Precondition: the owner's instance_role must be null, which is what a migrated " +
+                "volume leaves behind and what this test is about.",
+        )
+        assertEquals(InstanceRole.OWNER, access.instanceRole(f.member), "the seat did not take")
+
+        assertTrue(
+            access.canEditComment(f.member, theirs),
+            "The instance owner could not edit somebody else's comment; every other " +
+                "instance-scoped gate lets them, and migration work needs this one to.",
+        )
+        assertTrue(
+            access.canEditComment(f.admin, theirs),
+            "An instance administrator lost the comment override the owner just gained.",
+        )
+        assertFalse(access.canEditComment(f.staff, theirs), "An ordinary staff account reached another's words.")
+        assertFalse(access.canEditComment(null, theirs), "A caller with no session reached a comment.")
+        assertTrue(access.canEditComment(f.other, theirs), "The author lost their own comment.")
+    }
+
+    /**
+     * The pickers agree with the gate about the owner (LNL-201).
+     *
+     * `mentionableUsersIn` and `assignableUsers` are the same `max(audience, own row)` rule
+     * spelled a second time — over maps, because they answer about every account at once
+     * and a store read per row would be an N+1. Both spellings short-circuited on the
+     * *stored* row, so on a project admitting nobody the owner fell out of a set an
+     * administrator stayed in: an autocomplete that cannot offer the one person who can
+     * certainly read the board, and a mailer built from the same function that would then
+     * decline to resolve the name it offered.
+     *
+     * Asserted through the shared function rather than through the routes because the claim
+     * is about the *set*, and the two callers differ only in the rung they then filter to.
+     */
+    @Test
+    fun `the mention set holds the owner on a project that admits nobody`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.setOwnerUserId(f.member.id)
+        assertNull(roles.roleFor(f.member.id, f.project), "Precondition: the owner holds no row here.")
+
+        val mentionable = mentionableUsersIn(f.project, users, roles, instanceSettings).map { it.id }
+        assertTrue(
+            f.member.id in mentionable,
+            "The instance owner cannot be @mentioned on a board they own by owning the instance.",
+        )
+        assertTrue(f.admin.id in mentionable, "An instance administrator fell out of the mention set.")
+        assertFalse(f.other.id in mentionable, "An account with no route in was offered anyway.")
+    }
+
     // ── The rungs themselves ─────────────────────────────────────────────────
 
     /**

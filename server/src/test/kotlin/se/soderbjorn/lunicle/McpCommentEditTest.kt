@@ -4,9 +4,10 @@
  * The tool is two rules stacked, and every test here pins one of them:
  *
  *  - **May you touch this comment at all?** [AccessControl.canEditComment] — your
- *    own, or anyone's if you are an admin. The web app's `PUT /api/comments/{id}`
- *    asks exactly this, and the MCP tool must not be a softer door onto the same
- *    write. So a non-owner is refused, and an owner is not.
+ *    own, or anyone's if you run the instance (an administrator, or the owner above
+ *    them; LNL-201). The web app's `PUT /api/comments/{id}` asks exactly this, and the
+ *    MCP tool must not be a softer door onto the same write. So a non-author is
+ *    refused, and an author is not.
  *  - **May you also re-attribute or re-date it?** The admin-only backfill gate,
  *    [AccessControl.canAttributeWrites], reused verbatim from the create tools.
  *    An ordinary owner may rewrite their words and label the row as agent-written,

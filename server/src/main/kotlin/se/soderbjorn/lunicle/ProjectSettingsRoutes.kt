@@ -920,17 +920,22 @@ private suspend fun BoardDependencies.peopleRows(
     instanceOwnerId: Long?,
     canGrant: Boolean,
 ): List<PersonRow> = users.selectAll()
-    .filter { it.id in ownRows.keys || it.isInstanceAdmin || it.id == instanceOwnerId }
+    .filter { it.id in ownRows.keys || it.instanceRoleWith(instanceOwnerId).atLeast(InstanceRole.ADMIN) }
     .map { person ->
         val own = ownRows[person.id]
+        // Where this person stands on the instance, ownership folded in from the id read
+        // once above (LNL-201) — the whole ladder, so the two uses below cannot disagree
+        // about who the owner is. It used to be `storedInstanceRole` for the audience match
+        // and an inline `id == instanceOwnerId` for the rest.
+        val instanceRole = person.instanceRoleWith(instanceOwnerId)
         // What their audience gives them anyway, by the same one-comparison rule
         // AccessControl.effectiveRole uses: the instance ladder ascends, so "matches this
         // audience" is `their rank >= the audience's`.
         val floor = audienceRoles
-            .filterKeys { person.storedInstanceRole.atLeast(it.instanceRole) }
+            .filterKeys { instanceRole.atLeast(it.instanceRole) }
             .entries
             .maxByOrNull { it.value.rank }
-        val runsInstance = person.isInstanceAdmin || person.id == instanceOwnerId
+        val runsInstance = instanceRole.atLeast(InstanceRole.ADMIN)
         val effective = when {
             runsInstance -> ProjectRole.OWNER
             else -> listOfNotNull(own, floor?.value).maxByOrNull { it.rank }

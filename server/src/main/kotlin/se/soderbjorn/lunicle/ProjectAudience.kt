@@ -88,10 +88,11 @@ class ProjectAudience(
      *   wire type: these carry e-mail addresses, and narrowing to a name and an id
      *   is the route's job.
      *
-     *   Instance administrators are always in the set, including for a project they
-     *   hold nothing in — matching [AccessControl.effectiveRole], which gives them
-     *   [ProjectRole.OWNER] everywhere. Leaving them out would produce a picker that
-     *   cannot name the one person who can definitely see the thing.
+     *   Instance administrators are always in the set, and so is the owner, including
+     *   for a project they hold nothing in — matching [AccessControl.effectiveRole],
+     *   which gives them [ProjectRole.OWNER] everywhere. Leaving either out would
+     *   produce a picker that cannot name the one person who can definitely see the
+     *   thing.
      */
     suspend fun forProject(project: ProjectRecord): List<UserRecord> = forProjects(listOf(project))
 
@@ -129,11 +130,16 @@ class ProjectAudience(
         }
 
         val admitted = widestRank
+        // Read once, and folded into each account's rung by the one named function that
+        // does it (LNL-201). It was three clauses here — an administrator, then the owner
+        // separately, then the audience match off the *stored* row — which answered
+        // correctly only because the owner's own clause sat in front of the one that
+        // could not see them. One ladder per account says the same thing once.
         val ownerUserId = instanceSettings.current().ownerUserId
         return all.filter { user ->
-            user.storedInstanceRole.atLeast(InstanceRole.ADMIN) ||
-                user.id == ownerUserId ||
-                (admitted != null && user.storedInstanceRole.rank >= admitted) ||
+            val instanceRole = user.instanceRoleWith(ownerUserId)
+            instanceRole.atLeast(InstanceRole.ADMIN) ||
+                (admitted != null && instanceRole.rank >= admitted) ||
                 user.id in ownRowHolders
         }
     }

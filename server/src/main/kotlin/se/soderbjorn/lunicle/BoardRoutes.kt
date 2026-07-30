@@ -496,8 +496,12 @@ internal suspend fun BoardDependencies.authorNames(authors: Collection<Author>):
 internal suspend fun BoardDependencies.assignableUsers(projectId: Long): List<UserRecord> {
     val rungs = roles.rolesForProject(projectId)
     val audiences = roles.audienceRoles(projectId)
+    // Three reads, not two, since LNL-201: the owner's id, so that this set and
+    // AccessControl.canBeAssigned agree about them. Read once here rather than per
+    // candidate — see effectiveRungAmong.
+    val ownerUserId = instanceSettings.current().ownerUserId
     return users.selectAll().filter { candidate ->
-        candidate.effectiveRungAmong(rungs, audiences)?.atLeast(ProjectRole.CONTRIBUTOR) == true
+        candidate.effectiveRungAmong(rungs, audiences, ownerUserId)?.atLeast(ProjectRole.CONTRIBUTOR) == true
     }
 }
 
@@ -521,10 +525,10 @@ internal suspend fun BoardDependencies.assignableUsers(projectId: Long): List<Us
  *   ever: these carry e-mail addresses and the wire does not.
  */
 internal suspend fun BoardDependencies.mentionableUsers(projectId: Long): List<UserRecord> =
-    mentionableUsersIn(projectId, users, roles)
+    mentionableUsersIn(projectId, users, roles, instanceSettings)
 
 /**
- * [BoardDependencies.mentionableUsers], as a free function over the two stores
+ * [BoardDependencies.mentionableUsers], as a free function over the three stores
  * it actually needs.
  *
  * It exists in this shape because the second caller has no [BoardDependencies]
@@ -533,16 +537,21 @@ internal suspend fun BoardDependencies.mentionableUsers(projectId: Long): List<U
  * *the same set* the autocomplete offered. Two definitions of "who may be
  * mentioned here" would be an autocomplete that suggests a name and a mailer
  * that then quietly declines to recognise it.
+ *
+ * @param instanceSettings read once, for the owner's id and nothing else — the third
+ *   store, added by LNL-201. See [effectiveRungAmong] for why it cannot be left out.
  */
 internal suspend fun mentionableUsersIn(
     projectId: Long,
     users: se.soderbjorn.lunicle.store.UserStore,
     roles: se.soderbjorn.lunicle.store.RoleStore,
+    instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore,
 ): List<UserRecord> {
     val rungs = roles.rolesForProject(projectId)
     val audiences = roles.audienceRoles(projectId)
+    val ownerUserId = instanceSettings.current().ownerUserId
     return users.selectAll().filter { candidate ->
-        candidate.effectiveRungAmong(rungs, audiences) != null
+        candidate.effectiveRungAmong(rungs, audiences, ownerUserId) != null
     }
 }
 
@@ -564,20 +573,31 @@ internal suspend fun mentionableUsersIn(
  * the same edit. It is deliberately *not* exported: nothing outside this file may
  * reach it, and nothing may decide a write with it.
  *
- * The instance owner is not consulted here, and does not need to be: an owner
- * reaches [ProjectRole.OWNER] everywhere, and the only thing these two sets are
- * used for is offering names in a picker — where an administrator already appears
- * by the first clause and the owner appears by whichever of the two routes seats
- * them. See ProjectAudience, which does read ownership, because its answer is a
- * *membership* claim rather than a picker.
+ * ── Ownership is read here, and used not to be (LNL-201) ────────────────────
+ *
+ * This said the owner "does not need to be consulted: an administrator appears by the
+ * first clause, and the owner appears by whichever of the two routes seats them". The
+ * second half is false wherever neither route does. `storedInstanceRole` cannot say
+ * Owner — ownership is a setting, not a column — so on a volume 33.sqm migrated, where
+ * the seated owner's `instance_role` is NULL, the owner drops out of this set on any
+ * project with no audience row admitting them and no own row of their own. An
+ * administrator stays in it. That is the ladder inverting inside a picker: the
+ * autocomplete cannot name the person who can definitely read the thing, and the
+ * mailer built from the same set will not resolve `@them` either.
+ *
+ * @param instanceOwnerId read **once** by the caller, not per row. Consulting the store
+ *   inside this function would be the query-per-account these two sets exist to avoid;
+ *   see [instanceRoleWith], which is this fold named. Null where nobody is seated.
  */
 private fun UserRecord.effectiveRungAmong(
     rungs: Map<Long, ProjectRole>,
     audiences: Map<Audience, ProjectRole>,
+    instanceOwnerId: Long?,
 ): ProjectRole? {
-    if (storedInstanceRole.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
+    val instanceRole = instanceRoleWith(instanceOwnerId)
+    if (instanceRole.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
     val fromAudience = audiences.entries
-        .filter { storedInstanceRole.atLeast(it.key.instanceRole) }
+        .filter { instanceRole.atLeast(it.key.instanceRole) }
         .maxByOrNull { it.value.rank }
         ?.value
     val own = rungs[id]
@@ -1793,8 +1813,9 @@ private fun Route.commentRoutes(deps: BoardDependencies) {
  *
  * Two gates, not one: the issue must be readable (a 404 otherwise, so a comment
  * id cannot be used to probe a private project), and then the comment must be
- * this caller's or the caller an admin. `comment_on_issue` grants writing your
- * own comments, never editing someone else's words — see
+ * this caller's, or the caller must run the instance — an administrator, or the
+ * owner above them (LNL-201). A project rung never reaches here: reaching
+ * Maintainer grants editing anyone's *issue*, never their words. See
  * [AccessControl.canEditComment].
  */
 private suspend fun ApplicationCall.editableComment(
