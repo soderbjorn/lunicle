@@ -1123,10 +1123,15 @@ internal class DemoWorld {
             ownerName = owner?.name,
             ownerEmail = owner?.email,
             isOwnerSelf = isSelf,
-            // Everybody else who runs the place. Nobody, in this world: the demo has one
-            // account at the top and a plain administrator beside it would be a second
-            // story to tell.
-            adminNames = emptyList(),
+            // Everybody else who runs the place. Empty until somebody hands the instance
+            // over, and then not: the outgoing owner keeps the administrator rung, so this
+            // is where they reappear. Hardcoding it empty left the screen saying "no other
+            // account administers this instance" directly underneath the name of the person
+            // who had just handed it to somebody else.
+            //
+            // The owner is named on their own row above, so listing them here as well would
+            // read as two people.
+            adminNames = users.filter { it.isSysAdmin && it.id != ownerUserId }.map { it.name },
             canHandOver = isSelf,
             handOverBlockedReason = "Only the instance owner can hand it over.".takeIf { !isSelf },
             handOverCandidates = candidates,
