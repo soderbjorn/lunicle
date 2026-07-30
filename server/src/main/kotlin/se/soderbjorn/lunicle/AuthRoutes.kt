@@ -180,7 +180,7 @@ private fun ApplicationCall.clearSessionCookie() {
 
 /**
  * The caller's current [SessionState], given who (if anyone) they are and the
- * deployment's instance switches (LNL-115, LNL-137).
+ * deployment's instance switches (LNL-137).
  *
  * The switches are passed in rather than read here because this builder is not
  * suspend and has no store — its two suspend callers read them once from
@@ -227,12 +227,6 @@ private fun sessionStateFor(
         // the Google flag is: only the server knows which variables it was given,
         // and a picker must never render a method the server cannot perform.
         isEmailSignInAvailable = config.isEmailAvailable,
-        // Retired on the wire (LNL-192): the require-sign-in switch is gone, and
-        // what it said is now a per-project guest audience row. Sent false rather
-        // than removed so a browser running the previous bundle keeps deserialising
-        // this state — the landing gate simply never appears, which is exactly what
-        // an instance with no blanket means. See InstanceSettingKey.
-        isSignInRequired = false,
         // The display-name switch. Reaches every client because the profile field it
         // hides is one every signed-in user has. See SessionState.isDisplayNameHidden.
         isDisplayNameHidden = settings.hideDisplayName,
@@ -244,8 +238,8 @@ private fun sessionStateFor(
  * configure no instance settings).
  *
  * One helper so the three builders read the snapshot the same way and a null store
- * degrades to the pre-LNL-115 defaults — the app usable signed out, the display name
- * offered — rather than a crash. See InstanceSettingsStore.
+ * degrades to the defaults — the display name offered, no public projects — rather
+ * than a crash. See InstanceSettingsStore.
  */
 private suspend fun instanceSettingsOrDefault(
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore?,

@@ -1061,6 +1061,22 @@ private fun start() {
                 // an empty div beats a crash if it ever does.
                 ?: element("div", "pane-missing")
         },
+        // ...and what a tab with no panes shows instead, which is the one thing a
+        // board pane cannot show for itself. Two readers reach this: an admin on a
+        // fresh deployment, and someone who just closed their last board. Both are
+        // INSIDE the app, so the card sits in the canvas and leaves their chrome
+        // alone — it is their way out.
+        //
+        // A visitor is the third reader and is deliberately not one of them: the
+        // whole window is theirs, so their card is raised outside the shell (see
+        // renderLanding). Null while the first load is in flight, too, which leaves
+        // the canvas empty rather than promising there is nothing when four boards
+        // are about to arrive.
+        emptyTabContent = {
+            mainViewModel.stateFlow.value.emptyTab
+                ?.takeUnless { it.isVisitor }
+                ?.let { empty -> emptyTabSurface(empty = empty) }
+        },
         // User-owned, unlike the fixed strip Lunicle had before LNL-160: a tab is
         // a working set the reader arranges, so every gesture the toolkit offers —
         // add, close, rename, drag-reorder — is wired to the workspace.
@@ -1453,6 +1469,51 @@ private fun start() {
         // is a lambda handed out rather than the handle itself.
         refreshShell = { handle.refresh() }
 
+        // The landing page while it is up (see EmptyTabSurface). Held so the next
+        // state tick can take it back down; keyed on presence like the sign-in
+        // picker and the alert, which is what makes a project arriving dismiss it
+        // without a line here mentioning projects.
+        var landing: HTMLElement? = null
+
+        /**
+         * Raise or dismiss the landing page to match the state.
+         *
+         * Rebuilt rather than cached when the words change: there is no caret and
+         * no scroll on it to lose, and its brand note is read once from a config
+         * that cannot change mid-session anyway.
+         *
+         * The shell is left mounted underneath, only covered and made inert.
+         * Hiding it outright was the tempting move and is a trap: the toolkit
+         * measures pane geometry against the main slot's box, so a shell hidden
+         * while a project arrives would lay its first board out against a
+         * zero-sized rectangle. `inert` is what keeps the covered chrome out of
+         * the tab order — without it the reader can Tab into a "+" they cannot
+         * see and open a menu behind the page.
+         */
+        fun renderLanding(empty: MainScreenBackingViewModel.EmptyTab?) {
+            val wanted = empty?.takeIf { it.isVisitor }
+            landing?.let { it.parentElement?.removeChild(it) }
+            landing = null
+            appHost.asDynamic().inert = wanted != null
+            if (wanted == null) return
+            val el = emptyTabLanding(
+                empty = wanted,
+                // The mark is the hero here, the way it is on the sign-in picker:
+                // this is the deployment introducing itself to somebody who has
+                // arrived at it, and nothing else on the page says whose it is.
+                brandLogoSvg = brandConfig?.logoSvg,
+                note = brandConfig?.landingNote,
+                // The view model asks for the button; only the session knows whether
+                // the server can honour it. A deployment with no method configured
+                // gets the words without a door that opens on nothing — the rule the
+                // top-bar button already follows.
+                onSignIn = { signInView.startSignIn() }
+                    .takeIf { sessionViewModel.stateFlow.value.isSignInAvailable },
+            )
+            document.body?.appendChild(el)
+            landing = el
+        }
+
         // The bell can open its sidebar now that the shell exists. Opening also
         // fetches the full list (the bell's own poll only ever fetches the count).
         openNotifications = {
@@ -1524,6 +1585,12 @@ private fun start() {
             // Permissions change on sign-in, which is not a board change.
             var topbarGates: Pair<Boolean, Boolean>? = null
             var openWindows: List<Long>? = null
+            // What an empty tab was last told to show (see emptyTabContent). It
+            // turns over without the panes moving — the first load returning, a
+            // project list arriving empty, signing in and still seeing nothing —
+            // and the toolkit only rebuilds it on a refresh, so without this the
+            // reader keeps whichever wording was true when the tab appeared.
+            var tabEmpty: MainScreenBackingViewModel.EmptyTab? = null
             mainViewModel.stateFlow.collect { state ->
                 // Registries first, snapshot second: the toolkit asks for pane
                 // content the moment a pane appears in the snapshot, and the
@@ -1541,10 +1608,18 @@ private fun start() {
                 latest = snapshotOf(workspaceState.workspace)
                 deliver()
                 val gates = state.canCreateProject to state.canOpenAdminSettings
-                if (state.boards !== titledBoards || gates != topbarGates || state.openIssueIds != openWindows) {
+                val empty = state.emptyTab
+                if (state.boards !== titledBoards || gates != topbarGates ||
+                    state.openIssueIds != openWindows || empty != tabEmpty
+                ) {
                     titledBoards = state.boards
                     topbarGates = gates
                     openWindows = state.openIssueIds
+                    tabEmpty = empty
+                    // Both surfaces turn over on the same facts, so they turn over
+                    // together: the landing outside the shell, and — through the
+                    // refresh — the canvas card inside it.
+                    renderLanding(empty)
                     handle.refresh()
                 }
                 // The address bar follows the focused pane, so the URL is always a

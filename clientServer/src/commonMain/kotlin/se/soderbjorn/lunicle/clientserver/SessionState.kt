@@ -191,15 +191,6 @@ data class SignedInUser(
  *   server for [isGoogleAvailable]'s reason: only the server knows which variables
  *   it was given, and a surface must never render a method the server cannot
  *   perform. There is no client id beside it because there is no third party.
- * @property isSignInRequired whether this deployment refuses to be used signed out
- *   (LNL-115). An instance-wide switch, the same for everyone who asks, and it
- *   rides here — rather than only on the admin-only [AdminSettingsState] — because
- *   the client it is drawn for is precisely the signed-out one, which has no other
- *   state to read it from. When true and [user] is null, the shell raises a
- *   landing gate. An affordance, not a wall: a genuinely private board is still
- *   guarded per-request by `AccessControl.canReadProject`, so this is the UX that
- *   stops a signed-out visitor being dropped onto an empty-looking app rather than
- *   the thing that keeps private data private. See [InstanceSettingKey].
  * @property isDisplayNameHidden whether this deployment hides the display-name
  *   override in the settings pane's You tab (LNL-137). An instance-wide switch, the
  *   same for everyone who asks, and it rides here — rather than only on the
@@ -218,7 +209,6 @@ data class SessionState(
     val impersonatableAddresses: List<ImpersonationTarget> = emptyList(),
     val pendingEmail: String? = null,
     val isEmailSignInAvailable: Boolean = false,
-    val isSignInRequired: Boolean = false,
     val isDisplayNameHidden: Boolean = false,
 ) {
     /**

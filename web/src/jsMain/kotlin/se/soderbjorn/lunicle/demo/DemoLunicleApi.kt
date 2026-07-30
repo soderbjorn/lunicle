@@ -83,7 +83,7 @@ internal class DemoLunicleApi(
     //
     // Always signed in as Janeway. Sign-in, sign-out and impersonation are all
     // no-ops that return the same signed-in session, which is what makes the
-    // sign-out button harmless and the sign-in gate never appear.
+    // sign-out button harmless.
 
     override suspend fun session(): SessionState = world.sessionState()
     override suspend fun signInWithGoogle(code: String): SessionState = world.sessionState()

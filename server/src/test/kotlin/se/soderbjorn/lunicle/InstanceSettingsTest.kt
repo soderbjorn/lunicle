@@ -12,9 +12,9 @@
  *    caller is refused either way — creating still needs a session.
  *  - **hide-display-name** rides on `GET /api/session` (LNL-137), so every signed-in
  *    client knows to omit the profile override; the test proves the flag flips there.
- *  - **require-sign-in is gone** (LNL-192), and one test here pins that the session no
- *    longer claims a sign-in gate however the instance is configured. What it used to
- *    say is a per-project guest audience row now.
+ *  - **require-sign-in is gone** (LNL-192), off the wire entirely rather than pinned
+ *    false, so there is nothing left here to assert about it. What it used to say is a
+ *    per-project guest audience row now.
  *  - all are set through `POST /api/admin/instance-settings`, which is admin-only with
  *    no narrowed half, exactly like the rest of AdminRoutes.
  *
@@ -94,30 +94,6 @@ class InstanceSettingsTest {
         file.delete()
         File("${file.absolutePath}-wal").delete()
         File("${file.absolutePath}-shm").delete()
-    }
-
-    // ── the retired require-sign-in blanket ───────────────────────────────────
-
-    /**
-     * The retired blanket, pinned as retired (LNL-192).
-     *
-     * `isSignInRequired` still crosses the wire so a browser on the previous bundle
-     * keeps deserialising the session, and it is now always false: there is no switch
-     * left to raise it, and what it used to say is a per-project guest audience row.
-     * Asserted after flipping every switch there is, because "no combination of
-     * settings brings the landing gate back" is the actual claim.
-     */
-    @Test
-    fun `no instance switch can make the session claim a sign-in gate any more`(): Unit = runBlocking {
-        seed()
-        for (key in InstanceSettingKey.entries) instanceSettings.set(key, true)
-
-        withAuthAndBoard { client ->
-            assertFalse(
-                client.get("/api/session").body<SessionState>().isSignInRequired,
-                "The signed-out session still claims a deployment-wide sign-in gate.",
-            )
-        }
     }
 
     // ── hide-display-name reaches the session ─────────────────────────────────

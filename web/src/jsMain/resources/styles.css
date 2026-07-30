@@ -2273,6 +2273,175 @@ body > .dt-pane-menu {
    it sits apart from the primary Sign in button above it and does not stretch. */
 .signin-code .btn-quiet { align-self: flex-start; margin-top: 4px; }
 
+/* ============================================================
+   Nothing to show — the empty canvas and the landing page
+   ============================================================
+
+   See EmptyTabSurface.kt. One card, two settings for it.
+
+   The LANDING covers the window: a signed-out visitor who can reach no project
+   has nothing to do with the chrome — the tab strip holds one empty tab, the
+   sidebar lists that tab, and the "+" makes what they cannot keep. So it is
+   fixed to the viewport rather than mounted in the canvas, and opaque, and
+   sized in viewport units: nothing of the shell shows around it. Below the
+   modal layer (`.dt-modal` is 10000) so the sign-in picker opens OVER it,
+   which is the one thing that must still work here.
+
+   The CANVAS shape is for a reader already inside the app who has emptied a
+   tab. `inset: 0` against the toolkit's `position: relative` main slot, and
+   `z-index: 0` deliberately: it must sit UNDER any pane rather than over it.
+   The shell tears it down the instant a pane exists, but the two orders
+   overlap for a frame during the mount, and a panel painting over a board —
+   even for a frame — is a flash of nothing where content was. */
+.empty-tab-landing,
+.empty-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  /* Nothing here is a target; a stray click lands as it would on bare canvas.
+     The button and the links opt back in below. */
+  user-select: none;
+}
+.empty-tab-landing {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  z-index: 9000;
+  /* The CANVAS tone — the surface a board rests on — rather than the chrome
+     band around it. Two reasons, and they agree: it is the tone this window
+     will show once there is something to see, so signing in is a card leaving
+     rather than a page changing colour; and it is the one a pane is designed to
+     contrast against, which is the whole reason the card below reads as an
+     object at all. On a light theme whose chrome band and pane surface are both
+     near-white, taking the chrome tone here left the card carrying its own
+     separation on a hairline. */
+  background: var(--t-canvas, var(--t-chrome-bg, var(--bg)));
+}
+.empty-tab {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* The card itself: a pane's surface, a pane's border, a pane's roundness — this
+   is the same kind of object as a board window, and reading as one is what
+   keeps an empty instance looking like the product rather than like an error
+   page. The measure is a measure, not a width: at full canvas width the note
+   would run past 90 characters a line and the eye would lose the next one. */
+.empty-tab-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 560px;
+  padding: 52px 48px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--dt-corner-radius, 18px);
+  /* Barely there, and cast straight down: enough to lift the card off the
+     backdrop without announcing itself as a dialog, which it is not — there is
+     nothing behind it to come back to. */
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .06);
+}
+
+/* Bigger than the sign-in picker's 40px, deliberately: the picker's mark sits
+   above a form the reader came for, and this one is the page. See
+   .signin-brand-logo for the shape of the rule. */
+.empty-tab-logo { height: 52px; max-width: 320px; margin-bottom: 30px; }
+
+/* The deployment's display face when it has one (issue titles and column names
+   already use it), so a branded instance's empty canvas is branded too — and
+   `inherit` on an unbranded one, which keeps it on the proportional stack. */
+.empty-tab-headline {
+  font-family: var(--dt-font-display, inherit);
+  color: var(--head);
+  font-size: 27px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0;
+}
+
+/* `text-wrap: pretty` for .signin-hint's reason: the longest branch runs to two
+   clauses, and a lone trailing word is the ragged shape a centred column shows
+   up worst. */
+.empty-tab-detail {
+  color: var(--green-dim);
+  font-size: 16px;
+  line-height: 1.6;
+  margin: 12px 0 0;
+  text-wrap: pretty;
+}
+
+/* Given real room above it: the one thing on this card the reader can act on,
+   and a button tucked under the sentence reads as part of it. Wider padding
+   than a dialog's for .signin-provider's reason — a way IN, not a minor
+   control.
+
+   `--accent-on` rather than `--bg` for the label: --bg is the page, and a page
+   colour laid on an accent FILL is a coincidence that holds only while the two
+   happen to contrast. Under a light theme with a warm accent it does not —
+   near-white on amber lands around 2:1. `--accent-on` is the token a theme
+   declares for exactly this, type sitting ON the accent, and it falls back to
+   black. */
+.empty-tab-action {
+  margin-top: 30px;
+  padding: 13px 30px;
+  font-size: 15px;
+  color: var(--accent-on);
+  user-select: auto;
+}
+.empty-tab-action:hover:not(:disabled) { color: var(--accent-on); }
+
+/* The deployment's own words (Brand.landingNote), set as a footnote: quieter
+   than the instruction above, and pushed below the action by a hairline so the
+   eye stops at the button first and reads this only if it is still looking for
+   something. Quieter, not small — it is the paragraph that says what this
+   software is, and a reader who has got this far is reading it. */
+.empty-tab-note {
+  margin-top: 34px;
+  padding-top: 26px;
+  border-top: 1px solid var(--border);
+  width: 100%;
+  color: var(--green-dim);
+  font-size: 14px;
+  line-height: 1.65;
+  text-wrap: pretty;
+  user-select: auto;
+}
+.empty-tab-note-line { margin: 0; }
+.empty-tab-note-line + .empty-tab-note-line { margin-top: 12px; }
+
+/* Lunicle's own mark heading the footnote: glyph and name on one line, centred
+   with the rest of the card, and given a step down to the prose so it reads as
+   that block's heading rather than as another line of it. */
+.empty-tab-note-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+/* .icon-logo is sized for the 18px topbar and takes the CHROME accent with it,
+   which is the wrong zone inside a pane. Both are overridden here. */
+.empty-tab-note-mark .icon-logo { width: 22px; height: 22px; color: var(--green-hi-text); }
+.empty-tab-note-name {
+  font-family: var(--dt-font-display, inherit);
+  color: var(--head);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.empty-tab-note-link {
+  color: var(--green-hi-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  /* Long URLs must not push the card wider than its measure. */
+  overflow-wrap: anywhere;
+}
+.empty-tab-note-link:hover { color: var(--head); }
+
 /* A boolean and its label on one line, lunula's On/Off pair standing where
    the checkbox used to. See Dom.kt's Toggle.
 

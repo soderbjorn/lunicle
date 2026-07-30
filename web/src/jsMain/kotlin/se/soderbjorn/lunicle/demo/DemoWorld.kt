@@ -739,7 +739,6 @@ internal class DemoWorld {
             impersonatableAddresses = emptyList(),
             pendingEmail = null,
             isEmailSignInAvailable = false,
-            isSignInRequired = false,
             isDisplayNameHidden = hideDisplayName,
         )
     }

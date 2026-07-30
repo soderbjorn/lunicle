@@ -59,6 +59,14 @@ import kotlin.js.Promise
  *   `initCodeClient` so the account chooser is pre-filtered to that one domain.
  *   The hint is only UX — the binding boundary is the matching server-side gate in
  *   `exchangeGoogleCode`. Null ⇒ open chooser, exactly as an unbranded install.
+ * @property landingNote optional prose the signed-out landing page carries under
+ *   its headline, from `landingNote` in the manifest. What a deployment says about
+ *   itself to somebody who has arrived and cannot get in — which instance this is,
+ *   who runs it, what Lunicle is — and the only place a brand speaks in sentences
+ *   rather than in colours. Bare `http(s)` URLs in it become links, so the text
+ *   can be written as plain prose. Null on an unbranded instance, and on a branded
+ *   one with nothing to add: the landing then carries the headline and the way in,
+ *   and nothing else. See EmptyTabSurface.
  */
 data class Brand(
     val themes: List<Theme>,
@@ -68,6 +76,7 @@ data class Brand(
     val fonts: List<BrandFont>,
     val title: String?,
     val googleHostedDomain: String?,
+    val landingNote: String?,
     val appearanceShape: AppearanceShape,
     val chromeFontSizePx: Int?,
     val monoFontSizePx: Int?,
@@ -206,6 +215,7 @@ suspend fun loadBrand(): Brand? {
         fonts = fonts,
         title = manifest.stringOrNull("title"),
         googleHostedDomain = manifest.stringOrNull("googleHostedDomain"),
+        landingNote = manifest.stringOrNull("landingNote")?.takeIf { it.isNotBlank() },
         // Parsed leniently, field by field: a manifest naming a density this
         // build doesn't know must not also cost the deployment its selection
         // style. Both enums ignore anything unrecognised, and the radius is

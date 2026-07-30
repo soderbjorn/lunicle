@@ -83,19 +83,6 @@ class SignInView(
     private var signInPicker: SignInPickerDialog? = null
 
     /**
-     * The mandatory landing gate while it is up (LNL-115).
-     *
-     * A modal with a single Sign in button and no way out but signing in: on a
-     * deployment that requires sign-in, a signed-out visitor meets this instead of
-     * the app. It lives in this view rather than the shell because it is a sign-in
-     * surface like the picker and the corner — its button opens the very same
-     * [startSignIn] path, so the picker (or the Google popup) stacks over it and,
-     * the moment the session lands, the gate tears itself down. See
-     * [renderSignInGate].
-     */
-    private var signInGate: Modal? = null
-
-    /**
      * The deployment's brand logo SVG (LNL-110), shown atop the sign-in picker.
      * Set once at boot after the brand loads (see main.kt); null ⇒ the picker
      * carries no logo, exactly as before. Read when a picker is built fresh per
@@ -265,71 +252,8 @@ class SignInView(
         signInButton.visible(!showAccount && state.isSignInAvailable, displayValue = "inline-flex")
         signInButton.disabled = state.isBusy
 
-        renderSignInGate(state)
         renderSignInPicker(state)
         renderAlert(state)
-    }
-
-    /**
-     * Raise or dismiss the landing gate to match the state (LNL-115).
-     *
-     * Keyed on presence, like the picker and the alert: the view model decides
-     * whether the gate belongs on screen ([SessionBackingViewModel.State.isSignInGateShown]),
-     * this only builds it when it should appear and tears it down when it should
-     * not — which is what makes a completed sign-in close it without a line here
-     * mentioning sign-in at all. Built once and left up; there is nothing inside it
-     * that goes stale, so unlike the picker it is not rebuilt per showing.
-     */
-    private fun renderSignInGate(state: SessionBackingViewModel.State) {
-        if (state.isSignInGateShown && signInGate == null) {
-            signInGate = buildSignInGate(state)
-        } else if (!state.isSignInGateShown && signInGate != null) {
-            signInGate?.dismiss()
-            signInGate = null
-        }
-    }
-
-    /**
-     * Build the landing gate: a brand mark, a line of explanation, and one big Sign
-     * in button — nothing else, and no way to dismiss it.
-     *
-     * `onDismiss = {}` so Escape does nothing (the backdrop already swallows
-     * clicks), and no footer button: the only way past it is to sign in, which is
-     * the whole point of a required-sign-in deployment. The button hands off to
-     * [startSignIn], the same path the top-bar button takes — so a two-method
-     * deployment gets the picker over the gate and a one-method one goes straight to
-     * it. When the deployment somehow requires sign-in but offers no method to
-     * perform it (a misconfiguration), a line says so rather than a dead button.
-     */
-    private fun buildSignInGate(state: SessionBackingViewModel.State): Modal {
-        val gate = Modal(
-            title = "Sign in to continue",
-            onDismiss = {},
-            panelClass = "modal-narrow modal-signin",
-        )
-        val methods = element("div", "signin-methods")
-        brandLogoSvg?.let {
-            methods.appendChild(brandLogo(it).also { el -> el.className += " signin-brand-logo" })
-        }
-        methods.appendChild(
-            element("p", "signin-hint", "This workspace requires you to sign in before you can use it."),
-        )
-        if (state.isSignInAvailable) {
-            // "Sign in…" with the ellipsis, matching the top-bar button (this hands
-            // off to the picker or an OAuth redirect, it does not sign you in on the
-            // spot) — the gate had the bare label alone (LNL-153).
-            methods.appendChild(button("Sign in…", "btn signin-provider") { startSignIn() })
-        } else {
-            // Required, but no provider configured to satisfy it. Nothing this
-            // surface can do about it, so it says the true thing rather than
-            // offering a button that cannot work.
-            methods.appendChild(
-                element("p", "signin-hint", "No sign-in method is configured on this server. Ask an administrator."),
-            )
-        }
-        gate.body.appendChild(methods)
-        gate.mount(dialogHost)
-        return gate
     }
 
     /**
@@ -338,8 +262,14 @@ class SignInView(
      * One method configured means no picker: a modal offering a single option is a
      * click charged for nothing. Two means the picker. Zero cannot reach here —
      * the button is not rendered at all in that case, see `render`.
+     *
+     * Public because the corner is no longer the only way in: the empty-tab surface
+     * a signed-out visitor lands on carries its own button (see main.kt), and it has
+     * to open the very same door rather than a second one that drifts from this. A
+     * no-op before the first session response, which is the same beat the corner
+     * button is not rendered for.
      */
-    private fun startSignIn() {
+    fun startSignIn() {
         val state = lastState ?: return
         when {
             state.hasSignInChoice -> viewModel.onSignInPickerOpened()

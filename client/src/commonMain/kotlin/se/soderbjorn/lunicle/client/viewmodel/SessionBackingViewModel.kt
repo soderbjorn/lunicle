@@ -124,17 +124,10 @@ class SessionBackingViewModel(
         val isSignInPickerOpen: Boolean = false,
         val emailSignInAddress: String? = null,
         /**
-         * Whether this deployment requires signing in to be used at all (LNL-115).
-         * Straight from the server, like [isEmailSignInAvailable] — the client
-         * cannot know this and must not guess. Drives the shell's landing gate; see
-         * [isSignInGateShown].
-         */
-        val isSignInRequired: Boolean = false,
-        /**
          * Whether this deployment hides the display-name override (LNL-137).
-         * Straight from the server, like [isSignInRequired] — the client cannot know
-         * this and must not guess. When true the settings pane's You tab omits the
-         * override field; see SettingsPane.
+         * Straight from the server, like [isEmailSignInAvailable] — the client
+         * cannot know this and must not guess. When true the settings pane's You tab
+         * omits the override field; see SettingsPane.
          */
         val isDisplayNameHidden: Boolean = false,
     ) {
@@ -147,20 +140,6 @@ class SessionBackingViewModel(
          * Google credentials.
          */
         val isSignInAvailable: Boolean get() = isGoogleAvailable || isEmailSignInAvailable
-
-        /**
-         * Whether to raise the full-screen landing gate (LNL-115).
-         *
-         * Only once the session is actually known ([isLoaded]): before that, the
-         * shell shows neither the gate nor a signed-in board, for the same reason
-         * the top-bar corner stays blank — flashing a "you must sign in" wall at
-         * someone who turns out to be signed in is worse than a moment of nothing.
-         * Shown when the deployment requires sign-in and nobody is signed in. An
-         * admin previewing the signed-out view (impersonating nobody) sees it too,
-         * which is correct: that is what a signed-out visitor gets, and previewing
-         * it is the point.
-         */
-        val isSignInGateShown: Boolean get() = isLoaded && isSignInRequired && user == null
 
         /**
          * Whether the picker is worth showing at all, rather than going straight
@@ -312,8 +291,9 @@ class SessionBackingViewModel(
      * Re-fetch the session because something server-side changed what it reports
      * for the account already signed in — not a sign-in or sign-out, which have
      * their own paths, but an admin flipping an instance switch that rides on
-     * [SessionState]: the display-name gate (LNL-137) or the sign-in gate
-     * (LNL-115). Without this the running client keeps the snapshot it took at
+     * [SessionState]: the display-name gate (LNL-137) is the one left, the
+     * require-sign-in blanket having gone with LNL-192. Without this the running
+     * client keeps the snapshot it took at
      * [start] and the change only lands on the next page load. Unlike [start] this
      * is not one-shot — it is meant to be called again whenever such a switch is
      * written.
@@ -809,7 +789,6 @@ class SessionBackingViewModel(
         impersonatableAddresses = impersonatableAddresses,
         pendingEmail = pendingEmail,
         isEmailSignInAvailable = isEmailSignInAvailable,
-        isSignInRequired = isSignInRequired,
         isDisplayNameHidden = isDisplayNameHidden,
         isSignInPickerOpen = if (user != null) false else previous.isSignInPickerOpen,
         emailSignInAddress = if (user != null) null else previous.emailSignInAddress,

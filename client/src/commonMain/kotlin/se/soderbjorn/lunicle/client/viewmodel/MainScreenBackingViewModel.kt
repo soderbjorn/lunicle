@@ -618,7 +618,7 @@ class MainScreenBackingViewModel(
         }
 
         /**
-         * What to say when a tab has no panes at all, or null when it has some.
+         * What to show when a tab has no panes at all, or null when it has some.
          *
          * The app-level nothing, as against [BoardScreen.emptyMessage], which is
          * one board's. Several different nothings, and they mean different things
@@ -629,25 +629,61 @@ class MainScreenBackingViewModel(
          * a control the reader does not have is worse than no message, because it
          * reads as the app being broken.
          */
-        val emptyTabMessage: String? get() = when {
+        val emptyTab: EmptyTab? get() = when {
             !isLoaded -> null
             // The "+" in the top bar: "New project…" lives in the shell's add
             // menu. Pointing a brand new admin anywhere else sends them to a
             // control that cannot do this.
-            projects.isEmpty() && canCreateProject ->
-                "No projects yet. Use the + button in the top bar to make one."
+            projects.isEmpty() && canCreateProject -> EmptyTab(
+                headline = "No projects yet",
+                detail = "Use the + button in the top bar to make one.",
+            )
             // Signed in and still shown nothing: either the instance is empty or
             // every project on it is private to somebody else, and this reader
             // cannot tell those apart and should not have to. Deliberately not
             // told to use the "+" — they do not have it, only an admin does.
-            projects.isEmpty() && isSignedIn ->
-                "No projects to show. Ask an administrator to create one, " +
-                    "or to give you access to an existing one."
-            projects.isEmpty() ->
-                "No projects to show. Sign in if you have an account here."
-            else -> "Nothing open in this tab. Use + to add a board."
+            projects.isEmpty() && isSignedIn -> EmptyTab(
+                headline = "No projects to show",
+                detail = "Ask an administrator to create one, or to give you " +
+                    "access to an existing one.",
+            )
+            // Nobody is signed in and nothing here is theirs to see — the one
+            // reader for whom the app has no content, no tab worth showing and no
+            // control worth offering except the way in. See [EmptyTab.isVisitor].
+            projects.isEmpty() -> EmptyTab(
+                headline = "No projects to show",
+                detail = "Sign in if you have an account here.",
+                isVisitor = true,
+            )
+            else -> EmptyTab(
+                headline = "Nothing open in this tab",
+                detail = "Use + to add a board.",
+            )
         }
     }
+
+    /**
+     * The empty state of a tab with no panes — see [State.emptyTab].
+     *
+     * Split into a headline and a detail rather than handed over as one sentence
+     * because the surface sets them in different type: the headline is what the
+     * eye lands on across a whole empty canvas, the detail is the instruction
+     * under it. One string would have the view guessing where the break goes.
+     *
+     * @property isVisitor whether nobody is signed in and nothing here is this
+     *   reader's to see — so the app has no content, no tab worth showing and no
+     *   control worth offering them except the way in. The view treats it as
+     *   permission to take the whole window and say so, rather than tuck the
+     *   sentence into a canvas framed by chrome that can do nothing for them; and
+     *   as a request for a sign-in button, which it grants only if the server has
+     *   a method configured — a door that opens on nothing is worse than none.
+     *   See EmptyTabSurface and SignInView.
+     */
+    data class EmptyTab(
+        val headline: String,
+        val detail: String,
+        val isVisitor: Boolean = false,
+    )
 
     /**
      * One project's board, and everything drawn from it.
@@ -993,7 +1029,7 @@ class MainScreenBackingViewModel(
          * What this board's pane should say instead of columns, or null when it
          * has some to draw.
          *
-         * One board's nothing, as against [State.emptyTabMessage], which is the
+         * One board's nothing, as against [State.emptyTab], which is the
          * app's. Loading is null rather than a message: the pane draws a spinner
          * for that (LNL-135), and a sentence that is about to be replaced by
          * cards reads as an error for the beat it is up.

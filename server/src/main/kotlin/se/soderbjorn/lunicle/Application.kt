@@ -260,12 +260,13 @@ fun Application.module() {
     val reads = stores.reads
     val notificationStore = stores.notificationStore
     val uiSettings = stores.uiSettings
-    // The deployment-wide switches (LNL-115): require sign-in, and open project
-    // creation. Persistent on both backends — unlike the in-memory default the tests
-    // fall back to — because a switch that reset itself on every redeploy is one
-    // nobody could trust to keep a private instance private. Shared by the auth
-    // routes (which read require-sign-in into the session) and the board routes
-    // (which read both). See StoreGraph for the per-backend construction.
+    // The deployment-wide switches (LNL-115): open project creation, public
+    // projects, hidden display names. Persistent on both backends — unlike the
+    // in-memory default the tests fall back to — because a switch that reset itself
+    // on every redeploy is one nobody could trust to keep a private instance
+    // private. Shared by the auth routes (which read the display-name one into the
+    // session) and the board routes (which read the rest). See StoreGraph for the
+    // per-backend construction.
     val instanceSettings = stores.instanceSettings
     val oauthClients = stores.oauthClients
     val oauthLoginStates = stores.oauthLoginStates
@@ -596,8 +597,9 @@ fun Application.module() {
             // e-mail sign-in both hang off these two.
             emailCodes = emailCodes,
             notifications = notificationDispatcher,
-            // So every session response carries the require-sign-in switch, read
-            // by the shell's landing gate (LNL-115). See SessionState.isSignInRequired.
+            // So every session response carries the instance-wide switches a client
+            // has to know about before it draws anything — currently the
+            // display-name one. See SessionState.isDisplayNameHidden.
             instanceSettings = instanceSettings,
             // What this deployment says about itself (LNL-192): the domain that
             // decides staff from member, and — separately — whether the Google
