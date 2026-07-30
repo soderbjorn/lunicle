@@ -202,6 +202,21 @@ fun analyticsProjectIdOfPane(paneId: String): Long? =
  *   only which of them exist.
  * @property activePaneId the focused pane, or null for none. A pane id rather
  *   than a [PaneRef] because it is compared against what the toolkit reports.
+ * @property paneLabels titles the user has typed over a pane's derived one,
+ *   keyed by pane id. Absent for every pane by default, which is the point: a
+ *   Lunicle pane title is *computed* — "Board · Meridian", an issue's ticket key
+ *   — and stays computed, following a project rename or an issue retitle, until
+ *   somebody says otherwise. This map is the somebody.
+ *
+ *   Per **tab**, not per workspace, and deliberately: a pane id here names what
+ *   the pane shows rather than one placement of it (see the file header), so
+ *   `board-7` is the same id in every tab that holds that board. Naming the copy
+ *   in the release tab "Ship blockers" must not rename the copy in the triage
+ *   tab, which a workspace-wide map would.
+ *
+ *   Stored with the rest of the workspace, so a renamed window comes back
+ *   renamed. The toolkit persists where a window *sits*; what it is called was
+ *   never its to keep.
  */
 @Serializable
 data class WorkspaceTab(
@@ -209,6 +224,7 @@ data class WorkspaceTab(
     val name: String,
     val panes: List<PaneRef> = emptyList(),
     val activePaneId: String? = null,
+    val paneLabels: Map<String, String> = emptyMap(),
 ) {
     /** The pane with that id, or null. */
     fun pane(paneId: String): PaneRef? = panes.firstOrNull { it.paneId == paneId }
@@ -216,6 +232,19 @@ data class WorkspaceTab(
     /** Whether this tab holds a board for [projectId]. */
     fun hasBoardFor(projectId: Long): Boolean =
         panes.any { it is PaneRef.Board && it.projectId == projectId }
+
+    /**
+     * The user's title for [paneId] in this tab, or null when they have given it
+     * none and the derived title stands.
+     *
+     * Called by the shell's `paneLabel` before it computes anything, and by
+     * [WorkspaceBackingViewModel.onPaneMovedToTab] so a window carries its name
+     * with it.
+     *
+     * @param paneId the pane to look up.
+     * @return the override, or null.
+     */
+    fun paneLabel(paneId: String): String? = paneLabels[paneId]
 }
 
 /**
