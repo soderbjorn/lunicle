@@ -71,6 +71,16 @@ class EmailChangeTest {
     private val sessions = SessionStore(database)
     private val impersonations = Impersonations()
 
+    /**
+     * Ownership, and the oracle that reads it (LNL-197).
+     *
+     * Both here because impersonation is the owner's alone now, and `resolveCaller`
+     * asks this rather than the record — so the one test below that impersonates has to
+     * seat an owner or its impersonation is dropped before the route it is aimed at.
+     */
+    private val instanceSettings = InstanceSettingsStore(database)
+    private val access = AccessControl(RoleStore(database), instanceSettings)
+
     /** Every mail the fake Resend received: recipient, subject, body. */
     private val sent = mutableListOf<Triple<String, String, String>>()
 
@@ -271,7 +281,7 @@ class EmailChangeTest {
     // ── Impersonation, and the old address ───────────────────────────────────
 
     /**
-     * An admin wearing somebody's face may not redirect their mail.
+     * Somebody wearing another's face may not redirect their mail.
      *
      * Worth an explicit refusal rather than inheriting whatever `caller.effective`
      * happens to do — which is what the old route did, silently allowing it.
@@ -279,17 +289,18 @@ class EmailChangeTest {
      * redirecting their account.
      */
     @Test
-    fun `an impersonating admin cannot change the impersonated user's address`(): Unit = runBlocking {
-        val admin = user("gh-admin", "Admin")
-        val victim = user("gh-victim", "Victim")
-        val session = sessions.create(admin.id)
-        assertTrue(admin.isInstanceAdmin, "The first user seeded was not the admin; the fixture is wrong.")
+    fun `an impersonating owner cannot change the impersonated user's address`(): Unit = runBlocking {
+        val owner = user("gh-owner", "Owner", email = "owner@example.com")
+        user("gh-victim", "Victim", email = "victim@example.com")
+        val session = sessions.create(owner.id)
+        seatInstanceOwner(users, instanceSettings)
+        assertTrue(access.canImpersonate(owner), "The first user seeded did not end up owning the instance.")
 
         withRoutes { client ->
             client.post(ApiRoutes.IMPERSONATE) {
                 cookie(SESSION_COOKIE, session)
                 contentType(ContentType.Application.Json)
-                setBody(ImpersonateRequest(victim.id))
+                setBody(ImpersonateRequest("victim@example.com"))
             }
             assertEquals(
                 HttpStatusCode.Forbidden,
@@ -415,6 +426,8 @@ class EmailChangeTest {
                     impersonations = impersonations,
                     emailCodes = codes,
                     notifications = NotificationDispatcher(users, capturingSender()),
+                    instanceSettings = instanceSettings,
+                    access = access,
                 )
             }
         }
