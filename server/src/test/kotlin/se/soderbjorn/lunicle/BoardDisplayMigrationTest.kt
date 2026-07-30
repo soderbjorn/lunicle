@@ -157,7 +157,7 @@ class BoardDisplayMigrationTest {
     @Test
     fun `a project with no owner rung falls back to the instance owner`(): Unit = runBlocking {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
-        assertTrue(admin.isInstanceAdmin, "The first account is meant to be the system administrator.")
+        assertTrue(admin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
         val project = projectRepository.create("Lunamux", "LMX")
         unsettle(project.id)
         storeLegacyPreference(admin.id, project.id, hide = true)

@@ -8,21 +8,25 @@
  * failures worth testing are the quiet ones, where it grants too much:
  *
  *  - **It is per-project.** A project administrator of one board must be an
- *    ordinary user on every other. The obvious wrong implementation asks
- *    `hasRole` without a project id, or reuses a check that ignores it, and it
+ *    ordinary user on every other. The obvious wrong implementation asks the
+ *    question without a project id, or reuses a check that ignores it, and it
  *    looks perfect on a one-project instance — which is exactly what a dev
- *    machine is.
- *  - **It is not the system administrator.** Creating and deleting projects,
- *    impersonation and MCP backfill authorship stay instance-wide. `isSysAdmin`
- *    short-circuits everything; the new role must not acquire the same habit.
- *  - **It cannot promote a peer.** A role that can grant itself escalates: the
- *    first project administrator makes a second, who makes a third, and the
- *    system administrator who granted the first has no say in it. This is the
+ *    machine is. [AccessControl.effectiveRole] takes an id by signature, so the
+ *    first of those is hard to write; the second is what these tests are for.
+ *  - **It is not an instance administrator, and still less the instance owner.**
+ *    Creating a project is per tier and off until somebody turns it on (LNL-192);
+ *    deleting boards across the instance, impersonation and MCP backfill authorship
+ *    narrowed to the instance **owner** (LNL-191). Reaching [InstanceRole.ADMIN]
+ *    short-circuits [AccessControl.effectiveRole] to [ProjectRole.OWNER] on every
+ *    board at once; this rung must not acquire the same habit.
+ *  - **It cannot promote a peer.** A rung that can grant itself escalates: the
+ *    first project administrator makes a second, who makes a third, and the project
+ *    owner who granted the first has no say in it. This is the
  *    one rule with no backstop elsewhere, so it is asserted from the route.
- *  - **The bundle stops at authorship.** The role implies the four issue-scoped
- *    roles, deliberately. It does not imply owning other people's words —
- *    `canEditComment` is authorship, not a grant, and running a board is not a
- *    licence to rewrite what somebody said on it.
+ *  - **The bundle stops at authorship.** The rung contains every rung below it,
+ *    deliberately — that is what cumulative means. It does not imply owning other
+ *    people's words: `canEditComment` is authorship, not a rung, and running a
+ *    board is not a licence to rewrite what somebody said on it.
  *
  * Through the real routes with real session cookies, for VocabularyTest's
  * reason: a test against [AccessControl] alone would pass on a route that never
@@ -183,12 +187,11 @@ class ProjectAdminTest {
     // ── Where it stops ───────────────────────────────────────────────────────
 
     /**
-     * THE test of this file: the role cannot grant itself.
+     * THE test of this file: the rung cannot grant itself.
      *
      * Without this, one project administrator promotes a second, who promotes a
-     * third, and the system administrator who granted the first is no longer the
-     * only route in. There is no backstop anywhere else — the grant route is the
-     * only door.
+     * third, and whoever granted the first is no longer the only route in. There is
+     * no backstop anywhere else — the grant route is the only door.
      */
     @Test
     fun `a project administrator cannot make somebody else a project administrator`(): Unit = runBlocking {
@@ -202,8 +205,8 @@ class ProjectAdminTest {
             assertEquals(
                 HttpStatusCode.Forbidden,
                 response.status,
-                "A project administrator promoted a peer. The role can now escalate without a system " +
-                    "administrator ever being asked.",
+                "A project administrator promoted a peer. The rung can now escalate without an " +
+                    "owner ever being asked.",
             )
         }
         assertFalse(
@@ -212,7 +215,7 @@ class ProjectAdminTest {
         )
     }
 
-    /** A system administrator is the one who can. The mirror of the test above. */
+    /** An instance administrator is, holding OWNER on every board. The mirror of the test above. */
     @Test
     fun `a system administrator can make somebody a project administrator`(): Unit = runBlocking {
         val f = seed()
@@ -339,7 +342,7 @@ class ProjectAdminTest {
             }.body()
             assertTrue(
                 sysAdmin.access?.rungs.orEmpty().all { it.isSelectable },
-                "A system administrator lost a rung.",
+                "An instance administrator lost a rung.",
             )
 
             val outsider: ProjectSettingsState = client.get("/api/projects/${f.projectId}/settings") {
@@ -377,7 +380,7 @@ class ProjectAdminTest {
             )
 
             val sys = access.permissionsFor(users.findById(f.sysAdminId)!!, f.projectId)
-            assertTrue(sys.canMutateProjectIdentity, "A system administrator lost the rename/delete half.")
+            assertTrue(sys.canMutateProjectIdentity, "An instance administrator lost the rename/delete half.")
 
             val outsider = access.permissionsFor(users.findById(f.outsiderId)!!, f.projectId)
             assertFalse(outsider.canMutateProject)
@@ -503,19 +506,19 @@ class ProjectAdminTest {
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(projectAdmin.isInstanceAdmin, "The fixture's project administrator is a system one.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
+        assertFalse(projectAdmin.isInstanceAdmin, "The fixture's project administrator runs the instance too.")
 
         val project = projectRepository.create("Lunamux", "LMX")
         val other = projectRepository.create("Elsewhere", "ELS")
-        // The ONLY grant of substance. No create_issue, no comment_on_issue —
-        // the bundle has to supply those, or the tests above prove nothing.
+        // The ONLY grant of substance, and no lower rung written beside it — the
+        // ladder has to supply those, or the tests above prove nothing.
         roles.setRole(projectAdmin.id, project.id, ProjectRole.ADMIN)
         // Bare visibility, and nothing else, for the two callers whose refusals
         // this file is about. Since LNL-57 a private project is invisible to
         // somebody holding nothing in it, and an invisible project answers 404
         // to everything — which would satisfy every "…is Forbidden" assertion
-        // below without the admin gate existing at all. `view_project` grants
+        // below without the admin gate existing at all. The bottom rung grants
         // no ability whatsoever (see ProjectRole.VIEWER), so these two lines
         // move the refusals back to being about administering rather than about
         // seeing, which is what the tests claim to check.

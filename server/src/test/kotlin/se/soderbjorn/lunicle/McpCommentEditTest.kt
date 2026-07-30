@@ -126,10 +126,10 @@ class McpCommentEditTest {
     /**
      * Someone else's comment is not yours to rewrite.
      *
-     * The comment is the admin's; an ordinary user with the comment role on the
+     * The comment is the admin's; an ordinary user seated as a Contributor on the
      * same project — able to write their own — is refused editing this one, and
-     * nothing changes. `comment_on_issue` is a right to your own words, never a
-     * right to edit another account's, exactly as canEditComment says.
+     * nothing changes. A rung is a right to your own words, never a right to edit
+     * another account's, exactly as canEditComment says.
      */
     @Test
     fun `editing another account's comment is refused`(): Unit = runBlocking {

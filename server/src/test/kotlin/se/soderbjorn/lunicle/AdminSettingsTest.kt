@@ -464,10 +464,10 @@ class AdminSettingsTest {
     /**
      * The directory is ordered admins first, then by name.
      *
-     * Two facts in one list, and the order of them is the point: an admin holds
-     * every privilege in every project, so they are the rows an admin opening this
-     * screen is most often looking for, and burying them alphabetically among
-     * twenty ordinary accounts is what the ticket was about.
+     * Two facts in one list, and the order of them is the point: an administrator
+     * holds Owner on every project without a row, so they are the rows an
+     * administrator opening this screen is most often looking for, and burying them
+     * alphabetically among twenty ordinary accounts is what the ticket was about.
      *
      * The names are chosen so the two rules disagree: sorted by name alone the
      * admin would land in the middle, and grouped without a secondary sort the

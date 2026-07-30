@@ -326,15 +326,15 @@ class ProjectOwnerTest {
     )
 
     private suspend fun seed(): Fixture {
-        // The first account is the system administrator, who owns everything by the
-        // flag; this fixture's owner is deliberately NOT that account, so the tests
-        // are about the role rather than about isSysAdmin short-circuiting.
+        // The first account is the instance administrator, who reaches Owner on every
+        // board without a row; this fixture's owner is deliberately NOT that account, so
+        // the tests are about the rung rather than about the administrator short-circuit.
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val owner = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-owner", "Ona", "ona@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(owner.isInstanceAdmin, "The fixture's owner is a system administrator, which defeats the point.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
+        assertFalse(owner.isInstanceAdmin, "The fixture's owner runs the instance, which defeats the point.")
 
         val project = projectRepository.create("Lunamux", "LMX")
         val other = projectRepository.create("Elsewhere", "ELS")

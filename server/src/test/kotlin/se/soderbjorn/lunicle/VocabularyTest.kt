@@ -535,8 +535,8 @@ class VocabularyTest {
         // nothing in it, and an invisible project answers 404 to every route —
         // which would satisfy the refusals below whether or not the admin gates
         // still existed, and would defeat the "narrowed read" half outright.
-        // `view_project` grants no ability at all (see ProjectRole.VIEWER), so a
-        // caller holding only it is still exactly the non-admin this test means.
+        // The bottom rung grants no ability at all (see ProjectRole.VIEWER), so a
+        // caller seated on it is still exactly the non-admin this test means.
         roles.setRole(ordinary.id, fixture.projectId, ProjectRole.VIEWER)
         val status = statuses.forProject(fixture.projectId).first()
         val label = labels.forProject(fixture.projectId).first()
@@ -597,9 +597,9 @@ class VocabularyTest {
         assertTrue(labels.forProject(fixture.projectId).any { it.id == label.id })
         assertTrue(statuses.forProject(fixture.projectId).any { it.id == status.id })
         // Still exactly what the test granted at the top and nothing more — the
-        // self-grant of `create_issue` did not land. Spelled as the whole set
-        // rather than "does not contain CREATE_ISSUE", so a write that smuggled
-        // in some *other* role fails here too.
+        // attempted self-promotion did not land. Spelled as the whole set rather
+        // than "is not a contributor", so a write that smuggled in some *other*
+        // rung fails here too.
         assertEquals(setOf(ProjectRole.VIEWER), setOfNotNull(roles.roleFor(ordinary.id, fixture.projectId)))
     }
 

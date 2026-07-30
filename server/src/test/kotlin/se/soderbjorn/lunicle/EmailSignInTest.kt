@@ -150,8 +150,9 @@ class EmailSignInTest {
     }
 
     /**
-     * Asking for a code is also registration, and on a fresh instance the first
-     * one through becomes the system administrator.
+     * Asking for a code is also registration, and on a fresh instance the first one
+     * through becomes the instance administrator — and is seated as the instance
+     * owner at the next boot, by `seatInstanceOwner` rather than by anything here.
      *
      * The same rule Google sign-in has always had, and it has to survive being
      * reached by a second route — it lives as a subquery inside the INSERT

@@ -877,17 +877,19 @@ class McpBackfillTest {
      * The instance admin, one ordinary user who may file and comment, and a project.
      *
      * The admin is whoever signs in first — see Users.sq's upsert — so the order
-     * here is load-bearing rather than incidental. The ordinary user is granted
-     * `create_issue` and `comment_on_issue` explicitly, because otherwise every
-     * non-admin test below would be refused for the wrong reason and would pass
-     * against a server with no backfill check at all.
+     * here is load-bearing rather than incidental. The ordinary user is seated as a
+     * Contributor explicitly, because otherwise every non-admin test below would be
+     * refused for the wrong reason and would pass against a server with no backfill
+     * check at all.
      *
-     * `roles.seed()` first, as Application.module does at every startup: `grant` is
-     * an INSERT..SELECT that turns a role_key into a role_id, so against an
-     * unseeded `roles` table it selects nothing, inserts nothing, and reports
-     * success. Every non-admin test then fails with "You cannot create issues in
-     * this project" — a refusal, from the wrong rule, that looks exactly like the
-     * one being tested for.
+     * This used to carry a second warning, about calling `roles.seed()` first the way
+     * Application.module did at every startup: granting went through an INSERT..SELECT
+     * that turned a role_key into a role_id, so against an unseeded `roles` table it
+     * selected nothing, inserted nothing and reported success — and every non-admin
+     * test then failed with "You cannot create issues in this project", a refusal from
+     * the wrong rule that looked exactly like the one being tested for. LNL-191
+     * retired that table. A rung is one string on one row, so there is nothing to seed
+     * and nothing left to get wrong here.
      */
     private suspend fun seed(): Fixture {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))

@@ -237,20 +237,20 @@ class ProjectVisibilityTest {
             assertEquals(
                 HttpStatusCode.OK,
                 client.get(ApiRoutes.board(f.privateId)) { cookie(SESSION_COOKIE, f.outsiderCookie) }.status,
-                "view_project did not grant the one thing it is for.",
+                "The bottom rung did not grant the one thing it is for.",
             )
         }
     }
 
     /**
-     * And an issue-scoped role is enough too — the claim that separates
-     * "membership" from "holds `view_project`".
+     * And a rung above the bottom is enough too — the claim that separates
+     * "membership" from "is exactly a Viewer".
      *
-     * Somebody granted `create_issue` on a private project and nothing else could
+     * Somebody seated as a Contributor on a private project and nothing else could
      * not see the project they were meant to file in. That incoherence predates
-     * this change; phrasing membership as "holds something here" is what retires
+     * this change; phrasing membership as "reaches any rung here" is what retires
      * it, and this is the only test in the suite that would notice a build which
-     * narrowed the rule to the single role instead.
+     * narrowed the rule to the bottom rung instead.
      */
     @Test
     fun `a member holding only an issue-scoped role reads the board`(): Unit = runBlocking {
@@ -260,18 +260,18 @@ class ProjectVisibilityTest {
             assertEquals(
                 HttpStatusCode.OK,
                 client.get(ApiRoutes.board(f.privateId)) { cookie(SESSION_COOKIE, f.outsiderCookie) }.status,
-                "Membership was read as \"holds view_project\" rather than \"holds any role\".",
+                "Membership was read as \"is exactly a Viewer\" rather than \"reaches any rung\".",
             )
         }
     }
 
-    /** The system administrator, who holds no row anywhere and reads everything anyway. */
+    /** The instance administrator, who holds no row anywhere and reads everything anyway. */
     @Test
     fun `a system administrator reads a private project without holding a role`(): Unit = runBlocking {
         val f = seed()
         assertFalse(
             (roles.roleFor(f.sysAdminId, f.privateId) != null),
-            "The fixture's system administrator holds a row, so this test proves nothing.",
+            "The fixture's instance administrator holds a row, so this test proves nothing.",
         )
         withRoutes { client ->
             assertEquals(
@@ -492,8 +492,8 @@ class ProjectVisibilityTest {
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val member = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-mem", "Mem", "mem@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(outsider.isInstanceAdmin, "The fixture's outsider is a system administrator.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
+        assertFalse(outsider.isInstanceAdmin, "The fixture's outsider runs the instance.")
 
         val public = projectRepository.createOpenToAll("Lunamux", "LMX", roles)
         val private = projectRepository.create("Skunkworks", "SKW")
@@ -508,9 +508,8 @@ class ProjectVisibilityTest {
             .also { roles.setAudienceRole(it.id, Audience.MEMBER, ProjectRole.VIEWER) }
         roles.setRole(projectAdmin.id, private.id, ProjectRole.ADMIN)
         roles.setRole(member.id, private.id, ProjectRole.VIEWER)
-        // Deliberately no grant for the outsider anywhere, and none for the
-        // system administrator: both of those absences are what tests above
-        // assert against.
+        // Deliberately no grant for the outsider anywhere, and none for the instance
+        // administrator: both of those absences are what tests above assert against.
 
         val issue = issueRepository.createDraft(private.id, Author.Account(sysAdmin.id))
         issueRepository.save(

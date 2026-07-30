@@ -211,8 +211,8 @@ class ProjectAccessTest {
         val listed = settingsFor(f.ownerCookie, f.projectId).access!!.people.map { it.userId }
         assertTrue(f.ownerId in listed && f.adminId in listed && f.maintainerId in listed)
         assertFalse(f.outsiderId in listed, "An account with nothing here was listed as an exception.")
-        // The system administrator is listed, with a note instead of a picker: they hold
-        // Owner everywhere without a row, which is a fact worth seeing on the audit.
+        // The instance administrator is listed, with a note instead of a picker: they
+        // hold Owner everywhere without a row, which is a fact worth seeing on the audit.
         val sysAdminRow = settingsFor(f.ownerCookie, f.projectId).access!!.people
             .firstOrNull { it.userId == f.sysAdminId }
         assertNotNull(sysAdminRow, "The instance administrator, who holds Owner here, was invisible.")
@@ -282,7 +282,7 @@ class ProjectAccessTest {
         val f = seed()
         instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
         withRoutes { client ->
-            listOf("owner" to f.ownerCookie, "system administrator" to f.sysAdminCookie).forEach { (who, cookie) ->
+            listOf("owner" to f.ownerCookie, "instance owner" to f.sysAdminCookie).forEach { (who, cookie) ->
                 val response = client.post(ApiRoutes.projectAudience(f.projectId)) {
                     cookie(SESSION_COOKIE, cookie)
                     contentType(ContentType.Application.Json)
@@ -500,16 +500,17 @@ class ProjectAccessTest {
     )
 
     private suspend fun seed(): Fixture {
-        // The first account is the system administrator, and deliberately none of the four
-        // rungs below: every assertion here is about a rung rather than about the
-        // administrator short-circuit.
+        // The first account is the instance administrator — and, once seated below, its
+        // owner — and deliberately holds none of the four rungs written below: every
+        // assertion here is about a rung rather than about the administrator
+        // short-circuit.
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val owner = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-own", "Ona", "ona@example.com"))
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-adm", "Adi", "adi@example.com"))
         val maintainer = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-mai", "Mai", "mai@example.com"))
         val viewer = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-vie", "Vic", "vic@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the system administrator.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
 
         val project = projectRepository.create("Lunamux", "LMX")
         roles.setRole(owner.id, project.id, ProjectRole.OWNER)

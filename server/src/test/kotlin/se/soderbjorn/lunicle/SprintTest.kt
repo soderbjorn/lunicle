@@ -625,10 +625,10 @@ class SprintTest {
         val cookie = sessions.create(ordinary.id)
         // Since LNL-57 a private project is invisible to somebody holding
         // nothing in it, and an invisible project answers 404 to everything —
-        // including to a route whose admin gate had been deleted. `view_project`
+        // including to a route whose rung gate had been deleted. The bottom rung
         // grants no ability at all (see ProjectRole.VIEWER), so this is the
-        // smallest grant that keeps the refusals below about administering the
-        // sprint rather than about seeing the project.
+        // smallest grant that keeps the refusals below about shaping the sprint
+        // rather than about seeing the project.
         roles.setRole(ordinary.id, f.projectId, ProjectRole.VIEWER)
 
         withRoutes { client ->

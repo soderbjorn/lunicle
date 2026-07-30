@@ -368,14 +368,14 @@ class UnreadTest {
     )
 
     /**
-     * Two ordinary members of one private project, and a system administrator who
+     * Two ordinary members of one private project, and an instance administrator who
      * appears in no assertion.
      *
      * The administrator is created only to spend the "first account on the instance
-     * becomes the system administrator" badge on somebody harmless —
-     * `ForumWatchTest.seed` explains why at length: an admin can see every project,
-     * so an admin standing in for a member would make the visibility test pass on a
-     * build that never checks visibility.
+     * runs it" badge on somebody harmless — `ForumWatchTest.seed` explains why at
+     * length: an administrator holds Owner on every project, so one standing in for a
+     * member would make the visibility test pass on a build that never checks
+     * visibility.
      */
     private suspend fun seed(): Fixture {
         users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))

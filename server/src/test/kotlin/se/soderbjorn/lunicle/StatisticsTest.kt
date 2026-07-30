@@ -442,7 +442,7 @@ class StatisticsTest {
         }
     }
 
-    /** A system administrator does receive them. The other half of the gate. */
+    /** An instance administrator does, reaching Owner here. The other half of the gate. */
     @Test
     fun `a system administrator is sent the repository configuration`(): Unit = runBlocking {
         val f = seed()
