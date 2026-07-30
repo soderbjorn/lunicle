@@ -123,6 +123,19 @@ class AccessControl(
      * line here now instead of a dozen there, and it is answered off the
      * [UserRecord] with no store read.
      *
+     * ── An audience never exceeds its ceiling (LNL-202) ─────────────────────
+     *
+     * Every matched row is capped by [admitting] before the max is taken, which for
+     * [Audience.GUEST] means [ProjectRole.VIEWER]. That is a **read**-path guard and it
+     * is not redundant with [canSetAudience] refusing the write: a `guest → contributor`
+     * row can already be sitting in a database — hand-edited, restored, or written by a
+     * build older than that refusal — and this function is what a session-less caller's
+     * rights are computed from. Without the cap here, that one row is anonymous issue
+     * filing again; with it, `effectiveRole(null, …)` can never exceed
+     * [ProjectRole.VIEWER] whatever any row says, so **every** gate below that asks for
+     * [ProjectRole.CONTRIBUTOR] or above is closed to a caller with no session, by
+     * construction rather than by each gate remembering to check.
+     *
      * @param projectId an id rather than a [ProjectRecord], deliberately: with
      *   visibility gone from the project row there is nothing on the record this
      *   depends on, and most callers reach here holding only an issue.
@@ -131,11 +144,10 @@ class AccessControl(
         val stored = user.storedInstanceRole
         if (stored.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
 
-        // The audience rows this caller matches. Because the instance ladder
-        // ascends, "matches" is one comparison: a `guest` row matches everybody, a
-        // `member` row matches members and staff, a `staff` row matches staff.
+        // The audience rows this caller matches, each capped to what its audience may
+        // hold. See admitting(), which is the one place that filter and that cap live.
         var best: ProjectRole? = roles.audienceRoles(projectId)
-            .filterKeys { stored.atLeast(it.instanceRole) }
+            .admitting(stored)
             .values
             .maxByOrNull { it.rank }
 
@@ -171,11 +183,13 @@ class AccessControl(
      * — a `create_issue` grant did not imply visibility — and the ladder retires it
      * structurally rather than by remembering to tick a second box.
      *
-     * **This is still the only rule that can say yes to a stranger.** It does so
-     * through a `guest` audience row, which is what `is_public` became; the
-     * difference is that the row also says at what rung, so "the world may read
-     * this" and "the world may comment on this" are the same mechanism rather than a
-     * boolean and a feature request.
+     * **This is still the only rule that can say yes to a stranger, and now it is the
+     * only rule that ever could** (LNL-202). It says yes through a `guest` audience row,
+     * which is what `is_public` became. That row can name a rung where the boolean could
+     * not — and [Audience.GUEST]'s ceiling is [ProjectRole.VIEWER], so the only rung it
+     * can name is this one. "The world may read this" is expressible; "the world may
+     * comment on this" is not, because a comment needs an author. See [Audience.GUEST]
+     * for why that is a decision and not a gap.
      *
      * Takes the resolved [project] rather than an id because every caller has
      * already fetched it, and because taking one keeps the read gate looking like
@@ -374,13 +388,37 @@ class AccessControl(
      * statement about strangers, not about whether a board may admit the people who
      * already have accounts on the instance.
      *
+     * ── And the one thing nobody can decide at all (LNL-202) ────────────────
+     *
+     * A rung above the audience's [Audience.ceiling] is refused whoever asks and
+     * whatever the deployment's switches say — which today means **the guest row cannot
+     * go above [ProjectRole.VIEWER]**. Unlike the veto above this is not a policy an
+     * administrator can lift: a guest has no account, so a rung that describes writing
+     * has nobody to attribute the write to. See [Audience.GUEST].
+     *
+     * Checked here rather than only greyed in the Access list for the veto's reason, and
+     * a sharper one: the picker is an affordance, and this row is the one that hands the
+     * entire internet a rung. Note the refusal is on the **rung**, not the row — a guest
+     * row at Viewer is still exactly how a project is published, and withdrawing one
+     * ([rung] null) is never refused on this account.
+     *
      * @param audience which audience the write names. It is a parameter rather than
      *   a separate "may publish" question so that a caller cannot ask the general
      *   version and then write the guest row — the gate and the write name the same
      *   thing.
+     * @param rung what the write hands them, or null to withdraw the row. Required
+     *   rather than defaulted, for [audience]'s reason turned one notch further: a
+     *   caller who could omit it would be asking a question about a row without saying
+     *   what the row would say, which is precisely the gap this ticket closed.
      */
-    suspend fun canSetAudience(user: UserRecord?, projectId: Long, audience: Audience): Boolean {
+    suspend fun canSetAudience(
+        user: UserRecord?,
+        projectId: Long,
+        audience: Audience,
+        rung: ProjectRole?,
+    ): Boolean {
         if (audience == Audience.GUEST && !instanceSettings.current().allowPublicProjects) return false
+        if (rung != null && !audience.permits(rung)) return false
         return canOwnProject(user, projectId)
     }
 

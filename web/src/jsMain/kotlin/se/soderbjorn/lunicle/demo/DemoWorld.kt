@@ -186,6 +186,54 @@ internal object DemoAudienceKeys {
 }
 
 /**
+ * The highest rung an audience may hold — the demo's copy of `Audience.ceiling`
+ * (LNL-202).
+ *
+ * Guests stop at Viewer: a guest has not signed in, so there is nobody to attribute a
+ * write to, and every rung above Viewer describes writing. The other two audiences have
+ * accounts behind them, so nothing narrows theirs.
+ *
+ * Carried here for the reason the demo carries its own rungs and tiers at all — the
+ * server's enum is JVM-only — and honoured in both directions: in the pickers this world
+ * builds, and in [DemoLunicleApi]'s two audience writes. A demo that offered Contributor
+ * on the Guests row would be teaching a rule the product does not have.
+ */
+internal fun demoAudienceCeiling(audienceKey: String): String = when (audienceKey) {
+    DemoAudienceKeys.GUEST -> DemoRungKeys.VIEWER
+    else -> DemoRungKeys.OWNER
+}
+
+/** May this audience be handed [rungKey]? See [demoAudienceCeiling]. */
+internal fun demoAudiencePermits(audienceKey: String, rungKey: String): Boolean =
+    demoRungRank(demoAudienceCeiling(audienceKey)) >= demoRungRank(rungKey)
+
+/** [rungKey], or the audience's ceiling where it sits above it — the read-side half. */
+internal fun demoAudienceCap(audienceKey: String, rungKey: String): String =
+    if (demoAudiencePermits(audienceKey, rungKey)) rungKey else demoAudienceCeiling(audienceKey)
+
+/**
+ * The rung menu for one audience row: every rung, with the ones above that audience's
+ * ceiling dead and the reason on them.
+ *
+ * Greyed and captioned rather than removed, which is the rule every refusal in these
+ * dialogs follows — a control that vanishes reads as a bug, where a dead one with a
+ * sentence says why. The wording mirrors `Audience.refusalFor` on the server, which is
+ * where the real one lives.
+ */
+internal fun demoAudienceRungs(audienceKey: String): List<RungOption> = DEMO_RUNGS.map { rung ->
+    if (demoAudiencePermits(audienceKey, rung.key)) {
+        rung
+    } else {
+        rung.copy(
+            isSelectable = false,
+            unavailableReason = "A guest has not signed in, so there is nobody to attribute a " +
+                "write to — which is what every rung above Viewer is. Guests can only read. To " +
+                "let people file issues, give the members row Contributor.",
+        )
+    }
+}
+
+/**
  * The domain this demo deployment calls its own — which is what gives it a **staff**
  * tier at all (LNL-199).
  *
@@ -849,7 +897,9 @@ internal class DemoWorld {
                 DemoAudienceKeys.GUEST,
                 "Guests",
                 "Anybody at all, without signing in.",
-                p.audiences[DemoAudienceKeys.GUEST],
+                // Capped on the way out (LNL-202), so a row above the ceiling would show as
+                // the Viewer it effectively is rather than as a rung nothing honours.
+                p.audiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
                 // The publish veto, which the demo now honours here as well as on the
                 // instance's own default list. It applies to the guest row whoever asks,
                 // the owner included, so a demo that let the click through would be
@@ -862,18 +912,23 @@ internal class DemoWorld {
                     "This deployment does not allow a project to be made public. An " +
                         "instance administrator decides that, in the instance settings."
                 },
+                // Viewer only, with the rest greyed and the reason on them — the ceiling
+                // (LNL-202), which no switch lifts, unlike the veto above it.
+                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST),
             ),
             AudienceRow(
                 DemoAudienceKeys.MEMBER,
                 "Members",
                 "Everybody with an account on this deployment.",
                 p.audiences[DemoAudienceKeys.MEMBER],
+                rungs = demoAudienceRungs(DemoAudienceKeys.MEMBER),
             ),
             AudienceRow(
                 DemoAudienceKeys.STAFF,
                 "Staff",
                 "Accounts on $DEMO_STAFF_DOMAIN.",
                 p.audiences[DemoAudienceKeys.STAFF],
+                rungs = demoAudienceRungs(DemoAudienceKeys.STAFF),
             ),
         ),
         // The exceptions: everybody holding something other than what their audience gives
@@ -927,8 +982,11 @@ internal class DemoWorld {
     private fun audienceFloor(p: DemoProject, tier: String): Pair<String, String>? =
         p.audiences.entries
             .filter { tierReaches(tier, it.key) }
-            .maxByOrNull { demoRungRank(it.value) }
-            ?.let { it.key to it.value }
+            // Capped per row before the max, like the server's `admitting` (LNL-202): a
+            // guest row can only ever carry Viewer, so it must not win a comparison it
+            // could not win on the real thing.
+            .map { it.key to demoAudienceCap(it.key, it.value) }
+            .maxByOrNull { demoRungRank(it.second) }
 
     /** What to call an audience on screen. */
     private fun audienceTitle(key: String): String = when (key) {
@@ -1077,7 +1135,7 @@ internal class DemoWorld {
                 DemoAudienceKeys.GUEST,
                 "Guests",
                 "Anybody at all, without signing in.",
-                newProjectAudiences[DemoAudienceKeys.GUEST],
+                newProjectAudiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
                 isSelectable = allowPublicProjects,
                 unavailableReason = if (allowPublicProjects) {
                     null
@@ -1086,18 +1144,21 @@ internal class DemoWorld {
                         "one cannot start out admitting guests. The Policy switch on the " +
                         "Instance tab is what changes that."
                 },
+                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST),
             ),
             AudienceRow(
                 DemoAudienceKeys.MEMBER,
                 "Members",
                 "Everybody with an account on this deployment.",
                 newProjectAudiences[DemoAudienceKeys.MEMBER],
+                rungs = demoAudienceRungs(DemoAudienceKeys.MEMBER),
             ),
             AudienceRow(
                 DemoAudienceKeys.STAFF,
                 "Staff",
                 "Accounts on $DEMO_STAFF_DOMAIN.",
                 newProjectAudiences[DemoAudienceKeys.STAFF],
+                rungs = demoAudienceRungs(DemoAudienceKeys.STAFF),
             ),
         ),
         // The demo visitor owns the instance, so the order and the delete are theirs.

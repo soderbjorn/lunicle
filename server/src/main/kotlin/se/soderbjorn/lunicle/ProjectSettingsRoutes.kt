@@ -365,6 +365,11 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
      * here rather than only greyed in the list for the obvious reason: a rule that
      * lives in a screen is a rule a POST goes around.
      *
+     * It refuses a **rung above the audience's ceiling** for the same reason and one
+     * that is stronger (LNL-202): the guest row cannot go above Viewer, and unlike the
+     * veto that is not a switch anybody can flip. `Audience.refusalFor` is the sentence,
+     * written once so this refusal and the greying beside the picker are the same words.
+     *
      * Gated at ADMIN by [adminProject] first and then at the real rung by
      * `canSetAudience`, so an Admin gets "not yours" rather than "no such project".
      */
@@ -387,13 +392,17 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
                 return@post
             }
         }
-        if (!deps.access.canSetAudience(scope.user, scope.project.id, audience)) {
+        if (!deps.access.canSetAudience(scope.user, scope.project.id, audience, rung)) {
+            // The ceiling first, because it is the refusal that would still stand if the
+            // other two were lifted — the same order audienceRefusal states them in.
+            val ceiling = rung?.let { audience.refusalFor(it) }
             call.respond(
                 HttpStatusCode.Forbidden,
-                if (audience == Audience.GUEST && !deps.instanceSettings.current().allowPublicProjects) {
-                    "This deployment does not allow a project to be made public."
-                } else {
-                    "Only an owner of this project can change who it admits."
+                when {
+                    ceiling != null -> ceiling
+                    audience == Audience.GUEST && !deps.instanceSettings.current().allowPublicProjects ->
+                        "This deployment does not allow a project to be made public."
+                    else -> "Only an owner of this project can change who it admits."
                 },
             )
             return@post
@@ -841,31 +850,21 @@ private suspend fun BoardDependencies.buildAccess(
                     key = audience.key,
                     title = audience.title,
                     subtitle = audience.subtitle(identity.domain),
-                    roleKey = audienceRoles[audience]?.key,
+                    // Capped, so a `guest → contributor` row already in the database shows
+                    // as the Viewer it now effectively is rather than as a rung the board
+                    // is not honouring (LNL-202). The screen must not be the one surface
+                    // still claiming the old row.
+                    roleKey = audienceRoles[audience]?.let { audience.cap(it).key },
                     isSelectable = refusal == null,
                     unavailableReason = refusal,
+                    // This row's own menu, because what an audience may be handed is a fact
+                    // about the audience — the guest row offers Viewer and greys the rest
+                    // with the reason. See rungOptions.
+                    rungs = rungOptions(project, caller, rung, audience),
                 )
             },
         people = peopleRows(project, caller, ownRows, audienceRoles, settings.ownerUserId, canGrant),
-        rungs = ProjectRole.entries.map { offered ->
-            // The same question the write asks — canGrant — so a rung offered here
-            // cannot be refused there and a rung greyed here is genuinely refused.
-            val grantable = access.canGrant(caller, project.id, offered)
-            RungOption(
-                key = offered.key,
-                label = offered.label,
-                description = offered.description,
-                isSelectable = grantable,
-                unavailableReason = if (grantable) {
-                    null
-                } else {
-                    // Names the caller's own rung, because the useful part of the refusal
-                    // is who to ask rather than that there was one.
-                    "You are ${rung.label.article()} ${rung.label} here, so ${offered.label} " +
-                        "is not yours to hand out."
-                },
-            )
-        },
+        rungs = rungOptions(project, caller, rung, audience = null),
         canGrant = canGrant,
         // Parenthesised, and it matters: `"a" + "b".takeIf { … }` binds the takeIf to the
         // second literal alone, so a caller who CAN grant was handed "a" + "null" — a
@@ -880,7 +879,67 @@ private suspend fun BoardDependencies.buildAccess(
 }
 
 /**
+ * The rung menu for one control in the Access section — a person row, or one audience
+ * row (LNL-202).
+ *
+ * ── Two refusals, and why they are computed together ────────────────────────
+ *
+ * A rung can be out of reach for two unrelated reasons, and both have to arrive in the
+ * same list because the picker draws one list:
+ *
+ *  - **the caller may not hand it out** — an Admin may grant up to Maintainer, and the
+ *    two senior rungs are an Owner's. A fact about the caller.
+ *  - **this audience may not hold it** — the guest row stops at Viewer, because a guest
+ *    has nobody to attribute a write to. A fact about the row, true for the deployment's
+ *    own owner as much as for anybody.
+ *
+ * The ceiling is stated **first** where both apply, for the reason
+ * [audienceRefusal] states the publish veto first: it is the refusal that would still
+ * stand if the other were lifted, so it is the one worth reading.
+ *
+ * Note what this replaces: one `rungs` list on the response, shared by every control.
+ * That list could only ever express the caller's half, so the guest row offered
+ * Contributor — greyed nowhere, refused nowhere, and one click from an anonymous issue.
+ * The server sends a list per control instead of the browser deriving one, which is
+ * [ProjectAccessState]'s standing rule: the greying is computed where the refusal lives.
+ *
+ * @param audience the audience row this menu belongs to, or null for a person row —
+ *   a person has an account, so the only refusals that apply to them are the caller's.
+ */
+private suspend fun BoardDependencies.rungOptions(
+    project: ProjectRecord,
+    caller: UserRecord,
+    callerRung: ProjectRole,
+    audience: Audience?,
+): List<RungOption> = ProjectRole.entries.map { offered ->
+    val ceiling = audience?.refusalFor(offered)
+    // The same question the write asks — canGrant — so a rung offered here cannot be
+    // refused there and a rung greyed here is genuinely refused.
+    val grantable = access.canGrant(caller, project.id, offered)
+    RungOption(
+        key = offered.key,
+        label = offered.label,
+        description = offered.description,
+        isSelectable = ceiling == null && grantable,
+        unavailableReason = when {
+            ceiling != null -> ceiling
+            grantable -> null
+            // Names the caller's own rung, because the useful part of the refusal is who
+            // to ask rather than that there was one.
+            else -> "You are ${callerRung.label.article()} ${callerRung.label} here, so " +
+                "${offered.label} is not yours to hand out."
+        },
+    )
+}
+
+/**
  * Why this audience row is dead, or null because it is live.
+ *
+ * Note this is about the row as a **whole** — whether its menu may be opened at all —
+ * and not about any particular rung in it. The guest audience's ceiling is the other
+ * shape and deliberately not here: it kills the rungs above Viewer while leaving the
+ * row live, because setting a project's guest row *to* Viewer is exactly how a board is
+ * published. See [rungOptions].
  *
  * The publish veto is checked **first and separately**, because it is the refusal that
  * would still stand if the other were fixed: it applies to the guest row whoever asks,
@@ -928,13 +987,11 @@ private suspend fun BoardDependencies.peopleRows(
         // about who the owner is. It used to be `storedInstanceRole` for the audience match
         // and an inline `id == instanceOwnerId` for the rest.
         val instanceRole = person.instanceRoleWith(instanceOwnerId)
-        // What their audience gives them anyway, by the same one-comparison rule
-        // AccessControl.effectiveRole uses: the instance ladder ascends, so "matches this
-        // audience" is `their rank >= the audience's`.
-        val floor = audienceRoles
-            .filterKeys { instanceRole.atLeast(it.instanceRole) }
-            .entries
-            .maxByOrNull { it.value.rank }
+        // What their audience gives them anyway, through the same fold
+        // AccessControl.effectiveRole uses — matched by the ascending instance ladder and
+        // capped to what each audience may hold, so this cannot report a rung the board
+        // will not honour. See admitting().
+        val floor = audienceRoles.admitting(instanceRole).entries.maxByOrNull { it.value.rank }
         val runsInstance = instanceRole.atLeast(InstanceRole.ADMIN)
         val effective = when {
             runsInstance -> ProjectRole.OWNER

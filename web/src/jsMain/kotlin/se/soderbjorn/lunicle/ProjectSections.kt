@@ -780,17 +780,31 @@ class ProjectSections(
      */
     private fun renderAudiences(access: ProjectAccessState, isBusy: Boolean) {
         val signature = "$isBusy|" + access.audiences.joinToString("|") {
-            "${it.key}:${it.roleKey}:${it.isSelectable}:${it.unavailableReason}"
+            // The row's own rung list is in the signature too (LNL-202): the greying inside
+            // a menu is per audience now, so a menu whose dead rungs moved must be rebuilt
+            // even when nothing about the row around it did.
+            "${it.key}:${it.roleKey}:${it.isSelectable}:${it.unavailableReason}:" +
+                it.rungs.joinToString(",") { rung -> "${rung.key}/${rung.isSelectable}" }
         }
         if (signature == audienceSignature) return
         audienceSignature = signature
         audienceList.clear()
         access.audiences.forEach { row ->
-            audienceList.appendChild(audienceRow(row, access.rungs, isBusy))
+            audienceList.appendChild(audienceRow(row, isBusy))
         }
     }
 
-    private fun audienceRow(row: AudienceRow, rungs: List<RungOption>, isBusy: Boolean): HTMLElement {
+    /**
+     * One audience row and its menu.
+     *
+     * The menu is built from **the row's own** rung list rather than the section's shared
+     * one (LNL-202), which is what makes the Guests row offer Viewer and show the rest
+     * greyed with the reason on them. Nothing here decides that: [rungPicker] already
+     * draws a dead rung with its sentence, and the server already decided which are dead.
+     * Deliberately so — a ceiling applied in the browser would be a second copy of the
+     * ladder beside the one that refuses the write, and the two would part company.
+     */
+    private fun audienceRow(row: AudienceRow, isBusy: Boolean): HTMLElement {
         val container = element("div", "access-row")
         val text = element("div", "access-row-text").children(
             element("div", "access-row-name", row.title),
@@ -798,7 +812,7 @@ class ProjectSections(
         )
         container.appendChild(text)
         val picker = rungPicker(
-            rungs = rungs,
+            rungs = row.rungs,
             selectedKey = row.roleKey,
             isEnabled = row.isSelectable && !isBusy,
             onPick = { key -> viewModel.onAudienceRungChanged(row.key, key) },

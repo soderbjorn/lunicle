@@ -585,6 +585,16 @@ internal suspend fun mentionableUsersIn(
  * autocomplete cannot name the person who can definitely read the thing, and the
  * mailer built from the same set will not resolve `@them` either.
  *
+ * ── The audience ceiling applies here too (LNL-202) ─────────────────────────
+ *
+ * Through [admitting], which is the shared spelling of "the rows this instance role
+ * matches, capped to what each row may hold". It has to be the same fold: a
+ * `guest → contributor` row left in a database would otherwise put **every account on
+ * the instance** into the assignable set for a board where
+ * [AccessControl.canBeAssigned] refuses them all — a dropdown of names that 403 on
+ * click, which is exactly the affordance-disagrees-with-the-rule failure the one-rung
+ * model exists to make impossible.
+ *
  * @param instanceOwnerId read **once** by the caller, not per row. Consulting the store
  *   inside this function would be the query-per-account these two sets exist to avoid;
  *   see [instanceRoleWith], which is this fold named. Null where nobody is seated.
@@ -596,10 +606,7 @@ private fun UserRecord.effectiveRungAmong(
 ): ProjectRole? {
     val instanceRole = instanceRoleWith(instanceOwnerId)
     if (instanceRole.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
-    val fromAudience = audiences.entries
-        .filter { instanceRole.atLeast(it.key.instanceRole) }
-        .maxByOrNull { it.value.rank }
-        ?.value
+    val fromAudience = audiences.admitting(instanceRole).values.maxByOrNull { it.rank }
     val own = rungs[id]
     return listOfNotNull(fromAudience, own).maxByOrNull { it.rank }
 }
@@ -632,6 +639,14 @@ private fun UserRecord.effectiveRungAmong(
  * write. The setting keeps its stored value, so lifting the veto starts honouring it
  * again for projects created afterwards.
  *
+ * ── And the ceiling is applied rather than trusted (LNL-202) ────────────────
+ *
+ * `newProjectAudiences` is a *stored* setting, so it can hold a guest row above
+ * [Audience.GUEST]'s ceiling however carefully its own route refuses one today — an
+ * older build wrote it, or somebody edited the document. Capping on the way out means a
+ * project cannot be *born* admitting guests as contributors, which is the one path to
+ * that row that does not go through a picker at all.
+ *
  * @param creator the caller, or null. Null only for a route that let a signed-out
  *   visitor create — which [AccessControl.canCreateProject] never does — so it is
  *   handled by seating nobody rather than by an assertion nobody can reach.
@@ -641,7 +656,7 @@ private suspend fun BoardDependencies.seatNewProject(project: ProjectRecord, cre
     val settings = instanceSettings.current()
     settings.newProjectAudiences.forEach { (audience, rung) ->
         if (audience == Audience.GUEST && !settings.allowPublicProjects) return@forEach
-        roles.setAudienceRole(project.id, audience, rung)
+        roles.setAudienceRole(project.id, audience, audience.cap(rung))
     }
 }
 

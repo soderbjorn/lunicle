@@ -21,10 +21,16 @@ import se.soderbjorn.lunicle.store.RoleStore
  * caller with no session, granting nothing else. Every fixture that used to pass
  * `isPublic = true` wanted precisely that, and the ones that also wanted writes
  * granted them separately and still do.
+ *
+ * The rung is **not** a parameter, and used to be one nobody ever passed (LNL-202). It
+ * could only ever have named Viewer and mean anything: the guest audience is capped
+ * there, so a fixture handing it Contributor would seed a row the server refuses to write
+ * and no longer honours on read — a shared way of building an impossible world. The tests
+ * that want that row on purpose write it with `setAudienceRole` and say why.
  */
 internal suspend fun ProjectProvisioning.createOpenToAll(
     name: String,
     namePrefix: String,
     roles: RoleStore,
-    rung: ProjectRole = ProjectRole.VIEWER,
-): ProjectRecord = create(name, namePrefix).also { roles.setAudienceRole(it.id, Audience.GUEST, rung) }
+): ProjectRecord =
+    create(name, namePrefix).also { roles.setAudienceRole(it.id, Audience.GUEST, ProjectRole.VIEWER) }

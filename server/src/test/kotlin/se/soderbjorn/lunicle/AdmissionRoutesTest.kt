@@ -234,23 +234,23 @@ class AdmissionRoutesTest {
         roles.setRole(owner.id, fixture.projectId, ProjectRole.OWNER)
 
         assertFalse(
-            access.canSetAudience(owner, fixture.projectId, Audience.GUEST),
+            access.canSetAudience(owner, fixture.projectId, Audience.GUEST, ProjectRole.VIEWER),
             "A project owner published a board while the instance forbids it.",
         )
         val admin = users.findById(fixture.adminId)!!
         assertFalse(
-            access.canSetAudience(admin, fixture.projectId, Audience.GUEST),
+            access.canSetAudience(admin, fixture.projectId, Audience.GUEST, ProjectRole.VIEWER),
             "The veto is not a veto if the instance owner can walk past it.",
         )
 
         // The other two audiences are untouched: "nothing may be published" is a
         // statement about strangers, not about the people who already have accounts.
-        assertTrue(access.canSetAudience(owner, fixture.projectId, Audience.MEMBER))
-        assertTrue(access.canSetAudience(owner, fixture.projectId, Audience.STAFF))
+        assertTrue(access.canSetAudience(owner, fixture.projectId, Audience.MEMBER, ProjectRole.CONTRIBUTOR))
+        assertTrue(access.canSetAudience(owner, fixture.projectId, Audience.STAFF, ProjectRole.CONTRIBUTOR))
 
         instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
         assertTrue(
-            access.canSetAudience(owner, fixture.projectId, Audience.GUEST),
+            access.canSetAudience(owner, fixture.projectId, Audience.GUEST, ProjectRole.VIEWER),
             "Allowing public projects did not let the owner publish one.",
         )
     }
@@ -263,8 +263,8 @@ class AdmissionRoutesTest {
         roles.setRole(contributor.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
 
-        assertFalse(access.canSetAudience(contributor, fixture.projectId, Audience.GUEST))
-        assertFalse(access.canSetAudience(contributor, fixture.projectId, Audience.MEMBER))
+        assertFalse(access.canSetAudience(contributor, fixture.projectId, Audience.GUEST, ProjectRole.VIEWER))
+        assertFalse(access.canSetAudience(contributor, fixture.projectId, Audience.MEMBER, ProjectRole.VIEWER))
     }
 
     // ── Admission at the door ───────────────────────────────────────────────

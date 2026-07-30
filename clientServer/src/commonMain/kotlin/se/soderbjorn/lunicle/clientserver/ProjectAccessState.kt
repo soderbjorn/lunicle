@@ -44,11 +44,15 @@ import kotlinx.serialization.Serializable
  * @property label the one-word name a menu shows.
  * @property description the rung's own sentence, written once on the server so no
  *   screen can describe a rung differently from the thing granting it.
- * @property isSelectable whether *this caller* may hand this rung out. An Admin may
- *   grant up to Maintainer; Admin and Owner are an Owner's alone.
+ * @property isSelectable whether this rung may be chosen *here*, which is two questions
+ *   folded into one flag because the picker draws one list: whether **this caller** may
+ *   hand it out (an Admin grants up to Maintainer; Admin and Owner are an Owner's alone),
+ *   and — on an [AudienceRow]'s own [AudienceRow.rungs] — whether **this audience** may
+ *   ever hold it. The guests row stops at Viewer; see [AudienceRow.rungs].
  * @property unavailableReason why not, when [isSelectable] is false — "You are an
  *   Admin here, so Owner is not yours to hand out." Present exactly when the rung is
- *   dead, and shown beside it rather than replacing it.
+ *   dead, and shown beside it rather than replacing it. It says *which* of the two
+ *   refusals applied, which is the only thing distinguishing them at the screen.
  */
 @Serializable
 data class RungOption(
@@ -76,6 +80,20 @@ data class RungOption(
  *   project. The first is enforced server-side by `AccessControl.canSetAudience`
  *   regardless of what this says — the greying is the explanation, not the
  *   enforcement.
+ * @property rungs what **this row** may be handed, in ladder order (LNL-202).
+ *
+ *   Per row rather than one list on [ProjectAccessState], because what an audience may
+ *   hold is a fact about the audience: the guest row offers Viewer and nothing above it,
+ *   since a guest has no account and every higher rung describes writing. A single
+ *   shared list could only express the *caller's* half of the answer, so the guest row
+ *   offered Contributor — greyed nowhere and refused nowhere — which is how anonymous
+ *   issue filing came to be one dropdown away.
+ *
+ *   Sent rather than derived, for this file's standing reason: a browser that greyed the
+ *   rungs above a ceiling would be re-deriving the ladder, and the copy that renders and
+ *   the copy that refuses would eventually disagree. Each option carries its own
+ *   [RungOption.unavailableReason], so a rung out of reach is shown with the sentence
+ *   saying why — never omitted.
  */
 @Serializable
 data class AudienceRow(
@@ -85,6 +103,7 @@ data class AudienceRow(
     val roleKey: String? = null,
     val isSelectable: Boolean = true,
     val unavailableReason: String? = null,
+    val rungs: List<RungOption> = emptyList(),
 )
 
 /**
@@ -135,6 +154,9 @@ data class PersonRow(
  * [ProjectSettingsState.yourAccessLine] instead, which is a statement about
  * themselves.
  *
+ * @property rungs what a **person** row may be handed. The audience rows carry their own
+ *   narrowed lists — see [AudienceRow.rungs] — because a ceiling is a fact about an
+ *   audience and a person has an account, so nothing narrows theirs but the caller.
  * @property canGrant whether this caller may change anything here at all — Admin and
  *   above. False renders every control dead rather than hiding the lists: a
  *   Maintainer who can see who is on the board and cannot change it is being told the

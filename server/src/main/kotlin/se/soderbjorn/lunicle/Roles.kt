@@ -192,23 +192,119 @@ enum class InstanceRole(val key: String) {
  *   match this audience. Because the ladder ascends, a `guest` row matches
  *   everybody, a `member` row matches members and staff, and a `staff` row matches
  *   staff alone.
+ * @property ceiling the highest [ProjectRole] this audience may ever hold. See
+ *   [GUEST], which is the only one it narrows and the whole of LNL-202.
  */
-enum class Audience(val key: String, val instanceRole: InstanceRole) {
-    /** Everybody, including a caller with no session at all. */
-    GUEST("guest", InstanceRole.GUEST),
+enum class Audience(val key: String, val instanceRole: InstanceRole, val ceiling: ProjectRole) {
+    /**
+     * Everybody, including a caller with no session at all — and capped at
+     * [ProjectRole.VIEWER] (LNL-202).
+     *
+     * ── Why this one audience has a ceiling ─────────────────────────────────
+     *
+     * A guest is *defined* by the absence of an account, and every rung above Viewer
+     * describes **writing**: filing an issue, commenting, being handed work. A write
+     * needs somebody to attribute it to, and a session-less caller has nobody — no
+     * account, no name, not even an address to sign it with. LNL-197 already showed
+     * what an authorless row costs: it matches no "you wrote it" clause, so whoever
+     * made it can neither publish nor discard it.
+     *
+     * So this row could always only coherently mean one thing, and the design only
+     * ever described it as such: "set it to Viewer and the project is public". Nothing
+     * *enforced* that, though, and `project_audience_roles` will hold any rung for any
+     * audience — so an owner could set Guests → Contributor and anonymous issue filing
+     * was one dropdown away. The ceiling is what closes it, in one place, for the write
+     * gate and the read path alike.
+     *
+     * Note this caps the row rather than the caller: a signed-in member who matches
+     * only the guest row is capped too. That is correct and is the reason the ceiling
+     * is a property of the audience — a row above Viewer here is not a stricter
+     * arrangement to be honoured for whoever *can* be attributed, it is invalid data.
+     * "Everybody on this deployment may file bugs" is the **member** row, which has no
+     * ceiling.
+     *
+     * Anonymous contribution is deliberately not built. If it ever ships it needs a
+     * decision about attribution — a name field, a captcha, a moderation queue — and it
+     * must not arrive by leaving a dropdown unguarded.
+     */
+    GUEST("guest", InstanceRole.GUEST, ProjectRole.VIEWER),
 
-    /** Everybody with an account. */
-    MEMBER("member", InstanceRole.MEMBER),
+    /** Everybody with an account. Every rung is expressible: they can be attributed. */
+    MEMBER("member", InstanceRole.MEMBER, ProjectRole.OWNER),
 
-    /** Accounts from the deployment's own domain. */
-    STAFF("staff", InstanceRole.STAFF),
+    /** Accounts from the deployment's own domain. No ceiling, for [MEMBER]'s reason. */
+    STAFF("staff", InstanceRole.STAFF, ProjectRole.OWNER),
     ;
+
+    /** May this audience be handed [role] at all? See [ceiling]. */
+    fun permits(role: ProjectRole): Boolean = ceiling.atLeast(role)
+
+    /**
+     * [role], or this audience's [ceiling] where [role] is above it.
+     *
+     * The **read**-side half of the ceiling, and it is not redundant with [permits]: a
+     * row above the ceiling can already exist in a database — hand-edited, restored
+     * from a backup, or written by a build older than LNL-202 — and a capped write
+     * beside an uncapped read is one such row away from the bug all over again. Every
+     * place that folds audience rows into a rung goes through [admitting], which
+     * applies this.
+     */
+    fun cap(role: ProjectRole): ProjectRole = if (permits(role)) role else ceiling
+
+    /**
+     * Why [role] is more than this audience may hold — or null because it is not.
+     *
+     * The sentence lives on the vocabulary rather than in a screen because four
+     * surfaces show it: a project's Access list, the instance's new-project rows, and
+     * the two routes that refuse the write. A rule explained four ways is a rule
+     * nobody trusts, and the publish veto beside it is already spelled twice.
+     */
+    fun refusalFor(role: ProjectRole): String? {
+        if (permits(role)) return null
+        // A `when` rather than an `else`, so that giving MEMBER or STAFF a ceiling one
+        // day has to say why here rather than inheriting a sentence about guests.
+        return when (this) {
+            GUEST ->
+                "A guest has not signed in, so there is nobody to attribute a write to — " +
+                    "which is what every rung above ${ceiling.label} is. Guests can only read. " +
+                    "To let people file issues, give the members row ${ProjectRole.CONTRIBUTOR.label}."
+            MEMBER, STAFF -> "This audience cannot hold more than ${ceiling.label} here."
+        }
+    }
 
     companion object {
         /** The audience with this [key], or null — an unknown key grants nothing. */
         fun byKey(key: String): Audience? = entries.firstOrNull { it.key == key }
     }
 }
+
+/**
+ * The audience rows somebody on [instanceRole] matches, each capped to what its
+ * audience may hold (LNL-202).
+ *
+ * ── One fold, four callers ──────────────────────────────────────────────────
+ *
+ * `max(the audience rows the user matches, their own row)` is decided in exactly one
+ * place — [AccessControl.effectiveRole] — but the *matching* half is spelled four
+ * times, because three other places answer it about a whole directory at once from
+ * maps already in hand and must not do a store read per account: the assignable and
+ * mentionable sets, a project's Access list, and the instance's People tab. Those
+ * were four copies of `filterKeys { instanceRole.atLeast(it.instanceRole) }`, which
+ * is fine while there is nothing else to remember and became a place to forget the
+ * ceiling the moment [Audience.GUEST] got one. So the filter and the cap are one
+ * function, and a fifth caller gets both or neither.
+ *
+ * Because the instance ladder ascends, "matches" is one comparison: a `guest` row
+ * matches everybody, a `member` row matches members and staff, a `staff` row matches
+ * staff.
+ *
+ * @return the matching rows, keyed by audience so a caller can still say *which* row
+ *   is carrying the weight — the Access list's "the members row here already gives
+ *   Contributor" needs the key, not just the rung.
+ */
+fun Map<Audience, ProjectRole>.admitting(instanceRole: InstanceRole): Map<Audience, ProjectRole> =
+    filterKeys { instanceRole.atLeast(it.instanceRole) }
+        .mapValues { (audience, role) -> audience.cap(role) }
 
 /**
  * Whether an account belongs to the deployment's own domain.

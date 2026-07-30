@@ -146,13 +146,21 @@ fun Route.adminRoutes(deps: BoardDependencies) {
      * Say what one audience arrives as in a **newly created** project (LNL-195). An
      * administrator's.
      *
-     * ── The one refusal here, and why it is the same one a project makes ─────
+     * ── The two refusals here, and why they are the ones a project makes ─────
      *
      * The guest row answers to the public-projects veto. A deployment that has forbidden
      * itself from publishing boards must not be able to publish every *future* board
      * through this setting instead, so the refusal is made here as well as on a
      * project's own audience write — and it carries the same kind of sentence the
      * greying beside the row shows, rather than a second explanation of the same rule.
+     *
+     * It also answers to the audience's **ceiling** (LNL-202): the guest row cannot start
+     * a project out above Viewer, because a guest has nobody to attribute a write to, and
+     * unlike the veto that is not a switch anybody can lift. Refused here as well as on a
+     * project's own write because this setting is the one path to that row that runs with
+     * no project in existence yet — see `seatNewProject`, which caps what it writes for
+     * the same reason. `Audience.refusalFor` is the sentence, so the two routes and the
+     * two screens say the same words.
      *
      * An unknown audience or rung key is a malformed request rather than a silent no-op:
      * a client that has invented a key has a bug, and answering 200 to it would hide it.
@@ -174,6 +182,12 @@ fun Route.adminRoutes(deps: BoardDependencies) {
                 call.respond(HttpStatusCode.BadRequest, "No such role.")
                 return@post
             }
+        }
+        // The ceiling first: it is the refusal that would still stand if the veto were
+        // lifted, so it is the one worth reading.
+        rung?.let { audience.refusalFor(it) }?.let { ceiling ->
+            call.respond(HttpStatusCode.Conflict, ceiling)
+            return@post
         }
         if (audience == Audience.GUEST && rung != null && !deps.instanceSettings.current().allowPublicProjects) {
             call.respond(
@@ -556,7 +570,10 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     key = audience.key,
                     title = audience.adminTitle,
                     subtitle = audience.adminSubtitle(identity.domain),
-                    roleKey = switches.newProjectAudiences[audience]?.key,
+                    // Capped, because this is a stored setting and can hold a rung an older
+                    // build wrote (LNL-202). What shows is what `seatNewProject` will
+                    // actually give a new board, which is the whole claim this row makes.
+                    roleKey = switches.newProjectAudiences[audience]?.let { audience.cap(it).key },
                     isSelectable = !vetoed,
                     unavailableReason = if (vetoed) {
                         "This deployment does not allow a project to be made public, so a new " +
@@ -565,12 +582,27 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     } else {
                         null
                     },
+                    // This row's own menu: the guest row offers Viewer and greys the rest
+                    // with the reason, exactly as a project's Access list does. Every rung is
+                    // grantable by this caller — they hold the instance, and there is no
+                    // project here to be junior on — so the ceiling is the only refusal.
+                    rungs = ProjectRole.entries.map { offered ->
+                        val ceiling = audience.refusalFor(offered)
+                        RungOption(
+                            key = offered.key,
+                            label = offered.label,
+                            description = offered.description,
+                            isSelectable = ceiling == null,
+                            unavailableReason = ceiling,
+                        )
+                    },
                 )
             },
         // The rung vocabulary, sent rather than compiled into the bundle — the same list
         // and the same type a project's Access section is handed, so the two surfaces
         // cannot describe a rung differently. Every rung is selectable here: this caller
-        // holds the instance, and there is no project to be junior on.
+        // holds the instance, and there is no project to be junior on. The audience rows
+        // above carry their own narrowed copies; this is what everything else here reads.
         rungs = ProjectRole.entries.map {
             RungOption(key = it.key, label = it.label, description = it.description, isSelectable = true)
         },
@@ -645,11 +677,13 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                 isMcpEnabled = user.isMcpEnabled,
                 projects = allProjects.map { project ->
                     val own = rungsByProject[project.id]?.get(user.id)
-                    // What their audience gives them anyway, by the same one-comparison
-                    // rule AccessControl.effectiveRole uses: the instance ladder ascends,
-                    // so "matches this audience" is `their rank >= the audience's`.
+                    // What their audience gives them anyway, through the same fold
+                    // AccessControl.effectiveRole uses — matched by the ascending instance
+                    // ladder and capped to what each audience may hold, so this table cannot
+                    // credit somebody with a rung a guest row was never allowed to give.
+                    // See admitting().
                     val floor = audiencesByProject[project.id].orEmpty()
-                        .filterKeys { tier.atLeast(it.instanceRole) }
+                        .admitting(tier)
                         .entries
                         .maxByOrNull { it.value.rank }
                     // Computed off the two maps already in hand rather than a per-user

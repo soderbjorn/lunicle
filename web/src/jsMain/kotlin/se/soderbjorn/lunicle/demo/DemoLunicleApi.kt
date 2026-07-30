@@ -224,12 +224,16 @@ internal class DemoLunicleApi(
     /**
      * What a new project starts with (LNL-195).
      *
-     * Honours the same veto the server does — a guest row cannot be set while public
-     * projects are off — because the row is greyed on that basis, and a demo that let the
-     * click through would be teaching the wrong rule.
+     * Honours the same two refusals the server does — a guest row cannot be set while
+     * public projects are off, and cannot go above Viewer at all (LNL-202) — because the
+     * rows are greyed on both bases, and a demo that let a click through would be teaching
+     * a rule the product does not have.
      */
     override suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState {
-        if (audienceKey == "guest" && roleKey != null && !world.allowPublicProjects) {
+        if (audienceKey == DemoAudienceKeys.GUEST && roleKey != null && !world.allowPublicProjects) {
+            return world.adminSettingsState()
+        }
+        if (roleKey != null && !demoAudiencePermits(audienceKey, roleKey)) {
             return world.adminSettingsState()
         }
         if (roleKey == null) {
@@ -411,6 +415,12 @@ internal class DemoLunicleApi(
      * could publish a board from the Access section while the switch that governs it read
      * off, which is exactly the "two answers to who can see this, one of them enforced"
      * state the audience table exists to retire.
+     *
+     * And the audience's **ceiling** (LNL-202), which no switch lifts: the guest row stops
+     * at Viewer, because a guest has nobody to attribute a write to. The picker already
+     * greys the rungs above it, so this is the same defence-in-depth the real route makes
+     * behind the same greying — a demo whose screen and whose write disagreed would be
+     * demonstrating the bug this ticket fixed.
      */
     override suspend fun setProjectAudience(
         projectId: Long,
@@ -419,6 +429,9 @@ internal class DemoLunicleApi(
     ): ProjectSettingsState {
         val p = requireProject(projectId)
         if (audienceKey == DemoAudienceKeys.GUEST && roleKey != null && !world.allowPublicProjects) {
+            return world.projectSettingsState(p)
+        }
+        if (roleKey != null && !demoAudiencePermits(audienceKey, roleKey)) {
             return world.projectSettingsState(p)
         }
         if (roleKey == null) p.audiences.remove(audienceKey) else p.audiences[audienceKey] = roleKey

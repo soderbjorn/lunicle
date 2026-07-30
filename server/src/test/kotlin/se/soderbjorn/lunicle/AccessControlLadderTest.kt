@@ -327,7 +327,9 @@ class AccessControlLadderTest {
             },
             Triple("administer", ProjectRole.ADMIN) { u -> access.canAdministerProject(u, f.project) },
             Triple("own", ProjectRole.OWNER) { u -> access.canOwnProject(u, f.project) },
-            Triple("set the audience", ProjectRole.OWNER) { u -> access.canSetAudience(u, f.project, Audience.MEMBER) },
+            Triple("set the audience", ProjectRole.OWNER) { u ->
+                access.canSetAudience(u, f.project, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+            },
         )
 
         ProjectRole.entries.forEach { rung ->

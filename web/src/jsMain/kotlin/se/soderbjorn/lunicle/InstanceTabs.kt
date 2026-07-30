@@ -316,7 +316,11 @@ class InstanceTabs(
     /** The new-project audience rows, rebuilt only when they changed. */
     private fun renderNewProject(state: AdminSettingsBackingViewModel.State) {
         val signature = "${state.isBusy}|" + state.newProjectAudiences.joinToString("|") {
-            "${it.key}:${it.roleKey}:${it.isSelectable}:${it.unavailableReason}"
+            // The row's own rung list too (LNL-202): the greying inside a menu is per
+            // audience now, so a menu whose dead rungs moved must be rebuilt even when the
+            // row around it did not.
+            "${it.key}:${it.roleKey}:${it.isSelectable}:${it.unavailableReason}:" +
+                it.rungs.joinToString(",") { rung -> "${rung.key}/${rung.isSelectable}" }
         }
         if (signature == newProjectSignature) return
         newProjectSignature = signature
@@ -327,6 +331,15 @@ class InstanceTabs(
         }
     }
 
+    /**
+     * One new-project audience row and its menu.
+     *
+     * Built from **the row's own** rung list, not the tab's shared one (LNL-202): the
+     * Guests row offers Viewer and shows the rest greyed with the reason, because a guest
+     * has no account to attribute a write to. The same list a project's Access section is
+     * handed, computed by the server for the reason that file gives — the greying belongs
+     * where the refusal lives.
+     */
     private fun audienceRow(row: AudienceRow, state: AdminSettingsBackingViewModel.State): HTMLElement {
         val container = element("div", "access-row")
         container.appendChild(
@@ -337,7 +350,7 @@ class InstanceTabs(
         )
         container.appendChild(
             rungPicker(
-                rungs = state.rungs,
+                rungs = row.rungs,
                 selectedKey = row.roleKey,
                 // A vetoed row can still be cleared — the veto stops a project starting out
                 // public, not an administrator undoing one. The picker is live so "No access"

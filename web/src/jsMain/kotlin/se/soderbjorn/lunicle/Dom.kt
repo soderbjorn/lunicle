@@ -737,8 +737,8 @@ fun HTMLTextAreaElement.setValueIfChanged(next: String) {
 }
 
 /**
- * A rung menu: every rung the server sent, plus "No access", with the ones the caller
- * may not hand out dead and the reason on them.
+ * A rung menu: every rung the server sent, plus "No access", with the unavailable ones
+ * dead and the reason on them.
  *
  * Here rather than in either of its two callers because both a project's Access section
  * and the instance's "what a new project starts with" rows *are* the same control over
@@ -749,6 +749,13 @@ fun HTMLTextAreaElement.setValueIfChanged(next: String) {
  * a string. Local to the call, which is safe: the menu is rebuilt with its row, so an
  * index can never outlive the list it indexes.
  *
+ * @param rungs what **this control** may be handed, which is per row rather than per
+ *   screen (LNL-202): an audience row is given a list narrowed to what that audience may
+ *   hold, so the Guests row offers Viewer and carries the rest dead with the sentence
+ *   saying why. This function needed no change to gain that, which is the point — it
+ *   already draws a dead rung with its reason and refuses the click, so a second kind of
+ *   refusal is a different list rather than a branch here. Nothing about the ladder is
+ *   decided in this file, and nothing should be.
  * @param selectedKey the rung currently held, or null for none.
  * @param isEnabled whether the control may be opened at all — a write in flight, or a row
  *   this caller may not change.
