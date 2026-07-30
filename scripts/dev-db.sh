@@ -460,7 +460,14 @@ COMMIT;
 SQL
 
   echo "Seeded \"Lunamux\" (LMX) with 5 issues and 1 invisible draft."
-  echo "Members arrive as Contributors; the first account owns the board."
+  # Two sentences, because the second is only true when there was an account to
+  # seat. Saying "the first account owns the board" on an empty table would be the
+  # script asserting a row it had just declined to write.
+  if [[ "$(sqlite3 "$DB_PATH" "SELECT count(*) FROM project_roles WHERE role = 'owner';")" == "0" ]]; then
+    echo "Members arrive as Contributors. Nobody owns the board yet."
+  else
+    echo "Members arrive as Contributors; the first account owns the board."
+  fi
   echo "LMX-6 is imported history: its author is a name, not an account."
   echo
   # Foreign keys are OFF by default in the sqlite3 CLI — unlike the server,
