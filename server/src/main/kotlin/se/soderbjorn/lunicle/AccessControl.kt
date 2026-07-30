@@ -86,7 +86,7 @@ class AccessControl(
      * The short-circuit is not an optimisation so much as the correct answer
      * arriving early: an administrator is already senior to every audience there is,
      * so nothing about ownership could raise them further within a project, and only
-     * the four instance-scoped rules below care which of the two they are.
+     * only the instance-scoped rules below care which of the two they are.
      */
     suspend fun instanceRole(user: UserRecord?): InstanceRole {
         if (user == null) return InstanceRole.GUEST

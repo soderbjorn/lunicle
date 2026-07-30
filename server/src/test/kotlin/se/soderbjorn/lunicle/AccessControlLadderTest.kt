@@ -165,11 +165,16 @@ class AccessControlLadderTest {
     }
 
     /**
-     * The four instance-scoped powers narrowed to the owner (LNL-191) — an
-     * administrator is refused all four.
+     * The instance-scoped powers narrowed to the owner — an administrator is refused
+     * every one of them.
+     *
+     * Four when LNL-191 wrote this and five since LNL-197 added impersonation, which is
+     * the sharpest of them: it is the only one that hands the caller another person's
+     * rights with their writes attached. Listed here rather than tested apart so
+     * widening any of them is one visible diff in one place.
      */
     @Test
-    fun `the four instance powers are the owner's and not an administrator's`(): Unit = runBlocking {
+    fun `the instance powers are the owner's and not an administrator's`(): Unit = runBlocking {
         val f = seed()
         instanceSettings.setOwnerUserId(f.member.id)
         listOf<Pair<String, suspend (UserRecord?) -> Boolean>>(
@@ -177,6 +182,7 @@ class AccessControlLadderTest {
             "canAttributeWrites" to access::canAttributeWrites,
             "canSendAgentMail" to access::canSendAgentMail,
             "canDeleteAttachment" to access::canDeleteAttachment,
+            "canImpersonate" to access::canImpersonate,
         ).forEach { (name, rule) ->
             assertTrue(rule(f.member), "$name refused the instance owner.")
             assertFalse(rule(f.admin), "$name let an instance administrator through; it is the owner's.")
@@ -188,7 +194,7 @@ class AccessControlLadderTest {
      * Administering the instance is an **administrator's**, and is deliberately the one
      * instance-scoped rule that is not the owner's alone (LNL-195).
      *
-     * Its own test beside the four above, because the pair is the point and because getting
+     * Its own test beside the list above, because the pair is the point and because getting
      * it wrong is invisible from the server: the client offers the three instance tabs to
      * anybody who is an administrator, so a gate one rung too high renders three tabs that
      * are empty apart from a refusal — which is exactly what shipped before this rule
