@@ -164,6 +164,23 @@ data class AdminUser(
  *   than derived in the browser so the view keeps making no decisions, and so a tier
  *   added later needs no new branch in a renderer.
  * @property agentsKey likewise for [mayUseAgents].
+ * @property grantRefusal why nothing further may be *given* to this tier, or null when
+ *   it may (LNL-210). Set where nobody who can sign in stands at the tier at all: a
+ *   switch turned on there promises a permission to a set no arriving account is in,
+ *   which is the screen offering what the deployment will not deliver, so the route
+ *   refuses it too.
+ *
+ *   Directional, and deliberately — the mirror of [AudienceRow.withdrawRefusal] rather
+ *   than a flat `isSelectable`. A switch already stored **on** stays live, because it
+ *   takes effect in full the moment the deployment opens a door and an administrator
+ *   who cannot revoke it before then is holding a grant they can see and cannot stop.
+ *   That is LNL-203's rule on the guest row, in the same shape. A switch that is off
+ *   simply cannot be turned on, which on a fresh instance — both member switches
+ *   default to off — is the whole card, greyed.
+ *
+ *   Computed server-side for the reason everything else on this screen is: the inputs
+ *   are a manifest, a mail transport and two environment variables. See
+ *   InstanceIdentity.memberTierUnreachableReason.
  */
 @Serializable
 data class TierCard(
@@ -175,6 +192,7 @@ data class TierCard(
     val mayUseAgents: Boolean = false,
     val createKey: InstanceSettingKey,
     val agentsKey: InstanceSettingKey,
+    val grantRefusal: String? = null,
 )
 
 /**

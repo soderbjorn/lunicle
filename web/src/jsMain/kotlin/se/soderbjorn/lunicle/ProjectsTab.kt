@@ -15,11 +15,18 @@
  *
  * ── "New project…" at the bottom ────────────────────────────────────────────
  *
- * The **only** way to create a project. It was a row in the top bar's "+" menu, which
- * put "make a board" next to "open a board" — two very different acts, one of them
- * two clicks from anywhere and neither of them near the place you go to configure the
- * boards you have. Here it is at the end of the list of your projects, which is where
- * "and another one" belongs.
+ * Where a project is made. It was a row in the top bar's "+" menu, which put "make a
+ * board" next to "open a board" — two very different acts, one of them two clicks from
+ * anywhere and neither of them near the place you go to configure the boards you have.
+ * Here it is at the end of the list of your projects, which is where "and another one"
+ * belongs.
+ *
+ * The "+" row is back (LNL-211), and it is not a second home: it opens this tab and
+ * presses this button, and so does the empty state's. Being the only *way* was never
+ * the point — being the one place the act belongs was — and a home nobody can reach
+ * from where they are standing is just a hiding place. That is what it had become on an
+ * instance with no projects yet, where the tab holding it was hidden for want of a
+ * project to configure.
  *
  * ── One view model per project, built on selection ──────────────────────────
  *
@@ -60,7 +67,8 @@ import se.soderbjorn.lunicle.clientserver.ProjectSummary
  *   row at the end of your project list would read as a broken button.
  * @param onNewProject "New project…" was pressed. Raised by the app rather than here,
  *   because creating one is a modal over the whole window and its outcome — a board
- *   opening — is the workspace's business.
+ *   opening — is the workspace's business. The "+" menu's row and the empty state's
+ *   button end at the same gesture, having opened this tab first; see main.kt.
  * @param onRouteChanged the reader moved within the tab: another project, or another
  *   section. The address bar follows.
  * @param onProjectWritten a project's settings changed in a way the rest of the app
@@ -79,11 +87,14 @@ class ProjectsTab(
     private val root = element("div", "settings-tab-pane project-rail-split")
     private val rail = element("div", "project-rail")
     private val content = element("div", "project-rail-content")
-    private val placeholder = element(
-        "p",
-        "admin-placeholder",
-        "Choose a project on the left.",
-    )
+    /**
+     * What stands where a project's sections would be, before one is chosen.
+     *
+     * Its words are set on every render rather than fixed here, because there are two
+     * quite different reasons for nothing to be selected and only one of them is
+     * "pick one" — see [render].
+     */
+    private val placeholder = element("p", "admin-placeholder")
 
     /** Which project is selected, or null before the list has arrived. */
     private var selectedId: Long? = null
@@ -162,6 +173,17 @@ class ProjectsTab(
             view.showSection(selectedSection)
             selectedSection = view.currentSection()
         }
+        // "Choose a project on the left" over an empty rail is an instruction that
+        // cannot be followed, which reads as the app having lost the list rather than
+        // as there being none (LNL-211). An empty rail gets pointed at the one row it
+        // does have.
+        placeholder.setTextIfChanged(
+            when {
+                visible.isNotEmpty() -> "Choose a project on the left."
+                canCreateProject() -> "No projects yet. Use New project… below to make the first one."
+                else -> "No projects to configure."
+            },
+        )
         placeholder.visible(selectedId == null)
     }
 

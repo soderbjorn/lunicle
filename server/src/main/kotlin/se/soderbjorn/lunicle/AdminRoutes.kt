@@ -105,6 +105,21 @@ fun Route.adminRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
         }
+        // Granting to a tier nobody arriving can stand in, refused here as well as greyed
+        // (LNL-210) — for the reason the admission route below gives at length: a greyed
+        // control that a hand-written POST could still set makes the greying an
+        // affordance rather than a rule. **Turning ON only.** Off is always reachable,
+        // because a permission stored on before the configuration changed is one an
+        // administrator must still be able to take away; see TierCard.grantRefusal.
+        if (body.isEnabled && body.key in MEMBER_TIER_SWITCHES) {
+            deps.identity.memberTierUnreachableReason?.let { reason ->
+                call.respond(
+                    HttpStatusCode.Conflict,
+                    "This deployment cannot give members anything: $reason",
+                )
+                return@post
+            }
+        }
         deps.instanceSettings.set(body.key, body.isEnabled)
         logger.info(
             "Instance setting ${body.key.storageKey} set to ${body.isEnabled} by admin ${admin.id}",
@@ -201,6 +216,19 @@ fun Route.adminRoutes(deps: BoardDependencies) {
                     "cannot start out admitting guests.",
             )
             return@post
+        }
+        // The members row over a tier nobody arriving can stand in (LNL-210). Same shape as
+        // the guest veto directly above and the same direction as the tier switches: a rung
+        // may not be handed to a tier no arrival is in, and `rung == null` — taking it away
+        // — is always allowed.
+        if (audience == Audience.MEMBER && rung != null) {
+            deps.identity.memberTierUnreachableReason?.let { reason ->
+                call.respond(
+                    HttpStatusCode.Conflict,
+                    "A new project cannot start out giving members access here: $reason",
+                )
+                return@post
+            }
         }
         // And the floor (LNL-209), which these rows have exactly because a project's own do:
         // `seatNewProject` writes this list onto a new board, where the same rule then
@@ -569,6 +597,16 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     mayUseAgents = switches.memberMayUseAgents,
                     createKey = InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
                     agentsKey = InstanceSettingKey.MEMBER_MAY_USE_AGENTS,
+                    // Nothing further may be given to a tier nobody arriving can be in
+                    // (LNL-210). Two live switches over such a tier read as two switches
+                    // over people, and the count above cannot correct them — it can be
+                    // non-zero from addresses added by hand, which is exactly the case
+                    // where these still bite. Granting only: see the property's KDoc, and
+                    // the instance-settings route, which refuses the same direction.
+                    grantRefusal = identity.memberTierUnreachableReason?.let {
+                        "$it A switch already on stays yours to turn off — it takes effect " +
+                            "in full if a way in for outsiders is ever opened."
+                    },
                 ),
             )
         },
@@ -580,6 +618,11 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
             .filter { it != Audience.STAFF || identity.hasStaffTier }
             .map { audience ->
                 val vetoed = audience == Audience.GUEST && !switches.allowPublicProjects
+                // The members row's own veto (LNL-210): a rung handed to a tier no arrival
+                // is in is a promise to nobody. Null on every other row, and null on this
+                // one wherever an outsider can still reach a sign-in.
+                val memberUnreachable = identity.memberTierUnreachableReason
+                    ?.takeIf { audience == Audience.MEMBER }
                 // The same floor a project's own rows have, for the same reason and out of
                 // the same helper (LNL-209): these rows *become* a project's rows, so a
                 // pair of defaults this screen let through would arrive on every new board
@@ -603,12 +646,18 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     // has always allowed that — only this greying stopped them. A dead row here
                     // was the same withdrawal bug a project's own Access list had.
                     isSelectable = true,
-                    unavailableReason = if (vetoed) {
-                        "This deployment does not allow a project to be made public, so a new " +
-                            "one cannot start out admitting guests. The Policy switch on the " +
-                            "Instance tab is what changes that."
-                    } else {
-                        null
+                    unavailableReason = when {
+                        vetoed ->
+                            "This deployment does not allow a project to be made public, so a new " +
+                                "one cannot start out admitting guests. The Policy switch on the " +
+                                "Instance tab is what changes that."
+                        // The members row over a tier nobody arriving can be in (LNL-210).
+                        // Exactly the guest veto's shape: the rungs die, the row does not,
+                        // so a default stored before the deployment pinned itself can still
+                        // be cleared. See memberUnreachable below, which is the same string
+                        // inside the menu.
+                        audience == Audience.MEMBER -> memberUnreachable
+                        else -> null
                     },
                     // This row's own menu: the guest row offers Viewer and greys the rest
                     // with the reason, exactly as a project's Access list does. Every rung is
@@ -619,6 +668,7 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     rungs = ProjectRole.entries.map { offered ->
                         val refusal = audience.refusalFor(offered)
                             ?: PUBLIC_PROJECTS_VETO_RUNG_REASON.takeIf { vetoed }
+                            ?: memberUnreachable
                             ?: floorRefusal(floor, offered)
                         RungOption(
                             key = offered.key,
@@ -824,6 +874,18 @@ private val InstanceRole.adminLabel: String
         InstanceRole.ADMIN -> "Instance admin"
         InstanceRole.OWNER -> "Instance owner"
     }
+
+/**
+ * The two switches that answer to the member tier (LNL-210).
+ *
+ * A set rather than a `when` over every key: the other switches on this screen are the
+ * staff tier's or the instance's, and a branch listing them all would have to be revisited
+ * by anybody adding one. A tier switch added later belongs here and nowhere else.
+ */
+private val MEMBER_TIER_SWITCHES = setOf(
+    InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
+    InstanceSettingKey.MEMBER_MAY_USE_AGENTS,
+)
 
 /**
  * Who an audience is, on the Who-gets-in tab.

@@ -143,6 +143,48 @@ data class InstanceIdentity(
         get() = (isGoogleAvailable && googleHostedDomainPin == null) || isCodeSignInAvailable
 
     /**
+     * Why nobody who can sign in here stands in the member tier, or null when somebody
+     * can (LNL-210).
+     *
+     * The member tier is "everybody who is not on [domain]", so pinning every door to
+     * that domain leaves it holding nobody who can reach the app. Everything computed
+     * *from* that tier — its two switches on Who gets in, the members row under what a
+     * new project starts with — then describes a set no arriving account is in, and says
+     * so with the same confidence it uses for a tier full of people. That silence is the
+     * bug: an administrator reads two live switches and concludes they govern somebody.
+     *
+     * ── What this greys, and in which direction ─────────────────────────────
+     *
+     * **Granting only.** Turning a member switch on, or handing the members row a rung,
+     * is choosing something the deployment cannot apply to anybody, and offering it is
+     * the screen promising what the instance will not deliver. Both writes are refused
+     * here as well as greyed, so the two cannot drift apart — see AdminRoutes.
+     *
+     * Withdrawal stays reachable, always. This is LNL-203's rule on the guest row under
+     * the public-projects veto, and it is the same rule for the same reason: a
+     * permission stored *on* before the configuration changed is one an administrator
+     * must still be able to take away, because it wakes up in full the instant somebody
+     * edits `brand.json` and the tier becomes reachable again. Greying both directions
+     * would leave them holding a live grant they can see and cannot revoke. In practice
+     * this costs nothing on a fresh instance — both member switches default to off and
+     * the row defaults to no access, so a branded deployment shows the whole section
+     * dead, which is what it is.
+     *
+     * Null where there is nothing to refuse, including the two cases that would make the
+     * sentence itself a lie: a deployment with no [domain], where the member tier is
+     * simply everybody, and one with no door at all, where "every account that arrives
+     * is staff" would describe arrivals that cannot happen. The second is the admission
+     * list's to report, and it does, in the language of the environment variables that
+     * actually fix it.
+     */
+    val memberTierUnreachableReason: String?
+        get() = when {
+            !hasStaffTier || !hasAnyWayIn || outsiderCanArrive -> null
+            else -> "Nobody outside $domain can sign in here — $outsiderReason — so " +
+                "every account that arrives is staff."
+        }
+
+    /**
      * Every admission choice, with the ones this deployment cannot honour greyed and
      * the reason spelled out.
      *

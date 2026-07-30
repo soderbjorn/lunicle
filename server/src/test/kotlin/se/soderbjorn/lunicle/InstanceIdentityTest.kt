@@ -307,6 +307,67 @@ class InstanceIdentityTest {
     }
 
     /**
+     * The member tier stands empty of arrivals exactly where no outsider can arrive.
+     *
+     * The branded shape — a domain, a pinned chooser, no mail — leaves every account that
+     * signs in on the domain, so the tier's two switches on Who gets in, and the members
+     * row under what a new project starts with, describe a set no arriving account is in
+     * (LNL-210). The sentence is what says so; nothing is greyed by it, because nothing
+     * about it is refused.
+     */
+    @Test
+    fun `the member tier reports being unreachable only where no outsider can arrive`() {
+        val branded = InstanceIdentity(
+            domain = "acme.com",
+            onlyHostedGoogleAccounts = true,
+            isCodeSignInAvailable = false,
+        )
+        assertEquals(
+            "Nobody outside acme.com can sign in here — Google sign-in is locked to acme.com, " +
+                "and this deployment cannot mail a sign-in code — so every account that " +
+                "arrives is staff.",
+            branded.memberTierUnreachableReason,
+        )
+        // A single open door is enough to put somebody in the tier, and each of the two
+        // is a door on its own — the same one predicate the admission greying rides on.
+        assertNull(
+            InstanceIdentity(domain = "acme.com", onlyHostedGoogleAccounts = true)
+                .memberTierUnreachableReason,
+            "A deployment that mails codes claimed no member could reach it.",
+        )
+        assertNull(
+            InstanceIdentity(domain = "acme.com", isCodeSignInAvailable = false)
+                .memberTierUnreachableReason,
+            "An open Google chooser claimed no member could reach it.",
+        )
+    }
+
+    /**
+     * ...and says nothing at all in the two cases where the sentence would be a lie.
+     *
+     * With no domain the member tier is simply everybody, so there is nothing to report.
+     * With no door at all "every account that arrives is staff" would describe arrivals
+     * that cannot happen — that deployment's problem is a missing environment variable,
+     * which the admission list already says in the language that fixes it.
+     */
+    @Test
+    fun `the member tier says nothing where it is everybody, or where nobody arrives`() {
+        assertNull(
+            InstanceIdentity(isCodeSignInAvailable = false).memberTierUnreachableReason,
+            "A deployment with no domain reported a tier nobody could reach; it is everybody.",
+        )
+        assertNull(
+            InstanceIdentity(
+                domain = "acme.com",
+                onlyHostedGoogleAccounts = true,
+                isCodeSignInAvailable = false,
+                isGoogleAvailable = false,
+            ).memberTierUnreachableReason,
+            "A deployment nobody can sign into claimed its arrivals were all staff.",
+        )
+    }
+
+    /**
      * The staff-only policy needs a domain and nothing else — no door reaches it.
      *
      * It admits the deployment's own people, who arrive through whichever door exists,

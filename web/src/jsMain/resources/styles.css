@@ -2351,6 +2351,17 @@ body > .dt-pane-menu {
    .signin-brand-logo for the shape of the rule. */
 .empty-tab-logo { height: 52px; max-width: 320px; margin-bottom: 30px; }
 
+/* ...and a step down inside the canvas, where the card is an object in a tab that
+   still has all its chrome rather than the whole window. A mark sized for a
+   landing page reads as a second header arguing with the top bar above it, and
+   the shorter card is what lets this sit in a canvas only a few hundred pixels
+   tall. Same reason for the tighter padding: the canvas is whatever the reader's
+   layout left over, which can be a narrow column, and 48px a side of it is the
+   card's own margin rather than room for the words. */
+.empty-tab .empty-tab-logo { height: 40px; margin-bottom: 24px; }
+.empty-tab .empty-tab-card { padding: 40px 32px; }
+.empty-tab .empty-tab-action { margin-top: 24px; }
+
 /* The deployment's display face when it has one (issue titles and column names
    already use it), so a branded instance's empty canvas is branded too — and
    `inherit` on an unbranded one, which keeps it on the proportional stack. */
@@ -3751,6 +3762,31 @@ body > .dt-pane-menu {
   max-width: 42ch;
 }
 
+/* A choice this deployment cannot honour (LNL-210). The rows have always been
+   `disabled` in the DOM — the server decides which, and has since LNL-195 — but
+   the toolkit's own disabled treatment is scoped to `.toggle` above, so these
+   inherited none of it and looked exactly like the live ones. A control that
+   takes a click and does nothing with it is read as a broken app, which is the
+   opposite of what the sentence underneath is trying to say.
+
+   Same two properties as the toggle's, for its reason. */
+.admission-choice:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* Selected AND dead — the case this had to be designed around rather than the
+   edge case it sounds like. The stored policy is reported as the selection even
+   once the deployment stops being able to honour it (see AdmissionState.selected,
+   which argues why), so a chooser pinned to one domain lands here on first load:
+   `anyone` is what is stored, and `anyone` is what cannot be picked.
+
+   Dimming it as far as its dead siblings would say the deployment is not on that
+   policy, which is false and is the single fact this list exists to report. So it
+   keeps most of its weight and all of its accent, and the cursor and the reason
+   beneath it carry "and you cannot choose it". */
+.admission-choice.dt-selected:disabled { opacity: .8; }
+
 /* A card per tier: the count is what makes it a card, so the head puts the name
    and the count on one line with the count trailing and muted. */
 .tier-cards { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 4px; }
@@ -3779,6 +3815,28 @@ body > .dt-pane-menu {
    does not inherit `.admin-general`'s 22px trailing gap. */
 .tier-card .field-hint { margin: 4px 0 10px; }
 .tier-card .field-hint:last-child { margin: 8px 0 0; }
+
+/* Why the switches under it are dead (LNL-210). Set apart from the subtitle above
+   it rather than blended in, because the two say different kinds of thing: the
+   subtitle is what this tier IS, permanently, and this is what the deployment's
+   current configuration has done to it — a fact that goes away when somebody
+   edits brand.json.
+
+   A rule down the side rather than a fill or a border box: the greying here runs
+   one way, so a switch already on is still live beneath this sentence, and a
+   warning-coloured panel wrapped around the pair would say they were both dead.
+   Left-aligned against the card's own text column so it reads as a note on the
+   card, not as an alert over it. */
+.tier-card-refusal {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--body);
+  opacity: .85;
+  margin: 0 0 10px;
+  padding-left: 9px;
+  border-left: 2px solid var(--border);
+  text-wrap: pretty;
+}
 
 /* The read-only deployment facts: a label column and a value column, so four
    answers read as a table rather than as four sentences. */

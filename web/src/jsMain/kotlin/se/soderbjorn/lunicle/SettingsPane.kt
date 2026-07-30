@@ -86,7 +86,11 @@ import se.soderbjorn.lunicle.client.viewmodel.SettingsTab
  * @param onRouteChanged the reader moved within the pane — pressed a tab. The
  *   address bar follows; see main.kt's syncUrl.
  * @param hasProjects whether this caller has any project at all, read fresh on
- *   every render. Decides whether the Projects tab is on offer.
+ *   every render. Half of whether the Projects tab is on offer.
+ * @param canCreateProject whether this caller may make a project, read fresh for
+ *   [hasProjects]'s reason. The other half: the tab holds the only place a project
+ *   is made, so gating it on having one first left a fresh instance's owner with
+ *   the right and no door (LNL-211).
  */
 class SettingsPane(
     private val viewModel: ConnectionsBackingViewModel,
@@ -98,6 +102,7 @@ class SettingsPane(
     private val onRestoreDefaultLayout: () -> Unit,
     private val onRouteChanged: (SettingsRoute) -> Unit,
     private val hasProjects: () -> Boolean,
+    private val canCreateProject: () -> Boolean,
     /**
      * The Projects tab, built by the caller because it needs the API and the app's
      * "open a new project" gesture — neither of which this pane has any other use for.
@@ -649,7 +654,13 @@ class SettingsPane(
      *
      * Everyone has You. Projects appears for anyone with a project to configure —
      * which is any project they can see, because the tab is where a project's own
-     * settings live and a reader with none would be pressing into an empty rail.
+     * settings live — and for anyone who may make one, whether or not they have any
+     * yet. The second half is not symmetry: the rail's last row is where a project
+     * is made, so the has-one test alone shut the door on the one instance that
+     * most needs it open, the empty one (LNL-211). Somebody who may neither see a
+     * project nor make one still gets no tab, and would indeed be pressing into an
+     * empty rail.
+     *
      * The other three are the instance's, and belong to whoever administers it.
      *
      * The strip is drawn even with one tab. That is the opposite of the project
@@ -660,7 +671,7 @@ class SettingsPane(
      */
     private fun renderTabs(state: SessionBackingViewModel.State) {
         val shown = mutableSetOf(SettingsTab.YOU)
-        if (hasProjects()) shown += SettingsTab.PROJECTS
+        if (hasProjects() || canCreateProject()) shown += SettingsTab.PROJECTS
         if (state.isSysAdmin) {
             shown += SettingsTab.ACCESS
             shown += SettingsTab.PEOPLE

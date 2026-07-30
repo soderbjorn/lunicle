@@ -30,6 +30,22 @@ import org.w3c.dom.HTMLElement
 import se.soderbjorn.lunicle.client.viewmodel.MainScreenBackingViewModel
 
 /**
+ * The one door a card offers, or null where it has none to offer.
+ *
+ * One, deliberately: this surface exists because a reader has arrived somewhere
+ * with nothing on it, and the useful answer to that is the single thing they can
+ * do next, not a choice between several. Which one it is depends on who is
+ * reading — a visitor is offered the way in, somebody who may make a project is
+ * offered that — and both are the same slot, so the two can never appear at once.
+ *
+ * The label belongs to the caller rather than to this file, and so does its
+ * punctuation: both doors so far hand off to something else rather than acting on
+ * the spot, and both spell it with an ellipsis, but that is the caller's fact
+ * about its own gesture.
+ */
+data class EmptyTabAction(val label: String, val onSelect: () -> Unit)
+
+/**
  * The full-window landing page: the card, centred on a backdrop that covers the
  * app entirely.
  *
@@ -39,46 +55,51 @@ import se.soderbjorn.lunicle.client.viewmodel.MainScreenBackingViewModel
  * pane geometry against a zero-sized box the moment a project arrives — so the
  * caller marks it inert; see main.kt.
  *
- * @see emptyTabSurface for the in-canvas shape, and for the parameters.
+ * @param note the deployment's own words about itself, or null for none. Only
+ *   this shape takes one; see [emptyTabSurface] for why.
+ * @see emptyTabSurface for the in-canvas shape, and for the other parameters.
  */
 fun emptyTabLanding(
     empty: MainScreenBackingViewModel.EmptyTab,
     brandLogoSvg: String? = null,
     note: String? = null,
-    onSignIn: (() -> Unit)? = null,
+    action: EmptyTabAction? = null,
 ): HTMLElement = element("div", "empty-tab-landing").children(
-    emptyTabCard(empty, brandLogoSvg, note, onSignIn),
+    emptyTabCard(empty, brandLogoSvg, note, action),
 )
 
 /**
  * The in-canvas shape: the same card, centred on the tab's empty canvas.
  *
+ * Takes no `note`, and that is the one place the two shapes genuinely differ.
+ * The note is the deployment introducing itself, which is worth a paragraph to
+ * somebody who has just arrived and nothing at all to somebody already signed in
+ * to it — and this card sits in a canvas that can be a narrow column, where
+ * several paragraphs would push the headline it exists to carry off the top.
+ *
  * @param empty what to say.
  * @param brandLogoSvg the deployment's mark, or null to leave it off — the
  *   caller decides which readers get a hero, since that is a question about the
  *   reader rather than about the drawing.
- * @param note the deployment's own words about itself, or null for none. See
- *   [Brand.landingNote].
- * @param onSignIn the sign-in door, or null when there is none to offer. Null
- *   omits the button rather than disabling it: a control that cannot work reads
- *   as the app being broken, which is the impression this surface exists to
- *   prevent.
+ * @param action the one thing this reader can do next, or null when there is
+ *   nothing to offer. Null omits the button rather than disabling it: a control
+ *   that cannot work reads as the app being broken, which is the impression this
+ *   surface exists to prevent.
  */
 fun emptyTabSurface(
     empty: MainScreenBackingViewModel.EmptyTab,
     brandLogoSvg: String? = null,
-    note: String? = null,
-    onSignIn: (() -> Unit)? = null,
+    action: EmptyTabAction? = null,
 ): HTMLElement = element("div", "empty-tab").children(
-    emptyTabCard(empty, brandLogoSvg, note, onSignIn),
+    emptyTabCard(empty, brandLogoSvg, note = null, action = action),
 )
 
-/** The card both shapes centre — mark, headline, instruction, note, way in. */
+/** The card both shapes centre — mark, headline, instruction, way out, note. */
 private fun emptyTabCard(
     empty: MainScreenBackingViewModel.EmptyTab,
     brandLogoSvg: String?,
     note: String?,
-    onSignIn: (() -> Unit)?,
+    action: EmptyTabAction?,
 ): HTMLElement {
     val card = element("div", "empty-tab-card")
     brandLogoSvg?.let {
@@ -88,11 +109,8 @@ private fun emptyTabCard(
         element("h1", "empty-tab-headline", empty.headline),
         element("p", "empty-tab-detail", empty.detail),
     )
-    if (onSignIn != null) {
-        // The ellipsis matches the top-bar button, and for its reason: this hands
-        // off to the picker or an OAuth redirect, it does not sign anybody in on
-        // the spot.
-        card.appendChild(button("Sign in…", "btn btn-primary empty-tab-action") { onSignIn() })
+    action?.let {
+        card.appendChild(button(it.label, "btn btn-primary empty-tab-action") { it.onSelect() })
     }
     // Last, and under a rule: the deployment's words are the footnote to this
     // page, not its subject. Somebody who has an account wants the button, and

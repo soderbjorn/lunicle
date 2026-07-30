@@ -97,6 +97,19 @@ class AdminSettingsTest {
     private val instanceSettings = InMemoryInstanceSettingsStore()
     private val access = AccessControl(roles, instanceSettings)
 
+    /**
+     * The shape a branded deployment takes: a domain, a chooser pinned to it, no mail.
+     *
+     * Every door is shut to somebody outside the domain, so nobody who signs in is a
+     * member — which is what the member-tier tests below are about. See
+     * [InstanceIdentity.memberTierUnreachableReason].
+     */
+    private val BRANDED_IDENTITY = InstanceIdentity(
+        domain = "example.com",
+        onlyHostedGoogleAccounts = true,
+        isCodeSignInAvailable = false,
+    )
+
     @AfterTest
     fun tearDown() {
         opened.close()
@@ -811,6 +824,164 @@ class AdminSettingsTest {
             assertEquals(ProjectRole.VIEWER.key, members.floorKey)
             assertNotNull(members.withdrawRefusal, "The No access entry was left live.")
             assertNotNull(members.effectiveLine, "The row reported Viewer without saying where it comes from.")
+        }
+    }
+
+    /**
+     * Nothing may be *given* to a tier no arrival can stand in — on both surfaces (LNL-210).
+     *
+     * The branded shape — a domain, a pinned chooser, no mail — leaves every account that
+     * signs in on the domain, so the Members card's two switches and the members row under
+     * what a new project starts with both describe a set nobody arriving is in. A live
+     * control there is the screen offering a permission the deployment will hand to nobody,
+     * and the count beside the card cannot correct it: it can be non-zero from an address
+     * added by hand, which is exactly the case where these still bite.
+     *
+     * The direction is the other half of the claim, and the half that would be easy to get
+     * wrong in either direction. Granting is refused; withdrawing never is. A row stays
+     * selectable so a default stored before the deployment pinned itself can be cleared,
+     * and the rungs inside it die — which is precisely the shape LNL-203 settled for the
+     * guest row under the public-projects veto.
+     */
+    @Test
+    fun `a member tier nobody can arrive at refuses grants on both surfaces`(): Unit =
+        runBlocking {
+            val fixture = seed()
+            users.setKind(fixture.adminId, UserKind.STAFF)
+            val cookie = sessions.create(fixture.adminId)
+
+            withRoutes(identity = BRANDED_IDENTITY) { client ->
+                val body = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                    .body<AdminSettingsState>()
+
+                val members = body.tiers.first { it.key == InstanceRole.MEMBER.key }
+                val reason = assertNotNull(
+                    members.grantRefusal,
+                    "The Members card offered two switches over a tier nobody can arrive at.",
+                )
+                assertTrue(
+                    reason.contains("every account that arrives is staff"),
+                    "The card's sentence did not say what actually happens: $reason",
+                )
+                // Both default to off, so the card an administrator actually meets is dead.
+                assertFalse(members.mayCreateProjects)
+                assertFalse(members.mayUseAgents)
+
+                // Staff is the tier everybody lands in here, so it refuses nothing.
+                assertNull(
+                    body.tiers.first { it.key == InstanceRole.STAFF.key }.grantRefusal,
+                    "The tier every arrival stands in was refused a grant.",
+                )
+
+                val row = body.newProjectAudiences.first { it.key == Audience.MEMBER.key }
+                assertNotNull(
+                    row.unavailableReason,
+                    "The new-project members row said nothing about admitting nobody.",
+                )
+                assertTrue(
+                    row.rungs.none { it.isSelectable },
+                    "A rung was offered to a tier no arrival is in.",
+                )
+                // ...and the row itself is not, so No access stays reachable. LNL-203.
+                assertTrue(row.isSelectable, "The members row was killed along with its rungs.")
+                assertNull(row.withdrawRefusal, "Clearing the members default was refused.")
+            }
+        }
+
+    /**
+     * ...and the routes refuse the same direction, so the greying is a rule (LNL-210).
+     *
+     * Both halves matter. A greyed control that a hand-written POST could still set makes
+     * the greying an affordance — the argument the admission route already makes. And a
+     * refusal that also caught the withdrawal would strand an administrator with a
+     * permission they can see, cannot use, and cannot revoke before the day it wakes up.
+     */
+    @Test
+    fun `granting to an unreachable member tier is refused, and withdrawing is not`(): Unit = runBlocking {
+        val fixture = seed()
+        users.setKind(fixture.adminId, UserKind.STAFF)
+        val cookie = sessions.create(fixture.adminId)
+        // Stored on before the deployment pinned itself — the state the withdrawal half of
+        // the rule exists for, and the only way to reach it now.
+        instanceSettings.set(InstanceSettingKey.MEMBER_MAY_USE_AGENTS, true)
+
+        withRoutes(identity = BRANDED_IDENTITY) { client ->
+            val refused = client.post("/api/admin/instance-settings") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS, true))
+            }
+            assertEquals(
+                HttpStatusCode.Conflict,
+                refused.status,
+                "A permission was granted to a tier nobody arriving is in.",
+            )
+            assertFalse(
+                instanceSettings.current().memberMayCreateProjects,
+                "The refusal answered with a Conflict and stored the setting anyway.",
+            )
+
+            // The one already on comes back off, which is the whole point of the asymmetry.
+            val withdrawn = client.post("/api/admin/instance-settings") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(SetInstanceSettingRequest(InstanceSettingKey.MEMBER_MAY_USE_AGENTS, false))
+            }
+            assertEquals(
+                HttpStatusCode.OK,
+                withdrawn.status,
+                "An administrator was refused the withdrawal of a dormant permission.",
+            )
+            assertFalse(instanceSettings.current().memberMayUseAgents)
+
+            // Same rule on the other surface: a rung is refused, clearing the row is not.
+            val grant = client.post("/api/admin/new-project-audience") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(AudienceGrant(Audience.MEMBER.key, ProjectRole.VIEWER.key))
+            }
+            assertEquals(
+                HttpStatusCode.Conflict,
+                grant.status,
+                "A new project was set to start out giving members access nobody can claim.",
+            )
+            val cleared = client.post("/api/admin/new-project-audience") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(AudienceGrant(Audience.MEMBER.key, null))
+            }
+            assertEquals(
+                HttpStatusCode.OK,
+                cleared.status,
+                "Clearing the members default was refused along with setting it.",
+            )
+        }
+    }
+
+    /**
+     * ...and an open deployment carries neither sentence.
+     *
+     * The guard against a message that reads as a warning appearing on every unbranded
+     * install, which is the shape every default deployment and every test fixture takes.
+     */
+    @Test
+    fun `an open deployment says nothing about its member tier`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+
+        withRoutes(identity = InstanceIdentity(domain = "example.com")) { client ->
+            val body = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                .body<AdminSettingsState>()
+            assertTrue(
+                body.tiers.all { it.grantRefusal == null },
+                "A deployment anybody can sign into refused a grant to a tier.",
+            )
+            val row = body.newProjectAudiences.first { it.key == Audience.MEMBER.key }
+            assertNull(
+                row.unavailableReason,
+                "The members row carried a restriction this deployment does not impose.",
+            )
+            assertTrue(row.rungs.all { it.isSelectable }, "A members rung was greyed for no reason.")
         }
     }
 

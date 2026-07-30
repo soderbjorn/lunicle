@@ -631,12 +631,15 @@ class MainScreenBackingViewModel(
          */
         val emptyTab: EmptyTab? get() = when {
             !isLoaded -> null
-            // The "+" in the top bar: "New project…" lives in the shell's add
-            // menu. Pointing a brand new admin anywhere else sends them to a
-            // control that cannot do this.
+            // The card carries the button itself (LNL-212), so the instruction
+            // names it rather than sending the reader hunting through chrome for
+            // a control that may or may not be there. It said "use the + button
+            // in the top bar" for a while after that row was removed, which is
+            // exactly the failure the paragraph above warns about.
             projects.isEmpty() && canCreateProject -> EmptyTab(
                 headline = "No projects yet",
-                detail = "Use the + button in the top bar to make one.",
+                detail = "Make the first one to get started.",
+                canCreateProject = true,
             )
             // Signed in and still shown nothing: either the instance is empty or
             // every project on it is private to somebody else, and this reader
@@ -678,11 +681,19 @@ class MainScreenBackingViewModel(
      *   as a request for a sign-in button, which it grants only if the server has
      *   a method configured — a door that opens on nothing is worse than none.
      *   See EmptyTabSurface and SignInView.
+     * @property canCreateProject whether this reader may make a project, and so
+     *   whether the card offers them that. False on the "nothing open in this
+     *   tab" branch even for somebody who may: they have projects already, and
+     *   what they need is a board in front of them, not another project. Held
+     *   here rather than re-tested in the view for [isVisitor]'s reason — which
+     *   door a card offers is a fact about who is reading, worked out once,
+     *   where every other such fact is worked out.
      */
     data class EmptyTab(
         val headline: String,
         val detail: String,
         val isVisitor: Boolean = false,
+        val canCreateProject: Boolean = false,
     )
 
     /**

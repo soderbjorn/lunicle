@@ -243,6 +243,25 @@ class InstanceTabs(
      * menu draws rows and not rows with sub-rows — the same reason a rung's refusal has to
      * ride inside its label. Here there is room, so the reason sits under the choice where
      * it can be read without opening anything.
+     *
+     * ── Why the currently-selected choice is dead here and live in rungPicker ──
+     *
+     * [rungPicker] keeps the rung already held enabled even when it is unselectable, and
+     * this list does not. The two look like an inconsistency and are not, for two reasons
+     * that both point the same way (LNL-210):
+     *
+     *  - **A dropdown shows its value by rendering that row.** Disabling the held rung
+     *    would grey the closed control's own label, so the field would report the board's
+     *    answer as though the board were not honouring it. Nothing of the sort happens
+     *    here: all three choices are always on screen, so the selected one can be dead and
+     *    still visibly selected, which is exactly what it is.
+     *  - **Re-picking your own value means different things.** In the picker it is a
+     *    no-op the write ignores; here it is a write of a policy the route refuses. A live
+     *    row that produces a refusal is the screen and the route disagreeing, which is the
+     *    failure this whole area keeps producing.
+     *
+     * The greying is styling only — see `.admission-choice:disabled`, and the rule under
+     * it for the selected-and-dead shape, which is the common one rather than the corner.
      */
     private fun renderAdmission(state: AdminSettingsBackingViewModel.State) {
         waysInElement.setTextIfChanged(state.waysInLine ?: "")
@@ -277,7 +296,8 @@ class InstanceTabs(
     /** One card per tier, rebuilt only when they changed. */
     private fun renderTiers(state: AdminSettingsBackingViewModel.State) {
         val signature = "${state.areInstanceTogglesEnabled}|" + state.tiers.joinToString("|") {
-            "${it.key}:${it.accountCount}:${it.mayCreateProjects}/${it.mayUseAgents}:${it.subtitle}"
+            "${it.key}:${it.accountCount}:${it.mayCreateProjects}/${it.mayUseAgents}:" +
+                "${it.subtitle}:${it.grantRefusal}"
         }
         if (signature == tierSignature) return
         tierSignature = signature
@@ -294,15 +314,26 @@ class InstanceTabs(
             element("span", "tier-card-title", tier.title),
             element("span", "tier-card-count", accountCountLabel(tier.accountCount)),
         )
+        // Dead where the answer is already no and this deployment will not let it become
+        // yes (LNL-210) — and live where it is yes, so a permission stored before the
+        // deployment closed its doors can still be taken away. See TierCard.grantRefusal
+        // for why the greying runs one way, and the instance-settings route, which
+        // refuses the same direction rather than trusting this.
+        val isFrozenOff = { isOn: Boolean -> tier.grantRefusal != null && !isOn }
         val create = Toggle { viewModel.onInstanceSettingToggled(tier.createKey, it) }
         create.checked = tier.mayCreateProjects
-        create.disabled = !isEnabled
+        create.disabled = !isEnabled || isFrozenOff(tier.mayCreateProjects)
         val agents = Toggle { viewModel.onInstanceSettingToggled(tier.agentsKey, it) }
         agents.checked = tier.mayUseAgents
-        agents.disabled = !isEnabled
-        return element("div", "tier-card").children(
+        agents.disabled = !isEnabled || isFrozenOff(tier.mayUseAgents)
+        val card = element("div", "tier-card").children(
             heading,
             element("p", "field-hint", tier.subtitle),
+        )
+        // Above the switches, not below them: this says why they are dead, and a reader
+        // who has already tried one has been told too late.
+        tier.grantRefusal?.let { card.appendChild(element("p", "tier-card-refusal", it)) }
+        return card.children(
             toggleRow(create, TIER_CREATE_LABEL),
             toggleRow(agents, TIER_AGENTS_LABEL),
             element("p", "field-hint", TIER_AGENTS_HINT),

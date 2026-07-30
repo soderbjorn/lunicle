@@ -279,8 +279,23 @@ private const val ICON_NEW_TAB: String =
         "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\">" +
         "<path d=\"M12 5v14M5 12h14\"/></svg>"
 
-// ICON_NEW_PROJECT stood here, for the "+" menu's New project row. Both are gone
-// (LNL-194): the rail's own row is a text button, so there is no glyph to draw.
+/**
+ * Inline SVG for the "+" menu's New project row.
+ *
+ * Gone with the row in LNL-194 and back with it in LNL-211. A board with a plus
+ * beside it rather than the plain plus [ICON_NEW_TAB] wears: the two rows sit in the
+ * same menu, and "a new board" and "a new tab to put boards in" are the pair a reader
+ * is most likely to confuse. Drawn a size down from [ICON_BOARD_PANE] so the plus has
+ * room without either mark crowding the other, and at the same 14×14 box as its
+ * neighbours so the labels stay in a column.
+ */
+private const val ICON_NEW_PROJECT: String =
+    "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" " +
+        "stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linejoin=\"round\" " +
+        "stroke-linecap=\"round\">" +
+        "<rect x=\"2.5\" y=\"3.5\" width=\"14\" height=\"13\" rx=\"2\"/>" +
+        "<path d=\"M8 3.5v13\"/>" +
+        "<path d=\"M18.5 15.5v6M15.5 18.5h6\"/></svg>"
 
 /**
  * The pane glyph for a board — a window split into columns, which is what a board
@@ -1072,10 +1087,34 @@ private fun start() {
         // renderLanding). Null while the first load is in flight, too, which leaves
         // the canvas empty rather than promising there is nothing when four boards
         // are about to arrive.
+        //
+        // Being inside the app decides where the card goes and nothing else. It is
+        // the same card the landing draws, and it gets the same mark and its own
+        // door (LNL-212) — the sentence-in-a-box it used to be looked like a page
+        // that had failed to finish loading, which is the opposite of what an empty
+        // state is for.
         emptyTabContent = {
             mainViewModel.stateFlow.value.emptyTab
                 ?.takeUnless { it.isVisitor }
-                ?.let { empty -> emptyTabSurface(empty = empty) }
+                ?.let { empty ->
+                    emptyTabSurface(
+                        empty = empty,
+                        // The mark, but not the hero it is on the landing: here it
+                        // is what makes an otherwise bare card look like part of the
+                        // product rather than a stray paragraph (LNL-212). The note
+                        // stays with the landing — see emptyTabSurface, which does
+                        // not take one.
+                        brandLogoSvg = brandConfig?.logoSvg,
+                        // The same door the "+" menu's row opens and the same one at
+                        // the foot of the Projects rail: settings first, then the
+                        // dialog. Offered only where it can be honoured, so somebody
+                        // waiting to be given access gets the sentence and no button.
+                        action = EmptyTabAction("New project…") {
+                            openSettingsAt(SettingsRoute(SettingsTab.PROJECTS))
+                            mainViewModel.onNewProjectTapped()
+                        }.takeIf { empty.canCreateProject },
+                    )
+                }
         },
         // User-owned, unlike the fixed strip Lunicle had before LNL-160: a tab is
         // a working set the reader arranges, so every gesture the toolkit offers —
@@ -1152,7 +1191,8 @@ private fun start() {
                 //                        that already exists
                 //   New tab
                 //   ──────────
-                //   New project…       ← rare, and a dialog rather than a pane
+                //   New project…       ← rare, and a shortcut into settings rather
+                //                        than an act done from here; see below
                 //
                 // A separator is only drawn between two groups that both have
                 // something in them, so a reader with no create rights gets a menu
@@ -1215,12 +1255,50 @@ private fun start() {
                         ),
                     )
                 }
-                // "New project…" was a row here and is gone (LNL-194). It sat next to
-                // "Open board", which put "make a board" beside "look at a board" — two very
-                // different acts — and nowhere near the place you go to configure the boards
-                // you have. It is now the last row of the settings pane's Projects rail, and
-                // the only way to make one.
-                listOf(create)
+                // "New project…" — removed in LNL-194, restored in LNL-211, and doing
+                // something different now.
+                //
+                // LNL-194's objection stands and is not being overturned: the row sat next
+                // to "Open board", which put "make a board" beside "look at a board" — two
+                // very different acts — and nowhere near the place you go to configure the
+                // boards you have. So it is in its own group, below the separator, away
+                // from "Open board"; and it does not open the dialog itself. It opens the
+                // Projects tab and presses the button that lives there, which is the answer
+                // to "nowhere near": pressing this row takes you to where projects are
+                // configured, and makes one while you are standing in it.
+                //
+                // What forced the return is that a home nobody can reach is a hiding place.
+                // An instance with no projects hid the Projects tab (for want of a project
+                // to configure) and so hid the only way to make the first one — an owner
+                // with the right and no door. See SettingsPane.renderTabs, which now also
+                // opens the tab for whoever may create, and note the ORDER below: without
+                // that change this row would land on You with a dialog floating over it.
+                val projectGroup = buildList {
+                    if (state.canCreateProject) {
+                        add(
+                            PaneAddMenuItem(
+                                id = "new-project",
+                                label = "New project…",
+                                iconHtml = ICON_NEW_PROJECT,
+                                onSelect = {
+                                    // Settings first, so the dialog opens over the tab
+                                    // that owns this act rather than over whatever the
+                                    // reader happened to be looking at — and so dismissing
+                                    // it leaves them somewhere that makes sense of what
+                                    // they just did. openSettingsAt re-routes a pane that
+                                    // is already open, so this focuses rather than
+                                    // duplicates.
+                                    openSettingsAt(SettingsRoute(SettingsTab.PROJECTS))
+                                    // The rail's own button, not a second implementation
+                                    // of it: both end at this one call on the main view
+                                    // model, which is where the dialog lives.
+                                    mainViewModel.onNewProjectTapped()
+                                },
+                            ),
+                        )
+                    }
+                }
+                listOf(create, projectGroup)
                     .filter { it.isNotEmpty() }
                     .reduceOrNull { acc, group -> acc + paneAddSeparator("sep-${acc.size}") + group }
                     .orEmpty()
@@ -1507,7 +1585,11 @@ private fun start() {
                 // the server can honour it. A deployment with no method configured
                 // gets the words without a door that opens on nothing — the rule the
                 // top-bar button already follows.
-                onSignIn = { signInView.startSignIn() }
+                //
+                // The ellipsis matches the top-bar button, and for its reason: this
+                // hands off to the picker or an OAuth redirect, it does not sign
+                // anybody in on the spot.
+                action = EmptyTabAction("Sign in…") { signInView.startSignIn() }
                     .takeIf { sessionViewModel.stateFlow.value.isSignInAvailable },
             )
             document.body?.appendChild(el)
@@ -2525,6 +2607,9 @@ private class SettingsPanes(
             // Read fresh: a caller with no project has no Projects tab, and a
             // project arriving (or a sign-in) has to grow one.
             hasProjects = { mainViewModel.stateFlow.value.projects.isNotEmpty() },
+            // ...and read fresh for the same reason. Without this an instance with no
+            // projects yet hid the tab that holds the only way to make one (LNL-211).
+            canCreateProject = { mainViewModel.stateFlow.value.canCreateProject },
             projectsTab = projectsTab,
             // Who gets in, People and Instance — three panes over one view model and one
             // request (LNL-195). Built here because it needs the API and the app's "the
