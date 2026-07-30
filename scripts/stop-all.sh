@@ -79,7 +79,9 @@ LUNICLE_PORT="$port_requested"
 if [[ -z "$LUNICLE_PORT" ]]; then LUNICLE_PORT="$(running_dev_server_port)"; fi
 LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 SITE_PORT="${SITE_PORT:-8000}"
-LUNICLE_DEMO_PORT="${LUNICLE_DEMO_PORT:-8081}"
+# No LUNICLE_DEMO_PORT here on purpose: section 4 below finds the demo by the
+# directory it serves and then reads its port off the process, so this script no
+# longer needs a second copy of that default to be wrong about.
 CONTAINER="lunicle-local"
 
 status_only=0
@@ -152,18 +154,34 @@ else
 fi
 
 # ---- 4. run-demo.sh's static server ----
-# Matched on its port for the same reason the site's is: `python3 -m http.server`
-# is something people run for all sorts of reasons, and only the one on
-# LUNICLE_DEMO_PORT is ours. Normally Ctrl-C in run-demo.sh has already taken it
-# — it is that script's own child, not a Gradle-forked orphan — so this is for
-# the terminal you closed rather than stopped.
-if pgrep -f "http.server $LUNICLE_DEMO_PORT" > /dev/null 2>&1; then
+# Matched on the DIRECTORY it is serving rather than on a port, which is what makes
+# this the one section that finds a demo wherever it was started. `python3 -m
+# http.server` is something people run for all sorts of reasons, so it still needs
+# attributing precisely — but `--directory <this checkout>/web/build/…` is a better
+# attribution than a port is, and unlike a port it does not have to be guessed.
+#
+# It was matched on `http.server $LUNICLE_DEMO_PORT`, and so found nothing whenever
+# the demo was on any port but 8081 — reporting "not running" about a server that
+# was, which is the dev server's old lie in a second place. See
+# running_dev_server_port for that one.
+#
+# Normally Ctrl-C in run-demo.sh has already taken it — it is that script's own
+# child, not a Gradle-forked orphan — so this is for the terminal you closed rather
+# than stopped.
+demo_marker="http.server .*--directory $REPO_ROOT/web/build"
+if pgrep -f "$demo_marker" > /dev/null 2>&1; then
   found=1
+  # The port it actually bound, off its own command line, so the line below names
+  # the address you would have been visiting.
+  demo_port="$(
+    ps -o command= -p $(pgrep -f "$demo_marker" | tr '\n' ' ') 2>/dev/null |
+      sed -n 's/.*http\.server \([0-9][0-9]*\).*/\1/p' | tail -n 1
+  )"
   if [[ "$status_only" -eq 1 ]]; then
-    echo "    demo bundle       — running on :$LUNICLE_DEMO_PORT"
+    echo "    demo bundle       — running on :${demo_port:-?}"
   else
-    echo "    demo bundle       — stopping (:$LUNICLE_DEMO_PORT)"
-    pkill -f "http.server $LUNICLE_DEMO_PORT" 2>/dev/null || true
+    echo "    demo bundle       — stopping (:${demo_port:-?})"
+    pkill -f "$demo_marker" 2>/dev/null || true
   fi
 else
   [[ "$status_only" -eq 1 ]] && echo "    demo bundle       — not running"
@@ -202,7 +220,7 @@ fi
 echo "==> Port $LUNICLE_PORT is STILL held by: $holder" >&2
 echo "    That is not something this script started, so it has been left alone." >&2
 echo "    Either stop it yourself, or run the tracker elsewhere:" >&2
-# 8099 rather than 8081: 8081 is LUNICLE_DEMO_PORT's own default, so advising it
+# 8099 rather than 8081: 8081 is run-demo.sh's own default port, so advising it
 # sends you straight into the next port collision.
 echo "      LUNICLE_PORT=8099 ./scripts/run-dev.sh" >&2
 exit 1
