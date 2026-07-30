@@ -387,6 +387,43 @@ class AccessControlLadderTest {
         assertFalse(f.other.id in mentionable, "An account with no route in was offered anyway.")
     }
 
+    /**
+     * The sets that mirror the rule mirror the veto too (LNL-203).
+     *
+     * `mentionableUsersIn` and [ProjectAudience] both fold audience rows into an answer about
+     * a whole directory, off maps in hand rather than a read per account — and both would
+     * otherwise go on offering **every account on the instance** for a board whose guest row
+     * grants nothing. That is the affordance-disagrees-with-the-rule failure the one-rung
+     * model exists to make impossible: a picker of names the gates all refuse.
+     */
+    @Test
+    fun `a vetoed guest row narrows the mention set and the audience set`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        roles.setAudienceRole(f.project, Audience.GUEST, ProjectRole.VIEWER)
+        val audience = ProjectAudience(users, roles, instanceSettings)
+        val record = projects.findById(f.project)!!
+
+        assertTrue(
+            f.other.id in mentionableUsersIn(f.project, users, roles, instanceSettings).map { it.id },
+            "Precondition: a published board admits every account through its guest row.",
+        )
+        assertTrue(f.other.id in audience.forProject(record).map { it.id }, "Precondition, for the other set.")
+
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
+        assertFalse(
+            f.other.id in mentionableUsersIn(f.project, users, roles, instanceSettings).map { it.id },
+            "The mention set still offers somebody the silenced guest row no longer admits.",
+        )
+        assertFalse(
+            f.other.id in audience.forProject(record).map { it.id },
+            "The recipient set still names somebody the silenced guest row no longer admits.",
+        )
+        // And whoever runs the instance is still in both, veto or no veto — they read every
+        // board without a row, which is the thing these sets must never omit.
+        assertTrue(f.admin.id in audience.forProject(record).map { it.id })
+    }
+
     // ── The rungs themselves ─────────────────────────────────────────────────
 
     /**

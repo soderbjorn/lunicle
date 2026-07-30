@@ -63,12 +63,16 @@ package se.soderbjorn.lunicle
  * @param users the account table; the answer is always a subset of it.
  * @param roles asked two questions per project — which audiences it admits, and
  *   who holds an own row in it.
- * @param instanceSettings asked one question, once per call: who owns the
- *   deployment. It is here for the same reason [AccessControl] has it — ownership
- *   is a setting rather than a column, so no [UserRecord] carries it — and it is
- *   here at all because leaving it out is precisely the disagreement this file
- *   exists to prevent: the owner reads every project, so a picker that omitted
- *   them would omit somebody the mailer recognises.
+ * @param instanceSettings asked once per call, for two answers: who owns the
+ *   deployment, and whether public projects are allowed. The first is here for the
+ *   same reason [AccessControl] has it — ownership is a setting rather than a
+ *   column, so no [UserRecord] carries it — and it is here at all because leaving
+ *   it out is precisely the disagreement this file exists to prevent: the owner
+ *   reads every project, so a picker that omitted them would omit somebody the
+ *   mailer recognises. The second is the publish veto (LNL-203), which silences a
+ *   guest row and so **narrows** this set: the same disagreement in the other
+ *   direction, a picker naming every account on the instance for a board where the
+ *   row that named them grants nothing.
  */
 class ProjectAudience(
     private val users: se.soderbjorn.lunicle.store.UserStore,
@@ -105,9 +109,11 @@ class ProjectAudience(
      *
      * Note there is no short-circuit for a wide-open project any more, and none is
      * needed: the widest audience across every project collapses to a single
-     * comparison below, so one `guest` row in the list makes the whole union every
-     * account without any special case to write — which is what the old
-     * `if (any { isPublic }) return all` was doing by hand.
+     * comparison below, so one `guest` row *in effect* in the list makes the whole
+     * union every account without any special case to write — which is what the old
+     * `if (any { isPublic }) return all` was doing by hand. "In effect" is carrying
+     * weight there since LNL-203: a guest row on a deployment that forbids public
+     * projects is skipped, because it admits nobody.
      */
     suspend fun forProjects(projects: Collection<ProjectRecord>): List<UserRecord> {
         val all = users.selectAll()
@@ -121,21 +127,30 @@ class ProjectAudience(
         // Everyone with an own row in any of them — the other route in, and the one
         // an audience-only reading would miss.
         val ownRowHolders = mutableSetOf<Long>()
+        // Read once, before the loop, for two things: who owns the deployment (LNL-201) and
+        // whether public projects are allowed (LNL-203). The second is why the guest key is
+        // skipped below rather than trusted — a guest row grants nothing while the switch is
+        // off, so a set built off the stored key alone would put every account on the
+        // instance into a picker for a board none of them reaches through that row. "Every
+        // change to effectiveRole is a change to this" is this file's standing rule.
+        val switches = instanceSettings.current()
         projects.forEach { project ->
-            roles.audienceRoles(project.id).keys.forEach { audience ->
-                val rank = audience.instanceRole.rank
-                if (widestRank == null || rank < widestRank!!) widestRank = rank
-            }
+            roles.audienceRoles(project.id).keys
+                .filter { switches.allowPublicProjects || it != Audience.GUEST }
+                .forEach { audience ->
+                    val rank = audience.instanceRole.rank
+                    if (widestRank == null || rank < widestRank!!) widestRank = rank
+                }
             ownRowHolders += roles.memberIds(project.id)
         }
 
         val admitted = widestRank
-        // Read once, and folded into each account's rung by the one named function that
-        // does it (LNL-201). It was three clauses here — an administrator, then the owner
-        // separately, then the audience match off the *stored* row — which answered
-        // correctly only because the owner's own clause sat in front of the one that
-        // could not see them. One ladder per account says the same thing once.
-        val ownerUserId = instanceSettings.current().ownerUserId
+        // Folded into each account's rung by the one named function that does it (LNL-201).
+        // It was three clauses here — an administrator, then the owner separately, then the
+        // audience match off the *stored* row — which answered correctly only because the
+        // owner's own clause sat in front of the one that could not see them. One ladder per
+        // account says the same thing once.
+        val ownerUserId = switches.ownerUserId
         return all.filter { user ->
             val instanceRole = user.instanceRoleWith(ownerUserId)
             instanceRole.atLeast(InstanceRole.ADMIN) ||
