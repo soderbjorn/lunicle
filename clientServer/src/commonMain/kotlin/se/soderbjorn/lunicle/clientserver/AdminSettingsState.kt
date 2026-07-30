@@ -267,6 +267,13 @@ data class InstanceOwnership(
  *   project at creation and never consulted again, so editing this changes nothing about
  *   any project that already exists. A guest row is greyed while [allowPublicProjects] is
  *   off, exactly as it is on a project.
+ * @property canReorderProjects whether this caller may change the project order, or delete
+ *   a project they do not own. **The instance owner's, not an administrator's** — LNL-191
+ *   narrowed that on purpose, and everything else on these three tabs is an
+ *   administrator's, so the one narrowed capability has to be sent rather than assumed.
+ *   False greys the arrows and the Delete with [projectSetReadOnlyReason] beside them,
+ *   which is how an administrator learns whose it is instead of collecting a 403.
+ * @property projectSetReadOnlyReason the sentence for that, or null when they may.
  * @property ownership who owns and who administers this instance. See [InstanceOwnership].
  * @property allowPublicProjects whether a project's owner may hand its guest audience a
  *   rung — publishing a board to the world. **Off by default**, so out of the box every
@@ -286,6 +293,8 @@ data class AdminSettingsState(
     val deployment: DeploymentFacts = DeploymentFacts(),
     val tiers: List<TierCard> = emptyList(),
     val newProjectAudiences: List<AudienceRow> = emptyList(),
+    val canReorderProjects: Boolean = false,
+    val projectSetReadOnlyReason: String? = null,
     val ownership: InstanceOwnership = InstanceOwnership(),
     val allowPublicProjects: Boolean = false,
     val hideDisplayName: Boolean = false,

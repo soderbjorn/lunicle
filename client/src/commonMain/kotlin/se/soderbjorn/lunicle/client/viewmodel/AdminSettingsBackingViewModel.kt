@@ -251,9 +251,16 @@ fun ownerLine(name: String, email: String?, isSelf: Boolean): String {
     return "$who$address."
 }
 
-/** Who administers it alongside the owner, or that nobody does. */
-fun adminsLine(names: List<String>): String = when {
+/**
+ * Who administers it alongside the owner, or that nobody does.
+ *
+ * Second person when the reader *is* the owner: "administered alongside them" read as being
+ * about somebody else on the row that had just said "You own this instance". Found by
+ * driving the app.
+ */
+fun adminsLine(names: List<String>, isOwnerSelf: Boolean): String = when {
     names.isEmpty() -> "No other account administers this instance."
+    isOwnerSelf -> "Administered alongside you by ${names.joinToString(", ")}."
     else -> "Administered alongside them by ${names.joinToString(", ")}."
 }
 
@@ -341,6 +348,12 @@ data class AdminProjectRow(
     val namePrefix: String,
     val canMoveUp: Boolean,
     val canMoveDown: Boolean,
+    /**
+     * Whether Delete is live. False for an instance administrator who is not the owner:
+     * disposing of somebody else's board is the owner's (LNL-191), and the row says so
+     * rather than letting the click collect a 403.
+     */
+    val canDelete: Boolean,
 )
 
 /**
@@ -457,12 +470,12 @@ class AdminSettingsBackingViewModel(
                     userId = user.userId,
                     name = user.name,
                     subtitle = user.subtitle,
-                    badge = when {
-                        user.isSelf && user.isSysAdmin -> "you · admin"
-                        user.isSelf -> "you"
-                        user.isSysAdmin -> "admin"
-                        else -> null
-                    },
+                    // "you", and nothing else. It used to say "admin" too, which the tier
+                    // stamp beside it now says better and at more resolution — an
+                    // administrator and the owner are different rungs and the badge called
+                    // both "admin". Two labels saying one thing also wrapped the row onto a
+                    // second line. Found by driving the app.
+                    badge = "you".takeIf { user.isSelf },
                     tierLabel = user.tierLabel,
                     showsNotSignedIn = !user.hasSignedIn,
                     isSelected = user.userId == selectedUserId,
@@ -570,13 +583,23 @@ class AdminSettingsBackingViewModel(
             }
 
         /** Who administers it alongside them. Null until the first load lands. */
-        val adminsLine: String? get() = settings?.ownership?.let { adminsLine(it.adminNames) }
+        val adminsLine: String?
+            get() = settings?.ownership?.let { adminsLine(it.adminNames, it.isOwnerSelf) }
+
+        /** Whether the reader owns the instance — what decides whether Hand over… shows at all. */
+        val isOwnerSelf: Boolean get() = settings?.ownership?.isOwnerSelf == true
 
         /** Whether Hand over… is live. False for everybody until LNL-198. */
         val canHandOver: Boolean get() = settings?.ownership?.canHandOver == true
 
         /** Why it is dead, when it is. Beside the control rather than instead of it. */
         val handOverBlockedReason: String? get() = settings?.ownership?.handOverBlockedReason
+
+        /** Whether this caller may reorder or delete across every board. The owner's alone. */
+        val canReorderProjects: Boolean get() = settings?.canReorderProjects == true
+
+        /** Why not, when they may not — beside the dead arrows rather than instead of them. */
+        val projectSetReadOnlyReason: String? get() = settings?.projectSetReadOnlyReason
 
         /**
          * The instance's projects, in the arranged order, each told whether it can still
@@ -594,8 +617,9 @@ class AdminSettingsBackingViewModel(
                         projectId = project.id,
                         name = project.name,
                         namePrefix = project.namePrefix,
-                        canMoveUp = index > 0 && !isBusy,
-                        canMoveDown = index < projects.lastIndex && !isBusy,
+                        canMoveUp = index > 0 && !isBusy && canReorderProjects,
+                        canMoveDown = index < projects.lastIndex && !isBusy && canReorderProjects,
+                        canDelete = !isBusy && canReorderProjects,
                     )
                 }
             }

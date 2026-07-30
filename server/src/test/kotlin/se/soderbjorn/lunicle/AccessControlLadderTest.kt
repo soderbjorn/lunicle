@@ -184,6 +184,31 @@ class AccessControlLadderTest {
         }
     }
 
+    /**
+     * Administering the instance is an **administrator's**, and is deliberately the one
+     * instance-scoped rule that is not the owner's alone (LNL-195).
+     *
+     * Its own test beside the four above, because the pair is the point and because getting
+     * it wrong is invisible from the server: the client offers the three instance tabs to
+     * anybody who is an administrator, so a gate one rung too high renders three tabs that
+     * are empty apart from a refusal — which is exactly what shipped before this rule
+     * existed. Asserted at every rung, so the `==` spelling that would refuse the *owner*
+     * fails here too.
+     */
+    @Test
+    fun `administering the instance is an administrator's, from that rung upwards`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.setOwnerUserId(f.member.id)
+        assertTrue(access.canAdministerInstance(f.member), "the instance owner was refused.")
+        assertTrue(
+            access.canAdministerInstance(f.admin),
+            "an instance administrator was refused the tabs the client offers precisely to them.",
+        )
+        assertFalse(access.canAdministerInstance(f.other), "an ordinary account was let through.")
+        assertFalse(access.canAdministerInstance(f.staff), "a staff account was let through.")
+        assertFalse(access.canAdministerInstance(null), "a caller with no session was let through.")
+    }
+
     // ── The rungs themselves ─────────────────────────────────────────────────
 
     /**

@@ -3556,17 +3556,33 @@ body > .dt-pane-menu {
   padding-right: 0;
 }
 
+/* The second line of an account row: the tier, the address, and — where one is
+   owed — the NOT SIGNED IN badge. A flex row with a real gap, because these three
+   ran into each other as inline spans ("MEMBERNOT SIGNED IN") and wrapped a
+   232px row onto three lines when they sat up beside the name. */
+.admin-user-detail-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  margin-top: 2px;
+}
+
 /* The tier stamp every account row wears — "Member", "Instance owner". Quieter
-   than the `you · admin` badge beside it, which marks a row out; this one is
+   than the `you` badge on the line above, which marks one row out; this is
    simply a fact each row carries. */
 .admin-user-tier {
+  flex: none;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .04em;
   color: var(--body);
   opacity: .65;
-  margin-left: 6px;
 }
+
+/* The address gives up its own top margin inside the detail line, which owns the
+   spacing now, and shrinks rather than pushing the badge off the row. */
+.admin-user-detail-line .admin-user-subtitle { margin-top: 0; min-width: 0; }
 
 /* The tier, under the name in the detail pane. */
 .admin-detail-tier {

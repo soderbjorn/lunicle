@@ -126,6 +126,7 @@ class InstanceTabs(
     private lateinit var projectOrderHint: HTMLElement
     private lateinit var projectOrderList: HTMLElement
     private lateinit var projectOrderEmpty: HTMLElement
+    private lateinit var projectSetReadOnly: HTMLElement
     private lateinit var ownerElement: HTMLElement
     private lateinit var adminsElement: HTMLElement
     private lateinit var handOverButton: HTMLButtonElement
@@ -152,8 +153,14 @@ class InstanceTabs(
     private var deploymentSignature: String? = null
     private var projectOrderSignature: String? = null
 
-    /** Whether a reorder or delete has been reported, so it is reported once. */
-    private var reportedProjectsChanged = false
+    /**
+     * The project ids as last rendered, so [onProjectsChanged] fires once per actual
+     * change rather than once per pane.
+     *
+     * A boolean latch was wrong twice over: a *second* reorder would never be reported, so
+     * the rail and every picker would keep showing the order the first one produced.
+     */
+    private var lastProjectIds: List<Long>? = null
 
     /** Build all three panes. Called once, by the pane, in strip order. */
     fun mountAccess(): HTMLElement = buildAccess().also { accessPane = it }
@@ -412,14 +419,20 @@ class InstanceTabs(
                 // user-chosen, so this is what puts "<img onerror=…>" on the page as characters.
                 val name = element("span", "admin-user-name", user.name)
                 user.badge?.let { name.appendChild(element("span", "admin-user-badge", it)) }
-                // The stamp every row wears, and the badge only some do: a grant nobody has
-                // claimed looks exactly like one that has.
-                name.appendChild(element("span", "admin-user-tier", user.tierLabel))
+
+                // The tier every row wears, and the badge only some do — both on the SECOND
+                // line, with the address. On the name line they wrapped a 232px row onto two
+                // and three lines ("Ada Owner  YOU · ADMIN  INSTANCE / OWNER") and ran the
+                // badge straight into the stamp with no gap. Found by driving the app.
+                val detail = element("div", "admin-user-detail-line").children(
+                    element("span", "admin-user-tier", user.tierLabel),
+                    element("span", "admin-user-subtitle", user.subtitle),
+                )
                 if (user.showsNotSignedIn) {
-                    name.appendChild(element("span", "access-row-badge", NOT_SIGNED_IN_BADGE))
+                    detail.appendChild(element("span", "access-row-badge", NOT_SIGNED_IN_BADGE))
                 }
 
-                row.children(name, element("span", "admin-user-subtitle", user.subtitle))
+                row.children(name, detail)
                 peopleList.appendChild(row)
             }
         }
@@ -512,6 +525,10 @@ class InstanceTabs(
         projectOrderHint = element("p", "field-hint", PROJECT_ORDER_HINT)
         projectOrderList = element("div", "admin-project-list")
         projectOrderEmpty = element("p", "admin-placeholder")
+        // Why the arrows are dead, beside them rather than instead of the list: an
+        // administrator who is not the owner sees every board and moves none of them, and
+        // has to learn whose it is rather than collect a 403 from a live-looking arrow.
+        projectSetReadOnly = element("p", "admin-note")
 
         ownerElement = element("p", "modal-message")
         adminsElement = element("p", "field-hint")
@@ -535,6 +552,7 @@ class InstanceTabs(
             element("h3", "section-title", PROJECT_ORDER_TITLE),
             projectOrderHint,
             projectOrderEmpty,
+            projectSetReadOnly,
             projectOrderList,
             element("div", "settings-section-rule"),
             element("h3", "section-title", OWNERSHIP_TITLE),
@@ -577,12 +595,10 @@ class InstanceTabs(
         // Dead rather than absent, with the ticket named beside it: for the owner it says
         // "coming", where a missing button would say "not yours". Only the owner sees it at
         // all — see InstanceOwnership.
-        handOverButton.visible(state.settings?.ownership?.isOwnerSelf == true, displayValue = "inline-flex")
+        handOverButton.visible(state.isOwnerSelf, displayValue = "inline-flex")
         handOverButton.disabled = !state.canHandOver
         handOverReason.setTextIfChanged(state.handOverBlockedReason ?: "")
-        handOverReason.visible(
-            state.handOverBlockedReason != null && state.settings?.ownership?.isOwnerSelf == true,
-        )
+        handOverReason.visible(state.handOverBlockedReason != null && state.isOwnerSelf)
     }
 
     /**
@@ -601,14 +617,35 @@ class InstanceTabs(
         // to move — so the list is hidden only when there is genuinely nothing in it.
         projectOrderList.visible(state.projectRows.isNotEmpty())
 
+        projectSetReadOnly.setTextIfChanged(state.projectSetReadOnlyReason ?: "")
+        projectSetReadOnly.visible(state.projectSetReadOnlyReason != null && state.projectRows.isNotEmpty())
+
         val signature = state.projectRows.joinToString("|") {
-            "${it.projectId}:${it.name}:${it.namePrefix}:${it.canMoveUp}/${it.canMoveDown}"
+            "${it.projectId}:${it.name}:${it.namePrefix}:${it.canMoveUp}/${it.canMoveDown}/${it.canDelete}"
         }
         if (signature == projectOrderSignature) return
         projectOrderSignature = signature
 
+        // ── Keeping the reader's place across a reorder ──────────────────────
+        //
+        // Pressing ↑ on the last row threw the whole tab back to the top, which is as bad as
+        // it sounds on the one control here meant to be pressed repeatedly. Two separate
+        // causes, so two restores:
+        //
+        //  - rebuilding a list inside a scroller clamps its scrollTop to 0 while the list is
+        //    momentarily empty, and the browser does not put it back. The synchronous restore
+        //    covers that;
+        //  - a reorder also tells the app its project list moved, which re-renders the
+        //    workspace shell around this pane and zeroes the scroll again, *after* this
+        //    method returns. Nothing synchronous can catch that, hence the deferred one.
+        //
+        // A plain switch on this tab does neither, which is how the two were told apart.
+        // Found by driving the app.
+        val scrollTop = instancePane.scrollTop
         projectOrderList.clear()
         state.projectRows.forEach { projectOrderList.appendChild(projectOrderRow(it)) }
+        instancePane.scrollTop = scrollTop
+        kotlinx.browser.window.setTimeout({ instancePane.scrollTop = scrollTop }, 0)
     }
 
     private fun projectOrderRow(project: AdminProjectRow): HTMLElement {
@@ -616,11 +653,15 @@ class InstanceTabs(
         // The prefix beside the name, muted — the same disambiguator every picker shows, and
         // what tells two similarly-named projects apart before a delete.
         name.appendChild(element("span", "admin-project-row-prefix", project.namePrefix))
+        val delete = button("Delete", "btn btn-danger-quiet") {
+            viewModel.onDeleteProjectTapped(project.projectId)
+        }
+        delete.disabled = !project.canDelete
         return element("div", "admin-project-row").children(
             name,
             moveButton("↑", "Move up", project.canMoveUp) { viewModel.onProjectMoved(project.projectId, -1) },
             moveButton("↓", "Move down", project.canMoveDown) { viewModel.onProjectMoved(project.projectId, 1) },
-            button("Delete", "btn btn-danger-quiet") { viewModel.onDeleteProjectTapped(project.projectId) },
+            delete,
         )
     }
 
@@ -681,11 +722,11 @@ class InstanceTabs(
             it.visible(state.errorMessage != null)
         }
 
-        // Once, latched: the project list every other surface draws is stale from the first
-        // reorder or delete onwards, and telling the app twice would be two reloads.
-        if (state.projectsChanged && !reportedProjectsChanged) {
-            reportedProjectsChanged = true
-            onProjectsChanged()
-        }
+        // Once per actual change: the list every other surface draws is stale the moment the
+        // order or the membership moves, and it moves again on the next arrow press.
+        val ids = state.projectRows.map { it.projectId }
+        val previous = lastProjectIds
+        lastProjectIds = ids
+        if (state.projectsChanged && previous != null && previous != ids) onProjectsChanged()
     }
 }

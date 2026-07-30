@@ -205,6 +205,26 @@ class AccessControl(
     suspend fun canMutateProjects(user: UserRecord?): Boolean = ownsInstance(user)
 
     /**
+     * May [user] see and change what is true of the whole deployment — the account
+     * directory, admission, the per-tier permissions, and the policy switches?
+     *
+     * **An instance administrator, and the owner above them** (LNL-195). It is the
+     * literal job of the role, and it is deliberately a *weaker* gate than
+     * [canMutateProjects]: reading who exists here, and deciding whether members may
+     * create boards, is administering the instance — where reordering and deleting other
+     * people's boards is disposing of their work.
+     *
+     * Written as its own rule because the three instance tabs asked [canMutateProjects]
+     * before this, which made every one of them **owner-only by accident**: an
+     * administrator saw three tabs in the strip (the client offers them to anyone who is
+     * one) and every request behind them answered 403, so the tabs rendered as empty
+     * headings with a refusal at the bottom. Found by driving the app as an administrator
+     * who is not the owner. The two rules now differ where they should.
+     */
+    suspend fun canAdministerInstance(user: UserRecord?): Boolean =
+        instanceRole(user).atLeast(InstanceRole.ADMIN)
+
+    /**
      * May [user] bring a *new* project into existence?
      *
      * **Per tier** (LNL-192): signed in, and standing on a rung of the instance

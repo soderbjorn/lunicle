@@ -697,6 +697,8 @@ internal class DemoWorld {
                 newProjectAudiences["member"],
             ),
         ),
+        // The demo visitor owns the instance, so the order and the delete are theirs.
+        canReorderProjects = true,
         ownership = InstanceOwnership(
             ownerName = demoUser.name,
             ownerEmail = demoUser.email,

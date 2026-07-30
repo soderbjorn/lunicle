@@ -626,6 +626,86 @@ class AdminSettingsTest {
         assertFalse(projects.findById(beta.id) == null, "A refused delete removed the project anyway.")
     }
 
+    /**
+     * An instance **administrator** who is not the owner reads the whole directory and may
+     * flip a switch — and may still not reorder or delete across boards (LNL-195).
+     *
+     * The regression this exists for: every route in this file gated on
+     * `canMutateProjects`, which is the *owner*, so the three instance tabs were owner-only
+     * by accident. The client offers them to anybody who is an administrator, so what an
+     * administrator actually got was three tabs rendering empty headings and a refusal.
+     * Found by driving the app as one — and it failed no test here, because every test in
+     * this file signs in as the fixture's admin, who is also the seated owner.
+     *
+     * LNL-191's narrowing survives, and is asserted rather than merely left alone: the order
+     * and the cross-project delete stay the owner's, and the response says so on
+     * `canReorderProjects` so the screen greys the arrows instead of collecting a 403.
+     */
+    @Test
+    fun `an instance administrator who is not the owner reads and switches, but cannot reorder`(): Unit =
+        runBlocking {
+            val fixture = seed(name = "Alpha", prefix = "ALP")
+            val beta = projectRepository.create("Beta", "BET")
+            // A second administrator, who is not the seated owner. Promoted through the store
+            // because there is no route that promotes anybody — see the view model's preamble,
+            // which is why the People tab states adminship rather than offering it.
+            val second = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-second", "Second", null))
+            users.setInstanceAdmin(second.id, true)
+            assertEquals(
+                fixture.adminId,
+                instanceSettings.current().ownerUserId,
+                "Precondition: the fixture's first admin is the seated owner.",
+            )
+            val cookie = sessions.create(second.id)
+            val before = projects.selectAll().map { it.id }
+
+            withRoutes { client ->
+                val read = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                assertEquals(HttpStatusCode.OK, read.status, "An instance administrator was refused the directory.")
+                val body = read.body<AdminSettingsState>()
+                assertTrue(body.users.isNotEmpty(), "The directory came back empty for an administrator.")
+                assertTrue(body.projects.isNotEmpty(), "The project list came back empty for an administrator.")
+                assertFalse(
+                    body.canReorderProjects,
+                    "An administrator was told they may reorder; that is the owner's (LNL-191).",
+                )
+                assertNotNull(
+                    body.projectSetReadOnlyReason,
+                    "The arrows would be greyed with no sentence saying whose they are.",
+                )
+                assertFalse(body.ownership.isOwnerSelf, "An administrator was reported as the owner.")
+
+                // A policy switch: an administrator's, and it lands.
+                val write = client.post("/api/admin/instance-settings") {
+                    cookie(SESSION_COOKIE, cookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(SetInstanceSettingRequest(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true))
+                }
+                assertEquals(HttpStatusCode.OK, write.status, "An administrator was refused a policy switch.")
+                assertTrue(write.body<AdminSettingsState>().allowPublicProjects)
+
+                // The order and the cross-project delete: still the owner's.
+                assertEquals(
+                    HttpStatusCode.Forbidden,
+                    client.post("/api/admin/projects/order") {
+                        cookie(SESSION_COOKIE, cookie)
+                        contentType(ContentType.Application.Json)
+                        setBody(ProjectOrder(before.reversed()))
+                    }.status,
+                    "An administrator reordered every board on the instance.",
+                )
+                assertEquals(
+                    HttpStatusCode.Forbidden,
+                    client.delete("/api/admin/projects/${beta.id}") { cookie(SESSION_COOKIE, cookie) }.status,
+                    "An administrator deleted a board they do not own.",
+                )
+            }
+
+            assertEquals(before, projects.selectAll().map { it.id }, "A refused reorder moved something.")
+            assertFalse(projects.findById(beta.id) == null, "A refused delete removed the project anyway.")
+            assertTrue(instanceSettings.current().allowPublicProjects, "The administrator's switch did not persist.")
+        }
+
     private class Fixture(val adminId: Long, val projectId: Long)
 
     /**
@@ -702,6 +782,12 @@ class AdminSettingsTest {
         sessions = sessions,
         users = users,
         impersonations = impersonations,
+        // The SAME store `access` and the fixture's `seatInstanceOwner` use. Omitted before
+        // LNL-195, which meant BoardDependencies defaulted to a *second*, empty one — so
+        // every switch a route wrote landed somewhere the test could not read, and the
+        // ownership this file's fixture seats was invisible to the response being asserted.
+        // The tests passed because none of them looked.
+        instanceSettings = instanceSettings,
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

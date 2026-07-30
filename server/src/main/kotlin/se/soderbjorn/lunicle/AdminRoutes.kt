@@ -180,7 +180,7 @@ fun Route.adminRoutes(deps: BoardDependencies) {
      * dialog never merges two objects.
      */
     post(ApiRoutes.ADMIN_PROJECT_ORDER) {
-        val admin = call.adminCaller(deps, "reorder projects") ?: return@post
+        val admin = call.projectSetCaller(deps, "reorder projects") ?: return@post
         val body = call.receiveOrNull<ProjectOrder>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed order.")
             return@post
@@ -204,7 +204,7 @@ fun Route.adminRoutes(deps: BoardDependencies) {
      * everything in the project goes with it. Answers with the refreshed directory.
      */
     delete("${ApiRoutes.ADMIN_PROJECTS}/{id}") {
-        val admin = call.adminCaller(deps, "delete a project") ?: return@delete
+        val admin = call.projectSetCaller(deps, "delete any project on this instance") ?: return@delete
         val id = call.longParam("id") ?: run {
             call.respond(HttpStatusCode.BadRequest, "Bad project id.")
             return@delete
@@ -245,8 +245,36 @@ private suspend fun ApplicationCall.adminCaller(
     action: String,
 ): UserRecord? {
     val user = caller(deps)
+    if (user == null || !deps.access.canAdministerInstance(user)) {
+        respond(HttpStatusCode.Forbidden, "Only an instance administrator can $action.")
+        return null
+    }
+    return user
+}
+
+/**
+ * Resolve a caller who may change the *set* of projects, or respond and return null
+ * (LNL-195).
+ *
+ * A second, stricter gate beside [adminCaller], and the pair is the point. Reading the
+ * directory and flipping a policy switch is an administrator's; reordering every board on
+ * the deployment and deleting somebody else's is the **owner's** — LNL-191 narrowed that
+ * deliberately, and this is what keeps the narrowing while the rest of the surface opens
+ * back up to administrators. See AccessControl.canMutateProjects, which says at length
+ * why those are not the same trust.
+ *
+ * The refusal names the owner rather than saying "forbidden", because an administrator who
+ * reaches it is not doing anything wrong — they are being told whose it is. The screen
+ * greys the arrows and the Delete on the same fact, so this is very hard to reach; it is
+ * the enforcement, and the greying is the explanation.
+ */
+private suspend fun ApplicationCall.projectSetCaller(
+    deps: BoardDependencies,
+    action: String,
+): UserRecord? {
+    val user = caller(deps)
     if (user == null || !deps.access.canMutateProjects(user)) {
-        respond(HttpStatusCode.Forbidden, "Only a system administrator can $action.")
+        respond(HttpStatusCode.Forbidden, "Only the instance owner can $action.")
         return null
     }
     return user
@@ -369,6 +397,18 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
         rungs = ProjectRole.entries.map {
             RungOption(key = it.key, label = it.label, description = it.description, isSelectable = true)
         },
+        // The one narrowed capability on these three tabs: the project order and the
+        // cross-project delete are the OWNER's, where everything else here is an
+        // administrator's. Sent so the arrows grey with a reason rather than 403ing on
+        // click — see projectSetCaller, which enforces the same answer.
+        canReorderProjects = access.canMutateProjects(caller),
+        // Parenthesised, and it matters: `"a" + "b".takeIf { … }` binds the takeIf to the
+        // second literal alone, so a caller who MAY reorder would be handed "a" + "null" —
+        // a read-only banner over a live list. buildAccess was bitten by exactly this.
+        projectSetReadOnlyReason = (
+            "The order of every board, and deleting one from here, is the instance owner's. " +
+                "Yours is a board's own Delete, in its General section."
+            ).takeIf { !access.canMutateProjects(caller) },
         // Who holds this instance. LNL-198 wires Hand over…, so nobody may yet — and the
         // reason says which ticket, rather than leaving a dead button unexplained.
         ownership = ownership(caller, switches.ownerUserId, allUsers),
