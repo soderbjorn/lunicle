@@ -291,6 +291,14 @@ class StorageRepository(
         api.setNewProjectAudience(audienceKey, roleKey)
 
     /**
+     * Hand the whole deployment to another account (LNL-198).
+     *
+     * A pass-through like its neighbours, and the one write here whose answer describes an
+     * instance the caller no longer owns.
+     */
+    suspend fun handOverInstance(userId: Long): AdminSettingsState = api.handOverInstance(userId)
+
+    /**
      * Reorder the instance's projects, and delete one (LNL-93).
      *
      * Both from the Instance tab as of LNL-195 — display order is an instance-wide fact,

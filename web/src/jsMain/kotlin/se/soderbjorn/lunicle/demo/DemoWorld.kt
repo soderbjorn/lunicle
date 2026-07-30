@@ -723,7 +723,16 @@ internal class DemoWorld {
             ownerName = demoUser.name,
             ownerEmail = demoUser.email,
             isOwnerSelf = true,
-            handOverBlockedReason = "Handing the instance over is not built yet — it is LNL-198.",
+            // Hand over… is live for the owner, and its picker is empty — because this
+            // world names no staff domain, so every account in it is a member and none of
+            // them may be handed a deployment (LNL-198). The reason is the server's own
+            // wording for that case; a demo that offered a picker here would be teaching a
+            // rule the server does not have. See DemoLunicleApi.handOverInstance.
+            canHandOver = true,
+            handOverEmptyReason = "There is nobody to hand this instance to. Only staff — accounts " +
+                "on the deployment's own domain — can own it, and this deployment names no domain, " +
+                "so every account here is a member. That is deploy-time configuration " +
+                "(brand.json), not a setting on this screen.",
         ),
         admission = AdmissionState(
             selected = admission,

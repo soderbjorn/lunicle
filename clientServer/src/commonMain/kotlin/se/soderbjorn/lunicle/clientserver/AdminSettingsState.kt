@@ -206,11 +206,43 @@ data class DeploymentFacts(
 )
 
 /**
+ * One account the instance could be handed to (LNL-198).
+ *
+ * ── Who is on this list, and why it is this narrow ──────────────────────────
+ *
+ * **Staff who have signed in**, and nobody else. Not a member, and not a row somebody
+ * added ahead of time and nobody has ever arrived at ([AdminUser.hasSignedIn]) — so
+ * ownership of a deployment cannot land on an address that was typed once into a dialog.
+ * The eligible accounts are the ones the deployment itself vouches for: their address is
+ * on its own domain, and somebody has actually turned up holding it.
+ *
+ * A consequence worth stating rather than discovering: on a deployment that names no
+ * domain, `UserKind.forEmail` makes **everybody** a member, so this list is empty and
+ * [InstanceOwnership.handOverEmptyReason] is what the screen shows instead of a picker.
+ * That is the honest answer there — such a deployment cannot tell its own people from
+ * anybody else's, so it has nobody to vouch for.
+ *
+ * Deliberately not [AdminUser]: this is a row in a picker, so it carries what a picker
+ * needs to be read and no more. Re-derived on the server on the write as well as here —
+ * an id in a request body is a claim, never an eligibility.
+ *
+ * @property name what to call them in the menu, and what the typed phrase names.
+ * @property email the disambiguator, for [AdminUser.email]'s reason: two people called
+ *   "Robert" are not a hypothetical, and this is the one pick that cannot be undone.
+ */
+@Serializable
+data class OwnerCandidate(
+    val userId: Long,
+    val name: String,
+    val email: String? = null,
+)
+
+/**
  * Who owns this instance, and who administers it alongside them (LNL-195).
  *
  * Shown to every administrator, because "who do I ask" is the question an administrator
  * who has just hit a refusal is holding. **Handing it over is the owner's alone** — see
- * [canHandOver], and LNL-198, which is the ticket that wires the gesture up.
+ * [canHandOver], wired up by LNL-198.
  *
  * @property ownerName the owner's name, or null when nobody owns this instance yet —
  *   which is a real state on a volume that has never had an account, and one worth
@@ -225,8 +257,24 @@ data class DeploymentFacts(
  *   the People tab is where an account is looked at.
  * @property canHandOver whether the caller may hand the instance to somebody else. True
  *   for the owner alone; an administrator sees the row, and who holds it, and no button.
+ *
+ *   True for the owner **even when [handOverCandidates] is empty** (LNL-198), which is
+ *   the one place this rework does not grey a control with a reason beside it. The
+ *   reason lives one click in, where the picker would be: "nobody here is eligible" is a
+ *   sentence about the *deployment's* domain configuration and takes three lines to say
+ *   properly, and three lines of explanation under a permanent grey button on the
+ *   Instance tab would be read by every owner forever rather than by the one who went
+ *   looking. See [handOverEmptyReason].
  * @property handOverBlockedReason why not, when they may not — shown beside the dead
- *   control rather than instead of it, the rule this whole rework follows.
+ *   control rather than instead of it, the rule this whole rework follows. Null for the
+ *   owner, who may.
+ * @property handOverCandidates the accounts this instance could be handed to. See
+ *   [OwnerCandidate]. Empty for anybody who is not the owner: there is nothing for a
+ *   non-owner to pick from, and sending a directory of eligible successors to somebody
+ *   who cannot use it would be a list with no purpose.
+ * @property handOverEmptyReason why there is nobody to hand it to, when there is nobody —
+ *   naming this deployment's own domain, or its absence. Null when there is somebody, so
+ *   the dialog shows either a picker or a sentence and never both.
  */
 @Serializable
 data class InstanceOwnership(
@@ -236,6 +284,24 @@ data class InstanceOwnership(
     val adminNames: List<String> = emptyList(),
     val canHandOver: Boolean = false,
     val handOverBlockedReason: String? = null,
+    val handOverCandidates: List<OwnerCandidate> = emptyList(),
+    val handOverEmptyReason: String? = null,
+)
+
+/**
+ * "Hand this deployment to that account" (LNL-198).
+ *
+ * Names the account rather than a delta, for [SetInstanceSettingRequest]'s reason, and
+ * carries nothing about who is asking — that is the session cookie's job, re-derived on
+ * every request. See `AccessControl.canHandOverInstance`.
+ *
+ * The id is a **claim**, and the route treats it as one: it resolves the account,
+ * re-derives eligibility against the deployment's own domain and the account's sign-in
+ * stamp, and refuses anything else. A body cannot make somebody eligible by naming them.
+ */
+@Serializable
+data class HandOverInstanceRequest(
+    val userId: Long,
 )
 
 /**

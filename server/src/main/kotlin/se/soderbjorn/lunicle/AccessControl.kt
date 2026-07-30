@@ -248,6 +248,28 @@ class AccessControl(
     suspend fun canImpersonate(user: UserRecord?): Boolean = ownsInstance(user)
 
     /**
+     * May [user] give this deployment to somebody else (LNL-198)?
+     *
+     * The owner, and **only** the owner — the one rule in this file that is not merely
+     * narrower than an administrator's but self-referential: it decides who gets to
+     * decide. An administrator who could hand the instance over could hand it to
+     * themselves, which would make [InstanceRole.ADMIN] and [InstanceRole.OWNER] the same
+     * rung with extra steps and quietly undo every narrowing above.
+     *
+     * Named rather than spelled [canMutateProjects] or [canImpersonate] at the call site,
+     * even though all three answer identically today, for the reason [canImpersonate]
+     * gives: a gate that borrows another's name follows it the next time it moves. This
+     * one in particular must never widen by accident.
+     *
+     * Note what it does **not** say: who is eligible to *receive* it. That is a question
+     * about the subject rather than the caller — the deployment's own domain and whether
+     * anybody has ever signed into the account — and it lives at the route, beside the
+     * list the picker renders, so the affordance and the enforcement are computed from
+     * one rule. See `AdminRoutes.mayBeHandedTheInstance`.
+     */
+    suspend fun canHandOverInstance(user: UserRecord?): Boolean = ownsInstance(user)
+
+    /**
      * May [user] bring a *new* project into existence?
      *
      * **Per tier** (LNL-192): signed in, and standing on a rung of the instance

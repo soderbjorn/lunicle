@@ -9,15 +9,21 @@
  * administrator gets the vocabularies, everybody else gets their own notification toggle
  * and nothing else), where [adminCaller] simply refuses.
  *
- * ── Two gates, not one (LNL-195) ────────────────────────────────────────────
+ * ── Three gates, not one (LNL-195, LNL-198) ─────────────────────────────────
  *
- * [adminCaller] is an **instance administrator**, and every route here but two takes it:
+ * [adminCaller] is an **instance administrator**, and every route here but three takes it:
  * reading the directory, admission, the per-tier permissions, the policy switches and what
- * a new project starts with are the job of the role. The two exceptions take
+ * a new project starts with are the job of the role. Two exceptions take
  * [projectSetCaller], which is the **owner** — reordering every board on the deployment
  * and deleting somebody else's are what LNL-191 narrowed on purpose, and the response says
  * which of the two the caller is on `canReorderProjects` so the screen greys those controls
  * rather than letting an administrator collect a 403.
+ *
+ * The third is [ownershipCaller], on the one route that hands the deployment away
+ * (LNL-198). Also the owner, and a separate gate rather than a reuse of the second because
+ * the two are different questions that happen to have the same answer — see
+ * `AccessControl.canHandOverInstance`, and note that this is the one gate whose widening
+ * would collapse every narrowing above it.
  *
  * Every route here used the owner gate until LNL-195, which made the three instance tabs
  * owner-only *by accident* — the client offers them to any administrator, so an
@@ -57,8 +63,10 @@ import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AudienceGrant
 import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.DeploymentFacts
+import se.soderbjorn.lunicle.clientserver.HandOverInstanceRequest
 import se.soderbjorn.lunicle.clientserver.InstanceOwnership
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
+import se.soderbjorn.lunicle.clientserver.OwnerCandidate
 import se.soderbjorn.lunicle.clientserver.ProjectOrder
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
 import se.soderbjorn.lunicle.clientserver.RungOption
@@ -183,6 +191,74 @@ fun Route.adminRoutes(deps: BoardDependencies) {
     }
 
     /**
+     * Hand this deployment to another account (LNL-198). **The instance owner's alone.**
+     *
+     * ── One write to ownership, and a second row that is not part of it ──────
+     *
+     * Ownership is `instance_settings.owner_user_id`, a single-valued setting, so moving
+     * it is **one** write and "exactly one owner, always" stays structural on both
+     * backends — see `InstanceSettings.ownerUserId`. There is deliberately no
+     * demote-then-promote pair here; a two-step could half-fail and leave a deployment
+     * with two owners or none.
+     *
+     * The outgoing owner still needs `users.instance_role = 'admin'`, though, so they do
+     * not drop out of administration entirely — and that *is* a second row, in a
+     * different table, with no transaction spanning the two. So the order is chosen for
+     * what a failure between them leaves behind:
+     *
+     *  1. **flag the outgoing owner as an administrator**, then
+     *  2. **move ownership.**
+     *
+     * A failure after (1) changes nothing anybody can observe: ownership has not moved,
+     * and the owner — who is senior to an administrator anyway — is now also flagged as
+     * one, which is what re-running this will want and what `seatInstanceOwner` already
+     * relies on. The retry is the same two writes. Reversed, a failure between them would
+     * leave the new owner seated and the old owner demoted all the way to staff or member
+     * — stripped of administration by a crash, which is precisely the outcome the second
+     * write exists to prevent.
+     *
+     * The incoming owner gets no row written at all. Ownership is senior to
+     * [InstanceRole.ADMIN], so the flag would grant them nothing today; giving it to them
+     * would only pre-decide what they fall back to if they ever hand the instance on,
+     * which is that handover's business and not this one's.
+     *
+     * ── The refusals ────────────────────────────────────────────────────────
+     *
+     * Eligibility is re-derived here, from the store and the deployment's own domain,
+     * exactly as [ownership] derives the list the picker renders — so a hand-written
+     * request naming an ineligible account is refused with the sentence the screen would
+     * have shown, rather than a bare "no". See [mayBeHandedTheInstance].
+     */
+    post(ApiRoutes.ADMIN_OWNERSHIP) {
+        val owner = call.ownershipCaller(deps, "hand this instance over") ?: return@post
+        val body = call.receiveOrNull<HandOverInstanceRequest>() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        val successor = deps.users.findById(body.userId) ?: run {
+            call.respond(HttpStatusCode.NotFound, "No such account.")
+            return@post
+        }
+        // Not an error worth a special sentence, but not a silent no-op either: a request
+        // that would leave everything exactly as it is has misunderstood something.
+        if (successor.id == owner.id) {
+            call.respond(HttpStatusCode.Conflict, "You already own this instance.")
+            return@post
+        }
+        if (!successor.mayBeHandedTheInstance(deps.identity)) {
+            call.respond(HttpStatusCode.Conflict, ineligibleReason(successor, deps.identity))
+            return@post
+        }
+        // (1) then (2) — see this route's doc for what a failure between them leaves.
+        deps.users.setInstanceAdmin(owner.id, true)
+        deps.instanceSettings.setOwnerUserId(successor.id)
+        logger.info("Instance handed over from ${owner.id} to ${successor.id} (${successor.resolvedName})")
+        // Built for the caller, who is an administrator now rather than the owner — so the
+        // response they read is the one that puts the button away and moves the row's name.
+        call.respond(deps.buildAdminSettings(owner))
+    }
+
+    /**
      * Put the instance's projects in a given order.
      *
      * **The instance owner's**, not an administrator's — see [projectSetCaller], and
@@ -296,6 +372,83 @@ private suspend fun ApplicationCall.projectSetCaller(
         return null
     }
     return user
+}
+
+/**
+ * Resolve a caller who may hand the deployment away, or respond and return null
+ * (LNL-198).
+ *
+ * A third gate beside [adminCaller] and [projectSetCaller], and it is a third rather than
+ * a reuse of the second on purpose. The two answer identically today —
+ * `AccessControl.canMutateProjects` and `canHandOverInstance` are both "the owner" — and
+ * they are different questions: one is about the project list, one is about who owns the
+ * place. A gate that borrowed the other's name would follow it the next time it moved,
+ * and this is the one gate that must never widen by accident.
+ *
+ * The refusal names the owner, like [projectSetCaller]'s: an administrator reaching this
+ * is not doing anything wrong, they are being told whose it is. The screen shows them the
+ * ownership row with no button at all, so this is very hard to reach by hand — which is
+ * exactly why it is worth having, and worth a test that calls it directly.
+ */
+private suspend fun ApplicationCall.ownershipCaller(
+    deps: BoardDependencies,
+    action: String,
+): UserRecord? {
+    val user = caller(deps)
+    if (user == null || !deps.access.canHandOverInstance(user)) {
+        respond(HttpStatusCode.Forbidden, "Only the instance owner can $action.")
+        return null
+    }
+    return user
+}
+
+/**
+ * Could this account be handed the instance (LNL-198)?
+ *
+ * **Staff who have signed in**, and nobody else. The one rule, read by the write and by
+ * the list the picker renders, so the affordance cannot offer somebody the route would
+ * refuse.
+ *
+ * Three conditions, and each rules out a real account:
+ *
+ *  - **[UserKind.STAFF]** — their address is on the deployment's own domain, so the
+ *    deployment vouches for them. A member is somebody from outside it.
+ *  - **[UserRecord.hasSignedIn]** — somebody has actually turned up holding the address.
+ *    A row an administrator added ahead of time (LNL-194) holds rungs and is perfectly
+ *    real, and ownership of a whole deployment must not land on an address that was typed
+ *    once into a dialog and never claimed.
+ *  - **[InstanceIdentity.hasStaffTier]** — the deployment still names a domain. Redundant
+ *    against the first condition on a settled instance, because `UserKind.forEmail`
+ *    returns [UserKind.MEMBER] whenever there is no domain and the startup stamp
+ *    re-derives every row. It is here because `kind` is a stored column and this is not:
+ *    a deployment whose `brand.json` lost its domain has stale STAFF rows until it next
+ *    boots, and reading the live configuration means this rule cannot be satisfied by a
+ *    row the configuration no longer agrees with.
+ *
+ * A previewed address ([UserRecord.isPreviewOnly]) cannot reach here — it is never in
+ * `selectAll` and `findById` cannot resolve it — but it would fail [UserRecord.hasSignedIn]
+ * anyway, which is the conservative direction.
+ */
+private fun UserRecord.mayBeHandedTheInstance(identity: InstanceIdentity): Boolean =
+    identity.hasStaffTier && kind == UserKind.STAFF && hasSignedIn
+
+/**
+ * Why this account cannot be handed the instance, in the words the screen uses.
+ *
+ * The route's refusal rather than a bare 409, for the reason [ApiRoutes.ADMIN_ADMISSION]'s
+ * does: somebody who reaches an enforcement the screen was supposed to keep them away from
+ * should read the same explanation the screen would have given, not a second one.
+ */
+private fun ineligibleReason(user: UserRecord, identity: InstanceIdentity): String = when {
+    !identity.hasStaffTier ->
+        "This deployment names no domain of its own, so no account here is staff and there " +
+            "is nobody it can be handed to."
+    user.kind != UserKind.STAFF ->
+        "${user.resolvedName} is a member here rather than staff, so the instance cannot be " +
+            "handed to them. Only an account on ${identity.domain} can own this deployment."
+    else ->
+        "Nobody has ever signed in to ${user.resolvedName}'s account, so the instance cannot " +
+            "be handed to it. An address that has never been claimed cannot own a deployment."
 }
 
 /**
@@ -427,9 +580,9 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
             "The order of every board, and deleting one from here, is the instance owner's. " +
                 "Yours is a board's own Delete, in its General section."
             ).takeIf { !access.canMutateProjects(caller) },
-        // Who holds this instance. LNL-198 wires Hand over…, so nobody may yet — and the
-        // reason says which ticket, rather than leaving a dead button unexplained.
-        ownership = ownership(caller, switches.ownerUserId, allUsers),
+        // Who holds this instance, who administers it alongside them, and — for the owner
+        // alone — who it could be handed to. See ownership.
+        ownership = ownership(caller, switches.ownerUserId, allUsers, identity),
         allowPublicProjects = switches.allowPublicProjects,
         hideDisplayName = switches.hideDisplayName,
         // The instance's projects, in the arranged order `selectAll` now returns — the
@@ -517,21 +670,37 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
 }
 
 /**
- * Who owns this instance and who administers it alongside them.
+ * Who owns this instance, who administers it alongside them, and who it could be handed
+ * to.
  *
  * The owner is resolved from the setting rather than from a column, because that is
  * where ownership lives — see `InstanceSettings.ownerUserId` for why it is a setting and
  * not a third value on `users.instance_role`. A stored id naming nobody (an owner whose
  * account was deleted) reads as "nobody owns this", which is the honest answer and is
  * the vacancy the startup pass re-seats into.
+ *
+ * The successor list is computed **only for the owner** (LNL-198). It is not a secret so
+ * much as an answer to a question nobody else is asking: a non-owner cannot use it, and a
+ * directory of eligible successors on every administrator's response would be a list with
+ * no purpose. See [OwnerCandidate] for who is on it.
  */
 private fun ownership(
     caller: UserRecord,
     ownerUserId: Long?,
     allUsers: List<UserRecord>,
+    identity: InstanceIdentity,
 ): InstanceOwnership {
     val owner = ownerUserId?.let { id -> allUsers.firstOrNull { it.id == id } }
     val isSelf = owner != null && owner.id == caller.id
+    // In `selectAll`'s order, which is by resolved display name — so two owners looking at
+    // the same instance are offered the same list in the same order.
+    val candidates = if (isSelf) {
+        allUsers
+            .filter { it.id != caller.id && it.mayBeHandedTheInstance(identity) }
+            .map { OwnerCandidate(userId = it.id, name = it.resolvedName, email = it.email) }
+    } else {
+        emptyList()
+    }
     return InstanceOwnership(
         ownerName = owner?.resolvedName,
         ownerEmail = owner?.email,
@@ -539,14 +708,26 @@ private fun ownership(
         // Everybody else who runs the place. The owner is named on their own row above,
         // so listing them twice would read as two people.
         adminNames = allUsers.filter { it.isInstanceAdmin && it.id != owner?.id }.map { it.resolvedName },
-        // Nobody, yet: the gesture is LNL-198's. False for the owner too, so the button
-        // is dead rather than absent for the one person it will belong to — which is what
-        // tells them it is coming rather than missing.
-        canHandOver = false,
-        handOverBlockedReason = if (isSelf) {
-            "Handing the instance over is not built yet — it is LNL-198."
-        } else {
-            "Only the instance owner can hand it over."
+        // The owner's, and nobody else's — see AccessControl.canHandOverInstance. True even
+        // with an empty candidate list, deliberately: see InstanceOwnership.canHandOver.
+        canHandOver = isSelf,
+        handOverBlockedReason = "Only the instance owner can hand it over.".takeIf { !isSelf },
+        handOverCandidates = candidates,
+        // Shown where the picker would be, so the dialog holds either a list or a reason.
+        // Two different nothings, and they send an owner to two different places: a
+        // deployment with no domain has a `brand.json` to change, where one whose staff
+        // have not arrived yet has people to wait for.
+        handOverEmptyReason = when {
+            !isSelf || candidates.isNotEmpty() -> null
+            !identity.hasStaffTier ->
+                "There is nobody to hand this instance to. Only staff — accounts on the " +
+                    "deployment's own domain — can own it, and this deployment names no domain, " +
+                    "so every account here is a member. That is deploy-time configuration " +
+                    "(brand.json), not a setting on this screen."
+            else ->
+                "There is nobody to hand this instance to. Only an account on ${identity.domain} " +
+                    "that somebody has actually signed in to can own it — an address added ahead " +
+                    "of time and never claimed cannot."
         },
     )
 }

@@ -173,6 +173,19 @@ internal class DemoLunicleApi(
         return world.adminSettingsState()
     }
 
+    /**
+     * Handing the instance over (LNL-198) — which the demo honestly cannot do.
+     *
+     * Not a stub that pretends. The demo world names no staff domain, so every account in
+     * it is a member, so **nobody is eligible**: the dialog shows the reason where the
+     * picker would be, and there is nothing to call this with. It returns the world
+     * unchanged rather than throwing, because a demo should not be able to raise an error
+     * dialog — and it moves nothing, because seating an ineligible account would teach a
+     * rule the server does not have.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    override suspend fun handOverInstance(userId: Long): AdminSettingsState = world.adminSettingsState()
+
     override suspend fun reorderProjects(ids: List<Long>): AdminSettingsState {
         world.projects.sortBy { ids.indexOf(it.id) }
         return world.adminSettingsState()

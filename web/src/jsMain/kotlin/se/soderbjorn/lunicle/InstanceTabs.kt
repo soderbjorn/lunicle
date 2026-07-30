@@ -134,6 +134,7 @@ class InstanceTabs(
     private lateinit var instanceError: HTMLElement
 
     private var projectDeleteConfirm: ConfirmDialog? = null
+    private var handOverDialog: HandOverDialog? = null
 
     /**
      * What each rebuilt list was last built from, so a busy tick does not tear it down.
@@ -181,10 +182,12 @@ class InstanceTabs(
         viewModel.start()
     }
 
-    /** Take the confirmation down with the pane. The pane cancels [scope]. */
+    /** Take the confirmations down with the pane. The pane cancels [scope]. */
     fun dismiss() {
         projectDeleteConfirm?.dismiss()
         projectDeleteConfirm = null
+        handOverDialog?.dismiss()
+        handOverDialog = null
     }
 
     // ── Who gets in ──────────────────────────────────────────────────────────
@@ -532,7 +535,7 @@ class InstanceTabs(
 
         ownerElement = element("p", "modal-message")
         adminsElement = element("p", "field-hint")
-        handOverButton = button(HAND_OVER_LABEL, "btn btn-quiet btn-small") { }
+        handOverButton = button(HAND_OVER_LABEL, "btn btn-quiet btn-small") { viewModel.onHandOverTapped() }
         handOverReason = element("p", "admin-note")
 
         instanceError = element("p", "modal-error")
@@ -592,9 +595,10 @@ class InstanceTabs(
         ownerElement.visible(state.ownerLine != null)
         adminsElement.setTextIfChanged(state.adminsLine ?: "")
         adminsElement.visible(state.adminsLine != null)
-        // Dead rather than absent, with the ticket named beside it: for the owner it says
-        // "coming", where a missing button would say "not yours". Only the owner sees it at
-        // all — see InstanceOwnership.
+        // Only the owner sees it at all — an administrator gets the row, and who holds it,
+        // and no button. Live for the owner even on a deployment where nobody is eligible:
+        // the dialog is where that is explained, because the explanation names the
+        // deployment's domain and takes three lines. See InstanceOwnership.canHandOver.
         handOverButton.visible(state.isOwnerSelf, displayValue = "inline-flex")
         handOverButton.disabled = !state.canHandOver
         handOverReason.setTextIfChanged(state.handOverBlockedReason ?: "")
@@ -701,6 +705,28 @@ class InstanceTabs(
         }
     }
 
+    /**
+     * Raise or dismiss the handover dialog (LNL-198).
+     *
+     * Keyed on presence, like the delete confirmation above, and here that keying is
+     * load-bearing rather than merely tidy: the dialog holds the picked successor and the
+     * typed phrase itself, so rebuilding it on an unrelated state emission would throw away
+     * a half-typed phrase. Nothing inside it is state the view model can restore.
+     */
+    private fun renderHandOver(state: AdminSettingsBackingViewModel.State) {
+        val pending = state.pendingHandOver
+        if (pending != null && handOverDialog == null) {
+            handOverDialog = HandOverDialog(
+                pending = pending,
+                onConfirm = { viewModel.onHandOverConfirmed(it) },
+                onCancel = { viewModel.onHandOverCancelled() },
+            ).also { it.mount(dialogHost) }
+        } else if (pending == null && handOverDialog != null) {
+            handOverDialog?.dismiss()
+            handOverDialog = null
+        }
+    }
+
     // ── Rendering ────────────────────────────────────────────────────────────
 
     private fun render(state: AdminSettingsBackingViewModel.State) {
@@ -712,6 +738,7 @@ class InstanceTabs(
         renderPeople(state)
         renderInstance(state)
         renderProjectDeleteConfirm(state)
+        renderHandOver(state)
 
         // One message, on all three tabs: a write from any of them can fail, and the reader
         // is looking at whichever one they pressed. Cheaper and more honest than guessing

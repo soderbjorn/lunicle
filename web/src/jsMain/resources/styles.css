@@ -2041,6 +2041,42 @@ body > .dt-pane-menu {
 .modal-footer-spacer { flex: 1; }
 .modal-error { color: var(--red); font-size: 12px; margin: 12px 0 0; }
 
+/* The three consequences of handing the instance over (LNL-198). A real list, and
+   styled as one: bulleted and indented so the reader can see there are three of
+   them at a glance, which is half of what the dialog is saying. Roomier line
+   spacing than a field hint, because these are sentences to be read once and
+   understood rather than a caption to be skimmed past. */
+.hand-over-consequences {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--body);
+}
+
+.hand-over-consequences li + li { margin-top: 6px; }
+
+/* The phrase to type, echoed above the field, for the two dialogs gated on one
+   (LNL-107's project delete, and LNL-198's handover). Monospaced so a trailing
+   space or a lookalike character is visible, and boxed so it reads as a thing to
+   copy rather than as part of the sentence above it. It had been leaning on the
+   browser's default <code> until now, which rendered the phrase as ordinary prose
+   in the middle of a paragraph — the one place in the product where a character
+   has to be reproduced exactly. */
+.confirm-phrase-prompt { margin: 12px 0 8px; }
+
+.confirm-phrase {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--green-hi);
+  border: 1px solid var(--border-hi);
+  border-radius: 3px;
+  padding: 2px 6px;
+  /* A handover's phrase names a person, and a person's name can be long. Wrapping
+     is better than a dialog that scrolls sideways. */
+  overflow-wrap: anywhere;
+}
+
 /* ============================================================
    Fields
    ============================================================ */

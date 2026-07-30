@@ -420,6 +420,23 @@ class HttpLunicleApi(
         }.requireSuccess()
 
     /**
+     * Hand the whole deployment to another account (LNL-198). The owner's alone.
+     *
+     * @param userId the successor, from [AdminSettingsState]'s
+     *   `ownership.handOverCandidates`. A claim rather than an eligibility: the route
+     *   re-derives who may be handed the instance and refuses anything else.
+     * @return the whole refreshed [AdminSettingsState] — which describes an instance the
+     *   caller no longer owns, and is what tells the screen to put the button away.
+     * @throws ApiFailure 403 for anybody but the owner, 404 for an account that does not
+     *   exist, 409 carrying the server's own sentence for one that may not be handed it.
+     */
+    override suspend fun handOverInstance(userId: Long): AdminSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.ADMIN_OWNERSHIP) {
+            contentType(ContentType.Application.Json)
+            setBody(HandOverInstanceRequest(userId))
+        }.requireSuccess()
+
+    /**
      * Put the instance's projects in a given order.
      *
      * The whole new order, not a delta — see [ProjectOrder]. Admin only.

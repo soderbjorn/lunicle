@@ -62,6 +62,9 @@ interface LunicleApi {
     suspend fun setInstanceSetting(key: InstanceSettingKey, isEnabled: Boolean): AdminSettingsState
     suspend fun setAdmissionPolicy(policy: AdmissionPolicy): AdminSettingsState
     suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState
+
+    /** Hand the whole deployment to another account. The owner's alone (LNL-198). */
+    suspend fun handOverInstance(userId: Long): AdminSettingsState
     suspend fun reorderProjects(ids: List<Long>): AdminSettingsState
     suspend fun deleteProjectAsAdmin(id: Long): AdminSettingsState
 

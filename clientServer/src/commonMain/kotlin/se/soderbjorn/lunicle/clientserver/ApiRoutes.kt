@@ -229,6 +229,27 @@ object ApiRoutes {
     const val ADMIN_NEW_PROJECT_AUDIENCE: String = "/api/admin/new-project-audience"
 
     /**
+     * `POST` — hand this deployment to another account, from a
+     * [HandOverInstanceRequest]. Returns the whole refreshed [AdminSettingsState].
+     * **The instance owner only** (LNL-198).
+     *
+     * The narrowest gate on this surface. [ADMIN_PROJECT_ORDER] is the owner's too, but
+     * this is the write that decides who the owner *is*. An administrator reaching it
+     * gets a 403 naming the owner, which is the same fact the absent button carries.
+     *
+     * Its own route rather than a value on [ADMIN_INSTANCE_SETTINGS] for two reasons
+     * pointing the same way: it is neither a boolean nor governed by the administrator
+     * gate every switch there shares, and it has refusals of its own to make — the named
+     * account has to exist and has to be eligible, and eligibility is re-derived at the
+     * route and never read off the request.
+     *
+     * Answers with the refreshed state like every other write here, which matters more
+     * than usual: the caller is no longer the owner by the time they read it, so the
+     * response is what tells the screen to put the button away.
+     */
+    const val ADMIN_OWNERSHIP: String = "/api/admin/ownership"
+
+    /**
      * `POST` — put the instance's projects in a given order, from a [ProjectOrder].
      * Returns the whole refreshed [AdminSettingsState]. Admin only.
      *

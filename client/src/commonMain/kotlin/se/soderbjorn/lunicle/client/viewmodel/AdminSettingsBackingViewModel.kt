@@ -21,8 +21,12 @@
  * Instance-adminship is not editable either, and that one is not a decision this file gets
  * to make: there is no route on the server that sets it. The first account to sign in
  * becomes the administrator and the boot pass seats them as owner. The Instance tab says
- * who holds it rather than offering a control that would 404 — and Hand over…, which is
- * the one gesture that would change it, is LNL-198's.
+ * who holds it rather than offering a control that would 404.
+ *
+ * **Ownership is the one exception**, and only in one direction (LNL-198): the owner may
+ * hand the whole deployment to somebody else. Not "add an owner" — there is one at a time,
+ * so the gesture is a move, and the person making it cannot reverse it. See
+ * [PendingHandOver] and [handOverPhrase] for the ceremony that follows from that.
  *
  * ── What a new project starts with is a setting, not a policy ───────────────
  *
@@ -51,6 +55,7 @@ import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AdminUser
 import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
+import se.soderbjorn.lunicle.clientserver.OwnerCandidate
 import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunicle.clientserver.TierCard
 
@@ -237,8 +242,69 @@ const val PROJECT_ORDER_SINGLE: String = "One project, so there is no order to a
 /** The heading over ownership. */
 const val OWNERSHIP_TITLE: String = "Ownership"
 
-/** The label on the transfer button LNL-198 will wire up. */
+/** The label on the transfer button. */
 const val HAND_OVER_LABEL: String = "Hand over…"
+
+/** The handover dialog's title. */
+const val HAND_OVER_TITLE: String = "Hand over this instance"
+
+/**
+ * What the dialog leads with (LNL-198).
+ *
+ * The consequence before the control, deliberately. Every other dialog in the product
+ * leads with what you are about to do; this one leads with what you are about to stop
+ * being, because that is the half somebody looking for "how do I add another owner" has
+ * not understood — there is no adding, there is only moving.
+ */
+const val HAND_OVER_LEAD: String =
+    "You are the owner of this deployment. One account holds that at a time, so handing it " +
+        "over means giving it up."
+
+/**
+ * The three things that change, listed rather than summarised.
+ *
+ * Listed because they are three different kinds of consequence and a paragraph would let a
+ * reader carry away only the first: what they gain, what you keep, and what neither of you
+ * can undo. The third is the one this whole ceremony exists for.
+ */
+val HAND_OVER_CONSEQUENCES: List<String> = listOf(
+    "They get this instance's settings, every project on it, and the right to promote and " +
+        "demote instance administrators.",
+    "You become an instance administrator. Every project you own stays yours.",
+    "Only they can hand it back. You will not be able to undo this yourself.",
+)
+
+/** The label over the successor picker. */
+const val HAND_OVER_PICK_LABEL: String = "New owner"
+
+/** What the picker will and will not offer, said beside it rather than discovered. */
+const val HAND_OVER_PICK_HINT: String =
+    "Staff who have signed in. A member cannot own this deployment, and neither can an address " +
+        "somebody added that has never been signed in to."
+
+/** What to show until somebody is picked, in place of the phrase field. */
+const val HAND_OVER_PICK_FIRST: String = "Choose who gets it, and this will ask you to type a phrase."
+
+/** The destructive button's label. Says what it does, as every confirmation here does. */
+const val HAND_OVER_CONFIRM_LABEL: String = "Hand it over"
+
+/**
+ * The sentence somebody has to type to arm the handover.
+ *
+ * Naming the *successor* rather than a generic phrase, which is the one difference from
+ * [DELETE_PROJECT_CONFIRMATION_PHRASE] worth having: the dangerous property here is not
+ * that ownership moves, it is that it moves to a specific person and the mover cannot take
+ * it back. A phrase that names them cannot be typed by somebody who has misread the picker.
+ *
+ * Matched case-insensitively and trimmed by [ConfirmDialog]'s rule, so it is a sentence to
+ * mean rather than a spelling test — and the name is echoed for copying, so an accented or
+ * non-Latin name is not a barrier.
+ */
+fun handOverPhrase(name: String): String = "hand over to $name"
+
+/** The sentence over the phrase field, so the field is not an unexplained box. */
+fun handOverPrompt(name: String): String =
+    "This cannot be undone. Type the phrase below to hand this deployment to $name."
 
 /** What to say when nobody owns this instance yet. */
 const val NO_OWNER_LINE: String =
@@ -375,6 +441,34 @@ data class PendingProjectDelete(
 )
 
 /**
+ * The pending "hand this instance over" dialog, while it is up (LNL-198).
+ *
+ * Carries every string and every row the dialog draws, so the view decides nothing — the
+ * shape [PendingProjectDelete] uses, one rung more serious.
+ *
+ * What it deliberately does **not** carry is who is currently picked, or what has been
+ * typed. Those live in the dialog for the length of one gesture and are reported once, on
+ * confirm, exactly as `AddPersonDialog` handles its address and its rung. Holding them here
+ * would mean a state emission per keystroke, and every emission repaints three tabs.
+ *
+ * @property candidates who it can be handed to, in the server's order. Empty is a real and
+ *   expected state — see [emptyReason], which is what the dialog shows instead.
+ * @property emptyReason why there is nobody, or null when there is somebody. Exactly one of
+ *   this and a non-empty [candidates] is meaningful, so the dialog shows a picker or a
+ *   sentence and never both.
+ */
+data class PendingHandOver(
+    val title: String,
+    val lead: String,
+    val consequences: List<String>,
+    val pickLabel: String,
+    val pickHint: String,
+    val candidates: List<OwnerCandidate>,
+    val emptyReason: String?,
+    val confirmLabel: String,
+)
+
+/**
  * Drives the three instance-wide tabs.
  *
  * @param storage the client's one seam onto the server; defaulted so this is testable
@@ -417,6 +511,15 @@ class AdminSettingsBackingViewModel(
          * [selectedUserId] is state and not a field.
          */
         val pendingProjectDeleteId: Long? = null,
+        /**
+         * Whether the handover dialog is up (LNL-198).
+         *
+         * A flag rather than a captured lambda, for [pendingProjectDeleteId]'s reason: the
+         * dialog has to survive the re-render every write on these tabs causes. It carries
+         * no successor, because the successor is picked inside the dialog — see
+         * [PendingHandOver].
+         */
+        val isHandingOver: Boolean = false,
         /**
          * Whether these tabs have reordered or deleted a project since the pane opened.
          *
@@ -589,11 +692,39 @@ class AdminSettingsBackingViewModel(
         /** Whether the reader owns the instance — what decides whether Hand over… shows at all. */
         val isOwnerSelf: Boolean get() = settings?.ownership?.isOwnerSelf == true
 
-        /** Whether Hand over… is live. False for everybody until LNL-198. */
+        /** Whether Hand over… is live. The owner's, and true even when nobody is eligible. */
         val canHandOver: Boolean get() = settings?.ownership?.canHandOver == true
 
         /** Why it is dead, when it is. Beside the control rather than instead of it. */
         val handOverBlockedReason: String? get() = settings?.ownership?.handOverBlockedReason
+
+        /**
+         * The handover dialog to show, or null (LNL-198).
+         *
+         * Derived from [isHandingOver] and the state in hand, so the candidate list is
+         * always the one the last response named — and so a dialog somehow left up after
+         * ownership moved resolves to null on the next emission rather than offering a
+         * gesture the caller can no longer make.
+         */
+        val pendingHandOver: PendingHandOver?
+            get() {
+                if (!isHandingOver) return null
+                val ownership = settings?.ownership ?: return null
+                if (!ownership.canHandOver) return null
+                return PendingHandOver(
+                    title = HAND_OVER_TITLE,
+                    lead = HAND_OVER_LEAD,
+                    consequences = HAND_OVER_CONSEQUENCES,
+                    pickLabel = HAND_OVER_PICK_LABEL,
+                    pickHint = HAND_OVER_PICK_HINT,
+                    candidates = ownership.handOverCandidates,
+                    // The server's sentence, which names this deployment's own domain or its
+                    // absence. Never written here: the client does not know the domain and
+                    // must not guess at why a list it was handed is empty.
+                    emptyReason = ownership.handOverEmptyReason,
+                    confirmLabel = HAND_OVER_CONFIRM_LABEL,
+                )
+            }
 
         /** Whether this caller may reorder or delete across every board. The owner's alone. */
         val canReorderProjects: Boolean get() = settings?.canReorderProjects == true
@@ -798,6 +929,37 @@ class AdminSettingsBackingViewModel(
         write("Could not delete that project.", marksProjectsChanged = true) {
             storage.deleteProjectAsAdmin(id)
         }
+    }
+
+    /** Hand over… was pressed: raise the dialog (LNL-198). */
+    fun onHandOverTapped() {
+        // Refused locally as well as at the route, so a click on a control the caller may
+        // not use does nothing rather than opening a dialog whose confirm would 403.
+        if (!_stateFlow.value.canHandOver) return
+        _stateFlow.value = _stateFlow.value.copy(isHandingOver = true)
+    }
+
+    /** The dialog was dismissed without handing anything over. */
+    fun onHandOverCancelled() {
+        _stateFlow.value = _stateFlow.value.copy(isHandingOver = false)
+    }
+
+    /**
+     * The handover was confirmed, with the phrase typed and a successor chosen.
+     *
+     * Closes the dialog first so it does not linger over the busy write, and re-checks the
+     * successor against the candidate list the last response carried: the dialog holds the
+     * pick for the length of the gesture, and a list that moved underneath it (another
+     * administrator deleting the account, say) would otherwise send an id the route has to
+     * refuse. The route re-derives eligibility regardless — see AccessControl and
+     * AdminRoutes — so this is the affordance, not the rule.
+     */
+    fun onHandOverConfirmed(userId: Long) {
+        val state = _stateFlow.value
+        if (!state.canHandOver) return
+        if (state.settings?.ownership?.handOverCandidates.orEmpty().none { it.userId == userId }) return
+        _stateFlow.value = state.copy(isHandingOver = false)
+        write("Could not hand this instance over.") { storage.handOverInstance(userId) }
     }
 
     fun onErrorDismissed() {
