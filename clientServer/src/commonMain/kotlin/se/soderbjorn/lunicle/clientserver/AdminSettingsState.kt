@@ -1,22 +1,38 @@
 /**
- * Wire types for the instance settings dialog: the accounts on this server, what
- * each of them holds in each project, and who may bring an agent.
+ * Wire types for the three instance-wide tabs of the settings pane — **Who gets in**,
+ * **People** and **Instance** (LNL-195).
  *
- * The counterpart to [ProjectSettingsState], and the split between them is the
- * whole reason this file exists. That one is scoped by a project in its URL and
- * answers "who can do what *here*" — it is the thing an admin opens while
- * configuring one board. This one is scoped by the instance and answers "what is
- * this account, everywhere" — the question you have when somebody joins, or
- * leaves, or asks why their agent cannot connect. Neither view can be assembled
- * from the other without N requests, so there are two.
+ * The counterpart to [ProjectSettingsState], and the split between them is the whole
+ * reason this file exists. That one is scoped by a project in its URL and answers "who
+ * can do what *here*"; this one is scoped by the instance and answers "what is this
+ * account, everywhere" and "what is true of this deployment". Neither view can be
+ * assembled from the other without N requests, so there are two.
  *
- * Unlike [ProjectSettingsState] there is no narrowed half here. That state is sent
- * to every signed-in reader with the admin sections omitted, because a non-admin
- * still has a notification toggle of their own to manage in that dialog. Nothing
- * in *this* one belongs to a non-admin, so the route refuses them outright rather
- * than sending an empty shell — see AdminRoutes.
+ * Unlike [ProjectSettingsState] there is no narrowed half. That state is sent to every
+ * signed-in reader with the admin sections omitted, because a non-admin still has a
+ * notification toggle of their own in it. Nothing here belongs to a non-admin, so the
+ * route refuses them outright rather than sending an empty shell — see AdminRoutes, and
+ * see `SettingsPane.renderTabs`, which hides all three tabs rather than showing three
+ * empty ones.
+ *
+ * ── One state, three tabs, and why it is not three requests ─────────────────
+ *
+ * The whole payload is a few hundred bytes per account. Splitting it would buy a
+ * spinner per tab and cost the property every write here relies on: a write returns the
+ * **whole** refreshed state, so no screen ever merges two objects or has to guess what
+ * its own edit did elsewhere. Flipping "members may create projects" changes the tier
+ * card, and nothing else on any tab has to be told.
+ *
+ * ── Everything rendered as rungs, not as ticks (LNL-195) ────────────────────
+ *
+ * The per-project rights table used to be a grid of seven ticks per project per person,
+ * built from `RoleDescription` and a list of held keys. A person holds **one** rung per
+ * project now, so the table is one row per project saying which rung — and the rung
+ * vocabulary travels as [RungOption], the same type the project's own Access section
+ * uses, so the two surfaces cannot describe a rung differently.
  *
  * @see ProjectSettingsState
+ * @see ProjectAccessState for the audience/rung vocabulary this reuses
  * @see se.soderbjorn.lunicle.clientserver.ApiRoutes.ADMIN_SETTINGS
  */
 package se.soderbjorn.lunicle.clientserver
@@ -26,155 +42,251 @@ import kotlinx.serialization.Serializable
 /**
  * What one account holds in one project.
  *
- * Sent for **every** project on the instance, including the ones where this user
- * holds nothing. "No rights in Lunamux" is the answer an admin is most often
- * looking for — it is what they check when somebody says they cannot file an issue
- * — and a list that omitted the empty rows would answer that question with
- * silence, which reads identically to a project that does not exist.
+ * Sent for **every** project on the instance, including the ones where this account
+ * holds nothing. "No access to Lunamux" is the answer an administrator is most often
+ * looking for — it is what they check when somebody says they cannot file an issue —
+ * and a list that omitted the empty rows would answer that question with silence, which
+ * reads identically to a project that does not exist.
  *
- * @property projectName the project's name, so the detail pane can label the row
- *   without holding a second copy of the project list to look ids up in.
- * @property heldRoleKeys the roles this user holds here, as [RoleDescription.key].
- *   Keys rather than an enum, for [ProjectMember.roleKeys]' reason: the client
- *   renders them against [AdminSettingsState.roles] and has no business knowing
- *   what any of them mean. The **raw grant**, deliberately — see [canSeeProject]
- *   for why "can they see it" is not one of these keys.
- * @property canSeeProject whether this user can read this project *at all*, which
- *   is not the same as holding [RoleKeys.VIEWER]. The server's
- *   [se.soderbjorn.lunicle.AccessControl.canReadProject] says yes to a public
- *   project for everyone, and to anyone holding any role here — so a user with no
- *   `view_project` grant, or no grant at all on a public board, still sees it. The
- *   dialog draws the "see this project" row from this and every other row from
- *   [heldRoleKeys]; without it that one row shows a red cross where the server
- *   says yes. Effective, not raw, and the counterpart to [heldRoleKeys] the way
- *   [AdminUser.isMcpEnabled] is the effective counterpart to a bare permission.
+ * @property projectName the project's name, so the pane can label the row without
+ *   holding a second copy of the project list to look ids up in.
+ * @property roleKey the rung this account's **own row** holds here, as
+ *   [se.soderbjorn.lunicle.ProjectRole.key], or null for no own row. At most one: a
+ *   person holds one rung per project. Null is extremely common and is not the whole
+ *   answer — see [effectiveRoleKey].
+ * @property effectiveRoleKey what they can **actually do** here: the better of their own
+ *   row and the audience rows this project admits them under, which is the server's
+ *   `AccessControl.effectiveRole` rule. Null for "no access at all". This is the field
+ *   the row renders, because it is the question being asked; [roleKey] is what an
+ *   administrator would have to *change* to alter it, which is why both travel.
+ * @property viaAudience where the effective rung comes from when it is not their own row
+ *   — "the members row" — or null when the own row is the whole story. The `max` rule
+ *   made visible at the one place somebody would otherwise be surprised by it, exactly
+ *   as [PersonRow.effectiveLine] does on a project's own Access list.
  */
 @Serializable
 data class AdminProjectRights(
     val projectId: Long,
     val projectName: String,
-    val heldRoleKeys: List<String> = emptyList(),
-    val canSeeProject: Boolean = false,
+    val roleKey: String? = null,
+    val effectiveRoleKey: String? = null,
+    val viaAudience: String? = null,
 )
 
 /**
  * One account on this instance, whole.
  *
- * Richer than [ProjectMember] — that one is a row in a grant table and carries a
- * name and an id because a grant needs no more. This is the *subject* of a screen,
- * so it carries what somebody looking at that screen needs to be sure they are
- * looking at the right person.
+ * Richer than [ProjectMember] — that one is a row in a grant table and carries a name
+ * and an id because a grant needs no more. This is the *subject* of a screen, so it
+ * carries what somebody looking at that screen needs to be sure they are looking at the
+ * right person.
  *
  * That includes the e-mail, which is the one field here worth stopping on. It
- * deliberately does not cross the wire in [UserRecord.toSignedInUser] or in
- * [ProjectMember], and the reason it does here is that this is the account
- * directory and nothing else: two people called "Robert" are not a hypothetical,
- * and an admin about to turn off somebody's agent access has to know which Robert.
- * It reaches admins only — the route is refused to everyone else, so this is not a
- * field that became visible, it is a field that became visible *to the one role
- * that can already impersonate any of these accounts*.
+ * deliberately does not cross the wire in `UserRecord.toSignedInUser` or in
+ * [ProjectMember], and the reason it does here is that this is the account directory and
+ * nothing else: two people called "Robert" are not a hypothetical, and an administrator
+ * looking at somebody's access has to know which Robert. It reaches administrators only
+ * — the route is refused to everyone else.
  *
- * @property email what we last learned, or null for "we do not know". Null is
- *   common and is a fact worth rendering — an account with no address receives no
- *   notifications, which is a thing an admin gets asked about.
- * @property isSysAdmin whether this account is an instance admin. Sent because it
- *   changes what the rights list *means*: [se.soderbjorn.lunicle.AccessControl]
- *   says yes to an admin before it looks at a single role, so an admin's empty
- *   project rows do not mean what they say. The detail pane writes a sentence
- *   instead of a table for them.
- * @property isSelf whether this is the caller, shown for the reason the
- *   impersonation menu shows it: the list is of everyone, and finding yourself in
- *   it should not take a moment's thought.
- * @property isMcpAllowed whether this account's **tier** is permitted agent access
- *   (LNL-192). **Read-only**, and derived: the permission is two switches on
- *   [AdminSettingsState] now, and there is no per-person override in this design —
- *   so this reports which side of them an account falls on rather than something
- *   this screen sets. **Not an affordance** — unlike almost everything else on this
- *   wire it mirrors a real server-side gate, re-read per request by both
- *   `/oauth/authorize` and `/mcp`.
- * @property isMcpEnabled whether the user has switched agent access on for
- *   themselves. **Read-only here**, and shown next to the permission rather than
- *   hidden because "permitted, and they have not switched it on" and "permitted,
- *   and running" are different situations for an admin to be looking at — the
- *   first explains why somebody who was just granted access still reports that
- *   their agent does not work.
+ * @property email what we last learned, or null for "we do not know". Null is common and
+ *   is a fact worth rendering — an account with no address receives no notifications,
+ *   which is a thing an administrator gets asked about.
+ * @property tierLabel where this account stands on the instance ladder, in a word:
+ *   "Member", "Staff", "Instance admin", "Instance owner". Written server-side because
+ *   the ladder is the server's and because staff-ness is derived from a domain no client
+ *   is shown (LNL-195).
+ * @property isSysAdmin whether this account runs the instance — an administrator or the
+ *   owner. Sent as well as [tierLabel] because it changes what the project rows *mean*:
+ *   `AccessControl` says yes to an administrator before it looks at a single rung, so
+ *   their empty rows do not mean what they say. The pane writes a sentence instead of a
+ *   table for them.
+ * @property isSelf whether this is the caller, shown for the reason the impersonation
+ *   menu shows it: the list is of everyone, and finding yourself in it should not take a
+ *   moment's thought.
+ * @property hasSignedIn whether anybody has ever signed into this account (LNL-194 added
+ *   `users.signed_in_at`). False for an address an administrator added ahead of time; the
+ *   row wears a NOT SIGNED IN badge, because a grant nobody has claimed looks exactly
+ *   like one that has.
  *
- *   An admin cannot set it. It is the user's own answer, and a screen that let
- *   somebody else give it would be recording a preference the user never
- *   expressed. See the server's canUseMcp for how the pair combines.
- * @property projects every project on the instance, with what this user holds in
- *   each. See [AdminProjectRights].
+ *   **A never-signed-in row never expires.** There is no cleanup job, no age warning and
+ *   no "added 90 days ago" nag anywhere in this design: the row is somebody's deliberate
+ *   act, its rungs are live, and the only thing that should remove it is a person
+ *   deciding to. See LNL-195.
+ * @property isMcpAllowed whether this account's **tier** is permitted agent access.
+ *   Read-only and derived — the permission is two switches per tier on this same state
+ *   (see [TierCard.mayUseAgents]), and there is no per-person override in this design.
+ *   The per-account switch that used to sit beside this is **gone**.
+ * @property isMcpEnabled whether the person has switched agent access on for themselves.
+ *   Read-only here too, and shown beside the permission rather than hidden, because
+ *   "permitted, and they have not switched it on" and "permitted, and running" are
+ *   different situations to be looking at — the first explains why somebody freshly
+ *   permitted still reports that their agent does not work. An administrator cannot set
+ *   it: it is the person's own answer, and a screen that let somebody else give it would
+ *   record a preference the person never expressed.
+ * @property projects every project on the instance, with what this account holds in each.
+ *   See [AdminProjectRights].
  */
 @Serializable
 data class AdminUser(
     val userId: Long,
     val name: String,
     val email: String? = null,
+    val tierLabel: String = "",
     val isSysAdmin: Boolean = false,
     val isSelf: Boolean = false,
+    val hasSignedIn: Boolean = true,
     val isMcpAllowed: Boolean = false,
     val isMcpEnabled: Boolean = false,
     val projects: List<AdminProjectRights> = emptyList(),
 )
 
 /**
- * Everything the instance settings dialog needs, in one round-trip.
+ * One tier of account, as the Who-gets-in tab draws it: how many there are, and the two
+ * things the whole tier may do (LNL-195).
  *
- * One state rather than "a user list, then a detail fetch per click", which is the
- * shape this obviously suggests and is the wrong one here. The whole payload is a
- * few hundred bytes per account; a per-click fetch would buy nothing and would put
- * a spinner inside a master-detail pane, where the entire point is that picking a
- * name is instant. It also means a write can return the whole thing — see
- * [LunicleApi.setInstanceSetting] — so the dialog never merges two objects.
+ * A card per tier rather than four switches in a column, because the switches are only
+ * meaningful next to the answer to "how many people is this?" — a deployment where every
+ * account is staff and none is a member does not need to think hard about the members
+ * row, and cannot tell that from a list of switches.
  *
- * @property roles what a role *is*, on this server. Sent rather than compiled into
- *   the bundle, for [RoleDescription]'s reason: the client renders
- *   [AdminProjectRights.heldRoleKeys] against this list and a hardcoded copy would
- *   describe a rolled-back server's roles wrongly.
- * @property users every account, ordered as the store returns them — by name, case
- *   insensitively. The order is the server's so that two admins looking at the same
- *   instance see the same list.
- * @property projects every project on the instance, in the order a system
- *   administrator arranged them (LNL-93) — the same order the picker shows. The
- *   Projects tab of the dialog reorders and deletes from this list; a reorder or a
- *   delete returns a whole fresh state with this field rewritten, so the dialog
- *   never merges two objects. Empty on a fresh instance with no projects yet, and
- *   for the many deployments where only one exists there is nothing to arrange —
- *   the tab says so rather than showing a single row with dead arrows.
- * @property admission who may hold an account on this deployment, and which of the
- *   three answers the deployment can actually honour (LNL-192). Computed
- *   server-side, greying and all — see [AdmissionState], which says at length why a
- *   client must not re-derive it.
- * @property allowPublicProjects whether a project's owner may hand its guest
- *   audience a rung — that is, publish a board to the world (LNL-192). Off by
- *   default, and a veto rather than a default: while it is off the server refuses a
- *   guest audience row whoever writes it, and every project's Access list greys that
- *   row. See [InstanceSettingKey.ALLOW_PUBLIC_PROJECTS].
- * @property staffMayCreateProjects whether an account on the deployment's own domain
- *   may create a project. See [InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS]. Note
- *   an instance administrator may regardless, being senior to both tiers — so this
- *   being off does not mean nobody can.
- * @property memberMayCreateProjects the same, for everybody else signed in.
- * @property staffMayUseAgents whether an account on the deployment's own domain is
- *   permitted to connect an agent. **A permission, not the access**: the person
- *   still switches it on themselves. See [InstanceSettingKey.STAFF_MAY_USE_AGENTS].
- * @property memberMayUseAgents the same, for everybody else signed in.
- * @property hideDisplayName whether the display-name override in the profile dialog
- *   is hidden (LNL-137). Its own field rather than reading it back off
- *   [SessionState] because this is the admin's editable copy — the write returns a
- *   whole fresh state with it rewritten, the same way every other switch in this
- *   dialog does. See [InstanceSettingKey.HIDE_DISPLAY_NAME].
+ * **Guests get no card.** There is no account to permit: a guest is the absence of one,
+ * so neither creating a project nor connecting an agent is a thing they could be
+ * permitted to do. What a guest may *read* is a project's own guest audience row.
+ *
+ * @property title what to call them — "Staff", "Members".
+ * @property subtitle who that is, in one sentence. Written server-side because the staff
+ *   card's answer names the deployment's own domain.
+ * @property accountCount how many accounts stand at this tier right now. Administrators
+ *   and the owner are counted at *their* rung and not here — they are senior to both
+ *   tiers and are permitted regardless, so counting them in would make the card claim
+ *   people the switches do not govern.
+ * @property createKey the switch a change to [mayCreateProjects] names. Carried rather
+ *   than derived in the browser so the view keeps making no decisions, and so a tier
+ *   added later needs no new branch in a renderer.
+ * @property agentsKey likewise for [mayUseAgents].
+ */
+@Serializable
+data class TierCard(
+    val key: String,
+    val title: String,
+    val subtitle: String = "",
+    val accountCount: Int = 0,
+    val mayCreateProjects: Boolean = false,
+    val mayUseAgents: Boolean = false,
+    val createKey: InstanceSettingKey,
+    val agentsKey: InstanceSettingKey,
+)
+
+/**
+ * What this deployment is, as read-only fact (LNL-195).
+ *
+ * Every field here is deploy-time configuration that no screen can edit — `brand.json`,
+ * two environment variables, a mail transport. It is sent because an administrator
+ * asking "why is this person a member rather than staff" or "why can I not pick that
+ * admission policy" needs the inputs visible *somewhere*, and the answer being invisible
+ * is what makes the greying beside a policy look like a bug.
+ *
+ * @property staffDomain the organisation's own domain, or null when it has none. Null
+ *   means there is no staff tier at all: everybody signed in is a member.
+ * @property waysIn the doors, named — "Google", "mailed code". Empty means nobody can
+ *   sign in here at all, which is a real (and usually accidental) configuration.
+ * @property googlePin the domain Google's account chooser is pinned to, or null for an
+ *   open chooser. A real gate and not a hint: the server refuses a Google account whose
+ *   hosted-domain claim does not match.
+ * @property brandName what a brand directory calls this deployment, or null for the
+ *   default look. Independent of [staffDomain] — a deployment can be branded without
+ *   naming a domain, and vice versa.
+ */
+@Serializable
+data class DeploymentFacts(
+    val staffDomain: String? = null,
+    val waysIn: List<String> = emptyList(),
+    val googlePin: String? = null,
+    val brandName: String? = null,
+)
+
+/**
+ * Who owns this instance, and who administers it alongside them (LNL-195).
+ *
+ * Shown to every administrator, because "who do I ask" is the question an administrator
+ * who has just hit a refusal is holding. **Handing it over is the owner's alone** — see
+ * [canHandOver], and LNL-198, which is the ticket that wires the gesture up.
+ *
+ * @property ownerName the owner's name, or null when nobody owns this instance yet —
+ *   which is a real state on a volume that has never had an account, and one worth
+ *   saying out loud rather than rendering as a blank.
+ * @property ownerEmail the owner's address, for the reason [AdminUser.email] crosses:
+ *   two accounts can share a display name and this is the one row where being sure
+ *   matters most.
+ * @property isOwnerSelf whether the caller is the owner. What decides whether Hand
+ *   over… is offered at all.
+ * @property adminNames every instance administrator other than the owner, in the
+ *   directory's order. Names only: this is a statement about who holds the instance, and
+ *   the People tab is where an account is looked at.
+ * @property canHandOver whether the caller may hand the instance to somebody else. True
+ *   for the owner alone; an administrator sees the row, and who holds it, and no button.
+ * @property handOverBlockedReason why not, when they may not — shown beside the dead
+ *   control rather than instead of it, the rule this whole rework follows.
+ */
+@Serializable
+data class InstanceOwnership(
+    val ownerName: String? = null,
+    val ownerEmail: String? = null,
+    val isOwnerSelf: Boolean = false,
+    val adminNames: List<String> = emptyList(),
+    val canHandOver: Boolean = false,
+    val handOverBlockedReason: String? = null,
+)
+
+/**
+ * Everything the three instance tabs need, in one round-trip.
+ *
+ * @property rungs what a rung *is*, on this server — the same [RungOption] list the
+ *   project Access section is handed. Sent rather than compiled into the bundle so the
+ *   client renders [AdminProjectRights] against the server's vocabulary and a rolled-back
+ *   server cannot be described with a rung it does not have. This **replaced**
+ *   `roles: List<RoleDescription>`, which described a world of independent privileges
+ *   that no longer exists.
+ * @property users every account, administrators first and then by name. The order is the
+ *   server's so that two administrators looking at the same instance see the same list.
+ * @property projects every project on the instance, in the order an administrator
+ *   arranged them (LNL-93) — the order every picker and rail shows. Reordered from the
+ *   **Instance** tab as of LNL-195: display order is an instance-wide fact, and the
+ *   Projects rail is per-caller. Empty on a fresh instance, and with one project there
+ *   is nothing to arrange, so the tab says so rather than showing dead arrows.
+ * @property admission who may hold an account here, and which of the three answers this
+ *   deployment can honour. Computed server-side, greying and all — see [AdmissionState]
+ *   and `InstanceIdentity.outsiderCanArrive`, which says at length why a client must not
+ *   re-derive it.
+ * @property deployment the read-only facts the greying is computed from. See
+ *   [DeploymentFacts].
+ * @property tiers one card per tier of account that exists here — Members always, Staff
+ *   only on a deployment that names a domain. See [TierCard].
+ * @property newProjectAudiences the audience rows a **new** project is created with,
+ *   using the same [AudienceRow] type a project's own Access list uses. Copied into the
+ *   project at creation and never consulted again, so editing this changes nothing about
+ *   any project that already exists. A guest row is greyed while [allowPublicProjects] is
+ *   off, exactly as it is on a project.
+ * @property ownership who owns and who administers this instance. See [InstanceOwnership].
+ * @property allowPublicProjects whether a project's owner may hand its guest audience a
+ *   rung — publishing a board to the world. **Off by default**, so out of the box every
+ *   project's Guests row is greyed; that is deliberate. A veto rather than a default:
+ *   while it is off the server refuses a guest row whoever writes it.
+ * @property hideDisplayName whether the display-name override in the You tab is hidden
+ *   (LNL-137). Its own field rather than read back off [SessionState] because this is the
+ *   administrator's editable copy — the write returns a whole fresh state with it
+ *   rewritten, as every switch here does.
  */
 @Serializable
 data class AdminSettingsState(
-    val roles: List<RoleDescription> = emptyList(),
+    val rungs: List<RungOption> = emptyList(),
     val users: List<AdminUser> = emptyList(),
     val projects: List<ProjectSummary> = emptyList(),
     val admission: AdmissionState = AdmissionState(),
+    val deployment: DeploymentFacts = DeploymentFacts(),
+    val tiers: List<TierCard> = emptyList(),
+    val newProjectAudiences: List<AudienceRow> = emptyList(),
+    val ownership: InstanceOwnership = InstanceOwnership(),
     val allowPublicProjects: Boolean = false,
-    val staffMayCreateProjects: Boolean = false,
-    val memberMayCreateProjects: Boolean = false,
-    val staffMayUseAgents: Boolean = false,
-    val memberMayUseAgents: Boolean = false,
     val hideDisplayName: Boolean = false,
 )

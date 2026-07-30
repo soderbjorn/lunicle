@@ -32,7 +32,11 @@ import se.soderbjorn.lunicle.clientserver.AdmissionState
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AdminUser
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.BoardState
+import se.soderbjorn.lunicle.clientserver.DeploymentFacts
+import se.soderbjorn.lunicle.clientserver.InstanceOwnership
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.CommentView
 import se.soderbjorn.lunicle.clientserver.IssueDetail
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
@@ -45,12 +49,10 @@ import se.soderbjorn.lunicle.clientserver.NotificationSummary
 import se.soderbjorn.lunicle.clientserver.ProjectPermissionsView
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
-import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.PersonRow
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectSection
 import se.soderbjorn.lunicle.clientserver.ProjectSectionKeys
-import se.soderbjorn.lunicle.clientserver.RoleDescription
 import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SignedInUser
@@ -59,6 +61,7 @@ import se.soderbjorn.lunicle.clientserver.StatisticWindow
 import se.soderbjorn.lunicle.clientserver.StatisticsState
 import se.soderbjorn.lunicle.clientserver.ProjectStatistics
 import se.soderbjorn.lunicle.clientserver.StatusItem
+import se.soderbjorn.lunicle.clientserver.TierCard
 import se.soderbjorn.lunicle.clientserver.TokenModes
 import se.soderbjorn.lunicle.clientserver.UserOption
 import se.soderbjorn.lunicle.clientserver.VocabularyEntry
@@ -287,6 +290,14 @@ internal class DemoWorld {
     var memberMayUseAgents: Boolean = false
     var admission: AdmissionPolicy = AdmissionPolicy.ANYONE
     var hideDisplayName: Boolean = false
+
+    /**
+     * What a new project starts out admitting, by audience key (LNL-195).
+     *
+     * Empty, like a real fresh instance: out of the box a new project admits nobody. The
+     * demo never creates one, so this is only ever the setting being looked at and moved.
+     */
+    val newProjectAudiences: MutableMap<String, String> = mutableMapOf()
 
     var demoUserId: Long = 0
 
@@ -630,40 +641,73 @@ internal class DemoWorld {
     // ── Instance administration ───────────────────────────────────────────────
 
     fun adminSettingsState(): AdminSettingsState = AdminSettingsState(
-        // The instance dialog's per-project rights table still speaks in role keys; it is
-        // ticket 5's to rebuild, so the demo hands it the rungs under the same shape.
-        roles = DEMO_RUNGS.map { RoleDescription(it.key, it.description) },
+        rungs = DEMO_RUNGS,
         users = users.map { u ->
             AdminUser(
                 userId = u.id,
                 name = u.name,
                 email = u.email,
+                // No staff tier in the demo — it is an unbranded install with no domain of
+                // its own — so everybody who is not the visitor is a plain member.
+                tierLabel = if (u.isSysAdmin) "Instance owner" else "Member",
                 isSysAdmin = u.isSysAdmin,
                 isSelf = u.id == demoUserId,
+                // The crew never sign in; only the visitor has. That is what puts the
+                // NOT SIGNED IN badge on the rest, which is the real thing to show off.
+                hasSignedIn = u.id == demoUserId,
                 isMcpAllowed = false,
                 isMcpEnabled = false,
                 projects = projects.map { p ->
+                    val own = p.members[u.id]
                     AdminProjectRights(
                         projectId = p.id,
                         projectName = p.name,
-                        heldRoleKeys = listOfNotNull(p.members[u.id]),
-                        canSeeProject = true,
+                        roleKey = own,
+                        // No audience rows in the demo's own-row-only world, so the effective
+                        // rung is simply the own row — and nothing to say about where it came
+                        // from. See projectAccessState, which is the same shape one level down.
+                        effectiveRoleKey = own,
                     )
                 },
             )
         },
         projects = projects.map(::projectSummary),
-        allowPublicProjects = allowPublicProjects,
-        staffMayCreateProjects = staffMayCreateProjects,
-        memberMayCreateProjects = memberMayCreateProjects,
-        staffMayUseAgents = staffMayUseAgents,
-        memberMayUseAgents = memberMayUseAgents,
-        // Every option offered: the demo is an unbranded install with no domain,
-        // so nothing is greyed. See the server's InstanceIdentity.
+        // An unbranded install: no domain, so no staff tier and one tier card. Nothing is
+        // greyed on admission either. See the server's InstanceIdentity.
+        deployment = DeploymentFacts(waysIn = listOf("Google", "mailed code")),
+        tiers = listOf(
+            TierCard(
+                key = "member",
+                title = "Members",
+                subtitle = "Everybody with an account here. This deployment names no domain of " +
+                    "its own, so there is no staff tier to tell them from.",
+                accountCount = users.size,
+                mayCreateProjects = memberMayCreateProjects,
+                mayUseAgents = memberMayUseAgents,
+                createKey = InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
+                agentsKey = InstanceSettingKey.MEMBER_MAY_USE_AGENTS,
+            ),
+        ),
+        newProjectAudiences = listOf(
+            AudienceRow("guest", "Guests", "Anybody at all, without signing in.", newProjectAudiences["guest"]),
+            AudienceRow(
+                "member",
+                "Members",
+                "Everybody with an account on this deployment.",
+                newProjectAudiences["member"],
+            ),
+        ),
+        ownership = InstanceOwnership(
+            ownerName = demoUser.name,
+            ownerEmail = demoUser.email,
+            isOwnerSelf = true,
+            handOverBlockedReason = "Handing the instance over is not built yet — it is LNL-198.",
+        ),
         admission = AdmissionState(
             selected = admission,
             options = AdmissionPolicy.entries.map { AdmissionOption(it) },
         ),
+        allowPublicProjects = allowPublicProjects,
         hideDisplayName = hideDisplayName,
     )
 

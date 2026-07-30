@@ -214,6 +214,17 @@ class BoardDependencies(
      * if a transport is.
      */
     val identity: InstanceIdentity = InstanceIdentity(),
+    /**
+     * What this deployment is *called*, when a brand directory names it — the theme,
+     * logo and title an operator dropped in at deploy time (LNL-110).
+     *
+     * Null for the default look, which is not the same as "unbranded with a domain":
+     * the two are independent, and the Instance tab reports both. A string rather than
+     * the `BrandInfo` itself because the only thing any route needs is a name to show;
+     * the manifest's own fields reach the app through [identity] and the `/brand`
+     * endpoints. See LNL-195.
+     */
+    val brandName: String? = null,
     /** Who wants an e-mail about which project or issue. */
     val subscriptions: se.soderbjorn.lunicle.store.SubscriptionStore,
     /**

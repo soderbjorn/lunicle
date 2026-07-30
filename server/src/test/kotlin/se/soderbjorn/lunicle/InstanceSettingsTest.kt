@@ -229,7 +229,12 @@ class InstanceSettingsTest {
             }.body<AdminSettingsState>()
 
             assertTrue(after.allowPublicProjects, "The first switch did not survive the second write.")
-            assertTrue(after.memberMayCreateProjects, "The second switch was not reported.")
+            // A tier's permissions ride on its card now (LNL-195), so this is read where the
+            // screen reads it — off the Members card rather than off a top-level flag.
+            assertTrue(
+                after.tiers.first { it.key == "member" }.mayCreateProjects,
+                "The second switch was not reported on the tier card that renders it.",
+            )
         }
         val stored = instanceSettings.current()
         assertEquals(

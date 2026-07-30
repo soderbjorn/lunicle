@@ -195,6 +195,19 @@ object ApiRoutes {
     const val ADMIN_ADMISSION: String = "/api/admin/admission"
 
     /**
+     * `POST` — say what rung one audience arrives at in a **newly created** project,
+     * from an [AudienceGrant]. Returns the whole refreshed [AdminSettingsState]. Admin
+     * only (LNL-195).
+     *
+     * Its own route for [ADMIN_ADMISSION]'s reason and one more: it is neither a boolean
+     * nor a single value but one of three rows, and — like a project's own audience
+     * write — it has a refusal to make, since the guest row answers to the
+     * public-projects veto here exactly as it does there. One audience per request, so
+     * two administrators editing different rows cannot revert each other.
+     */
+    const val ADMIN_NEW_PROJECT_AUDIENCE: String = "/api/admin/new-project-audience"
+
+    /**
      * `POST` — put the instance's projects in a given order, from a [ProjectOrder].
      * Returns the whole refreshed [AdminSettingsState]. Admin only.
      *

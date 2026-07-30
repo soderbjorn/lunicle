@@ -138,6 +138,25 @@ internal class DemoLunicleApi(
         return world.adminSettingsState()
     }
 
+    /**
+     * What a new project starts with (LNL-195).
+     *
+     * Honours the same veto the server does — a guest row cannot be set while public
+     * projects are off — because the row is greyed on that basis, and a demo that let the
+     * click through would be teaching the wrong rule.
+     */
+    override suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState {
+        if (audienceKey == "guest" && roleKey != null && !world.allowPublicProjects) {
+            return world.adminSettingsState()
+        }
+        if (roleKey == null) {
+            world.newProjectAudiences.remove(audienceKey)
+        } else {
+            world.newProjectAudiences[audienceKey] = roleKey
+        }
+        return world.adminSettingsState()
+    }
+
     override suspend fun reorderProjects(ids: List<Long>): AdminSettingsState {
         world.projects.sortBy { ids.indexOf(it.id) }
         return world.adminSettingsState()

@@ -387,6 +387,25 @@ class HttpLunicleApi(
         }.requireSuccess()
 
     /**
+     * Say what rung one audience arrives at in a **newly created** project (LNL-195).
+     *
+     * Keys rather than typed enums in the signature, because the audiences and rungs this
+     * deployment has are the server's list — the screen is handed
+     * [AdminSettingsState.newProjectAudiences] and [AdminSettingsState.rungs] and echoes a
+     * key back, exactly as a project's own Access rows do.
+     *
+     * @param roleKey the rung, or null to hand that audience nothing — which is not the
+     *   same as the lowest rung, and is what a fresh instance has.
+     * @throws ApiFailure 403 for a non-admin, 409 when a guest row is asked for on a
+     *   deployment whose public-projects veto stands.
+     */
+    override suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.ADMIN_NEW_PROJECT_AUDIENCE) {
+            contentType(ContentType.Application.Json)
+            setBody(AudienceGrant(audienceKey, roleKey))
+        }.requireSuccess()
+
+    /**
      * Put the instance's projects in a given order.
      *
      * The whole new order, not a delta — see [ProjectOrder]. Admin only.

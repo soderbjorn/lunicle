@@ -71,8 +71,8 @@ import se.soderbjorn.lunicle.client.queryValue
 import se.soderbjorn.lunicle.client.Ticket
 import se.soderbjorn.lunicle.client.parseTicket
 import se.soderbjorn.lunicle.client.viewmodel.ActiveDialog
-import se.soderbjorn.lunicle.client.viewmodel.AdminSettingsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.CommentBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.AdminSettingsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.EditProjectBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.EditorDirtyRegistry
@@ -442,11 +442,6 @@ private fun start() {
         mainViewModel,
         editorRegistry,
         ticketSource,
-        // An instance switch flipped in the admin dialog can change what the session
-        // reports (LNL-137's display-name gate), and this client took its session
-        // once at bootstrap — so re-fetch it when one is written. See
-        // AdminSettingsBackingViewModel.onInstanceSettingChanged.
-        reloadSession = sessionViewModel::reload,
     )
 
     // One document-level listener for every rendered image there will ever be —
@@ -552,6 +547,11 @@ private fun start() {
         // Pressing a tab changes nothing either flow would report, so the address bar
         // has to be told directly.
         onRouteChanged = { syncSettingsAddress() },
+        // An instance switch on Who-gets-in or Instance can change what the session
+        // reports (LNL-137's display-name gate), and this client took its session once
+        // at bootstrap — so re-fetch it when one is written. See
+        // AdminSettingsBackingViewModel.onInstanceSettingChanged.
+        onSessionAffectingWrite = sessionViewModel::reload,
     )
 
     // Every entry point's one path: the board's gear, its "Manage access", the
@@ -1987,12 +1987,6 @@ private class Dialogs(
     private val editorRegistry: EditorDirtyRegistry,
     /** Ticket references for the comment editor — the `PREFIX-` autocomplete (LNL-139). */
     private val ticketSource: TicketSource,
-    /**
-     * Re-fetch the session, run when the admin dialog writes an instance switch
-     * that rides on it (LNL-137). Threaded from `start`'s session view model
-     * because this class does not own one. See [openAdminSettings].
-     */
-    private val reloadSession: () -> Unit,
 ) {
     private var current: ActiveDialog = ActiveDialog.None
     private var dismiss: (() -> Unit)? = null
@@ -2033,53 +2027,10 @@ private class Dialogs(
             ActiveDialog.None -> Unit
             ActiveDialog.NewProject -> openProject(projects = state.projects)
             is ActiveDialog.ChooseResolution -> openResolution(dialog)
-            ActiveDialog.AdminSettings -> openAdminSettings()
             is ActiveDialog.NewSprint -> openNewSprint(dialog)
             is ActiveDialog.PlanSprint -> openPlanSprint(dialog)
             is ActiveDialog.CompleteSprint -> openCompleteSprint(dialog)
         }
-    }
-
-    /**
-     * The instance settings dialog. Its own scope and view model, like the project
-     * one — it fetches and writes, so its `collect` must die with it.
-     *
-     * `changed = false` on close: nothing this dialog writes is on the board. The
-     * agent-access flag changes what a *token* may do, not what a card shows, so
-     * reloading would be a round-trip that repaints the same pixels.
-     *
-     * ── Parked, not forgotten (LNL-193) ─────────────────────────────────────
-     *
-     * **Nothing opens this any more.** The top bar's gear opens the settings pane at
-     * its Instance tab, and `ActiveDialog.AdminSettings` is no longer raised by
-     * anything — this branch is what keeps [AdminSettingsDialog] compiling, so the
-     * General switches, the account directory and the project list are still here to
-     * be *moved* into that pane's tabs by tickets 4 and 5 of this epic rather than
-     * rewritten from memory. Delete the dialog, this method and the ActiveDialog case
-     * together, once the last of its sections has a new home.
-     */
-    private fun openAdminSettings() {
-        val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-        val viewModel = AdminSettingsBackingViewModel(
-            storage = storage,
-            scope = dialogScope,
-            onInstanceSettingChanged = reloadSession,
-        )
-        val view = AdminSettingsDialog(
-            viewModel = viewModel,
-            scope = dialogScope,
-            // `changed` only when the Projects tab reordered or deleted something:
-            // the picker draws its order and membership from a separate load, so
-            // that is exactly what a reload has to catch up with. The agent-access
-            // toggle changes nothing on the board and still closes at no cost. See
-            // AdminSettingsBackingViewModel.State.projectsChanged.
-            onDismiss = {
-                mainViewModel.onDialogClosed(changed = viewModel.stateFlow.value.projectsChanged)
-            },
-        )
-        view.mount(host)
-        scope = dialogScope
-        dismiss = { view.dismiss() }
     }
 
     /**
@@ -2360,6 +2311,12 @@ private class SettingsPanes(
     private val onRestoreDefaultLayout: () -> Unit,
     /** The reader moved within the pane. The address bar follows; see [main]'s syncUrl. */
     private val onRouteChanged: () -> Unit,
+    /**
+     * An instance-wide switch was written that the session reports (LNL-137's
+     * display-name gate). Re-fetches the session, because this client took its own once
+     * at bootstrap and would otherwise keep showing the old answer until a reload.
+     */
+    private val onSessionAffectingWrite: () -> Unit,
 ) {
     private var view: SettingsPane? = null
     private var scope: CoroutineScope? = null
@@ -2443,6 +2400,22 @@ private class SettingsPanes(
                 // A rename, a display switch or a delete has to reach the boards and the
                 // project list — the rail's own names among them.
                 onProjectWritten = { mainViewModel.reload() },
+            ),
+            // Who gets in, People and Instance — three panes over one view model and one
+            // request (LNL-195). Built here because it needs the API and the app's "the
+            // project list changed" hook, and built ONCE so the three tabs cannot
+            // describe two different instances.
+            instanceTabs = InstanceTabs(
+                viewModel = AdminSettingsBackingViewModel(
+                    storage = storage,
+                    scope = paneScope,
+                    onInstanceSettingChanged = onSessionAffectingWrite,
+                ),
+                scope = paneScope,
+                dialogHost = dialogHost,
+                // A reorder or a delete changes the project list every board, rail and
+                // picker draws — the switches on those tabs change none of it.
+                onProjectsChanged = { mainViewModel.reload() },
             ),
         )
         pane.mount(hostElement())

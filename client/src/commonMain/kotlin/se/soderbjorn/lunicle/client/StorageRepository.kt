@@ -284,7 +284,16 @@ class StorageRepository(
         isEnabled: Boolean,
     ): AdminSettingsState = api.setInstanceSetting(key, isEnabled)
 
-    /** Reorder the instance's projects, and delete one — both from the Projects tab (LNL-93). */
+    /** Say what one audience arrives as in a newly created project (LNL-195). */
+    suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState =
+        api.setNewProjectAudience(audienceKey, roleKey)
+
+    /**
+     * Reorder the instance's projects, and delete one (LNL-93).
+     *
+     * Both from the Instance tab as of LNL-195 — display order is an instance-wide fact,
+     * where the Projects rail is per-caller.
+     */
     suspend fun reorderProjects(ids: List<Long>): AdminSettingsState = api.reorderProjects(ids)
 
     suspend fun deleteProjectAsAdmin(id: Long): AdminSettingsState = api.deleteProjectAsAdmin(id)

@@ -206,9 +206,10 @@ class AdminSettingsTest {
             val body = response.body<AdminSettingsState>()
 
             assertEquals(
-                ProjectRole.entries.map { it.key }.toSet(),
-                body.roles.map { it.key }.toSet(),
-                "The dialog renders held rights against this list; a short one hides rights.",
+                ProjectRole.entries.map { it.key },
+                body.rungs.map { it.key },
+                "The People tab renders a rung against this list, in ladder order; a short " +
+                    "one hides rungs and a reordered one renames them.",
             )
 
             val row = body.users.firstOrNull { it.userId == ordinary.id }
@@ -230,20 +231,17 @@ class AdminSettingsTest {
             )
             val onFixture = row.projects.first { it.projectId == fixture.projectId }
             val onOther = row.projects.first { it.projectId == other.id }
-            assertEquals(listOf(ProjectRole.CONTRIBUTOR.key), onFixture.heldRoleKeys)
-            assertEquals(emptyList(), onOther.heldRoleKeys)
-
-            // "Can they see it" is not "do they hold view_project". Holding any role
-            // — here create_issue, and no view_project grant in sight — makes a
-            // private project visible, so the fixture project reads as seen while
-            // the one they hold nothing in does not. See AccessControl.canReadProject.
-            assertTrue(
-                onFixture.canSeeProject,
-                "A user who holds a role on a project cannot see it, per the directory.",
-            )
-            assertTrue(
-                !onOther.canSeeProject,
-                "A user who holds nothing on a private project can somehow see it.",
+            // One rung, not a set of keys (LNL-195). Their own row and what they
+            // effectively reach are the same thing here, there being no audience row to
+            // raise them — which is exactly why both fields travel.
+            assertEquals(ProjectRole.CONTRIBUTOR.key, onFixture.roleKey)
+            assertEquals(ProjectRole.CONTRIBUTOR.key, onFixture.effectiveRoleKey)
+            assertNull(onFixture.viaAudience, "An audience was credited for an own row.")
+            assertNull(onOther.roleKey)
+            assertNull(
+                onOther.effectiveRoleKey,
+                "A project this account holds nothing in, and no audience admits it to, " +
+                    "reported a rung.",
             )
 
             val self = body.users.firstOrNull { it.userId == fixture.adminId }
@@ -253,18 +251,19 @@ class AdminSettingsTest {
     }
 
     /**
-     * A public project reads as visible to a user who holds nothing in it.
+     * An audience row reaches somebody who holds nothing of their own — and the row
+     * says which audience did it.
      *
-     * The bug this pins: the directory showed a red cross on "see this project" for
-     * an ordinary account on a *public* board, because it asked "do they hold
-     * view_project" when the rule is [AccessControl.canReadProject] — public means
-     * visible to everyone, grant or no grant. The account here holds nothing at all,
-     * which is the exact state that was showing the wrong answer, so `heldRoleKeys`
-     * stays empty while `canSeeProject` is true. The two together are the point:
-     * the row is not driven by the grant list, and this proves it is not.
+     * The bug the old version of this pinned: the directory answered "can they see this"
+     * from the grant list, so an account with no own row on a *public* board read as
+     * having no access to a board it can plainly read. The rung shape inherits the fix
+     * and states it more usefully — the account holds nothing, reaches Viewer, and the
+     * row names the guest audience as the reason. Somebody wondering how an account with
+     * no grants anywhere is reading a board gets the answer on the row rather than by
+     * opening the project.
      */
     @Test
-    fun `a public project reads as visible to a user who holds nothing in it`(): Unit = runBlocking {
+    fun `an audience row reaches somebody who holds nothing, and the row names it`(): Unit = runBlocking {
         val fixture = seed()
         val open = projectRepository.createOpenToAll("Open", "OPN", roles)
         val ordinary = users.upsert(
@@ -278,15 +277,16 @@ class AdminSettingsTest {
             val onOpen = body.users.first { it.userId == ordinary.id }
                 .projects.first { it.projectId == open.id }
 
+            assertNull(
+                onOpen.roleKey,
+                "The account is meant to hold nothing of its own here — that is the case under test.",
+            )
             assertEquals(
-                emptyList(),
-                onOpen.heldRoleKeys,
-                "The account is meant to hold nothing here — that is the case under test.",
+                ProjectRole.VIEWER.key,
+                onOpen.effectiveRoleKey,
+                "A board an audience row admits this account to read reported no access.",
             )
-            assertTrue(
-                onOpen.canSeeProject,
-                "A public project showed as unseeable to a user who can in fact read it.",
-            )
+            assertEquals("the guests row", onOpen.viaAudience)
         }
     }
 

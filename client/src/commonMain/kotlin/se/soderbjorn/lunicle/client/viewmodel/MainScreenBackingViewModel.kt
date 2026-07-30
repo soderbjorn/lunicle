@@ -60,18 +60,6 @@ sealed interface ActiveDialog {
     /** The project dialog, creating. */
     data object NewProject : ActiveDialog
 
-    /**
-     * The instance settings dialog: the account directory.
-     *
-     * Carries nothing. It is not about a project, and the
-     * one thing it would otherwise carry — "is this caller an admin" — is not an
-     * argument to it: the route it opens onto refuses a non-admin outright, so a
-     * dialog opened by one would render its own 403. See
-     * [MainScreenBackingViewModel.State.canOpenAdminSettings], which is why that
-     * does not happen, and AdminRoutes, which is why it would not matter if it did.
-     */
-    data object AdminSettings : ActiveDialog
-
     // EditProject and Statistics used to be cases here. Both are PANES now
     // (LNL-160): a project surface opens beside the board rather than over it, so
     // "which dialog is up" is no longer the question being asked about either.
@@ -1439,25 +1427,6 @@ class MainScreenBackingViewModel(
 
     fun onNewProjectTapped() {
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.NewProject)
-    }
-
-    /**
-     * The instance settings button was tapped.
-     *
-     * Guarded on the same affordance the button is shown by, so a stale click —
-     * the session changing between render and mouseup — opens nothing rather than
-     * a dialog that immediately renders a 403.
-     *
-     * **No caller since LNL-193**: the gear opens the settings pane at its Instance
-     * tab instead. Kept, with [ActiveDialog.AdminSettings], only so the old dialog
-     * still compiles and tickets 4 and 5 can move its sections into that pane rather
-     * than rewrite them — see main.kt's openAdminSettings, which says the same and
-     * says when to delete all three.
-     */
-    fun onAdminSettingsTapped() {
-        val state = _stateFlow.value
-        if (!state.canOpenAdminSettings) return
-        _stateFlow.value = state.copy(dialog = ActiveDialog.AdminSettings)
     }
 
     /**

@@ -18,15 +18,14 @@
  * layout with a project-named tab in it. That is the whole of the permission
  * story here; see [renderTabs].
  *
- * ── What is deliberately not built yet ──────────────────────────────────────
+ * ── Where each tab's content lives ──────────────────────────────────────────
  *
- * Who gets in, People and Instance are **stubs**, naming what ticket 5 of this epic
- * will move into them. Their content still lives in [AdminSettingsDialog], which is
- * where that ticket will take it from — it is being moved, not rewritten from memory,
- * so nothing is deleted here to make room.
- *
- * Projects is built (LNL-194): a rail listing every project the caller holds something
- * in, with the selected one's sections indented beneath it. See [ProjectsTab].
+ * You is built here, because it is the only tab whose subject is the reader and whose
+ * two view models the pane already holds. The other four are their own views, handed
+ * in: Projects is a [ProjectsTab] (LNL-194), and Who gets in, People and Instance are
+ * the three panes of one [InstanceTabs] (LNL-195), which share a view model and a
+ * single request. `AdminSettingsDialog` — the modal all three came from — is **gone**;
+ * its content was moved rather than rewritten, and the last of it landed with LNL-195.
  *
  * ── No dialog-wide OK ───────────────────────────────────────────────────────
  *
@@ -105,6 +104,14 @@ class SettingsPane(
      * Handed in rather than constructed here so the pane stays a shell over five tabs.
      */
     private val projectsTab: ProjectsTab,
+    /**
+     * Who gets in, People and Instance — three panes over one view model (LNL-195).
+     *
+     * Handed in for [projectsTab]'s reason and one more: it needs the API and the app's
+     * "the project list changed" hook, and it must be built once so the three tabs
+     * share a single request and can never disagree about which instance they describe.
+     */
+    private val instanceTabs: InstanceTabs,
 ) {
     /**
      * Where in the pane the reader is.
@@ -155,6 +162,15 @@ class SettingsPane(
 
     private var confirmDialog: ConfirmDialog? = null
 
+    /**
+     * Whether the three instance tabs have been told to fetch.
+     *
+     * Only an administrator's session may ask, so the fetch waits for the session to say
+     * so — see [renderTabs]. A latch rather than a re-check because the session emits on
+     * every render and the request must go out once.
+     */
+    private var areInstanceTabsStarted: Boolean = false
+
     /** The session as last rendered, so the connections half can word its refusal. */
     private var lastSession: SessionBackingViewModel.State = sessionViewModel.stateFlow.value
 
@@ -169,16 +185,10 @@ class SettingsPane(
 
         tabStrip = buildTabStrip()
         tabPanes[SettingsTab.YOU] = buildYouTab()
-        tabPanes[SettingsTab.ACCESS] = stubPane(
-            "Who may hold an account on this deployment, and what a fresh one arrives holding.",
-        )
-        tabPanes[SettingsTab.PEOPLE] = stubPane(
-            "Every account on this instance, and what each of them holds.",
-        )
+        tabPanes[SettingsTab.ACCESS] = instanceTabs.mountAccess()
+        tabPanes[SettingsTab.PEOPLE] = instanceTabs.mountPeople()
         tabPanes[SettingsTab.PROJECTS] = projectsTab.mount()
-        tabPanes[SettingsTab.INSTANCE] = stubPane(
-            "The switches that are true for everybody here.",
-        )
+        tabPanes[SettingsTab.INSTANCE] = instanceTabs.mountInstance()
 
         shell.body.children(tabStrip, *SettingsTab.entries.map { tabPanes.getValue(it) }.toTypedArray())
         // Close, alone. See this file's preamble: with five tabs and every project
@@ -266,29 +276,16 @@ class SettingsPane(
     /**
      * Show one pane, hide the rest, and move the underline with it.
      *
-     * The Projects pane is a flex row — rail beside content — so showing it with the
-     * default `display: block` would drop the content below the rail and stop the split
-     * filling the tab. Same treatment the old project dialog's Privileges split needed.
+     * Two of the five panes are flex rows — Projects (rail beside content) and People
+     * (list beside detail) — so showing either with the default `display: block` would
+     * drop the right-hand half below the left and stop the split filling the tab.
      */
     private fun selectTab(tab: SettingsTab) {
         tabPanes.forEach { (which, pane) ->
-            pane.visible(which == tab, displayValue = if (which == SettingsTab.PROJECTS) "flex" else "block")
+            pane.visible(which == tab, displayValue = if (which in SPLIT_TABS) "flex" else "block")
         }
         tabButtons.forEach { (which, btn) -> btn.classList.toggle("admin-tab-selected", which == tab) }
     }
-
-    /**
-     * A tab that names what will be here.
-     *
-     * Not an empty pane and not a missing tab: the strip is the shell this ticket
-     * is for, and a reader who presses "People" has to learn that they found the
-     * right place and that it is not built yet. See this file's preamble.
-     */
-    private fun stubPane(what: String): HTMLElement =
-        element("div", "settings-tab-pane").children(
-            element("p", "admin-placeholder", what),
-            element("p", "admin-placeholder", "Not built yet — it is on its way here."),
-        )
 
     // ── You ──────────────────────────────────────────────────────────────────
 
@@ -668,6 +665,15 @@ class SettingsPane(
             shown += SettingsTab.ACCESS
             shown += SettingsTab.PEOPLE
             shown += SettingsTab.INSTANCE
+            // Fetched here rather than at mount, and once: the admin state's route is
+            // admin-only and refuses everybody else, so asking for it before the session
+            // says who this is would 403 in every member's console on every open — and
+            // would fill three tabs they cannot see with an error about a request they
+            // never made. Latched, because a session tick arrives on every render.
+            if (!areInstanceTabsStarted) {
+                areInstanceTabsStarted = true
+                instanceTabs.start()
+            }
         }
         tabButtons.forEach { (tab, btn) -> btn.visible(tab in shown, displayValue = "inline-flex") }
 
@@ -771,6 +777,12 @@ class SettingsPane(
         confirmDialog?.dismiss()
         confirmDialog = null
         projectsTab.dispose()
+        instanceTabs.dismiss()
         shell.dismiss()
+    }
+
+    private companion object {
+        /** The two panes that are flex rows rather than blocks. See [selectTab]. */
+        val SPLIT_TABS = setOf(SettingsTab.PROJECTS, SettingsTab.PEOPLE)
     }
 }

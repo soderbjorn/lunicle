@@ -401,6 +401,10 @@ fun Application.module() {
         // Deploy-time configuration, for the admission options the settings dialog
         // renders. See InstanceIdentity.
         identity = instanceIdentity,
+        // What the deployment is called when a brand dir names it. The title if the
+        // manifest gives one, else the directory's own name, which is what an operator
+        // recognises. Null for the default look. See LNL-195's Instance tab.
+        brandName = brandInfo?.let { it.title ?: it.dir.name },
         subscriptions = subscriptions,
         reads = reads,
         notificationStore = notificationStore,

@@ -740,58 +740,6 @@ class ProjectSections(
         return container
     }
 
-    /**
-     * A rung menu: every rung the server sent, plus "No access", with the ones this
-     * caller may not hand out dead and the reason on them.
-     *
-     * Ids are positions in [rungs] because [Dropdown] is keyed on Long and a rung is
-     * keyed on a string. Local to this call, which is safe: the menu is rebuilt with the
-     * row, so an index can never outlive the list it indexes.
-     */
-    private fun rungPicker(
-        rungs: List<RungOption>,
-        selectedKey: String?,
-        isEnabled: Boolean,
-        onPick: (String?) -> Unit,
-    ): HTMLElement {
-        val items = mutableListOf(DropdownItem(NO_ACCESS_ID, "No access"))
-        rungs.forEachIndexed { index, rung ->
-            // The reason rides in the label, because the menu draws rows and not rows with
-            // sub-rows. It is the only place a dead rung can say why while still being
-            // visible — and it must stay visible: "a rung out of the caller's reach shows
-            // with the reason, not omitted".
-            //
-            // Except on the rung that is currently held, because the closed control reads
-            // that row's label: a read-only reader, for whom no rung is selectable, saw
-            // "Contributor — You are a Maintainer here, so Cont…" as the *value* of the
-            // field. The reason belongs in the menu, and there is nothing to explain about
-            // a rung somebody already holds. Found by driving the app.
-            val label = when {
-                rung.isSelectable || rung.key == selectedKey -> rung.label
-                else -> "${rung.label} — ${rung.unavailableReason}"
-            }
-            items.add(DropdownItem(index.toLong(), label))
-        }
-        lateinit var dropdown: Dropdown
-        dropdown = Dropdown(isField = true) { id ->
-            when {
-                id == NO_ACCESS_ID -> onPick(null)
-                else -> {
-                    val rung = rungs.getOrNull(id.toInt()) ?: return@Dropdown
-                    // Refused here as well as at the route, so a click on a rung the caller
-                    // may not hand out does nothing rather than making a request that 403s.
-                    if (rung.isSelectable) onPick(rung.key) else dropdown.close()
-                }
-            }
-        }
-        val selectedId = selectedKey
-            ?.let { key -> rungs.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.toLong() }
-            ?: NO_ACCESS_ID
-        dropdown.render(items, selectedId, placeholder = "No access", unsetId = NO_ACCESS_ID)
-        dropdown.element.disabled = !isEnabled
-        return dropdown.element
-    }
-
     private fun renderDeleteConfirm(state: EditProjectBackingViewModel.State) {
         val pending = state.pendingProjectDelete
         if (pending != null && deleteConfirm == null) {
@@ -843,16 +791,6 @@ class ProjectSections(
                 onDismiss = { viewModel.onSettingsErrorDismissed() },
             ).also { dialog -> dialog.mount(dialogHost) }
         }
-    }
-
-    private companion object {
-        /**
-         * The menu id that means "no access".
-         *
-         * Negative, so it cannot collide with a position in the rung list however long
-         * that list grows.
-         */
-        const val NO_ACCESS_ID = -1L
     }
 
     /**

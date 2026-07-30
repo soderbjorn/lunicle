@@ -19,6 +19,7 @@ import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.HTMLTextAreaElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
+import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunula.web.shell.buildMenuTrigger
 import se.soderbjorn.lunula.web.shell.setMenuTriggerLabel
 import se.soderbjorn.lunula.web.shell.setMenuTriggerOpen
@@ -734,3 +735,73 @@ fun HTMLInputElement.setValueIfChanged(next: String) {
 fun HTMLTextAreaElement.setValueIfChanged(next: String) {
     if (value != next) value = next
 }
+
+/**
+ * A rung menu: every rung the server sent, plus "No access", with the ones the caller
+ * may not hand out dead and the reason on them.
+ *
+ * Here rather than in either of its two callers because both a project's Access section
+ * and the instance's "what a new project starts with" rows *are* the same control over
+ * the same vocabulary, and two copies would come to grey a rung differently — which is
+ * the one thing about a permission picker that must never differ.
+ *
+ * Ids are positions in [rungs] because [Dropdown] is keyed on Long and a rung is keyed on
+ * a string. Local to the call, which is safe: the menu is rebuilt with its row, so an
+ * index can never outlive the list it indexes.
+ *
+ * @param selectedKey the rung currently held, or null for none.
+ * @param isEnabled whether the control may be opened at all — a write in flight, or a row
+ *   this caller may not change.
+ * @param onPick the rung's key, or null for "No access".
+ */
+fun rungPicker(
+    rungs: List<RungOption>,
+    selectedKey: String?,
+    isEnabled: Boolean,
+    onPick: (String?) -> Unit,
+): HTMLElement {
+    val items = mutableListOf(DropdownItem(NO_ACCESS_ID, "No access"))
+    rungs.forEachIndexed { index, rung ->
+        // The reason rides in the label, because the menu draws rows and not rows with
+        // sub-rows. It is the only place a dead rung can say why while still being visible
+        // — and it must stay visible: a rung out of the caller's reach shows with the
+        // reason, never omitted.
+        //
+        // Except on the rung currently held, because the closed control reads that row's
+        // label: a read-only reader, for whom no rung is selectable, saw "Contributor — You
+        // are a Maintainer here, so Cont…" as the *value* of the field. The reason belongs
+        // in the menu, and there is nothing to explain about a rung somebody already holds.
+        // Found by driving the app.
+        val label = when {
+            rung.isSelectable || rung.key == selectedKey -> rung.label
+            else -> "${rung.label} — ${rung.unavailableReason}"
+        }
+        items.add(DropdownItem(index.toLong(), label))
+    }
+    lateinit var dropdown: Dropdown
+    dropdown = Dropdown(isField = true) { id ->
+        when {
+            id == NO_ACCESS_ID -> onPick(null)
+            else -> {
+                val rung = rungs.getOrNull(id.toInt()) ?: return@Dropdown
+                // Refused here as well as at the route, so a click on a rung the caller may
+                // not hand out does nothing rather than making a request that 403s.
+                if (rung.isSelectable) onPick(rung.key) else dropdown.close()
+            }
+        }
+    }
+    val selectedId = selectedKey
+        ?.let { key -> rungs.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.toLong() }
+        ?: NO_ACCESS_ID
+    dropdown.render(items, selectedId, placeholder = "No access", unsetId = NO_ACCESS_ID)
+    dropdown.element.disabled = !isEnabled
+    return dropdown.element
+}
+
+/**
+ * The rung-menu id that means "no access".
+ *
+ * Negative, so it cannot collide with a position in the rung list however long that list
+ * grows.
+ */
+private const val NO_ACCESS_ID = -1L
