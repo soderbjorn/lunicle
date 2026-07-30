@@ -1584,7 +1584,17 @@ private fun start() {
             appHost.asDynamic().inert = wanted != null
             if (wanted == null) return
             val el = emptyTabLanding(
-                empty = wanted,
+                // The deployment's own words where it has given any. The stock pair is
+                // written for an instance that happens to have nothing public on it —
+                // it reports an absence — and that is the wrong sentence for one which
+                // is private on purpose, where the truth is a door rather than an empty
+                // room. Applied here rather than in the view model: which reader gets
+                // which card is a fact about the reader and stays there, and a brand may
+                // reword the visitor's card without laying a hand on anybody else's.
+                empty = wanted.copy(
+                    headline = brandConfig?.landingHeadline ?: wanted.headline,
+                    detail = brandConfig?.landingDetail ?: wanted.detail,
+                ),
                 // The mark is the hero here, the way it is on the sign-in picker:
                 // this is the deployment introducing itself to somebody who has
                 // arrived at it, and nothing else on the page says whose it is.

@@ -225,6 +225,20 @@ data class WorkspaceTab(
     val panes: List<PaneRef> = emptyList(),
     val activePaneId: String? = null,
     val paneLabels: Map<String, String> = emptyMap(),
+    /**
+     * Whether [name] is the user's own word rather than a derived one.
+     *
+     * [paneLabels]' argument, one level up. A tab name is computed too — "Workspace"
+     * for the empty one, the board's name once a board lands in it — and stays
+     * computed until somebody types over it. This flag is that somebody, and it is
+     * what stops [WorkspaceBackingViewModel.onBoardOpened] renaming a tab a reader
+     * happened to call "Workspace" themselves.
+     *
+     * Defaults false, which is what every workspace stored before this field existed
+     * decodes to. Safe: those tabs carry either the old "New tab" or a name their
+     * reader typed, and the rename matches neither.
+     */
+    val isNameGiven: Boolean = false,
 ) {
     /** The pane with that id, or null. */
     fun pane(paneId: String): PaneRef? = panes.firstOrNull { it.paneId == paneId }

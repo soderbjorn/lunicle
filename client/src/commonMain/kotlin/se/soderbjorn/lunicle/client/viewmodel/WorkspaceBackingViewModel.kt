@@ -343,7 +343,8 @@ class WorkspaceBackingViewModel(
         if (clean.isEmpty()) return
         val ws = _stateFlow.value.workspace
         if (ws.tabs.none { it.id == tabId }) return
-        commit(ws.mapTab(tabId) { it.copy(name = clean) })
+        // Marked as theirs, so nothing here renames it again — see WorkspaceTab.
+        commit(ws.mapTab(tabId) { it.copy(name = clean, isNameGiven = true) })
     }
 
     /**
@@ -592,10 +593,12 @@ class WorkspaceBackingViewModel(
         // project had it built the workspace itself, which is the shape this reaches by
         // the other road.
         //
-        // Only that one. A tab somebody asked for keeps "New tab" until they say
-        // otherwise, and a tab somebody has named keeps their name: renaming it would
-        // discard the one thing they have said about their own layout.
-        val takesTheName = target.name == INITIAL_TAB_NAME
+        // Only that one, and only while nobody has typed over it. A tab somebody asked
+        // for keeps "New tab" until they say otherwise; a tab somebody has named keeps
+        // their name, including the reader who called one "Workspace" themselves —
+        // renaming it would discard the one thing they have said about their layout.
+        // See WorkspaceTab.isNameGiven, which is what tells the two apart.
+        val takesTheName = target.name == INITIAL_TAB_NAME && !target.isNameGiven
         commit(
             ws.mapTab(target.id) { tab ->
                 val withBoard = tab.withPane(pane)
