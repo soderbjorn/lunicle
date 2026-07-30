@@ -373,6 +373,12 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
      * veto that is not a switch anybody can flip. `Audience.refusalFor` is the sentence,
      * written once so this refusal and the greying beside the picker are the same words.
      *
+     * And a rung **below what a wider row already gives** (LNL-209), "no access" included:
+     * the audiences nest, so a members row set to nothing on a public board wrote a row that
+     * came to nothing and then said the opposite on screen. `floorRefusal` is that sentence,
+     * shared the same way. The guest row is the widest audience and has no floor, so
+     * withdrawing one is untouched.
+     *
      * Gated at ADMIN by [adminProject] first and then at the real rung by
      * `canSetAudience`, so an Admin gets "not yours" rather than "no such project".
      */
@@ -397,14 +403,23 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
         }
         if (!deps.access.canSetAudience(scope.user, scope.project.id, audience, rung)) {
             // The ceiling first, because it is the refusal that would still stand if the
-            // other two were lifted — the same order audienceRefusal states them in.
+            // others were lifted — the same order audienceRefusal states them in. The floor
+            // last of the row's own, being the one another row can lift, and worded by the
+            // same `floorRefusal` the struck-through entry carries so the two agree.
             val ceiling = rung?.let { audience.refusalFor(it) }
+            val settings = deps.instanceSettings.current()
+            val stored = deps.roles.audienceRoles(scope.project.id)
+            val floor = stored.floorFor(
+                audience,
+                publicProjectsAllowed = !stored.hasGuestRow || settings.allowPublicProjects,
+            )
             call.respond(
                 HttpStatusCode.Forbidden,
                 when {
                     ceiling != null -> ceiling
-                    audience == Audience.GUEST && !deps.instanceSettings.current().allowPublicProjects ->
+                    audience == Audience.GUEST && !settings.allowPublicProjects ->
                         "This deployment does not allow a project to be made public."
+                    floor.refuses(rung) -> floorRefusal(floor, rung).orEmpty()
                     else -> "Only an owner of this project can change who it admits."
                 },
             )
@@ -997,6 +1012,11 @@ private suspend fun BoardDependencies.buildAccess(
             // anything rather than a stricter setting. Two rows, not three.
             .filter { it != Audience.STAFF || identity.hasStaffTier }
             .map { audience ->
+                // What a wider row already gives this audience, from the rows in effect
+                // (LNL-209). Everything below is a consequence of it: what the row reads,
+                // which rungs are struck, and whether it can be withdrawn at all.
+                val floor = audienceRoles.floorFor(audience, allowPublic)
+                val stored = audienceRoles[audience]?.let { audience.cap(it) }
                 AudienceRow(
                     key = audience.key,
                     title = audience.title,
@@ -1012,7 +1032,11 @@ private suspend fun BoardDependencies.buildAccess(
                     // would be the screen lying in the other direction. The row's own
                     // sentence says it is not in effect, and visibilityLine below refuses to
                     // count it.
-                    roleKey = audienceRoles[audience]?.let { audience.cap(it).key },
+                    // And never below the floor (LNL-209): a member matches the guests row
+                    // too, so a members row reading "No access" beside a public board was
+                    // the screen saying the opposite of what the board does. What it stores
+                    // underneath is untouched and comes back the moment the wider row drops.
+                    roleKey = listOfNotNull(stored, floor?.value).maxByOrNull { it.rank }?.key,
                     // The row itself is live for whoever owns the project, veto or not
                     // (LNL-203). The veto kills the *rungs*, not the row — otherwise the
                     // owner of an already-published board could not close it, which is the
@@ -1027,7 +1051,21 @@ private suspend fun BoardDependencies.buildAccess(
                     // This row's own menu, because what an audience may be handed is a fact
                     // about the audience — the guest row offers Viewer and greys the rest
                     // with the reason. See rungOptions.
-                    rungs = rungOptions(project, caller, rung, audience, allowPublic),
+                    rungs = rungOptions(project, caller, rung, audience, allowPublic, floor),
+                    floorKey = floor?.value?.key,
+                    // The "No access" entry's reason, which has nowhere else to ride: it is
+                    // the picker's own entry rather than one of the rungs above.
+                    withdrawRefusal = floorRefusal(floor, offered = null),
+                    // Where the rung above comes from, when it is not this row's own doing.
+                    // Silent when the row's own stored rung is already senior — saying "the
+                    // guests row gives Viewer" beside a members row reading Maintainer
+                    // explains nothing about what the screen is showing.
+                    effectiveLine = floor
+                        ?.takeIf { it.value.rank >= (stored?.rank ?: -1) }
+                        ?.let {
+                            "The ${it.key.title.lowercase()} row above already gives " +
+                                "${it.value.label}, and ${audience.title.lowercase()} are inside it."
+                        },
                 )
             },
         // What all of that adds up to, from the rows that are actually in effect. See
@@ -1102,7 +1140,7 @@ private fun visibilityLine(inEffect: Map<Audience, ProjectRole>, domain: String?
  *
  * ── Three refusals, and why they are computed together ──────────────────────
  *
- * A rung can be out of reach for three unrelated reasons, and all of them have to arrive
+ * A rung can be out of reach for four unrelated reasons, and all of them have to arrive
  * in the same list because the picker draws one list:
  *
  *  - **the caller may not hand it out** — an Admin may grant up to Maintainer, and the
@@ -1110,13 +1148,17 @@ private fun visibilityLine(inEffect: Map<Audience, ProjectRole>, domain: String?
  *  - **this audience may not hold it** — the guest row stops at Viewer, because a guest
  *    has nobody to attribute a write to. A fact about the row, true for the deployment's
  *    own owner as much as for anybody.
+ *  - **a wider audience already gives more** — the members row cannot come to less than
+ *    the guests row, because a member is inside the guests row (LNL-209). A fact about how
+ *    the rows compose, and the only one of the four that changes when another row does.
  *  - **this deployment forbids public projects** — every guest rung is refused while the
- *    switch is off (LNL-203). A fact about the instance, and the only one of the three
- *    somebody can go and change.
+ *    switch is off (LNL-203). A fact about the instance, and the only one somebody can go
+ *    and change from the instance settings.
  *
  * The ceiling is stated **first** where more than one applies, for the reason
  * [audienceRefusal] states the publish veto first: it is the refusal that would still
- * stand if the others were lifted, so it is the one worth reading.
+ * stand if the others were lifted, so it is the one worth reading. The floor is stated
+ * last of the row's own three, being the one another row can lift.
  *
  * **Every** guest rung dies under the veto and none of them is omitted, which is what
  * leaves "No access" as the one live entry in the menu — see `rungPicker`, which always
@@ -1134,6 +1176,9 @@ private fun visibilityLine(inEffect: Map<Audience, ProjectRole>, domain: String?
  *   a person has an account, so the only refusals that apply to them are the caller's.
  * @param allowPublic the instance's publish switch, passed in rather than read here
  *   because this is called once per row and the caller holds the settings snapshot.
+ * @param floor what a wider audience already gives this one, or null for none and for
+ *   every person row (LNL-209). A person's own row is an exception that only ever raises
+ *   them, so it has no floor to be below — see [ProjectAccessState].
  */
 private suspend fun BoardDependencies.rungOptions(
     project: ProjectRecord,
@@ -1141,9 +1186,12 @@ private suspend fun BoardDependencies.rungOptions(
     callerRung: ProjectRole,
     audience: Audience?,
     allowPublic: Boolean,
+    floor: Map.Entry<Audience, ProjectRole>? = null,
 ): List<RungOption> = ProjectRole.entries.map { offered ->
     val vetoed = audience == Audience.GUEST && !allowPublic
-    val onTheRow = audience?.refusalFor(offered) ?: PUBLIC_PROJECTS_VETO_RUNG_REASON.takeIf { vetoed }
+    val onTheRow = audience?.refusalFor(offered)
+        ?: PUBLIC_PROJECTS_VETO_RUNG_REASON.takeIf { vetoed }
+        ?: floorRefusal(floor, offered)
     // The same question the write asks — canGrant — so a rung offered here cannot be
     // refused there and a rung greyed here is genuinely refused.
     val grantable = access.canGrant(caller, project.id, offered)
@@ -1367,14 +1415,6 @@ private fun BoardDependencies.newAddressRefusal(policy: AdmissionPolicy): String
             "Outside $domain, only addresses that already have an account here can be added."
     }
 }
-
-/** What to call an audience on screen. */
-private val Audience.title: String
-    get() = when (this) {
-        Audience.GUEST -> "Guests"
-        Audience.MEMBER -> "Members"
-        Audience.STAFF -> "Staff"
-    }
 
 /**
  * Who that audience is, in one sentence.

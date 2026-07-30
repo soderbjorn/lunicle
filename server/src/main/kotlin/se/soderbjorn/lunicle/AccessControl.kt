@@ -455,6 +455,18 @@ class AccessControl(
      *   a separate "may publish" question so that a caller cannot ask the general
      *   version and then write the guest row — the gate and the write name the same
      *   thing.
+     * ── And the one thing no row can decide about itself (LNL-209) ──────────
+     *
+     * A rung **below** what a wider audience already gives is refused, "no access"
+     * included: the audiences nest, so `Guests → Viewer, Members → No access` never shut a
+     * member out — it wrote a row that came to nothing on a board every stranger could
+     * already read, and then said so in the two words that read as the opposite. See
+     * [floorFor], which is where the floor and its reversibility are argued.
+     *
+     * Coming down *to* the floor is not refused, and that is what keeps this from being a
+     * trap rather than a rule. Nor is anything refused on the guest row, which is the
+     * widest audience and so has no floor — the withdrawal LNL-203 protects is untouched.
+     *
      * @param rung what the write hands them, or null to withdraw the row. Required
      *   rather than defaulted, for [audience]'s reason turned one notch further: a
      *   caller who could omit it would be asking a question about a row without saying
@@ -472,7 +484,23 @@ class AccessControl(
             return false
         }
         if (rung != null && !audience.permits(rung)) return false
+        if (audienceFloor(projectId, audience).refuses(rung)) return false
         return canOwnProject(user, projectId)
+    }
+
+    /**
+     * What a wider audience already gives [audience] in [projectId] (LNL-209).
+     *
+     * The read the write gate pays for, skipped the moment it cannot change the answer:
+     * [Audience.GUEST] is the widest audience, so nothing is ever above it and the common
+     * case — publishing or closing a board — costs nothing at all. See [floorFor], and
+     * [admittedRows] for the same shape spelled for the publish veto.
+     */
+    private suspend fun audienceFloor(projectId: Long, audience: Audience): Map.Entry<Audience, ProjectRole>? {
+        if (audience == Audience.GUEST) return null
+        val stored = roles.audienceRoles(projectId)
+        val publicProjectsAllowed = !stored.hasGuestRow || instanceSettings.current().allowPublicProjects
+        return stored.floorFor(audience, publicProjectsAllowed)
     }
 
     // ── Issues ───────────────────────────────────────────────────────────────

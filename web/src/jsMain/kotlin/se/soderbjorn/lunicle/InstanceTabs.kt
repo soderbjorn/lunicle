@@ -320,6 +320,7 @@ class InstanceTabs(
             // audience now, so a menu whose dead rungs moved must be rebuilt even when the
             // row around it did not.
             "${it.key}:${it.roleKey}:${it.isSelectable}:${it.unavailableReason}:" +
+                "${it.withdrawRefusal}:${it.effectiveLine}:" +
                 it.rungs.joinToString(",") { rung -> "${rung.key}/${rung.isSelectable}" }
         }
         if (signature == newProjectSignature) return
@@ -342,12 +343,14 @@ class InstanceTabs(
      */
     private fun audienceRow(row: AudienceRow, state: AdminSettingsBackingViewModel.State): HTMLElement {
         val container = element("div", "access-row")
-        container.appendChild(
-            element("div", "access-row-text").children(
-                element("div", "access-row-name", row.title),
-                element("div", "access-row-detail", row.subtitle),
-            ),
+        val text = element("div", "access-row-text").children(
+            element("div", "access-row-name", row.title),
+            element("div", "access-row-detail", row.subtitle),
         )
+        // What a wider default already gives this one (LNL-209) — the same line a project's
+        // own rows carry, because these rows become a project's rows.
+        row.effectiveLine?.let { text.appendChild(element("div", "access-row-detail", it)) }
+        container.appendChild(text)
         container.appendChild(
             rungPicker(
                 rungs = row.rungs,
@@ -356,6 +359,9 @@ class InstanceTabs(
                 // public, not an administrator undoing one. The picker is live so "No access"
                 // stays reachable, and the write refuses the rung itself.
                 isEnabled = !state.isBusy,
+                // A floored row is the one case where it is not reachable, and the entry says
+                // so rather than going quiet. See rungPicker.
+                withdrawRefusal = row.withdrawRefusal,
                 onPick = { key -> viewModel.onNewProjectAudienceChanged(row.key, key) },
             ),
         )

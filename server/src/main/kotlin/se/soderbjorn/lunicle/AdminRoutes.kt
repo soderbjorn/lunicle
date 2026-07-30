@@ -162,6 +162,10 @@ fun Route.adminRoutes(deps: BoardDependencies) {
      * the same reason. `Audience.refusalFor` is the sentence, so the two routes and the
      * two screens say the same words.
      *
+     * And it answers to the **floor** (LNL-209): a row cannot start a project out below
+     * what a wider row gives it, because the board it creates could not be set that way by
+     * hand either. `floorRefusal` is that sentence, shared the same way.
+     *
      * An unknown audience or rung key is a malformed request rather than a silent no-op:
      * a client that has invented a key has a bug, and answering 200 to it would hide it.
      */
@@ -189,12 +193,22 @@ fun Route.adminRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.Conflict, ceiling)
             return@post
         }
-        if (audience == Audience.GUEST && rung != null && !deps.instanceSettings.current().allowPublicProjects) {
+        val settings = deps.instanceSettings.current()
+        if (audience == Audience.GUEST && rung != null && !settings.allowPublicProjects) {
             call.respond(
                 HttpStatusCode.Conflict,
                 "This deployment does not allow a project to be made public, so a new project " +
                     "cannot start out admitting guests.",
             )
+            return@post
+        }
+        // And the floor (LNL-209), which these rows have exactly because a project's own do:
+        // `seatNewProject` writes this list onto a new board, where the same rule then
+        // applies. A default pair the board could not be set to by hand is one the screen
+        // would have to misreport from the moment the project existed.
+        val floor = settings.newProjectAudiences.floorFor(audience, settings.allowPublicProjects)
+        floorRefusal(floor, rung)?.let { below ->
+            call.respond(HttpStatusCode.Conflict, below)
             return@post
         }
         deps.instanceSettings.setNewProjectAudience(audience, rung)
@@ -566,14 +580,23 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
             .filter { it != Audience.STAFF || identity.hasStaffTier }
             .map { audience ->
                 val vetoed = audience == Audience.GUEST && !switches.allowPublicProjects
+                // The same floor a project's own rows have, for the same reason and out of
+                // the same helper (LNL-209): these rows *become* a project's rows, so a
+                // pair of defaults this screen let through would arrive on every new board
+                // as a state that board's own Access list refuses to express.
+                val floor = switches.newProjectAudiences
+                    .floorFor(audience, switches.allowPublicProjects)
+                val stored = switches.newProjectAudiences[audience]?.let { audience.cap(it) }
                 AudienceRow(
                     key = audience.key,
-                    title = audience.adminTitle,
+                    title = audience.title,
                     subtitle = audience.adminSubtitle(identity.domain),
                     // Capped, because this is a stored setting and can hold a rung an older
                     // build wrote (LNL-202). What shows is what `seatNewProject` will
-                    // actually give a new board, which is the whole claim this row makes.
-                    roleKey = switches.newProjectAudiences[audience]?.let { audience.cap(it).key },
+                    // actually give a new board, which is the whole claim this row makes —
+                    // and a new board folds these rows with `max`, so the floor is part of
+                    // that claim too.
+                    roleKey = listOfNotNull(stored, floor?.value).maxByOrNull { it.rank }?.key,
                     // Live even when vetoed (LNL-203), because the veto kills the *rungs* and
                     // not the row: an administrator who left a guest default stored and then
                     // turned the switch off must still be able to clear it, and the route above
@@ -596,6 +619,7 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     rungs = ProjectRole.entries.map { offered ->
                         val refusal = audience.refusalFor(offered)
                             ?: PUBLIC_PROJECTS_VETO_RUNG_REASON.takeIf { vetoed }
+                            ?: floorRefusal(floor, offered)
                         RungOption(
                             key = offered.key,
                             label = offered.label,
@@ -604,6 +628,14 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                             unavailableReason = refusal,
                         )
                     },
+                    floorKey = floor?.value?.key,
+                    withdrawRefusal = floorRefusal(floor, offered = null),
+                    effectiveLine = floor
+                        ?.takeIf { it.value.rank >= (stored?.rank ?: -1) }
+                        ?.let {
+                            "The ${it.key.title.lowercase()} row above already gives " +
+                                "${it.value.label}, and ${audience.title.lowercase()} are inside it."
+                        },
                 )
             },
         // The rung vocabulary, sent rather than compiled into the bundle — the same list
@@ -712,7 +744,7 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                         // sentence restating the rung beside it.
                         viaAudience = floor
                             ?.takeIf { !tier.atLeast(InstanceRole.ADMIN) && it.value.rank >= (own?.rank ?: -1) }
-                            ?.let { "the ${it.key.adminTitle.lowercase()} row" },
+                            ?.let { "the ${it.key.title.lowercase()} row" },
                     )
                 },
             )
@@ -794,21 +826,18 @@ private val InstanceRole.adminLabel: String
     }
 
 /**
- * What to call an audience on the Who-gets-in tab, and who they are.
+ * Who an audience is, on the Who-gets-in tab.
  *
- * Deliberately the same words `ProjectSettingsRoutes` uses for a project's own audience
- * rows: this setting *is* that list, one project earlier, and two spellings of "Guests"
- * would suggest two different sets of people. They are separate private extensions
- * rather than one shared helper because the subtitle differs — here it has to say that
- * the row is a starting point rather than a current fact.
+ * The *name* is [Audience.title] — the same word `ProjectSettingsRoutes` shows on a
+ * project's own audience rows, because this setting *is* that list one project earlier and
+ * two spellings of "Guests" would suggest two different sets of people. It used to be two
+ * identical private copies, one per screen; LNL-209 needed the word in a third place — a
+ * sentence naming one row while standing on another — and three copies is where a fact
+ * moves onto the vocabulary that holds it.
+ *
+ * The subtitle stays here, because here it has to say that the row is a starting point
+ * rather than a current fact.
  */
-private val Audience.adminTitle: String
-    get() = when (this) {
-        Audience.GUEST -> "Guests"
-        Audience.MEMBER -> "Members"
-        Audience.STAFF -> "Staff"
-    }
-
 private fun Audience.adminSubtitle(domain: String?): String = when (this) {
     // The ceiling said once on the row, for the reason a project's own Guests subtitle
     // gives (LNL-202): the greyed rungs inside the menu carry one clause each, and the

@@ -501,6 +501,136 @@ class ProjectAccessTest {
         )
     }
 
+    /**
+     * A row inside a wider one cannot come to less than it, and reads as what it comes to
+     * (LNL-209).
+     *
+     * The state that prompted the ticket, which was never wrong and was unreadable: guests
+     * at Viewer, members at nothing, on a board every stranger could read. The members row
+     * said "No access" beside a public board — the two words most likely to be read as the
+     * opposite of what the board does — because the audiences nest and nothing on the screen
+     * said so.
+     *
+     * Both ends again, for the reason the ceiling test gives: the write is what a POST
+     * cannot go around, and the row is what stops the browser inviting the click.
+     */
+    @Test
+    fun `the members row cannot come to less than the guests row, and says what it comes to`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        roles.setAudienceRole(f.projectId, Audience.GUEST, ProjectRole.VIEWER)
+
+        withRoutes { client ->
+            // "No access" is the entry the ticket is about, and it is refused with the row
+            // that is doing it named — the thing to change is elsewhere on the same screen.
+            val withdrawn = client.post(ApiRoutes.projectAudience(f.projectId)) {
+                cookie(SESSION_COOKIE, f.ownerCookie)
+                contentType(ContentType.Application.Json)
+                setBody(AudienceGrant(Audience.MEMBER.key, null))
+            }
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                withdrawn.status,
+                "A members row was set to No access on a board every stranger can read.",
+            )
+            assertTrue(
+                withdrawn.bodyAsText().contains("guests row"),
+                "The refusal did not name the row that is actually giving the access.",
+            )
+            // Coming down TO the floor is not refused, and that is what keeps this from being
+            // a trap: an owner taking Members back from Contributor writes Viewer and is done,
+            // rather than having to close the board, withdraw, and publish it again.
+            roles.setAudienceRole(f.projectId, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+            assertEquals(
+                HttpStatusCode.OK,
+                client.post(ApiRoutes.projectAudience(f.projectId)) {
+                    cookie(SESSION_COOKIE, f.ownerCookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(AudienceGrant(Audience.MEMBER.key, ProjectRole.VIEWER.key))
+                }.status,
+                "The floor refused the one write that takes a members row back down to it.",
+            )
+        }
+        roles.setAudienceRole(f.projectId, Audience.MEMBER, null)
+
+        val section = settingsFor(f.ownerCookie, f.projectId).access!!
+        val members = section.audiences.first { it.key == Audience.MEMBER.key }
+        assertEquals(
+            ProjectRole.VIEWER.key,
+            members.roleKey,
+            "The members row reported No access on a board every stranger can read.",
+        )
+        assertEquals(ProjectRole.VIEWER.key, members.floorKey)
+        assertNotNull(
+            members.withdrawRefusal,
+            "The No access entry was left live, so the picker still offers the state the row cannot hold.",
+        )
+        assertNotNull(members.effectiveLine, "The row reported Viewer without saying where it comes from.")
+        assertTrue(
+            members.effectiveLine.orEmpty().contains("guests row"),
+            "The row named no source for a rung it is not giving itself.",
+        )
+        // The guests row is the widest audience, so nothing floors it — which is what leaves
+        // LNL-203's withdrawal untouched.
+        val guests = section.audiences.first { it.key == Audience.GUEST.key }
+        assertNull(guests.floorKey, "The widest audience was given a floor.")
+        assertNull(guests.withdrawRefusal, "Closing a published board was refused, which is LNL-203.")
+        // And the staff row is floored by the better of the two above it — on a deployment
+        // that names a domain, which is the only one that has a staff row at all.
+        roles.setAudienceRole(f.projectId, Audience.MEMBER, ProjectRole.MAINTAINER)
+        val staff = settingsFor(f.ownerCookie, f.projectId, domain = "example.com").access!!
+            .audiences.first { it.key == Audience.STAFF.key }
+        assertEquals(
+            ProjectRole.MAINTAINER.key,
+            staff.floorKey,
+            "The staff row's floor was not the best of the rows it is inside.",
+        )
+        assertEquals(
+            listOf(ProjectRole.MAINTAINER, ProjectRole.ADMIN, ProjectRole.OWNER).map { it.key },
+            staff.rungs.filter { it.isSelectable }.map { it.key },
+            "A rung beneath the floor was offered, or one at it was struck.",
+        )
+        assertEquals(
+            ProjectRole.entries.map { it.key },
+            staff.rungs.map { it.key },
+            "A rung beneath the floor was omitted rather than struck, which reads as a bug.",
+        )
+    }
+
+    /**
+     * A vetoed guest row floors nothing (LNL-203 meeting LNL-209).
+     *
+     * The two rules would contradict each other if the floor were computed from the rows as
+     * stored: a board that is *not* public would be telling its owner that members cannot be
+     * set to No access because guests can read it — which they cannot. So the floor comes
+     * from the rows in effect, the same fold `effectiveRole` reads.
+     */
+    @Test
+    fun `a silenced guest row does not floor the members row`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        roles.setAudienceRole(f.projectId, Audience.GUEST, ProjectRole.VIEWER)
+        roles.setAudienceRole(f.projectId, Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, false)
+
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.OK,
+                client.post(ApiRoutes.projectAudience(f.projectId)) {
+                    cookie(SESSION_COOKIE, f.ownerCookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(AudienceGrant(Audience.MEMBER.key, null))
+                }.status,
+                "A row nobody is honouring was allowed to floor the row beneath it.",
+            )
+        }
+        val members = settingsFor(f.ownerCookie, f.projectId).access!!
+            .audiences.first { it.key == Audience.MEMBER.key }
+        assertNull(members.roleKey, "The members row reported a rung it does not hold.")
+        assertNull(members.floorKey)
+        assertNull(members.withdrawRefusal)
+    }
+
     // ── Rungs ────────────────────────────────────────────────────────────────
 
     /** An Admin hands out up to Maintainer, and "no access" removes the row. */

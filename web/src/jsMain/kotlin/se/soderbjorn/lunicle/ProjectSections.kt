@@ -580,14 +580,19 @@ class ProjectSections(
             ),
             audienceList,
             visibilityElement,
-            element("h3", "section-title", "People with something different"),
+            element("h3", "section-title", "Extra access for individuals"),
+            // Three facts, in the order somebody reads them: what the rows above did, who
+            // this list is for, and what being on it can and cannot do. The old wording said
+            // the same things but argued for the design in the middle of them — "which is
+            // what keeps this list short enough to read as the record it is" — and the
+            // sentence that mattered ("the best of the two, never the worst") arrived last
+            // and in the vocabulary of the fold rather than of the screen.
             element(
                 "p",
                 "field-hint",
-                "Exceptions only — somebody who needs more than their audience gives them. " +
-                    "Whoever is served by a row above is not listed here, which is what keeps this " +
-                    "list short enough to read as the record it is. Somebody's effective role is " +
-                    "the best of the two, never the worst.",
+                "The rows above admit whole audiences. This is for the people who need more " +
+                    "than their audience gives them, and only them. Whoever is already covered " +
+                    "above is left out, and being listed here can only add — never take away.",
             ),
             peopleList,
             peopleEmpty,
@@ -910,7 +915,11 @@ class ProjectSections(
             // The row's own rung list is in the signature too (LNL-202): the greying inside
             // a menu is per audience now, so a menu whose dead rungs moved must be rebuilt
             // even when nothing about the row around it did.
+            // The floor's three fields too (LNL-209): lowering the guests row changes what
+            // the members row reads and which of its entries are struck, and a row whose
+            // menu moved must be rebuilt even when its own rung did not.
             "${it.key}:${it.roleKey}:${it.isSelectable}:${it.unavailableReason}:" +
+                "${it.withdrawRefusal}:${it.effectiveLine}:" +
                 it.rungs.joinToString(",") { rung -> "${rung.key}/${rung.isSelectable}" }
         }
         if (signature == audienceSignature) return
@@ -937,11 +946,16 @@ class ProjectSections(
             element("div", "access-row-name", row.title),
             element("div", "access-row-detail", row.subtitle),
         )
+        // Where the rung comes from, when a wider row is the one giving it (LNL-209) —
+        // beneath the subtitle, exactly where a person row says the same thing about the
+        // same rule. A detail line and not a reason: nothing here is refused or dead.
+        row.effectiveLine?.let { text.appendChild(element("div", "access-row-detail", it)) }
         container.appendChild(text)
         val picker = rungPicker(
             rungs = row.rungs,
             selectedKey = row.roleKey,
             isEnabled = row.isSelectable && !isBusy,
+            withdrawRefusal = row.withdrawRefusal,
             onPick = { key -> viewModel.onAudienceRungChanged(row.key, key) },
         )
         container.appendChild(picker)

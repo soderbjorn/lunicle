@@ -240,7 +240,11 @@ internal fun demoAudienceCap(audienceKey: String, rungKey: String): String =
  * sentence says why. The wording mirrors `Audience.refusalFor` on the server, which is
  * where the real one lives.
  */
-internal fun demoAudienceRungs(audienceKey: String, vetoed: Boolean = false): List<RungOption> =
+internal fun demoAudienceRungs(
+    audienceKey: String,
+    vetoed: Boolean = false,
+    floor: Pair<String, String>? = null,
+): List<RungOption> =
     DEMO_RUNGS.map { rung ->
         // The ceiling first where both apply: it is the refusal that would still stand if
         // the switch were flipped. Mirrors the server's rungOptions.
@@ -251,10 +255,63 @@ internal fun demoAudienceRungs(audienceKey: String, vetoed: Boolean = false): Li
                 // `Audience.refusalFor`.
                 "Guests have no account, so there is nobody to attribute a write to."
             vetoed -> DEMO_PUBLIC_VETO_RUNG_REASON
-            else -> null
+            // Last of the three, being the one another row can lift (LNL-209).
+            else -> demoFloorRefusal(floor, rung.key)
         }
         if (refusal == null) rung else rung.copy(isSelectable = false, unavailableReason = refusal)
     }
+
+/**
+ * What a **wider** audience row already gives [audienceKey] — the demo's copy of
+ * `Map<Audience, ProjectRole>.floorFor` (LNL-209).
+ *
+ * The audiences nest, here as on the server: a member matches the guest row too, and the
+ * fold takes the best. So a members row cannot come to less than the guests row, and the
+ * demo has to say so — a demo that offered "No access" beside a public board would be
+ * teaching the exact reading the ticket was filed about.
+ *
+ * @param rowsInEffect audience rows already capped and already stripped of a vetoed guest
+ *   row, since a row granting nothing floors nothing.
+ */
+internal fun demoAudienceFloor(
+    rowsInEffect: Map<String, String>,
+    audienceKey: String,
+): Pair<String, String>? = rowsInEffect.entries
+    .filter { it.key != audienceKey && tierReaches(audienceKey, it.key) }
+    .map { it.key to it.value }
+    .maxByOrNull { demoRungRank(it.second) }
+
+/**
+ * Why [offeredKey] — null for the picker's "No access" entry — is less than [floor]
+ * already gives. Mirrors the server's `floorRefusal`, one clause for its reason.
+ */
+internal fun demoFloorRefusal(floor: Pair<String, String>?, offeredKey: String?): String? {
+    if (floor == null) return null
+    if (offeredKey != null && demoRungRank(offeredKey) >= demoRungRank(floor.second)) return null
+    val rung = DEMO_RUNGS.firstOrNull { it.key == floor.second }?.label ?: floor.second
+    return "The ${demoAudienceTitle(floor.first).lowercase()} row already gives $rung, " +
+        "and this audience is inside it."
+}
+
+/** What to call an audience on screen. The demo's copy of `Audience.title`. */
+internal fun demoAudienceTitle(key: String): String = when (key) {
+    DemoAudienceKeys.GUEST -> "Guests"
+    DemoAudienceKeys.MEMBER -> "Members"
+    DemoAudienceKeys.STAFF -> "Staff"
+    else -> key
+}
+
+/**
+ * Where a row's rung comes from when a wider row is giving it — the line beneath the
+ * subtitle. Mirrors the sentence `ProjectSettingsRoutes` and `AdminRoutes` both build.
+ */
+internal fun demoEffectiveLine(floor: Pair<String, String>?, audienceKey: String, stored: String?): String? {
+    if (floor == null) return null
+    if (demoRungRank(floor.second) < demoRungRank(stored)) return null
+    val rung = DEMO_RUNGS.firstOrNull { it.key == floor.second }?.label ?: floor.second
+    return "The ${demoAudienceTitle(floor.first).lowercase()} row above already gives $rung, " +
+        "and ${demoAudienceTitle(audienceKey).lowercase()} are inside it."
+}
 
 /**
  * Why a guest rung is refused while the demo's publish switch is off (LNL-203).
@@ -919,6 +976,64 @@ internal class DemoWorld {
     }
 
     /**
+     * One audience row that sits **inside** a wider one — Members, or Staff (LNL-209).
+     *
+     * Its rung is what that audience *arrives at*, never below the floor: a member matches
+     * the guests row too, so a members row reading "No access" beside a public board says
+     * the opposite of what the board does. What the row stores underneath is untouched and
+     * returns the moment the wider row drops, which is the server's arrangement exactly —
+     * see `Map<Audience, ProjectRole>.floorFor`.
+     */
+    private fun flooredAudienceRow(p: DemoProject, audienceKey: String, subtitle: String): AudienceRow {
+        val floor = audienceFloorFor(p, audienceKey)
+        val stored = p.audiences[audienceKey]?.let { demoAudienceCap(audienceKey, it) }
+        return AudienceRow(
+            key = audienceKey,
+            title = demoAudienceTitle(audienceKey),
+            subtitle = subtitle,
+            roleKey = higherRung(stored, floor?.second),
+            rungs = demoAudienceRungs(audienceKey, floor = floor),
+            floorKey = floor?.second,
+            withdrawRefusal = demoFloorRefusal(floor, offeredKey = null),
+            effectiveLine = demoEffectiveLine(floor, audienceKey, stored),
+        )
+    }
+
+    /**
+     * What a wider row gives [audienceKey] on this board, or on a board yet to exist
+     * (LNL-209) — the two floors, each read by the row that draws it *and* by the write
+     * that refuses below it. One definition per surface rather than two, which is the whole
+     * of why they are here: a picker striking a rung the write then accepted would be worse
+     * than either behaviour alone.
+     */
+    fun audienceFloorFor(p: DemoProject, audienceKey: String): Pair<String, String>? =
+        demoAudienceFloor(rowsInEffect(p), audienceKey)
+
+    /** @see audienceFloorFor */
+    fun newProjectAudienceFloorFor(audienceKey: String): Pair<String, String>? = demoAudienceFloor(
+        newProjectAudiences
+            .filterKeys { allowPublicProjects || it != DemoAudienceKeys.GUEST }
+            .mapValues { demoAudienceCap(it.key, it.value) },
+        audienceKey,
+    )
+
+    /** [flooredAudienceRow], for the defaults a new project is created with (LNL-209). */
+    private fun flooredNewProjectRow(audienceKey: String, subtitle: String): AudienceRow {
+        val floor = newProjectAudienceFloorFor(audienceKey)
+        val stored = newProjectAudiences[audienceKey]?.let { demoAudienceCap(audienceKey, it) }
+        return AudienceRow(
+            key = audienceKey,
+            title = demoAudienceTitle(audienceKey),
+            subtitle = subtitle,
+            roleKey = higherRung(stored, floor?.second),
+            rungs = demoAudienceRungs(audienceKey, floor = floor),
+            floorKey = floor?.second,
+            withdrawRefusal = demoFloorRefusal(floor, offeredKey = null),
+            effectiveLine = demoEffectiveLine(floor, audienceKey, stored),
+        )
+    }
+
+    /**
      * Who this project admits, as the demo's Access section (LNL-194).
      *
      * Audience rows come from [DemoProject.audiences]; person rows are the exceptions —
@@ -961,20 +1076,22 @@ internal class DemoWorld {
                 // (LNL-202), which no switch lifts; and every rung dead while the veto is on
                 // (LNL-203), which one does.
                 rungs = demoAudienceRungs(DemoAudienceKeys.GUEST, vetoed = !allowPublicProjects),
+                // No floor, ever: guests are the widest audience, so there is nothing above
+                // this row to be inside of. Which is also why withdrawing it — the one
+                // withdrawal LNL-203 is about — is untouched by the floor rule (LNL-209).
             ),
-            AudienceRow(
-                DemoAudienceKeys.MEMBER,
-                "Members",
-                "Everybody with an account on this deployment.",
-                p.audiences[DemoAudienceKeys.MEMBER],
-                rungs = demoAudienceRungs(DemoAudienceKeys.MEMBER),
+            // The two rows that are inside a wider one, and so have a floor (LNL-209). The
+            // staff row's is the better of the guests and members rows, which is why it is
+            // computed rather than named.
+            flooredAudienceRow(
+                p = p,
+                audienceKey = DemoAudienceKeys.MEMBER,
+                subtitle = "Everybody with an account on this deployment.",
             ),
-            AudienceRow(
-                DemoAudienceKeys.STAFF,
-                "Staff",
-                "Accounts on $DEMO_STAFF_DOMAIN.",
-                p.audiences[DemoAudienceKeys.STAFF],
-                rungs = demoAudienceRungs(DemoAudienceKeys.STAFF),
+            flooredAudienceRow(
+                p = p,
+                audienceKey = DemoAudienceKeys.STAFF,
+                subtitle = "Accounts on $DEMO_STAFF_DOMAIN.",
             ),
         ),
         // The exceptions: everybody holding something other than what their audience gives
@@ -997,7 +1114,7 @@ internal class DemoWorld {
                     runsInstance -> null
                     floor == null -> null
                     demoRungRank(floor.second) < demoRungRank(own) -> null
-                    else -> "The ${audienceTitle(floor.first).lowercase()} row here already gives " +
+                    else -> "The ${demoAudienceTitle(floor.first).lowercase()} row here already gives " +
                         "${demoRungLabel(floor.second)}, so this person is effectively " +
                         "${demoRungLabel(effective ?: floor.second)}."
                 },
@@ -1151,14 +1268,6 @@ internal class DemoWorld {
             .map { it.key to it.value }
             .maxByOrNull { demoRungRank(it.second) }
 
-    /** What to call an audience on screen. */
-    private fun audienceTitle(key: String): String = when (key) {
-        DemoAudienceKeys.GUEST -> "Guests"
-        DemoAudienceKeys.MEMBER -> "Members"
-        DemoAudienceKeys.STAFF -> "Staff"
-        else -> key
-    }
-
     fun projectSettingsState(p: DemoProject): ProjectSettingsState = ProjectSettingsState(
         labels = p.labels.sortedBy { it.position }.map { namedEntry(it, usageOfLabel(p, it.id)) },
         components = p.components.sortedBy { it.position }.map { namedEntry(it, usageOfComponent(p, it.id)) },
@@ -1254,7 +1363,7 @@ internal class DemoWorld {
                                 !tierReaches(tier, DemoTierKeys.ADMIN) &&
                                     demoRungRank(it.second) >= demoRungRank(own)
                             }
-                            ?.let { "the ${audienceTitle(it.first).lowercase()} row" },
+                            ?.let { "the ${demoAudienceTitle(it.first).lowercase()} row" },
                     )
                 },
             )
@@ -1311,19 +1420,16 @@ internal class DemoWorld {
                 },
                 rungs = demoAudienceRungs(DemoAudienceKeys.GUEST, vetoed = !allowPublicProjects),
             ),
-            AudienceRow(
-                DemoAudienceKeys.MEMBER,
-                "Members",
-                "Everybody with an account on this deployment.",
-                newProjectAudiences[DemoAudienceKeys.MEMBER],
-                rungs = demoAudienceRungs(DemoAudienceKeys.MEMBER),
+            // Floored, like a project's own rows and by the same helper (LNL-209) — these
+            // rows *become* a project's rows, so a pair of defaults the board could not be
+            // set to by hand would arrive on every new board unreadable.
+            flooredNewProjectRow(
+                audienceKey = DemoAudienceKeys.MEMBER,
+                subtitle = "Everybody with an account on this deployment.",
             ),
-            AudienceRow(
-                DemoAudienceKeys.STAFF,
-                "Staff",
-                "Accounts on $DEMO_STAFF_DOMAIN.",
-                newProjectAudiences[DemoAudienceKeys.STAFF],
-                rungs = demoAudienceRungs(DemoAudienceKeys.STAFF),
+            flooredNewProjectRow(
+                audienceKey = DemoAudienceKeys.STAFF,
+                subtitle = "Accounts on $DEMO_STAFF_DOMAIN.",
             ),
         ),
         // The demo visitor owns the instance, so the order and the delete are theirs.

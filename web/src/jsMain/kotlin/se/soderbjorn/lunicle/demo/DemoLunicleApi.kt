@@ -237,6 +237,11 @@ internal class DemoLunicleApi(
         if (roleKey != null && !demoAudiencePermits(audienceKey, roleKey)) {
             return world.adminSettingsState()
         }
+        // And the floor, for the reason a project's own audience write has one (LNL-209):
+        // these defaults become a project's rows.
+        if (world.newProjectAudienceFloorFor(audienceKey).let { demoFloorRefusal(it, roleKey) } != null) {
+            return world.adminSettingsState()
+        }
         if (roleKey == null) {
             world.newProjectAudiences.remove(audienceKey)
         } else {
@@ -433,6 +438,13 @@ internal class DemoLunicleApi(
             return world.projectSettingsState(p)
         }
         if (roleKey != null && !demoAudiencePermits(audienceKey, roleKey)) {
+            return world.projectSettingsState(p)
+        }
+        // And never below what a wider row already gives (LNL-209) — "No access" included,
+        // which is the entry this rule exists for. The rows are struck through on this
+        // basis, so letting a click through here would teach a rule the product does not
+        // have; the server refuses the same write in `canSetAudience`.
+        if (world.audienceFloorFor(p, audienceKey).let { demoFloorRefusal(it, roleKey) } != null) {
             return world.projectSettingsState(p)
         }
         if (roleKey == null) p.audiences.remove(audienceKey) else p.audiences[audienceKey] = roleKey

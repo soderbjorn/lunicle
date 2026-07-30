@@ -766,6 +766,54 @@ class AdminSettingsTest {
         }
     }
 
+    /**
+     * The defaults cannot be a pair a project's own Access list would refuse (LNL-209).
+     *
+     * The sibling refusal again, and it earns its place the same way: `seatNewProject`
+     * copies these rows onto every future board, where the floor then applies. A guests
+     * Viewer beside a members No access here would arrive on a new project as a members row
+     * the board reports as Viewer and this screen reported as nothing — the same sentence
+     * said two ways, which is the defect one step earlier.
+     */
+    @Test
+    fun `a new project cannot start out with members below guests`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        instanceSettings.setNewProjectAudience(Audience.GUEST, ProjectRole.VIEWER)
+
+        withRoutes { client ->
+            val refused = client.post("/api/admin/new-project-audience") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(AudienceGrant(Audience.MEMBER.key, null))
+            }
+            assertEquals(
+                HttpStatusCode.Conflict,
+                refused.status,
+                "A default pair landed that a new board's own Access list refuses to express.",
+            )
+            assertTrue(
+                refused.bodyAsText().contains("guests row"),
+                "The refusal did not name the row that is giving the access.",
+            )
+
+            // And the row that comes back says what a member actually starts with, with the
+            // entry that would have said otherwise struck through.
+            val members = client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }
+                .body<AdminSettingsState>().newProjectAudiences
+                .first { it.key == Audience.MEMBER.key }
+            assertEquals(
+                ProjectRole.VIEWER.key,
+                members.roleKey,
+                "The members default reported No access beside a guests default of Viewer.",
+            )
+            assertEquals(ProjectRole.VIEWER.key, members.floorKey)
+            assertNotNull(members.withdrawRefusal, "The No access entry was left live.")
+            assertNotNull(members.effectiveLine, "The row reported Viewer without saying where it comes from.")
+        }
+    }
+
     // ── Handing the instance over (LNL-198) ──────────────────────────────────
 
     /**

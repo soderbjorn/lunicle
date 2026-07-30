@@ -74,11 +74,21 @@ data class RungOption(
  *   present either way, since the absence of a grant is a state worth being able to
  *   see and to change back.
  *
- *   **As stored**, capped, and not blanked when the instance's publish veto has silenced
- *   it (LNL-203): nothing withdrew the row, and turning the switch back on restores it
- *   exactly, so sending null would be the screen lying in the other direction — an owner
+ *   **What they arrive at, not what the row stores** (LNL-209), which differs in exactly
+ *   one direction: never *below* [floorKey], because the audiences nest and a member
+ *   matches the guest row too. `Guests → Viewer, Members → No access` was a members row
+ *   reading "No access" on a board every stranger could read — true about the row and the
+ *   opposite of true about the audience, said in the two words most likely to be read as
+ *   the latter. So the Members row on a public board reads Viewer, and what it stores
+ *   underneath stays stored: lower the guests row and it falls straight back. See
+ *   [floorKey].
+ *
+ *   Otherwise **as stored**, capped, and not blanked when the instance's publish veto has
+ *   silenced it (LNL-203): nothing withdrew the row, and turning the switch back on restores
+ *   it exactly, so sending null would be the screen lying in the other direction — an owner
  *   would think their board was already closed. What the row is *not doing* is said in
- *   [unavailableReason] and in [ProjectAccessState.visibilityLine].
+ *   [unavailableReason] and in [ProjectAccessState.visibilityLine]. A vetoed guest row
+ *   grants nothing and therefore floors nothing, so the two rules cannot both bite a row.
  * @property isSelectable whether this caller may change this row at all. One refusal
  *   reaches here and only one: the caller does not own this project.
  *
@@ -109,6 +119,35 @@ data class RungOption(
  *   the copy that refuses would eventually disagree. Each option carries its own
  *   [RungOption.unavailableReason], so a rung out of reach is shown with the sentence
  *   saying why — never omitted.
+ *
+ *   A rung below [floorKey] arrives dead here too, on the same terms and for the reason
+ *   [floorKey] gives.
+ * @property floorKey the rung a **wider** audience already gives this one, or null where
+ *   none does (LNL-209) — the guests row's rung on the members row, and the better of the
+ *   two on the staff row.
+ *
+ *   The audiences nest: an audience row is a statement about everybody at or above its
+ *   tier, so everybody it describes is described by every wider row as well, and the
+ *   server takes the **best** of them. A row can therefore never come to less than the row
+ *   above it, and this is that sentence made visible — it is what [roleKey] cannot go
+ *   below, what strikes the rungs beneath it, and what [withdrawRefusal] explains.
+ *
+ *   Computed from the rows **in effect**, so a guest row the deployment has vetoed floors
+ *   nothing: a board that is not public must let its members row say "No access" and mean
+ *   it (LNL-203).
+ * @property withdrawRefusal why this row cannot be set to "No access", or null because it
+ *   can. Present exactly when [floorKey] is — the picker's own "No access" entry is not a
+ *   [RungOption] and so has nowhere else to carry its reason.
+ *
+ *   Note what is **not** refused: coming down *to* [floorKey]. That rung stays live, and an
+ *   owner taking Members from Contributor back to nothing-of-its-own on a public board
+ *   writes Viewer and is done. Without that the rule would be a trap — the only way back
+ *   would be to close the board, withdraw, and publish it again, which is three writes and
+ *   a board that goes briefly private to express one that never changed.
+ * @property effectiveLine where [roleKey] comes from when it is not this row's own doing —
+ *   "Members are inside Guests, which admits everybody as Viewer." — or null when the row
+ *   is the whole story. [PersonRow.effectiveLine] for audiences, and the same `max` rule
+ *   made visible at the second place somebody would otherwise be surprised by it.
  */
 @Serializable
 data class AudienceRow(
@@ -119,6 +158,9 @@ data class AudienceRow(
     val isSelectable: Boolean = true,
     val unavailableReason: String? = null,
     val rungs: List<RungOption> = emptyList(),
+    val floorKey: String? = null,
+    val withdrawRefusal: String? = null,
+    val effectiveLine: String? = null,
 )
 
 /**

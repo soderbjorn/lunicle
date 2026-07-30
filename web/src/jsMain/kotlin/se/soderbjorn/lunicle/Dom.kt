@@ -804,15 +804,33 @@ fun HTMLTextAreaElement.setValueIfChanged(next: String) {
  * @param selectedKey the rung currently held, or null for none.
  * @param isEnabled whether the control may be opened at all — a write in flight, or a row
  *   this caller may not change.
+ * @param withdrawRefusal why "No access" is not available here, or null because it is
+ *   (LNL-209). The one entry this function invents rather than being handed, so it is also
+ *   the one whose refusal cannot arrive as a [RungOption] — an audience inside a wider one
+ *   cannot come to nothing, and that entry is exactly where the old screen said it could.
+ *   It is drawn dead with the sentence, like every other refused rung, rather than removed:
+ *   an entry that vanishes reads as a bug.
  * @param onPick the rung's key, or null for "No access".
  */
 fun rungPicker(
     rungs: List<RungOption>,
     selectedKey: String?,
     isEnabled: Boolean,
+    withdrawRefusal: String? = null,
     onPick: (String?) -> Unit,
 ): HTMLElement {
-    val items = mutableListOf(DropdownItem(NO_ACCESS_ID, "No access"))
+    // Live unless the row has a floor — and live regardless when it is the current answer,
+    // which is the rule the rungs below follow and for the same reason: the closed control
+    // reads this row's label, and striking through what the control reports would say the
+    // board is not honouring it.
+    val canWithdraw = withdrawRefusal == null || selectedKey == null
+    val items = mutableListOf(
+        DropdownItem(
+            NO_ACCESS_ID,
+            if (canWithdraw) "No access" else "No access — $withdrawRefusal",
+            isEnabled = canWithdraw,
+        ),
+    )
     rungs.forEachIndexed { index, rung ->
         // The reason rides in the label, because the menu draws rows and not rows with
         // sub-rows. It is the only place a dead rung can say why while still being visible
@@ -843,7 +861,10 @@ fun rungPicker(
     }
     val dropdown = Dropdown(isField = true) { id ->
         when {
-            id == NO_ACCESS_ID -> onPick(null)
+            // `canWithdraw` for the reason the rung branch below keeps its own check: the
+            // entry is live when it is the current answer, and re-sending the answer as a
+            // write this row may not make is the one way through a menu that refuses nothing.
+            id == NO_ACCESS_ID -> if (withdrawRefusal == null) onPick(null)
             else -> {
                 val rung = rungs.getOrNull(id.toInt()) ?: return@Dropdown
                 // Kept as well as the menu's own refusal, and not because the menu might

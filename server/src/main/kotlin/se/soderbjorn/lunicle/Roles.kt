@@ -194,8 +194,19 @@ enum class InstanceRole(val key: String) {
  *   staff alone.
  * @property ceiling the highest [ProjectRole] this audience may ever hold. See
  *   [GUEST], which is the only one it narrows and the whole of LNL-202.
+ * @property title what to call them on screen. On the vocabulary rather than beside each
+ *   screen because [floorRefusal] names one row while standing on another — a sentence a
+ *   project's Access list and the instance's new-project rows both show, and which was
+ *   two identical private copies of this word before it had to be said in a third place.
+ *   The *subtitles* stay in their screens: they differ, and the staff one names the
+ *   deployment's domain, which this vocabulary does not hold.
  */
-enum class Audience(val key: String, val instanceRole: InstanceRole, val ceiling: ProjectRole) {
+enum class Audience(
+    val key: String,
+    val instanceRole: InstanceRole,
+    val ceiling: ProjectRole,
+    val title: String,
+) {
     /**
      * Everybody, including a caller with no session at all — and capped at
      * [ProjectRole.VIEWER] (LNL-202).
@@ -227,13 +238,13 @@ enum class Audience(val key: String, val instanceRole: InstanceRole, val ceiling
      * decision about attribution — a name field, a captcha, a moderation queue — and it
      * must not arrive by leaving a dropdown unguarded.
      */
-    GUEST("guest", InstanceRole.GUEST, ProjectRole.VIEWER),
+    GUEST("guest", InstanceRole.GUEST, ProjectRole.VIEWER, "Guests"),
 
     /** Everybody with an account. Every rung is expressible: they can be attributed. */
-    MEMBER("member", InstanceRole.MEMBER, ProjectRole.OWNER),
+    MEMBER("member", InstanceRole.MEMBER, ProjectRole.OWNER, "Members"),
 
     /** Accounts from the deployment's own domain. No ceiling, for [MEMBER]'s reason. */
-    STAFF("staff", InstanceRole.STAFF, ProjectRole.OWNER),
+    STAFF("staff", InstanceRole.STAFF, ProjectRole.OWNER, "Staff"),
     ;
 
     /** May this audience be handed [role] at all? See [ceiling]. */
@@ -337,6 +348,77 @@ fun Map<Audience, ProjectRole>.admitting(
     filterKeys { instanceRole.atLeast(it.instanceRole) }
         .filterKeys { publicProjectsAllowed || it != Audience.GUEST }
         .mapValues { (audience, role) -> audience.cap(role) }
+
+/**
+ * What a **wider** audience already gives [audience] here, or null because none does
+ * (LNL-209).
+ *
+ * ── Why a row has a floor at all ────────────────────────────────────────────
+ *
+ * The audiences nest: a member matches the guest row too, and [admitting] is what says
+ * so — it keeps every row at or below the caller's tier and [AccessControl.effectiveRole]
+ * takes the **max**. So `Guests → Viewer, Members → No access` never meant that members
+ * were shut out; it meant the members row added nothing on top of a board every stranger
+ * could already read. That is a true statement and an unreadable one, and the screen said
+ * it in the two words most likely to be read as the opposite.
+ *
+ * The nesting is the fact, so it is the *rows* that have to bend to it: a row cannot be
+ * set below its floor, and it does not display below it either. The Members row on a
+ * public board reads Viewer — which is what a member arrives as — and its "No access"
+ * entry is struck through with the guests row named as the thing to change instead.
+ *
+ * ── What this deliberately does not do ──────────────────────────────────────
+ *
+ * It does not rewrite anything. A row storing nothing goes on storing nothing while it
+ * shows the floor it inherits, so lowering the wider row lets it fall straight back —
+ * exactly [admitting]'s reversibility, for the same reason. And **coming down to the floor
+ * is always allowed**, which is what keeps this from being a trap: an owner taking
+ * `Members → Contributor` back on a public board writes Viewer and is done, rather than
+ * having to close the board, withdraw, and publish it again.
+ *
+ * The widest audience — [Audience.GUEST] — has no floor by construction, so withdrawing a
+ * guest row is untouched by any of this. That withdrawal is the one LNL-203 was about.
+ *
+ * @param publicProjectsAllowed as [admitting] — a vetoed guest row grants nothing, so it
+ *   floors nothing either. A board that is not public must let its members row say so.
+ * @return the widest wider row and its rung, keyed so a caller can name it — "the guests
+ *   row here already gives Viewer" needs the row, not just the rung.
+ */
+fun Map<Audience, ProjectRole>.floorFor(
+    audience: Audience,
+    publicProjectsAllowed: Boolean,
+): Map.Entry<Audience, ProjectRole>? =
+    admitting(audience.instanceRole, publicProjectsAllowed)
+        .filterKeys { it != audience }
+        .entries
+        .maxByOrNull { it.value.rank }
+
+/**
+ * Why [offered] is less than this audience already arrives at — or null because it is not
+ * (LNL-209).
+ *
+ * [offered] is null for the picker's "No access" entry, which is the one this exists for:
+ * it is the entry that read as "members are shut out" on a board any stranger could read.
+ *
+ * **One clause and no advice**, [Audience.refusalFor]'s constraint for its reason — this
+ * rides inside a menu row's label. Naming the row that is doing it is not advice, it is
+ * the whole of the answer: the thing to change is somewhere else on this screen.
+ */
+fun floorRefusal(floor: Map.Entry<Audience, ProjectRole>?, offered: ProjectRole?): String? {
+    if (floor == null) return null
+    if (offered != null && offered.rank >= floor.value.rank) return null
+    return "The ${floor.key.title.lowercase()} row already gives ${floor.value.label}, " +
+        "and this audience is inside it."
+}
+
+/**
+ * Does this floor refuse [rung]? The write gate's half of [floorRefusal], and deliberately
+ * the *same* predicate rather than a second one beside it — a rung struck through in the
+ * picker and a rung the route refuses have to be the same rung, which they are only if
+ * there is one question. [ProjectAccessState]'s standing rule, applied to the floor.
+ */
+fun Map.Entry<Audience, ProjectRole>?.refuses(rung: ProjectRole?): Boolean =
+    floorRefusal(this, rung) != null
 
 /**
  * Why a guest rung cannot be handed out while this deployment forbids public projects
