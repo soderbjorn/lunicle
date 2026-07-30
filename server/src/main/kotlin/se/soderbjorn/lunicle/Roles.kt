@@ -256,12 +256,32 @@ enum class UserKind(val key: String, val instanceRole: InstanceRole) {
  * Where this account stands on the instance ladder, **as far as its own row knows**.
  *
  * Never [InstanceRole.OWNER], and that is the whole caveat: ownership is
- * `instance_settings.owner_user_id`, which no [UserRecord] carries. Ask
- * [AccessControl.instanceRole] for the answer that can see it. This property
- * exists because everything that only needs to tell guest from member from staff
- * from administrator — which is every audience match — can be answered without a
- * read, and paying for one on every permission check to learn a fact that changes
- * once a year would be the wrong trade.
+ * `instance_settings.owner_user_id`, which no [UserRecord] carries.
+ *
+ * ── Which kind of caller this is for (LNL-201) ───────────────────────────────
+ *
+ * There are two questions that look identical here and are not, and reading this
+ * property for the wrong one is the bug LNL-201 fixed:
+ *
+ *  - **A tier read** — "is this account staff, or a member?" Ownership is orthogonal
+ *    to the answer: the owner is *also* staff or a member, and a per-tier count or a
+ *    per-tier switch genuinely wants the row. **This property is for those.**
+ *  - **An authority read** — "is this caller senior enough to do X?" The owner is
+ *    senior to every rung there is, so an authority question answered from the row
+ *    alone can never say yes to them. **Never use this property for one.** Ask
+ *    [AccessControl.instanceRole], or — where the caller has already read the
+ *    settings and is deciding about many accounts at once — [instanceRoleWith].
+ *
+ * The distinction is reachable rather than theoretical: 33.sqm leaves
+ * `instance_role` NULL for everybody *including the seated owner*, so on every
+ * migrated volume an authority read here says "member" about the person who owns the
+ * deployment, and an ordinary administrator outranks them. That is the ladder
+ * inverting, and it inverted in exactly one gate before LNL-201 found it.
+ *
+ * It exists at all because a tier read is the common one and costs nothing: telling
+ * guest from member from staff from administrator — which is every audience match —
+ * needs no store read, and paying for one on every permission check to learn a fact
+ * that changes once a year would be the wrong trade.
  */
 val UserRecord?.storedInstanceRole: InstanceRole
     get() = when {
@@ -269,6 +289,29 @@ val UserRecord?.storedInstanceRole: InstanceRole
         isInstanceAdmin -> InstanceRole.ADMIN
         else -> kind.instanceRole
     }
+
+/**
+ * The whole instance ladder — ownership included — from a row and an [ownerUserId]
+ * the caller has **already** read.
+ *
+ * [AccessControl.instanceRole] is the answer for one caller resolved from a session,
+ * and is what a permission gate asks. This is the same answer for code that is
+ * deciding about a *set* of accounts and has the owner's id in hand: the People tab
+ * mapping every row to a tier, a recipient picker filtering the directory, a project's
+ * Access list. Those must not do a store read per account, and they must not fall back
+ * to [storedInstanceRole] either — which is what several of them were doing beside an
+ * inline `if (id == ownerUserId)`, three times, in three spellings. This is that line,
+ * named once.
+ *
+ * @param ownerUserId `instance_settings.owner_user_id`, or null on a deployment that
+ *   has nobody seated — which is a real state, not a missing read: see 33.sqm on an
+ *   instance that never had a system administrator.
+ */
+fun UserRecord?.instanceRoleWith(ownerUserId: Long?): InstanceRole = when {
+    this == null -> InstanceRole.GUEST
+    ownerUserId != null && id == ownerUserId -> InstanceRole.OWNER
+    else -> storedInstanceRole
+}
 
 /**
  * Reads and writes `project_roles` and `project_audience_roles`.

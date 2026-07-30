@@ -60,14 +60,15 @@ package se.soderbjorn.lunicle
  *   not on the [UserRecord] the way administrator-ness is.
  *
  *   This is a second collaborator where the class had exactly one, so it is worth
- *   saying what stops it from becoming a read on every check: everything that only
- *   needs to tell guest from member from staff from administrator is answered by
- *   [storedInstanceRole] with no read at all, and [effectiveRole] consults
- *   ownership only when the answer could still change — that is, when the caller is
- *   not already an administrator and has not already reached [ProjectRole.OWNER] by
- *   some other route. On the common path — an ordinary user on an ordinary board —
- *   it is one extra read of one tiny document; on the paths that would loop, the
- *   short-circuits fire first.
+ *   saying what keeps the read cheap rather than what keeps it rare — LNL-201 settled
+ *   that every *authority* question asks the whole ladder, so a gate that skipped the
+ *   read to stay non-suspend is a gate the owner cannot clear. What is left is
+ *   ordering: matching an audience only needs to tell guest from member from staff
+ *   from administrator and is answered by [storedInstanceRole] with no read at all,
+ *   and every rule that could answer yes without knowing who owns the place — an
+ *   author editing their own words, a caller who already reached [ProjectRole.OWNER]
+ *   by some other route — asks that half first and short-circuits. So the common path
+ *   costs nothing, and the paths that would loop cannot.
  */
 class AccessControl(
     private val roles: se.soderbjorn.lunicle.store.RoleStore,
@@ -80,8 +81,11 @@ class AccessControl(
      *
      * [storedInstanceRole] answers the same question from the record alone and can
      * never say [InstanceRole.OWNER], because no row knows who owns the deployment.
-     * This is the version that reads the setting, and it is the one to ask whenever
-     * the difference between an administrator and the owner matters.
+     * This is the version that reads the setting, and it is the one **every authority
+     * question** asks — not merely the ones where the difference between an
+     * administrator and the owner is the point. A gate that reads the row instead is a
+     * gate the owner cannot clear on any migrated volume, which is the whole of
+     * LNL-201; see [storedInstanceRole] for the two kinds of caller and which is which.
      *
      * The short-circuit is not an optimisation so much as the correct answer
      * arriving early: an administrator is already senior to every audience there is,
@@ -90,11 +94,7 @@ class AccessControl(
      */
     suspend fun instanceRole(user: UserRecord?): InstanceRole {
         if (user == null) return InstanceRole.GUEST
-        return if (instanceSettings.current().ownerUserId == user.id) {
-            InstanceRole.OWNER
-        } else {
-            user.storedInstanceRole
-        }
+        return user.instanceRoleWith(instanceSettings.current().ownerUserId)
     }
 
     /**
@@ -547,43 +547,45 @@ class AccessControl(
      * May [user] change or delete [comment]?
      *
      * Authorship, not a rung: reaching [ProjectRole.MAINTAINER] grants editing
-     * anyone's *issue*, never their words. An instance administrator overrides. A
-     * comment whose author is deleted is theirs alone, which is correct.
+     * anyone's *issue*, never their words. Whoever runs the instance overrides — an
+     * administrator, and the owner above them. A comment whose author is deleted is
+     * theirs alone, which is correct.
      *
-     * An imported comment is the administrator's too, and falls out of the same line
-     * rather than needing a case: an [Author.External] is a name, and a name is never
-     * equal to an account. Nobody can inherit an imported comment by happening to
-     * share the name it was filed under.
+     * An imported comment is theirs too, and falls out of the same line rather than
+     * needing a case: an [Author.External] is a name, and a name is never equal to an
+     * account. Nobody can inherit an imported comment by happening to share the name it
+     * was filed under.
      *
-     * ── The one instance-scoped gate the OWNER does not clear (LNL-199) ──────
+     * ── Why this is suspend, which it was not (LNL-201) ──────────────────────
      *
-     * This asks [storedInstanceRole], which reads the account's own row and therefore
-     * **can never answer [InstanceRole.OWNER]** — ownership is a setting, not a column.
-     * Every other instance-scoped rule in this file goes through [instanceRole], which
-     * reads that setting, so the owner is above all of them. This one is the exception,
-     * and it is not a deliberate one: it says "an instance administrator overrides"
-     * and means it literally.
+     * It used to ask [storedInstanceRole] and was non-suspend as a result, and the
+     * KDoc here argued that being non-suspend was a fact worth keeping — it needs
+     * nothing but the caller's record and a comment the route already holds. That
+     * argument loses to the ladder being true everywhere.
      *
-     * That gap is reachable rather than theoretical. On a volume migrated by 33.sqm
-     * every `instance_role` is left NULL — including the seated owner's, deliberately,
-     * because that migration makes no grants — so on such a deployment the owner
-     * cannot edit or delete anybody else's comment while an administrator can. A
-     * hand-over reaches it the same way: the successor is seated as owner and their
-     * own row is untouched.
+     * [storedInstanceRole] reads the account's own row and so **can never answer
+     * [InstanceRole.OWNER]**: ownership is `instance_settings.owner_user_id`, not a
+     * column. Every other instance-scoped authority gate in this file goes through
+     * [instanceRole], which reads the setting — so this one gate, alone, was one the
+     * owner could not clear. On a volume migrated by 33.sqm that is not a corner case
+     * but the default state: `instance_role` lands NULL for everybody *including the
+     * seated owner*, so the owner could not touch anybody else's comment while an
+     * ordinary administrator could. A hand-over reaches it the same way — the
+     * successor is seated as owner and their own row is untouched.
      *
-     * It is left alone here rather than quietly changed, because closing it is a
-     * change to who may edit whose words and that is the epic author's call, not a
-     * tidy-up's. Closing it means reading the owner setting, which means becoming
-     * `suspend` and touching all seven call sites — or being handed the owner's id.
+     * The maintainer's decision (LNL-201) is that the instance owner can do anything,
+     * comments included, because migration and cleanup work needs it. So this reads the
+     * ladder like everything else, and pays one read of one tiny document for it.
      *
-     * Not suspend, and that was a fact worth keeping: this needs nothing but the
-     * caller's record and the comment the route is already holding. It is also
-     * exactly what makes the paragraph above true.
+     * Authorship is asked **first**, which is the other half of that price: the common
+     * case by far is somebody editing their own comment, and `||` short-circuits, so the
+     * ordinary path costs exactly what it did before. Only a caller who did not write
+     * the comment reaches the read.
      */
-    fun canEditComment(user: UserRecord?, comment: CommentRecord): Boolean =
+    suspend fun canEditComment(user: UserRecord?, comment: CommentRecord): Boolean =
         user != null && (
-            user.storedInstanceRole.atLeast(InstanceRole.ADMIN) ||
-                user.wrote(comment.author)
+            user.wrote(comment.author) ||
+                instanceRole(user).atLeast(InstanceRole.ADMIN)
             )
 
     // ── Forums and private messages: switched off ────────────────────────────
