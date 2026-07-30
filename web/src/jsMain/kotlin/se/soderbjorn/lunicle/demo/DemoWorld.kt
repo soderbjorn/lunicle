@@ -41,7 +41,6 @@
 package se.soderbjorn.lunicle.demo
 
 import kotlin.js.Date
-import se.soderbjorn.lunula.core.Appearance
 import se.soderbjorn.lunicle.clientserver.AdminProjectRights
 import se.soderbjorn.lunicle.clientserver.AdmissionOption
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
@@ -294,33 +293,11 @@ internal const val DEMO_PUBLIC_VETO_RUNG_REASON: String =
  */
 internal const val DEMO_STAFF_DOMAIN: String = "voyager.starfleet"
 
-/**
- * What the demo looks like out of the box: the Classic Lunamux pair, dark side up.
- *
- * The same kind of declaration as [DEMO_STAFF_DOMAIN] and for the same reason — a real
- * deployment names its default themes in `brand.json`, and the demo is a bundle with no
- * server to read one, so it says here what a `brand.json` would have said. Applied in
- * main.kt through [se.soderbjorn.lunicle.ThemePersister.setEmbedDefaults], which is the
- * tier that fills a slot nobody has chosen: beneath an explicit `?theme=`/`?darkTheme=`/
- * `?lightTheme=` from a host page, and beneath a theme picked in the demo itself, which
- * sticks until reload like every other demo edit.
- *
- * Dark rather than Lunicle's own Light default because the demo is a *showcase* — the
- * house look is the dark one, and lunicle.dev already frames the embedded demo that way
- * (`?theme=dark&darkTheme=Lunamux%20Classic%20Dark&lightTheme=…`, see the site's
- * content.js). Naming it here is what makes `?demo=1` on its own — a local
- * `scripts/run-demo.sh` run, or anyone opening the bundle direct — land on the look the
- * site shows, instead of the neutral GitHub grey that only the query string moved it off.
- * The light slot still matters: the Appearance control works in the demo, and flicking it
- * should reach the Classic daylight palette rather than back to GitHub Light.
- */
-internal const val DEMO_DEFAULT_DARK_THEME: String = "Lunamux Classic Dark"
-
-/** The light half of the demo's default pair. See [DEMO_DEFAULT_DARK_THEME]. */
-internal const val DEMO_DEFAULT_LIGHT_THEME: String = "Lunamux Classic Light"
-
-/** Which of the demo's two slots is showing on arrival. See [DEMO_DEFAULT_DARK_THEME]. */
-internal val DEMO_DEFAULT_APPEARANCE: Appearance = Appearance.Dark
+// The demo declares no look of its own. It briefly did — the Classic Lunamux pair,
+// dark side up — back when Lunicle's own default was GitHub Light and only the demo
+// wanted otherwise. That pair is now the app's default for everybody
+// (LUNICLE_DEFAULT_* in ThemePersister.kt), so `?demo=1` inherits it like any other
+// load, and a second declaration here could only ever drift from the first.
 
 // ── Entities ────────────────────────────────────────────────────────────────
 

@@ -66,9 +66,6 @@ import se.soderbjorn.lunula.web.shell.TopbarAction
 import se.soderbjorn.lunula.web.shell.mountAppShell
 import se.soderbjorn.lunula.web.settings.closeNotificationsSidebar
 import se.soderbjorn.lunicle.client.StorageRepository
-import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_APPEARANCE
-import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_DARK_THEME
-import se.soderbjorn.lunicle.demo.DEMO_DEFAULT_LIGHT_THEME
 import se.soderbjorn.lunicle.demo.DemoLunicleApi
 import se.soderbjorn.lunicle.client.nextSearch
 import se.soderbjorn.lunicle.client.queryValue
@@ -177,11 +174,11 @@ private fun demoEnabled(): Boolean = queryValue(window.location.search, "demo") 
  * The appearance a host page asked this embed to seed on: `?theme=dark|light|auto`.
  *
  * A client-side hint, for the one job the toolkit's own defaults cannot do: a
- * browser with nothing stored seeds on Lunicle's Light default (GitHub Light,
- * LNL-149), which clashes with a dark host embedding the tracker in an iframe. The
- * Lunamux site is hard-committed dark and passes `?theme=dark`; [ThemePersister]
- * takes it as the *default* appearance — beneath any signed-in user's saved choice,
- * which still wins — so only an unchosen/signed-out browser is moved.
+ * browser with nothing stored seeds on Lunicle's own default appearance
+ * ([LUNICLE_DEFAULT_APPEARANCE]), which is one answer for every host, and a host
+ * embedding the tracker in an iframe is entitled to the other one. [ThemePersister]
+ * takes this as the *default* appearance — beneath any signed-in user's saved
+ * choice, which still wins — so only an unchosen/signed-out browser is moved.
  *
  * Null for absent and for anything that is not one of the three [Appearance]
  * names, which is then just another parameter the app ignores. `auto` maps to the
@@ -197,8 +194,8 @@ private fun preferredAppearance(): Appearance? =
  * `?darkTheme=Lunamux%20Dark&lightTheme=Lunamux%20Light`.
  *
  * [preferredAppearance]'s other half, and the half that actually matches colours.
- * Going dark is not enough on its own — the dark slot would still hold GitHub Dark,
- * a neutral grey, inside a host with a look of its own. These name the theme that
+ * Picking a side is not enough on its own — the slot would still hold Lunicle's own
+ * Classic palette inside a host with a look of its own. These name the theme that
  * matches, and correspond exactly to brand.json's `defaultDarkTheme` /
  * `defaultLightTheme`, one tier above them (see [ThemePersister.setEmbedDefaults]).
  *
@@ -1429,21 +1426,14 @@ private fun start() {
         // A host embedding the tracker can name both the appearance an unchosen
         // browser seeds on (?theme=) and the themes its slots default to
         // (?darkTheme=/?lightTheme=), so the frame matches the surrounding chrome
-        // rather than flashing Lunicle's GitHub Light. Set after the brand above,
-        // which it outranks, and before start(), which is where the seed happens —
-        // and beneath any stored user choice, which still wins.
+        // rather than clashing with it. Set after the brand above, which it outranks,
+        // and before start(), which is where the seed happens — and beneath any stored
+        // user choice, which still wins.
         //
-        // The demo declares its own look in the same slots, one tier below the URL:
-        // it has no brand dir to read a default off, so DemoWorld says what a
-        // brand.json would have (DEMO_DEFAULT_*). That is what makes a bare `?demo=1`
-        // open on the Classic Lunamux dark palette the site's demo tab shows, rather
-        // than on GitHub Light. A host page naming a look still overrides it.
-        val demo = demoEnabled()
-        persister.setEmbedDefaults(
-            preferredAppearance() ?: DEMO_DEFAULT_APPEARANCE.takeIf { demo },
-            preferredDarkTheme() ?: DEMO_DEFAULT_DARK_THEME.takeIf { demo },
-            preferredLightTheme() ?: DEMO_DEFAULT_LIGHT_THEME.takeIf { demo },
-        )
+        // The demo needs nothing of its own here any more: `?demo=1` used to name the
+        // Classic pair itself, and now inherits it from Lunicle's own default
+        // (LUNICLE_DEFAULT_*), which is the same look. One default, one place.
+        persister.setEmbedDefaults(preferredAppearance(), preferredDarkTheme(), preferredLightTheme())
 
         // The caller's stored theme and layout — or Lunicle's defaults — fetched
         // *before* the shell mounts, because the shell reads the persister as part
