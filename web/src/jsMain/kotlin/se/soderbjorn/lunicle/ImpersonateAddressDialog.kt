@@ -113,10 +113,15 @@ class ImpersonateAddressDialog(
         addressField.setValueIfChanged(state.impersonateAddress ?: "")
 
         val preview = state.addressPreview
+        // The summary alone, not the standing beside it. The two are the same fact at
+        // two lengths — the server's sentence for an unknown address opens "No account
+        // here", so prefixing the label read "no account here — No account here." The
+        // labels are for the menu rows, which have room for three words and not for a
+        // sentence.
         resolution.setTextIfChanged(
             when {
                 state.isPreviewingAddress -> "Resolving…"
-                preview != null -> "${preview.standing.label} — ${preview.summary}"
+                preview != null -> preview.summary
                 else -> ""
             },
         )

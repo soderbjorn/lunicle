@@ -461,7 +461,11 @@ private suspend fun BoardDependencies.conversationDetailFor(scope: ConversationS
                 authorName = message.author.displayName(authorNames),
                 agentName = message.agentName,
                 createdAt = message.createdAt,
-                isMine = message.author == Author.Account(scope.user?.id ?: -1L),
+                // `wrote` rather than a comparison against a -1 sentinel for "nobody":
+                // -1 is now the previewed-address id (LNL-197), so the sentinel had
+                // started to mean something. Asking the caller what they wrote is also the
+                // one place that answer lives. See UserRecord.wrote.
+                isMine = scope.user?.wrote(message.author) == true,
                 canDelete = access.canDeleteMessage(scope.user, message.author),
             )
         },

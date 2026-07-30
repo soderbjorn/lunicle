@@ -35,6 +35,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientCon
 import io.ktor.client.request.cookie
 import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
@@ -51,6 +52,7 @@ import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.ImpersonateRequest
 import se.soderbjorn.lunicle.clientserver.IssueDraft
+import se.soderbjorn.lunicle.clientserver.IssueUpdate
 import se.soderbjorn.lunicle.clientserver.ProjectListState
 import se.soderbjorn.lunicle.clientserver.SessionState
 import java.io.File
@@ -297,18 +299,24 @@ class ImpersonationRoutesTest {
     }
 
     /**
-     * An impersonated unknown address can still **write**, and the write is authored by
-     * nobody.
+     * An impersonated unknown address can **finish** a write, and it is signed with the
+     * address.
      *
-     * Full powers is the point — "could a stranger file this?" is not a question a
-     * read-only view can answer — and the authorship is the one concession the shape
-     * forces: `issues.created_by` references `users`, there is no row to point at, and
-     * the honest answer is the null the column already allows. Attributing it to the
-     * impersonating owner would be a lie; refusing the write would be the read-only
-     * preview this deliberately is not.
+     * Two requests, and the second is the one that matters. Filing an issue is a draft
+     * followed by a save, and a first draft of this ticket stopped after the draft —
+     * which passed, and left the editor stuck on "You cannot edit this issue" the
+     * moment somebody actually tried it in a browser. The cause was authorship: an
+     * `Author.Nobody` draft belongs to nobody, so the "you wrote it" clause of
+     * `canEditIssue` could never match, and a previewed address could neither publish
+     * its draft nor discard it. Full powers, writes included, is the point of
+     * impersonation, and a write you cannot finish is not one.
+     *
+     * So the address is held as an external author, exactly as an imported one is —
+     * see `UserRecord.asAuthor`. Both requests are asserted here so the pair can never
+     * come apart again.
      */
     @Test
-    fun `an impersonated unknown address may file an issue, authored by nobody`(): Unit = runBlocking {
+    fun `an impersonated unknown address may file an issue and save it`(): Unit = runBlocking {
         val f = seed()
         roles.setAudienceRole(f.projectId, Audience.STAFF, ProjectRole.CONTRIBUTOR)
         val before = users.selectAll().map { it.id }.toSet()
@@ -321,13 +329,32 @@ class ImpersonationRoutesTest {
             }
             assertEquals(HttpStatusCode.OK, filed.status, "A stranger the audience admits as a contributor was refused.")
             filedId = filed.body<IssueDraft>().id
+
+            val saved = client.put("/api/issues/$filedId") {
+                cookie(SESSION_COOKIE, f.ownerCookie)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    IssueUpdate(
+                        title = "Filed while previewing a stranger",
+                        description = "",
+                        statusId = statuses.forProject(f.projectId).first().id,
+                        priorityId = priorities.forProject(f.projectId).first().id,
+                    ),
+                )
+            }
+            assertEquals(
+                HttpStatusCode.OK,
+                saved.status,
+                "The previewed address filed a draft it could not then save, which is not a write.",
+            )
         }
 
         val issue = requireNotNull(issues.findById(filedId)) { "The route answered OK and wrote nothing." }
+        assertEquals("Filed while previewing a stranger", issue.title)
         assertEquals(
-            Author.Nobody,
+            Author.External("stranger@acme.com"),
             issue.author,
-            "The issue was attributed to somebody, and there is nobody it could honestly be.",
+            "The write is not signed with the address it was made under.",
         )
         assertEquals(before, users.selectAll().map { it.id }.toSet(), "Filing as a previewed address created an account.")
     }

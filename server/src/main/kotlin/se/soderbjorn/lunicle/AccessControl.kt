@@ -386,7 +386,7 @@ class AccessControl(
         if (user == null) return false
         val rung = effectiveRole(user, issue.projectId) ?: return false
         return rung.atLeast(ProjectRole.MAINTAINER) ||
-            (rung.atLeast(ProjectRole.CONTRIBUTOR) && issue.author == Author.Account(user.id))
+            (rung.atLeast(ProjectRole.CONTRIBUTOR) && user.wrote(issue.author))
     }
 
     /**
@@ -407,7 +407,7 @@ class AccessControl(
         if (user == null) return false
         val rung = effectiveRole(user, issue.projectId) ?: return false
         return rung.atLeast(ProjectRole.ADMIN) ||
-            (rung.atLeast(ProjectRole.CONTRIBUTOR) && issue.author == Author.Account(user.id))
+            (rung.atLeast(ProjectRole.CONTRIBUTOR) && user.wrote(issue.author))
     }
 
     /**
@@ -540,7 +540,7 @@ class AccessControl(
     fun canEditComment(user: UserRecord?, comment: CommentRecord): Boolean =
         user != null && (
             user.storedInstanceRole.atLeast(InstanceRole.ADMIN) ||
-                comment.author == Author.Account(user.id)
+                user.wrote(comment.author)
             )
 
     // ── Forums and private messages: switched off ────────────────────────────

@@ -546,7 +546,7 @@ private suspend fun BoardDependencies.postListFor(scope: ForumReadScope): ForumP
                 // Not your own writing, and not anybody's if nobody is asking.
                 isUnread = scope.user != null &&
                     listing.post.createdAt > mark &&
-                    listing.post.author != Author.Account(scope.user.id),
+                    !scope.user.wrote(listing.post.author),
                 canDelete = access.canDeleteForumContent(scope.user, listing.post.author, scope.project.id),
             )
         },

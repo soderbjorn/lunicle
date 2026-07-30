@@ -246,9 +246,16 @@ sealed interface Author {
      * A name with nobody behind it — history imported from another tracker,
      * written by somebody who has never signed in here.
      *
-     * Admin-only, and only ever at creation. See `created_by_external` in
-     * Issues.sq for why the name is held rather than an account minted for it,
-     * and [AccessControl.canAttributeWrites] for who may say it.
+     * See `created_by_external` in Issues.sq for why the name is held rather than an
+     * account minted for it, and [AccessControl.canAttributeWrites] for who may
+     * *claim* one: naming somebody else as the author is an administrator's, and only
+     * ever at creation.
+     *
+     * That gate is about a **claim**, and there is now one path that reaches this
+     * without making one: a previewed address writing as itself (LNL-197). The name
+     * comes from the session, not from the request, so there is nothing for
+     * `canAttributeWrites` to authorise — the caller is not attributing the write to
+     * anybody, it is signing it. See [asAuthor].
      */
     data class External(val name: String) : Author
 
@@ -263,20 +270,45 @@ sealed interface Author {
  * receiver because the routes carry a nullable user, and "nobody was signed in"
  * has always been recordable — see [Author.Nobody].
  *
- * Note there is no way to reach [Author.External] from a [UserRecord], and that
- * is the point: an imported author is not a user and never becomes one.
+ * ── The one non-account it can produce (LNL-197) ────────────────────────────
  *
- * A **previewed address** writes as [Author.Nobody] (LNL-197). It is not that the
- * write is refused — impersonation keeps full powers on purpose, and "could a
- * stranger file this?" is the question it exists to answer — but the row it files
- * cannot point at a `users` row that does not exist. `created_by` is nullable and
- * `Author.Nobody` is exactly the shape for "somebody wrote this and it was not an
- * account", so the write lands and the board shows it authored by nobody. Attributing
- * it to the impersonating owner instead would be the one lie this file exists not to
- * tell. See [previewRecordFor].
+ * A **previewed address** writes as [Author.External], carrying the address. It used
+ * to be the case that nothing could reach [Author.External] from a [UserRecord], on
+ * the reasoning that an imported author is not a user and never becomes one. That
+ * reasoning survives; what changed is that there is now a *caller* who is not a user
+ * either, and `created_by` cannot point at a `users` row that does not exist.
+ *
+ * [Author.Nobody] was the obvious answer and is the wrong one, which only a browser
+ * found: the two "did you write this?" gates — [AccessControl.canEditIssue] and
+ * `canDeleteIssue` — cannot match [Author.Nobody] to anybody, so a previewed address
+ * could file a draft and then neither publish nor discard it. Full powers, writes
+ * included, is the point of impersonation; a write you cannot finish is not one.
+ *
+ * The address is therefore held exactly as an imported author's name is, which is
+ * also the honest thing to show: the board says who filed it, and says something no
+ * account is behind. Note the trace this leaves is a trace of a *write* somebody
+ * deliberately made, not of the impersonation — nothing appears in `users`, in
+ * `added_at`, or in any project's People list. See [previewRecordFor] and [wrote].
  */
-fun UserRecord?.asAuthor(): Author =
-    this?.takeIf { !it.isPreviewOnly }?.let { Author.Account(it.id) } ?: Author.Nobody
+fun UserRecord?.asAuthor(): Author = when {
+    this == null -> Author.Nobody
+    isPreviewOnly -> Author.External(providerName)
+    else -> Author.Account(id)
+}
+
+/**
+ * Did this caller write something [author] describes?
+ *
+ * The one place "it is mine" is decided, so the two issue gates and the comment gate
+ * cannot answer it three ways. Expressed against [asAuthor] rather than by comparing
+ * to [Author.Account] directly, which is what makes it correct for a previewed
+ * address for free: whatever this caller's writes are attributed *to* is exactly what
+ * counts as theirs, so the two can never drift apart.
+ *
+ * [Author.Nobody] belongs to nobody, and this returns false for it — an authorless
+ * row is not everybody's to edit.
+ */
+fun UserRecord.wrote(author: Author): Boolean = author == asAuthor()
 
 /**
  * Is this account **permitted** to hold agent access — the tier's half of the question?
