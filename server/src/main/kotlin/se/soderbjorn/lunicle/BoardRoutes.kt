@@ -1085,6 +1085,22 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
 // ── Issues ───────────────────────────────────────────────────────────────────
 
 private fun Route.issueRoutes(deps: BoardDependencies) {
+    /**
+     * File an issue — which begins as a draft row, so this is a write before the editor
+     * has been shown anything.
+     *
+     * Gated by `canCreateIssue`, and **separately by there being somebody to attribute it
+     * to** (LNL-202). The second check is deliberately redundant with the first: the guest
+     * audience is capped at Viewer, so a caller with no session can no longer reach
+     * Contributor and cannot get here. It stays because the redundancy is the cheap half
+     * of the lesson — the rung is a permission question and authorship is not, and this
+     * route read a **nullable** user straight into `asAuthor()`, which answers
+     * [Author.Nobody]. That row matches no "you wrote it" clause (see
+     * `AccessControl.canEditIssue`), so whoever filed it could neither publish nor discard
+     * it, exactly as LNL-197 found for a previewed address — and unlike that case there is
+     * not even an address to sign it with. An anonymous issue is not a permission we chose
+     * to withhold; it is a row with nobody at the other end.
+     */
     post("${ApiRoutes.PROJECTS}/{id}/issues") {
         val user = call.caller(deps)
         val projectId = call.longParam("id") ?: run {
@@ -1092,7 +1108,7 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             return@post
         }
         val project = call.readableProject(deps, user, projectId) ?: return@post
-        if (!deps.access.canCreateIssue(user, project.id)) {
+        if (user == null || !deps.access.canCreateIssue(user, project.id)) {
             call.respond(HttpStatusCode.Forbidden, "You cannot create issues in this project.")
             return@post
         }
@@ -1790,10 +1806,18 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
 // ── Comments ─────────────────────────────────────────────────────────────────
 
 private fun Route.commentRoutes(deps: BoardDependencies) {
+    /**
+     * Start a comment — a draft row, like an issue's.
+     *
+     * `canComment`, and separately somebody to attribute it to, for the reason the
+     * create-issue route above states at length (LNL-202): the rung is a permission
+     * question and authorship is not, and a comment signed [Author.Nobody] is one its
+     * writer can neither publish nor delete.
+     */
     post("/api/issues/{id}/comments") {
         val user = call.caller(deps)
         val issue = call.readableIssue(deps, user) ?: return@post
-        if (!deps.access.canComment(user, issue.projectId)) {
+        if (user == null || !deps.access.canComment(user, issue.projectId)) {
             call.respond(HttpStatusCode.Forbidden, "You cannot comment on this project's issues.")
             return@post
         }

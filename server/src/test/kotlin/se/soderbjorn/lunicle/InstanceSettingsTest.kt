@@ -488,6 +488,37 @@ class InstanceSettingsTest {
     }
 
     /**
+     * A stored guest row above Viewer is capped as it is copied onto a new board (LNL-202).
+     *
+     * The setting is written straight through the store rather than through its route,
+     * because that route refuses it now — this is the value an older build left behind or
+     * somebody edited in. It matters because project creation is the one path to a guest row
+     * that runs with no picker and no project in existence yet: a board could otherwise be
+     * *born* admitting strangers as contributors.
+     */
+    @Test
+    fun `a stored guest row above viewer is capped when a project is created`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        instanceSettings.setNewProjectAudience(Audience.GUEST, ProjectRole.CONTRIBUTOR)
+
+        withAuthAndBoard { client ->
+            client.post("/api/projects") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(ProjectUpdate("Capped", "CAP"))
+            }
+        }
+        val capped = projects.selectAll().first { it.namePrefix == "CAP" }
+        assertEquals(
+            ProjectRole.VIEWER,
+            roles.audienceRoles(capped.id)[Audience.GUEST],
+            "A new board was born admitting guests above Viewer, from a setting nothing capped.",
+        )
+    }
+
+    /**
      * The session says an owner **runs the instance**, even with no administrator row of
      * their own (LNL-198).
      *

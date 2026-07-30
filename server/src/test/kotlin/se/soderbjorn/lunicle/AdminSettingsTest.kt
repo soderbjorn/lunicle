@@ -51,6 +51,7 @@ import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
+import se.soderbjorn.lunicle.clientserver.AudienceGrant
 import se.soderbjorn.lunicle.clientserver.HandOverInstanceRequest
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.ProjectOrder
@@ -707,6 +708,63 @@ class AdminSettingsTest {
             assertFalse(projects.findById(beta.id) == null, "A refused delete removed the project anyway.")
             assertTrue(instanceSettings.current().allowPublicProjects, "The administrator's switch did not persist.")
         }
+
+    /**
+     * The new-project guests row stops at Viewer too (LNL-202).
+     *
+     * The sibling of a project's own audience write, and it needs the same refusal for a
+     * reason of its own: this setting is copied onto **every future board**, so a guest row
+     * above Viewer here would be that row on projects that do not exist yet, written by
+     * `seatNewProject` with no picker anywhere near it.
+     *
+     * Both ends again — the POST refuses it with the reason, and the row that comes back
+     * offers Viewer alone with the rest greyed. Public projects are switched on first, so the
+     * publish veto is not what is doing the refusing.
+     */
+    @Test
+    fun `a new project cannot start out admitting guests above viewer`(): Unit = runBlocking {
+        val fixture = seed()
+        val cookie = sessions.create(fixture.adminId)
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+
+        withRoutes { client ->
+            val refused = client.post("/api/admin/new-project-audience") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(AudienceGrant(Audience.GUEST.key, ProjectRole.CONTRIBUTOR.key))
+            }
+            assertEquals(HttpStatusCode.Conflict, refused.status, "Every future board was made writable by guests.")
+            assertTrue(
+                refused.bodyAsText().contains("attribute"),
+                "The refusal did not say what is missing: somebody to attribute the write to.",
+            )
+            assertNull(
+                instanceSettings.current().newProjectAudiences[Audience.GUEST],
+                "The refused setting landed anyway.",
+            )
+
+            // Viewer is accepted — a deployment whose boards are public by default is a
+            // deployment, not a bug.
+            val accepted = client.post("/api/admin/new-project-audience") {
+                cookie(SESSION_COOKIE, cookie)
+                contentType(ContentType.Application.Json)
+                setBody(AudienceGrant(Audience.GUEST.key, ProjectRole.VIEWER.key))
+            }
+            assertEquals(HttpStatusCode.OK, accepted.status)
+            val guests = accepted.body<AdminSettingsState>().newProjectAudiences
+                .first { it.key == Audience.GUEST.key }
+            assertEquals(
+                listOf(ProjectRole.VIEWER.key),
+                guests.rungs.filter { it.isSelectable }.map { it.key },
+                "The guests row offered a rung the write refuses.",
+            )
+            assertEquals(
+                ProjectRole.entries.map { it.key },
+                guests.rungs.map { it.key },
+                "A rung out of reach was omitted rather than greyed, which reads as a bug.",
+            )
+        }
+    }
 
     // ── Handing the instance over (LNL-198) ──────────────────────────────────
 

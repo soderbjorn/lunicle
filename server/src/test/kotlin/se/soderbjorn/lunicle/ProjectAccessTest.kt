@@ -8,7 +8,7 @@
  * for itself would pass every assertion in that file and offer a control the route
  * refuses.
  *
- * Four things:
+ * Five things:
  *
  *  - **Sections are per project and per rung.** A Viewer gets one section, a
  *    Maintainer gets General read-only, an Admin gets Structure, an Owner gets Github.
@@ -17,6 +17,10 @@
  *    Viewer must not receive it — omitted, not sent-and-hidden.
  *  - **Audiences are the owner's, and the veto outranks them.** Including for an
  *    instance administrator, which is the case a screen-level rule would miss.
+ *  - **The guests row stops at Viewer** (LNL-202), whoever asks and whatever the switches
+ *    say. Asserted at both ends — the POST refuses it with a reason, and the row's own rung
+ *    list offers Viewer alone with the rest greyed — because the whole defect was a picker
+ *    offering a rung nothing refused.
  *  - **A rung is refused at both ends.** An Admin may hand out Maintainer and may not
  *    write Viewer over an Owner's row, which is the same escalation running downhill.
  *
@@ -30,6 +34,7 @@ import io.ktor.client.request.cookie
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -305,6 +310,87 @@ class ProjectAccessTest {
         assertTrue(
             greyed.unavailableReason.orEmpty().contains("public"),
             "The greying did not name the deployment's veto as the reason.",
+        )
+    }
+
+    /**
+     * The guest row stops at Viewer, and the picker says so (LNL-202).
+     *
+     * The other refusal on this row, and the one no switch lifts: public projects are
+     * *allowed* here, the caller owns the board, and a rung above Viewer is still refused —
+     * because a guest has no account and every rung above Viewer describes writing.
+     *
+     * Both ends asserted in one test on purpose. The write is what a POST cannot go around;
+     * the response is what keeps the browser from inviting the click, and the two have to
+     * agree or one of them is a lie. Note the row itself stays **live** with only its higher
+     * rungs greyed, rather than the whole row dying: setting the guest row *to* Viewer is
+     * exactly how a board is published.
+     */
+    @Test
+    fun `the guest row offers viewer only, and refuses more with the reason`(): Unit = runBlocking {
+        val f = seed()
+        instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        withRoutes { client ->
+            listOf(ProjectRole.CONTRIBUTOR, ProjectRole.MAINTAINER, ProjectRole.ADMIN, ProjectRole.OWNER)
+                .forEach { rung ->
+                    val response = client.post(ApiRoutes.projectAudience(f.projectId)) {
+                        cookie(SESSION_COOKIE, f.ownerCookie)
+                        contentType(ContentType.Application.Json)
+                        setBody(AudienceGrant(Audience.GUEST.key, rung.key))
+                    }
+                    assertEquals(
+                        HttpStatusCode.Forbidden,
+                        response.status,
+                        "An owner handed guests ${rung.key} — a write with nobody behind it.",
+                    )
+                    assertTrue(
+                        response.bodyAsText().contains("attribute"),
+                        "The refusal did not say what is missing: somebody to attribute the write to.",
+                    )
+                }
+            assertNull(roles.audienceRoles(f.projectId)[Audience.GUEST], "A refused guest row landed anyway.")
+
+            // And Viewer is accepted, because publishing a board is the feature.
+            assertEquals(
+                HttpStatusCode.OK,
+                client.post(ApiRoutes.projectAudience(f.projectId)) {
+                    cookie(SESSION_COOKIE, f.ownerCookie)
+                    contentType(ContentType.Application.Json)
+                    setBody(AudienceGrant(Audience.GUEST.key, ProjectRole.VIEWER.key))
+                }.status,
+                "The ceiling took away publishing, which is the one thing the row is for.",
+            )
+            assertEquals(ProjectRole.VIEWER, roles.audienceRoles(f.projectId)[Audience.GUEST])
+        }
+
+        val section = settingsFor(f.ownerCookie, f.projectId).access!!
+        val guests = section.audiences.first { it.key == Audience.GUEST.key }
+        assertTrue(guests.isSelectable, "The whole guest row died; only the rungs above Viewer should.")
+        assertEquals(
+            listOf(ProjectRole.VIEWER.key),
+            guests.rungs.filter { it.isSelectable }.map { it.key },
+            "The guests row offered a rung other than Viewer, or stopped offering Viewer.",
+        )
+        guests.rungs.filter { !it.isSelectable }.forEach {
+            assertNotNull(it.unavailableReason, "A dead rung crossed the wire with no reason on it.")
+        }
+        assertEquals(
+            ProjectRole.entries.map { it.key },
+            guests.rungs.map { it.key },
+            "A rung out of reach was omitted rather than greyed, which reads as a bug.",
+        )
+        // The members row is untouched: an account can be attributed, so nothing narrows it.
+        assertEquals(
+            ProjectRole.entries.map { it.key },
+            section.audiences.first { it.key == Audience.MEMBER.key }.rungs
+                .filter { it.isSelectable }.map { it.key },
+            "The ceiling leaked onto an audience that has accounts behind it.",
+        )
+        // And the person rows are untouched, for the same reason.
+        assertEquals(
+            ProjectRole.entries.map { it.key },
+            section.rungs.filter { it.isSelectable }.map { it.key },
+            "The ceiling leaked onto the person rows, which are about accounts.",
         )
     }
 

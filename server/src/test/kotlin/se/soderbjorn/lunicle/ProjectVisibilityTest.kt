@@ -66,6 +66,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectListState
 import se.soderbjorn.lunicle.clientserver.RungGrant
@@ -302,6 +303,104 @@ class ProjectVisibilityTest {
             )
             assertTrue(listed.projects.none { it.id == f.privateId })
         }
+    }
+
+    /**
+     * A signed-out visitor reads a public board and **writes nothing on it** (LNL-202).
+     *
+     * The other half of the test above, and the half that was missing. `is_public` could
+     * only say "may look", but a guest audience row names a rung — and nothing capped which
+     * rung, so an owner could set Guests → Contributor and this route would file an issue
+     * for a caller with no session at all. The row is capped at Viewer now (see
+     * [Audience.GUEST]), and both refusals are asserted **with no cookie on the request**,
+     * which is the only way to make this claim: a browser tab you have signed into cannot.
+     *
+     * The board's own affordances are asserted alongside, because a screen offering the
+     * buttons beside a route refusing them is the same bug wearing a 403.
+     */
+    @Test
+    fun `a signed-out visitor cannot file, comment or be assigned on a public project`(): Unit = runBlocking {
+        val f = seed()
+        val issueId = publicIssue(f)
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("${ApiRoutes.PROJECTS}/${f.publicId}/issues").status,
+                "A caller with no session filed an issue on a public board.",
+            )
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/issues/$issueId/comments").status,
+                "A caller with no session commented on a public board.",
+            )
+            val board: BoardState = client.get(ApiRoutes.board(f.publicId)).body()
+            assertFalse(board.permissions.canCreateIssue, "The board invited a stranger to file an issue.")
+            assertFalse(board.permissions.canComment, "The board invited a stranger to comment.")
+            assertFalse(board.permissions.canBeAssigned, "The board offered a stranger the work.")
+        }
+    }
+
+    /**
+     * The same, with the guest row **forced above Viewer in the store** — the row a fresh
+     * UI can no longer produce (LNL-202).
+     *
+     * Written with `setAudienceRole` rather than through the audience route, because that
+     * route refuses it now. This is the row a hand-edit leaves behind, or one a build older
+     * than the cap wrote, and it is the case that tells a capped write from a capped
+     * *read*: with only the former, this test files an issue.
+     */
+    @Test
+    fun `a guest row forced to contributor still lets a stranger do nothing but read`(): Unit = runBlocking {
+        val f = seed()
+        val issueId = publicIssue(f)
+        roles.setAudienceRole(f.publicId, Audience.GUEST, ProjectRole.CONTRIBUTOR)
+        assertEquals(
+            ProjectRole.CONTRIBUTOR,
+            roles.audienceRoles(f.publicId)[Audience.GUEST],
+            "Precondition: the store was meant to hold the invalid row verbatim.",
+        )
+
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.OK,
+                client.get(ApiRoutes.board(f.publicId)).status,
+                "Capping the row must not stop a published board being read.",
+            )
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("${ApiRoutes.PROJECTS}/${f.publicId}/issues").status,
+                "A stored `guest -> contributor` row let a caller with no session file an issue.",
+            )
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post("/api/issues/$issueId/comments").status,
+                "A stored `guest -> contributor` row let a caller with no session comment.",
+            )
+            val board: BoardState = client.get(ApiRoutes.board(f.publicId)).body()
+            assertFalse(board.permissions.canCreateIssue)
+            assertFalse(board.permissions.canComment)
+            assertFalse(board.permissions.canBeAssigned)
+        }
+    }
+
+    /** An issue on the public board, so the comment route has something to refuse. */
+    private suspend fun publicIssue(f: Fixture): Long {
+        val draft = issueRepository.createDraft(f.publicId, Author.Account(f.sysAdminId))
+        issueRepository.save(
+            issue = issues.findById(draft.first)!!,
+            title = "Visible to everybody",
+            description = "",
+            statusId = statuses.forProject(f.publicId).first().id,
+            priorityId = priorities.defaultForProject(f.publicId)!!.id,
+            resolutionId = null,
+            assigneeId = null,
+            sprintId = null,
+            plannedVersionId = null,
+            fixedVersionId = null,
+            labelIds = emptyList(),
+            componentIds = emptyList(),
+        )
+        return draft.first
     }
 
     /** And a signed-in non-member reads it too — the guest audience row did not narrow. */
