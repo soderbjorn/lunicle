@@ -1555,7 +1555,15 @@ private fun start() {
         // back to the top (LNL-45). This hook fires after the rebuild, the only
         // point at which writing scrollTop takes: on a detached element it is a
         // no-op. Idempotent, as the hook requires.
-        onAfterRefresh = { boardWindows.restoreScroll() },
+        //
+        // The settings pane rides along for exactly the same reason, and needs it more
+        // often: every switch in it writes, and every write reloads the board — so the
+        // shell re-render that loses the scroll is the direct consequence of the press
+        // (LNL-45's complaint, one surface over). See [SettingsPanes.scrollPositions].
+        onAfterRefresh = {
+            boardWindows.restoreScroll()
+            settingsPanes.restoreScroll()
+        },
     )
 
     scope.launch {
@@ -2653,6 +2661,26 @@ private class SettingsPanes(
     private var host: HTMLElement? = null
 
     /**
+     * How far each scroller inside the pane is scrolled — [BoardWindow.columnScroll]'s
+     * sibling, for the same toolkit fact and against the same complaint.
+     *
+     * Every settings write here calls `mainViewModel.reload()`, because a rename or a
+     * display switch has to reach the boards and the project list. That is a shell
+     * re-render, and a shell re-render rebuilds the pane subtrees: this host is detached
+     * and re-appended, which silently zeroes the `scrollTop` of everything inside it
+     * without firing a `scroll` event. So flipping a switch at the bottom of a long
+     * section — Structure's estimate buttons, six vocabularies down — threw the reader
+     * back to the top of the pane, every time.
+     *
+     * Keyed by the scrolling element itself rather than by section, because the panes and
+     * tab bodies here are built once and kept ([view] is never rebuilt), so an element is
+     * a stable name for "the thing the reader was looking at". Recorded from a
+     * capture-phase listener on the host: `scroll` does not bubble, so one listener in the
+     * capture phase is what sees all of them without every scroller needing its own.
+     */
+    private val scrollPositions = mutableMapOf<HTMLElement, Double>()
+
+    /**
      * Follow the workspace: build the view when the pane appears, drop it when it
      * goes.
      *
@@ -2697,7 +2725,32 @@ private class SettingsPanes(
 
     private fun hostElement(): HTMLElement = host ?: element("div", "settings-pane-host").also {
         it.addEventListener("mousedown", { onPaneMousedown(PaneRef.SETTINGS_PANE_ID) }, true)
+        // Capture phase, because `scroll` does not bubble — see [scrollPositions].
+        it.addEventListener(
+            "scroll",
+            { event ->
+                val scroller = event.target as? HTMLElement ?: return@addEventListener
+                scrollPositions[scroller] = scroller.scrollTop
+            },
+            true,
+        )
         host = it
+    }
+
+    /**
+     * Put every scroller in the pane back where the reader left it — [BoardWindow.restoreScroll]'s
+     * sibling, called from the same `onAfterRefresh` hook and for the same reason.
+     *
+     * Must run *after* the re-attach: `scrollTop` on a detached element is a no-op, and so
+     * is one on a hidden section — which is right, since a hidden section keeps its
+     * remembered position here until it is shown and refreshed again. Idempotent, as the
+     * hook requires: in the common case it writes back the position the element already
+     * holds, and the `scroll` event that a real write fires simply re-records the same value.
+     */
+    fun restoreScroll() {
+        scrollPositions.forEach { (scroller, wanted) ->
+            if (scroller.isConnected && scroller.scrollTop != wanted) scroller.scrollTop = wanted
+        }
     }
 
     private fun create() {

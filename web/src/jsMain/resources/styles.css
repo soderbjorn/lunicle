@@ -2362,6 +2362,15 @@ body > .dt-pane-menu {
 .field-hint { color: var(--green-dim); font-size: 12px; margin: 6px 0 0; }
 .field-validation { color: var(--yellow); font-size: 13px; margin: 12px 0 0; }
 
+/* A hint carries no bottom margin — under a field it is the last word on that
+   field and the next field brings its own spacing. A choice row underneath is
+   the exception: it is a *control* answering the sentence above it, and with
+   nothing between them the buttons read as a third line of the paragraph. The
+   note that follows the row (the "an administrator's to change" line) needs the
+   same gap for the same reason, from the other side. */
+.field-hint + .dt-settings-button-row { margin-top: 10px; }
+.dt-settings-button-row + .admin-note { margin-top: 12px; }
+
 /* ── The sign-in method picker ───────────────────────────────────────────────
 
    Two ways in — a provider popup and a mailed code — and the layout's whole job
@@ -3598,12 +3607,19 @@ body.app-impersonating::after {
    keeps the styled scrollbar off the controls, `.settings-body`'s reason for the
    same padding. In the small (new-project / non-admin) modal the body is a plain
    block: flex is inert there and the pane simply grows with its content, which is
-   all the lone General tab ever holds. */
+   all the lone General tab ever holds.
+
+   The bottom padding is the pane's own end-of-content margin. Without it the
+   last control in a section — Structure's estimate buttons, Versions' switch —
+   lands hard against the dialog's footer rule with nothing under it, which reads
+   as a pane that has been cut off rather than one that has ended. It is inside
+   the scroller on purpose, so scrolling to the bottom brings the gap with it. */
 .project-pane {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding-right: 14px;
+  padding-bottom: 24px;
 }
 
 /* The env-variable / paste-token field group under the token-source row (LNL-141).

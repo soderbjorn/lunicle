@@ -961,6 +961,11 @@ class ProjectSections(
      * which is [peopleList]'s ancestor rather than [peopleList] itself. Read back before
      * restoring so a genuinely shorter list (somebody's row withdrawn) still settles at its
      * own new maximum instead of being forced to a position that no longer exists.
+     *
+     * This is the *within-a-render* half of keeping the reader in place. The other half is
+     * [SettingsPanes.restoreScroll] in main.kt: a settings write re-renders the shell,
+     * which detaches this pane's whole subtree and zeroes its scrollTop without so much as
+     * a `scroll` event, and nothing inside a render can see that coming.
      */
     private fun preservingScroll(block: () -> Unit) {
         val scroller = peopleList.closest(".project-pane") as? HTMLElement
