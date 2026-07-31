@@ -57,6 +57,9 @@ import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
 import se.soderbjorn.lunicle.client.viewmodel.EditProjectBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.ESTIMATE_HINT
+import se.soderbjorn.lunicle.client.viewmodel.ESTIMATE_MODE_OPTIONS
+import se.soderbjorn.lunicle.client.viewmodel.ESTIMATE_SECTION_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.GITHUB_TOKEN_ENV_HINT
 import se.soderbjorn.lunicle.client.viewmodel.GITHUB_TOKEN_ENV_LABEL
 import se.soderbjorn.lunicle.client.viewmodel.GITHUB_TOKEN_ENV_PREFIX_EXAMPLE
@@ -141,6 +144,11 @@ class ProjectSections(
     private lateinit var requirementsElement: HTMLElement
     private lateinit var requireLabelToggle: Toggle
     private lateinit var requireComponentToggle: Toggle
+    // The estimate mode (LNL-215): three buttons, one lit. Same control shape as the
+    // Github token source — see buildEstimateGroup.
+    private lateinit var estimateGroup: HTMLElement
+    private lateinit var estimateReadOnly: HTMLElement
+    private val estimateModeButtons = mutableMapOf<String, HTMLButtonElement>()
 
     // ── Sprints ──
     private lateinit var sprintSectionElement: HTMLElement
@@ -407,13 +415,77 @@ class ProjectSections(
 
     // ── Structure, Sprints and Versions ──────────────────────────────────────
 
+    /**
+     * The six vocabularies that define what the board is, then the switches that refer
+     * to them.
+     *
+     * ── Why relation kinds landed HERE and not in a section of their own ─────
+     *
+     * LNL-196 is the precedent pulling the other way: Versions was one list among these
+     * until it outgrew being one, and lifting it out beside Sprints was the right call
+     * because those two share a property none of the rest have — their *presence* is a
+     * feature flag, and making the first one turns something on across the whole board.
+     *
+     * Relation kinds do not share that property. Every project made or migrated since
+     * LNL-215 starts with three of them (see IssueRelationKinds.sq), so there is no
+     * "make the first one and the feature appears" moment to build a section around;
+     * this is a list of names an administrator occasionally renames, which is exactly
+     * what the five lists above it are. It also belongs to the same rung — an
+     * administrator's, where Sprints and Versions are a maintainer's — so a section of
+     * its own would have to explain a different permission for no different reason.
+     *
+     * The honest cost is that Structure is now six lists and two switch groups, which is
+     * long. It is long in a *scrolling pane*, in the order somebody reads it (what the
+     * board is, then what a ticket must carry, then whether it is sized), and every list
+     * carries its own heading — so the length is navigable rather than cramped. Had this
+     * needed a second rung, or turned something on by existing, it would have gone in
+     * its own section and this note would say the opposite.
+     */
     private fun buildStructure(): HTMLElement {
         structureSectionsElement = element("div", "project-structure")
         requirementsElement = buildRequirementsSection()
         // The vocabularies, then the new-ticket requirements that refer to them
         // (LNL-106): you see the labels and components a project has, then the switches
-        // that decide whether a new ticket must use them.
-        return element("div", "project-pane").children(structureSectionsElement, requirementsElement)
+        // that decide whether a new ticket must use them. Estimates last, because it is
+        // the one switch here that refers to no list above it.
+        return element("div", "project-pane").children(
+            structureSectionsElement,
+            requirementsElement,
+            buildEstimateGroup(),
+        )
+    }
+
+    /**
+     * "Does this project estimate, and in what?" — three buttons, one lit (LNL-215).
+     *
+     * A three-way choice row rather than a pair of toggles ("estimates: on/off" plus
+     * "unit: time/points"), because it is one decision with three answers and splitting
+     * it would invent a state — off-but-in-points — that means nothing and that the
+     * server folds away anyway. It reuses the Github token source's control exactly
+     * (`dt-settings-button-row` / `dt-settings-choice-btn`), so a three-way choice looks
+     * the same wherever this app makes one.
+     *
+     * An **administrator's**, like the ticket requirements above it, and read-only
+     * rather than absent below that rung — the sentence says whose it is. Whether a
+     * board estimates is worth knowing to everybody who can see this section; deciding
+     * it is not.
+     */
+    private fun buildEstimateGroup(): HTMLElement {
+        val row = element("div", "dt-settings-button-row")
+        ESTIMATE_MODE_OPTIONS.forEach { (mode, label) ->
+            val btn = button(label, "dt-settings-choice-btn") { viewModel.onEstimateModeChanged(mode) }
+            estimateModeButtons[mode] = btn
+            row.appendChild(btn)
+        }
+        estimateReadOnly = element("p", "admin-note")
+        estimateGroup = element("div", "project-requirements").children(
+            element("div", "settings-section-rule"),
+            element("h3", "section-title", ESTIMATE_SECTION_TITLE),
+            element("p", "field-hint", ESTIMATE_HINT),
+            row,
+            estimateReadOnly,
+        )
+        return estimateGroup
     }
 
     /**
@@ -740,6 +812,21 @@ class ProjectSections(
             requireLabelToggle.disabled = state.isBusy
             requireComponentToggle.checked = state.requireComponent
             requireComponentToggle.disabled = state.isBusy
+        }
+
+        // The estimate mode (LNL-215). An unrecognised key from a newer server lights
+        // NOTHING rather than falling back to "Off" — a row of three unlit buttons reads
+        // as "something else is set here", where lighting Off would be a wrong answer
+        // given confidently, and pressing another button would then look like a
+        // correction rather than the change it is.
+        estimateGroup.visible(state.showEstimateSection)
+        if (state.showEstimateSection) {
+            estimateModeButtons.forEach { (mode, btn) ->
+                btn.classList.toggle("dt-selected", mode == state.estimateMode)
+                btn.disabled = state.isBusy || !state.canSetRequirements
+            }
+            estimateReadOnly.setTextIfChanged(state.requirementsReadOnlyReason ?: "")
+            estimateReadOnly.visible(state.requirementsReadOnlyReason != null)
         }
 
         // The fixed-version rule, in the Versions section now. Shown from Maintainer up
@@ -1143,7 +1230,12 @@ class ProjectSections(
                 "${row.id}:${row.name}:${row.requiresResolution}:${row.isDone}:" +
                     "${row.isDeletable}/${row.deleteBlockedReason}/${row.deleteBlockedSummary}:" +
                     "${row.canMoveUp}/${row.canMoveDown}:${row.isEditable}:" +
-                    "${row.completionLine}/${row.completionActionLabel}"
+                    "${row.completionLine}/${row.completionActionLabel}:" +
+                    // A relation kind's two extra facts (LNL-215). In the signature like
+                    // everything else the row draws, so making a kind symmetric — which
+                    // changes the inverse field from live-with-text to empty-and-dead —
+                    // rebuilds the row rather than leaving the old field on screen.
+                    "${row.inverseName}/${row.marksBlocked}"
             }
             if (next == signature) return
             signature = next
@@ -1158,8 +1250,23 @@ class ProjectSections(
             // Commit on blur, never per keystroke: this field renames a board
             // column for everybody, so an oninput version would send a request per
             // character. See Dom.kt's textFieldCommitting.
+            //
+            // Every one of the row's OTHER facts rides along, because onVocabularyEdited
+            // writes the whole row and its defaults are values rather than "leave alone"
+            // — a rename that omitted them would quietly make a relation kind symmetric
+            // and non-blocking. The row is where they are read from rather than the live
+            // inverse field, because that field is built after this one and a rename does
+            // not otherwise concern it.
             val nameField = textFieldCommitting {
-                viewModel.onVocabularyEdited(section.kind, row.id, it, row.requiresResolution, row.isDone)
+                viewModel.onVocabularyEdited(
+                    kind = section.kind,
+                    id = row.id,
+                    name = it,
+                    requiresResolution = row.requiresResolution,
+                    isDone = row.isDone,
+                    inverseName = row.inverseName,
+                    marksBlocked = row.marksBlocked,
+                )
             }
             nameField.value = row.name
             // Dead for a reader who may not write here, and still shown with the name in
@@ -1172,6 +1279,14 @@ class ProjectSections(
             // button below can be told to fill the same cell without knowing what
             // is in it. See .vocab-row-actions.
             val actions = element("div", "vocab-row-actions")
+
+            // A relation kind is the richest row in this dialog: a name, an opposite
+            // beside it, and two checkboxes (LNL-215). Built as one unit so the three
+            // controls that depend on each other are wired in one place — see
+            // [relationFields].
+            if (row.showsRelationFields) {
+                actions.appendChild(relationFields(section, row, nameField))
+            }
 
             if (row.showsClosingFlag) {
                 val flag = Toggle {
@@ -1244,6 +1359,113 @@ class ProjectSections(
 
             container.appendChild(actions)
             return container
+        }
+
+        /**
+         * A relation kind's extra controls: the opposite name, the symmetry switch, and
+         * the blocking flag (LNL-215).
+         *
+         * ── Symmetry is the ABSENCE of an opposite, and the switch says so ───
+         *
+         * There is no "is symmetric" column and this deliberately does not invent one:
+         * a null inverse name IS symmetry, on the wire and in the schema (see
+         * IssueRelationKinds.sq). So the switch is a *view* of whether that field has a
+         * value — turning it on clears the field and disables it, turning it off makes
+         * the field live again, and it is the field's content that gets written either
+         * way. That is why the switch is rendered from `row.inverseName == null` rather
+         * than from a flag of its own: two sources for one fact would eventually
+         * disagree, and the one on screen would be the one that was wrong.
+         *
+         * Clearing on the way in is not merely cosmetic — it is the write. Ticking
+         * "same in both directions" sends `inverseName = null` immediately, so the row
+         * does not sit there symmetric-looking and unsaved.
+         *
+         * ── The name comes from the FIELD, not from the row ──────────────────
+         *
+         * Every control here sends the whole row, and each reads the name out of
+         * [nameField] rather than out of `row`, so flipping a switch does not silently
+         * revert a rename the admin has typed and not yet blurred out of. The closing
+         * and done flags above make the same move for the same reason; this one has to
+         * make it twice over, because the inverse field is a second live text box whose
+         * value the switches must also preserve.
+         */
+        private fun relationFields(
+            section: VocabularySection,
+            row: VocabularyRowState,
+            nameField: HTMLInputElement,
+        ): HTMLElement {
+            val isSymmetric = row.inverseName == null
+
+            // Commits on blur like the name beside it, never per keystroke: this renames
+            // a link's far side for everybody, so an oninput version would send a PUT per
+            // character. See Dom.kt's textFieldCommitting.
+            val inverseField = textFieldCommitting { typed ->
+                viewModel.onVocabularyEdited(
+                    kind = section.kind,
+                    id = row.id,
+                    name = nameField.value,
+                    requiresResolution = row.requiresResolution,
+                    isDone = row.isDone,
+                    // Blank means symmetric, which is the same thing the switch says —
+                    // somebody who empties the field by hand has said it the other way.
+                    inverseName = typed.trim().ifBlank { null },
+                    marksBlocked = row.marksBlocked,
+                )
+            }
+            inverseField.classList.add("vocab-inverse")
+            inverseField.value = row.inverseName.orEmpty()
+            inverseField.placeholder = "Opposite (e.g. Blocks)"
+            inverseField.setAttribute("aria-label", "Opposite name")
+            // Dead while symmetric, and dead for a reader — two different reasons for the
+            // same state, which is fine here because the sentence explaining each is
+            // elsewhere (the switch beside it, and the section's read-only note).
+            inverseField.disabled = !row.isEditable || isSymmetric
+
+            val symmetry = Toggle { same ->
+                viewModel.onVocabularyEdited(
+                    kind = section.kind,
+                    id = row.id,
+                    name = nameField.value,
+                    requiresResolution = row.requiresResolution,
+                    isDone = row.isDone,
+                    // On → null (symmetric). Off → whatever is in the field, and the
+                    // kind's own name when it is empty, because a kind that is not
+                    // symmetric must have an opposite to be: sending null back would
+                    // put the switch straight into the state that was just turned off.
+                    // Seeding it with the name gives the admin something to edit rather
+                    // than a blank they have to guess the purpose of.
+                    inverseName = if (same) null else inverseField.value.trim().ifBlank { nameField.value },
+                    marksBlocked = row.marksBlocked,
+                )
+            }
+            symmetry.checked = isSymmetric
+            symmetry.disabled = !row.isEditable
+
+            val blocking = Toggle { blocks ->
+                viewModel.onVocabularyEdited(
+                    kind = section.kind,
+                    id = row.id,
+                    name = nameField.value,
+                    requiresResolution = row.requiresResolution,
+                    isDone = row.isDone,
+                    inverseName = if (inverseField.disabled) row.inverseName else inverseField.value.trim().ifBlank { null },
+                    marksBlocked = blocks,
+                )
+            }
+            blocking.checked = row.marksBlocked
+            blocking.disabled = !row.isEditable
+
+            val group = element("div", "vocab-relation")
+            group.children(
+                inverseField,
+                // "same in both directions" rather than "symmetric": the word is
+                // accurate and the phrase is what it means, and this row is read by
+                // people configuring a board rather than by people who have met the
+                // word. Same register as "needs a resolution" and "means done" beside it.
+                toggleRow(symmetry, "same in both directions", "vocab-flag"),
+                toggleRow(blocking, "marks blocked", "vocab-flag"),
+            )
+            return group
         }
 
         private fun moveButton(

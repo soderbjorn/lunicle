@@ -1689,6 +1689,143 @@ body > .dt-pane-menu {
 }
 .card-author .agent-badge { font-size: 11px; padding: 1px 6px 1px 4px; }
 
+/* The assignee's initials, as a round mark at the trailing edge of the title line
+   (LNL-215). A flex sibling of the title inside `.card-head`, not an absolutely
+   positioned corner mark — see BoardWindow.assigneeAvatar for why, and for why the
+   title therefore cannot run underneath it without any padding being reserved.
+
+   NEUTRAL, and taken from a theme token rather than generated per name. The obvious
+   flourish here is a hash-to-hue disc, and it is wrong on this card: the label and
+   component dots already spend the card's colour budget on facts about the ISSUE,
+   and a third hue meaning "this is Robert" would compete with them while carrying
+   nothing the two letters do not. `--border` is the accent at low alpha, so it
+   composites over whatever the card is and stays a quiet disc in every theme, light
+   and dark alike; `--head` is the bright text token, which is what keeps two 9.5px
+   letters legible on it.
+
+   `position: relative` because the agent badge below hangs off its corner. `flex:
+   none` so a long title cannot squeeze it into an oval. */
+.card-avatar {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--border);
+  border: 1px solid var(--border-hi);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card-avatar-initials {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  line-height: 1;
+  color: var(--head);
+  /* Two letters that must stay two letters: a proportional face pairs "IL" much
+     narrower than "MW", and a disc of fixed width reads as broken when its
+     contents wander off centre. */
+  font-family: var(--mono);
+}
+
+/* "…and it is their AGENT doing this" — the agent mark badged onto the avatar's
+   bottom-right corner, overlapping it (LNL-215).
+
+   The status-dot idiom, deliberately, rather than a second element beside the
+   avatar: beside would read as two people, where on the corner it reads as a
+   property of the one — which is what it is. The work goes to this person's agent,
+   through this person's own session, and the card should say "Robert, via a
+   machine" rather than "Robert and a machine".
+
+   The ring is the CARD's own background, not a border colour, which is the trick
+   that makes a badge overlapping a disc read as sitting in front of it rather than
+   as being cut out of it. Colour is the agent violet the badge pill uses; see
+   `.agent-badge` for why that hue is hard-coded through `light-dark()` rather than
+   taken from a token. */
+.card-avatar-agent {
+  position: absolute;
+  /* Hung mostly OUTSIDE the disc — about a third of it overlaps — because the two
+     letters underneath are the mark's whole content and a badge centred on the rim
+     covers the second one. Far enough out to read as a badge, far enough in that it
+     is plainly attached to this avatar and not floating beside it. */
+  right: -6px;
+  bottom: -6px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  box-shadow: 0 0 0 1.5px var(--panel-2);
+  color: light-dark(#6d28d9, #c4a2ff);
+}
+/* Overriding `.icon-agent`'s 13px, which is sized to sit beside 12px text in a
+   badge pill. Inside a 13px disc it has to be smaller than the disc. */
+.card-avatar-agent .icon-agent { width: 10px; height: 10px; }
+
+/* "Blocked", on the meta line the parent back-reference already owns (LNL-215).
+
+   Shares that line rather than adding one, so a blocked card is exactly as tall as
+   an unblocked one and a column of them does not go ragged. `.card-parent` is a
+   plain block, so the two children sit inline with the gap below between them.
+
+   NO FILL, unlike the epic badge one line up, and that is the argument rather than
+   the styling: a filled chip is a claim on attention, and a blocked card is not more
+   important than an unblocked one — it is less actionable, which is the opposite
+   claim. The dim on the card around it is already saying "not now"; a red pill would
+   say "look here" at the same time. So it is the same muted `--green-dim` the parent
+   link beside it uses, and the icon carries the meaning that the colour is not. */
+.card-parent > * + * { margin-left: 12px; }
+.card-blocked-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--green-dim);
+  vertical-align: middle;
+}
+.card-blocked-icon {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+}
+.card-blocked-icon svg { width: 12px; height: 12px; }
+
+/* A blocked card, dimmed as well as chipped (LNL-215).
+
+   ── What a CLOSED card carries, and why this had to differ in kind ─────────
+
+   Nothing. A closed card is drawn byte-for-byte like an open one: `renderCard` puts
+   no class on it, the board tells you an issue is closed by which COLUMN it is in
+   and which resolution group it sits under (see MainScreenBackingViewModel's
+   `groupBy` on resolution), and `.card-readonly` — the only other standing state a
+   card has — changes the cursor and nothing visible. So there is no existing dim to
+   be confused with, and the danger the requirement names is a future one: if closed
+   cards ever gain a treatment, these two must not be the same treatment at two
+   strengths, because "greyer" is not a distinction anybody reads off a board.
+
+   So the dim differs in KIND rather than in degree, twice over:
+
+     1. It is a DESATURATION first and a fade second — `grayscale()` leading, with
+        the opacity folded into the same filter. A closed card, if it is ever
+        softened, will be softened by fading; a card that has had its colour drained
+        while keeping its contrast reads as "held up", not as "finished".
+     2. It LIFTS ON HOVER. Nothing else on this board un-dims when you point at it.
+        A finished thing stays finished when you look at it; a blocked thing is
+        something you are about to go and do something about, so pointing at it
+        returns it to full strength and lets you read the blockers off the chip's
+        tooltip at the same moment.
+
+   The opacity rides inside `filter` rather than on the `opacity` property on
+   purpose: `.card-dragging` owns that property, and two single-class rules setting
+   it would be decided by source order. Composed through the filter, a blocked card
+   being dragged is dim AND ghosted, which is what both states mean. */
+.card-blocked { filter: grayscale(.72) opacity(.68); }
+.card-blocked:hover { filter: none; }
+
 /* Filled pills, not outlined ones.
 
    A card carrying four chips used to draw four more rectangles inside a
@@ -3434,6 +3571,32 @@ body.app-impersonating::after {
    the pair follows it directly. */
 .vocab-flag .toggle-label { flex: none; }
 
+/* A relation kind's extra controls: the opposite name and the two switches
+   (LNL-215).
+
+   This is the richest row in the dialog by some way — a status has one flag and a
+   resolution has one flag, where this has a second text field and two — so it is the
+   one row allowed to wrap. `flex-wrap` on the group rather than on
+   `.vocab-row-actions` around it, so the arrows and Delete stay together at the
+   trailing edge whatever this does: an admin hunting for Delete should not find it in
+   a different place on this section than on the five above.
+
+   The inverse field is capped rather than allowed to grow. It holds two or three
+   words ("Blocks", "Duplicated by"), and a field that took the row's slack would be
+   a 300px box for one of them while the switches beside it were squeezed. */
+.vocab-relation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.vocab-inverse {
+  flex: 0 1 auto;
+  width: 160px;
+  min-width: 110px;
+}
+
 /* Square, so the two arrows read as one pair of nudges rather than as two
    buttons with words missing. */
 .vocab-move {
@@ -4190,6 +4353,163 @@ body.app-impersonating::after {
   gap: 4px;
   flex-shrink: 0;
 }
+/* This issue's links to other issues (LNL-215).
+
+   Directly under the children and styled as their sibling — the same 4px row gap,
+   the same `.ticket-ref` links — because they answer the same question from
+   different sides: what this work is made of, and what it waits on.
+
+   One heading per direction of per kind, and the heading is a WORD rather than a
+   chip: "Blocked by" is a preposition introducing the list beneath it, and a pill
+   would make it read as a label the issue wears. Dim and uppercase-tracked like the
+   read-mode field captions, which is the register this app already uses for "the
+   following is the answer to this". */
+.issue-relations-section { margin-bottom: 14px; }
+.issue-relations {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.issue-relation-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.issue-relation-label {
+  color: var(--green-dim);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.issue-relation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.issue-relation-link { font-variant-numeric: tabular-nums; }
+
+/* The add control: kind, then issue, on one row — one sentence, not two settings.
+   The kind picker is sized to its words and the issue picker takes the rest, so a
+   long kind name is readable and the typeahead still has room to show a title. */
+.issue-relation-add {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Two classes, and the doubling is not stylistic: the toolkit's own
+   `.dt-menu-trigger-field` sets `flex: 1 1 auto` and `max-width: 100%`, and its sheet
+   is injected at mount time — AFTER this one — so a single-class rule here loses every
+   tie and the kind picker takes the whole row, pushing the issue picker onto a second
+   line. Same reason the modal rules at the top of this file double theirs. */
+.issue-relation-add > .issue-relation-kind {
+  flex: 0 1 auto;
+  min-width: 130px;
+  max-width: 220px;
+}
+
+/* ============================================================
+   The estimate popover (LNL-215)
+   ============================================================ */
+
+/* Sits on the shared `.dt-hover-menu` chrome, like the version picker — see
+   EstimateDropdown for why this is a popover and not a modal. What is added here is
+   only what a menu of ROWS does not need: a row of boxes, and a footer.
+
+   `padding` rather than the menu's usual zero, because the contents are fields
+   rather than full-bleed rows: a text box flush against a popover's edge reads as a
+   rendering fault. */
+.lunicle-dropdown-menu.estimate-menu {
+  padding: 10px;
+  min-width: 220px;
+}
+
+.estimate-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* One box and its caption. `flex: 1` on all three so days, hours and minutes are the
+   same width — they hold the same kind of number, and unequal boxes would suggest
+   one of them takes a bigger one. */
+.estimate-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.estimate-caption {
+  color: var(--green-dim);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+/* Tabular figures: three boxes of digits side by side that do not line up read as
+   sloppy in a way a single field never does. */
+.estimate-field {
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The "…or type 2d 4h" line. The only documentation this control can carry, so it
+   is present rather than left to be discovered — but dim and small, because the
+   three boxes above it are what nearly everybody will use. */
+.estimate-hint {
+  margin: 6px 0 0;
+  color: var(--green-dim);
+  font-size: 11px;
+}
+
+/* Clear at the leading edge, Set at the trailing one, with the gap between them
+   doing the separating. They are not a pair of equals: `margin-left: auto` on the
+   primary is what puts a hand's width between "throw this away" and "keep this",
+   which is the one mis-click worth designing against here. */
+.estimate-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.estimate-actions > .btn-primary { margin-left: auto; }
+
+/* The estimate's read chip. Deliberately takes NO hue of its own, unlike the sprint's
+   violet and the versions' teal: those two mark axes an issue can be on, where this
+   is a measurement of the issue in front of you, and a fourth colour in that row
+   would be spent saying "this is a different kind of fact" about the one chip whose
+   content already says so. --mono for the same reason the epic count uses it: it is
+   a number, and numbers in this app are fixed-width. */
+.tag-estimate {
+  color: var(--green-dim);
+  font-family: var(--mono);
+}
+
+/* "…or their agent", under the assignee dropdown in the editor (LNL-215).
+
+   Inside the assignee's own cell rather than a cell of its own — it qualifies the
+   answer above it and is not a seventh field. The top margin is what separates it
+   from the dropdown; the label shrinks because a grid track sized for a select is
+   narrow, and "Assign to their agent" at field size would wrap in it.
+
+   STACKED rather than side by side, which is the one place this app's toggle rows
+   are: every other one sits in a full-width band with room for a sentence, and this
+   one lives in a grid track sized for a `<select>` — about 150px. Beside the pair the
+   label had ~70px and broke "Assign to their agent" across two lines mid-phrase, with
+   the buttons hanging off the second one. On its own line it reads in one go and the
+   pair sits under it, which also lines the pair up with the dropdown's left edge. */
+.issue-agent-toggle {
+  flex-wrap: wrap;
+  margin-top: 8px;
+  gap: 4px 8px;
+}
+.issue-agent-toggle .toggle-label {
+  flex: 1 1 100%;
+  font-size: 11px;
+}
+
 /* Square-ish reorder buttons, disabled to a dim state at the ends. */
 .btn-arrow {
   min-width: 28px;

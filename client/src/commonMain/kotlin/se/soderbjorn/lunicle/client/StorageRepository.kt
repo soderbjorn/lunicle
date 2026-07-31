@@ -29,6 +29,7 @@ import se.soderbjorn.lunicle.clientserver.ApiFailure
 import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.CommentDraft
 import se.soderbjorn.lunicle.clientserver.DiscussionUnreadState
+import se.soderbjorn.lunicle.clientserver.Estimate
 import se.soderbjorn.lunicle.clientserver.NotificationCountState
 import se.soderbjorn.lunicle.clientserver.NotificationListState
 import se.soderbjorn.lunicle.clientserver.IssueDetail
@@ -503,8 +504,21 @@ class StorageRepository(
     suspend fun deleteMessage(conversationId: Long, messageId: Long): ConversationDetail =
         api.deleteMessage(conversationId, messageId)
 
-    suspend fun addVocabulary(projectId: Long, kind: VocabularyKind, name: String): ProjectSettingsState =
-        api.addVocabulary(projectId, kind, name)
+    /**
+     * Add a vocabulary row.
+     *
+     * [inverseName] and [marksBlocked] are a relation kind's two extra facts (LNL-215)
+     * and are ignored server-side for every other kind. They default here as they do on
+     * the API, so the twenty existing callers — one per kind that has neither — say
+     * nothing about them and read exactly as they did.
+     */
+    suspend fun addVocabulary(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String? = null,
+        marksBlocked: Boolean = false,
+    ): ProjectSettingsState = api.addVocabulary(projectId, kind, name, inverseName, marksBlocked)
 
     suspend fun editVocabulary(
         projectId: Long,
@@ -513,7 +527,12 @@ class StorageRepository(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean = false,
-    ): ProjectSettingsState = api.editVocabulary(projectId, kind, itemId, name, requiresResolution, isDone)
+        /** A relation kind's to-side label, or null because it reads the same both ways. */
+        inverseName: String? = null,
+        /** A relation kind's blocking flag. See [addVocabulary]. */
+        marksBlocked: Boolean = false,
+    ): ProjectSettingsState =
+        api.editVocabulary(projectId, kind, itemId, name, requiresResolution, isDone, inverseName, marksBlocked)
 
     suspend fun deleteVocabulary(projectId: Long, kind: VocabularyKind, itemId: Long): ProjectSettingsState =
         api.deleteVocabulary(projectId, kind, itemId)
@@ -540,6 +559,17 @@ class StorageRepository(
     suspend fun setProjectNewIssueNotification(projectId: Long, subscribed: Boolean): ProjectSettingsState =
         api.setProjectNewIssueNotification(projectId, subscribed)
 
+    /**
+     * Say whether this project estimates, and in what unit (LNL-215).
+     *
+     * A **string** rather than the [se.soderbjorn.lunicle.clientserver.EstimateMode]
+     * enum, all the way down: the wire carries the key and the server folds anything it
+     * does not recognise to `none`, so passing the key through unmolested is what keeps
+     * a client one deploy ahead from being refused rather than degraded.
+     */
+    suspend fun setProjectEstimateMode(projectId: Long, mode: String): ProjectSettingsState =
+        api.setProjectEstimateMode(projectId, mode)
+
     // ── Issues ───────────────────────────────────────────────────────────────
 
     suspend fun createIssueDraft(projectId: Long): IssueDraft = api.createIssueDraft(projectId)
@@ -564,6 +594,18 @@ class StorageRepository(
         fixedVersionId: Long?,
         labelIds: List<Long>,
         componentIds: List<Long>,
+        /**
+         * Whether the work goes to the assignee's agent rather than to them in person,
+         * and how much work it is (LNL-215).
+         *
+         * Both default, so the one caller that has not been taught about them compiles
+         * and sends the pre-LNL-215 shape — but note the defaults are not "leave alone":
+         * [IssueUpdate] is the editor's whole field set, so `false` really does mean "a
+         * person does this" and a null [estimate] really does clear it. There is exactly
+         * one caller (the issue editor's save), and it always passes both.
+         */
+        assigneeIsAgent: Boolean = false,
+        estimate: Estimate? = null,
     ): IssueDetail = api.saveIssue(
         id,
         IssueUpdate(
@@ -578,6 +620,8 @@ class StorageRepository(
             fixedVersionId = fixedVersionId,
             labelIds = labelIds,
             componentIds = componentIds,
+            assigneeIsAgent = assigneeIsAgent,
+            estimate = estimate,
         ),
     )
 
@@ -589,6 +633,21 @@ class StorageRepository(
 
     /** Rank one epic's children, first to last. See [LunicleApi.reorderChildren] (LNL-55). */
     suspend fun reorderChildren(id: Long, childIds: List<Long>): IssueDetail = api.reorderChildren(id, childIds)
+
+    /**
+     * Link two issues, and unlink them (LNL-215).
+     *
+     * Both are posted to the issue whose window is open — the *from* side — and both
+     * answer with that issue's refreshed detail rather than with the row they touched,
+     * which is the convention every write above keeps: one stored row renders as two
+     * different sentences, so the client has no business patching its own copy of it.
+     * See [LunicleApi.addIssueRelation].
+     */
+    suspend fun addIssueRelation(id: Long, toIssueId: Long, kindId: Long): IssueDetail =
+        api.addIssueRelation(id, toIssueId, kindId)
+
+    suspend fun removeIssueRelation(id: Long, relationId: Long): IssueDetail =
+        api.removeIssueRelation(id, relationId)
 
     // ── Sprints ──────────────────────────────────────────────────────────────
     //
