@@ -1,10 +1,11 @@
 /**
- * The two things a booting instance has to settle about its own ladder: who is
- * staff, and who owns the place (LNL-191).
+ * The three things a booting instance has to settle about its own ladder: who is
+ * staff, who owns the place (LNL-191), and — where its own configuration has
+ * already decided — who it will admit.
  *
- * Both run unconditionally at startup, both are idempotent, and both are safe to
- * be interrupted — which is the property that lets them stand in for the parts of
- * the permission migration SQL and Firestore cannot express.
+ * All three run unconditionally at startup, all are idempotent, and all are safe
+ * to be interrupted — which is the property that lets them stand in for the parts
+ * of the permission migration SQL and Firestore cannot express.
  *
  * ── Why these are not in the migration ──────────────────────────────────────
  *
@@ -19,11 +20,19 @@
  * to sign in becomes one — so seating has to happen after somebody exists, which
  * means at boot, every boot, doing nothing on all but one of them.
  *
+ * Admission is the same shape once more, from the other direction: the policy a
+ * deployment can honour is a question about `brand.json` and two environment
+ * variables, which is exactly what a migration cannot see. See
+ * [settleAdmissionPolicy], and note it needs no accounts at all — so unlike the
+ * seat above, boot is the only place it is called from.
+ *
  * @see UserKind.forEmail
  * @see se.soderbjorn.lunicle.store.InstanceSettings.ownerUserId
+ * @see se.soderbjorn.lunicle.store.InstanceSettings.isAdmissionStored
  */
 package se.soderbjorn.lunicle
 
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.store.InstanceSettingsStore
 import se.soderbjorn.lunicle.store.UserStore
 
@@ -116,4 +125,54 @@ suspend fun seatInstanceOwner(users: UserStore, instanceSettings: InstanceSettin
     val candidate = users.selectAll().filter { it.isInstanceAdmin }.minByOrNull { it.id } ?: return null
     instanceSettings.setOwnerUserId(candidate.id)
     return candidate.id
+}
+
+/**
+ * Give a deployment that has never chosen an admission policy one it can honour.
+ *
+ * ── The default that described somebody else's deployment ───────────────────
+ *
+ * [AdmissionPolicy.ANYONE] is the standing default, and it is the right one: an
+ * unbranded install has every way in available and nothing restricted. On a
+ * deployment that pins its Google chooser to one domain and cannot mail a code, it
+ * is a sentence about a deployment this is not. Who-gets-in opens on "Anyone who
+ * can sign in", selected and greyed, on an instance where nobody outside the domain
+ * can reach a sign-in at all — and an administrator reads that as a setting they
+ * have somehow been given rather than as one nobody ever chose.
+ *
+ * It is also the more consequential half of a dormant setting waking up. Unpin the
+ * chooser or turn mail on, and a stored-by-nobody ANYONE becomes live: the instance
+ * starts taking all comers on a configuration change that was about sign-in
+ * ergonomics. Settling it here means the policy in force is always one somebody
+ * either chose or could have.
+ *
+ * ── Only into a vacancy, and only downwards from the default ────────────────
+ *
+ * [InstanceSettings.isAdmissionStored] is the whole gate: a deployment that has
+ * *chosen* ANYONE and then pinned itself keeps that choice, greyed, which is the
+ * stranded-choice case `AdmissionState.selected` exists to report. This only fills
+ * in for a deployment that has said nothing.
+ *
+ * And it can only ever land on a policy the deployment can honour — in practice
+ * exactly one, because the two outward-facing policies live and die together (see
+ * [InstanceIdentity.outsiderCanArrive]), so where ANYONE is unavailable
+ * [AdmissionPolicy.STAFF_DOMAIN_ONLY] is the only candidate there is. Nothing is
+ * written when ANYONE is honourable, and nothing is written on a deployment with no
+ * door at all, where every policy is unavailable and the missing environment
+ * variable is the thing to fix.
+ *
+ * @return the policy just settled, or null if nothing was done — which is every
+ *   boot but the first, and every boot of an unbranded install.
+ */
+suspend fun settleAdmissionPolicy(
+    instanceSettings: InstanceSettingsStore,
+    identity: InstanceIdentity,
+): AdmissionPolicy? {
+    if (instanceSettings.current().isAdmissionStored) return null
+    val options = identity.admissionState(AdmissionPolicy.ANYONE).options
+    if (options.first { it.policy == AdmissionPolicy.ANYONE }.isSelectable) return null
+    val honourable = options.filter { it.isSelectable }.map { it.policy }
+    val settled = honourable.singleOrNull() ?: return null
+    instanceSettings.setAdmissionPolicy(settled)
+    return settled
 }

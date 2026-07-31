@@ -41,7 +41,10 @@ class InMemoryInstanceSettingsStore(
     }
 
     override suspend fun setAdmissionPolicy(policy: AdmissionPolicy) {
-        settings = settings.copy(admission = policy)
+        // Stored, as in both real stores: a write puts a row there, and what makes
+        // the boot's settle a no-op afterwards is that the row exists rather than
+        // what it says. See InstanceSettings.isAdmissionStored.
+        settings = settings.copy(admission = policy, isAdmissionStored = true)
     }
 
     /** One audience's row for future projects; null removes it, as in both real stores. */

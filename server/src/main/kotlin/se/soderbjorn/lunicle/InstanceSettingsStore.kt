@@ -50,6 +50,11 @@ class InstanceSettingsStore(
             // setting must not lock every future account out on the strength of a
             // typo. The stored value is left alone, so the row survives a rollback.
             admission = AdmissionPolicy.byKey(rows[ADMISSION_KEY]) ?: AdmissionPolicy.ANYONE,
+            // Whether the row is there at all, which the line above cannot say. An
+            // unparseable value counts as stored: somebody wrote it, and treating it
+            // as a vacancy would have the boot settle over the top of a choice it
+            // could not read. See InstanceSettings.isAdmissionStored.
+            isAdmissionStored = rows.containsKey(ADMISSION_KEY),
             allowPublicProjects = rows[InstanceSettingKey.ALLOW_PUBLIC_PROJECTS.storageKey].isTrue(),
             staffMayCreateProjects = rows[InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS.storageKey].isTrue(),
             memberMayCreateProjects = rows[InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS.storageKey].isTrue(),

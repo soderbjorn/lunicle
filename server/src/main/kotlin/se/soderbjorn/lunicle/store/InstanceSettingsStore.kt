@@ -48,6 +48,20 @@ data class InstanceSettings(
      */
     val admission: AdmissionPolicy = AdmissionPolicy.ANYONE,
     /**
+     * Whether [admission] is a stored answer rather than the default standing in.
+     *
+     * The one place this collapse matters. Every other setting here reads as its
+     * default when unset and no caller needs to tell the two apart — but "nobody has
+     * chosen" and "somebody chose ANYONE" mean opposite things to a deployment that
+     * cannot honour ANYONE. A stored one is an administrator's stranded choice and is
+     * reported back to them, greyed, so they can see what to fix (see
+     * `AdmissionState.selected`). An unstored one is a default that describes a
+     * deployment this is not.
+     *
+     * Read by `settleAdmissionPolicy` at boot, and by nothing else.
+     */
+    val isAdmissionStored: Boolean = false,
+    /**
      * Whether a project's owner may hand its *guest* audience a rung — publishing a
      * board to the world.
      *

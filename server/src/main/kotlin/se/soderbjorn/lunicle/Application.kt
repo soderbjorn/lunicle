@@ -459,14 +459,22 @@ fun Application.module() {
         // openDatabase is fatal on a bad schema: a server behind its build must not serve.
         stores.migrate()
 
-        // Both unconditional and both idempotent, which is what lets a fresh volume,
+        // All unconditional and all idempotent, which is what lets a fresh volume,
         // a purged one, and one that has been serving for a month all take the same
         // code path — and what makes an interrupted run a non-event. See
-        // stampUserKinds and seatInstanceOwner.
+        // stampUserKinds, seatInstanceOwner and settleAdmissionPolicy.
         val stamped = stampUserKinds(users, instanceIdentity.domain)
         if (stamped > 0) log.info("Instance: re-derived the staff/member kind of $stamped account(s)")
         seatInstanceOwner(users, instanceSettings)?.let {
             log.info("Instance: seated user $it as the instance owner — nobody held it")
+        }
+        // Needs the identity rather than the accounts, so unlike the seat above it has
+        // everything it needs at boot and nowhere else to be called from.
+        settleAdmissionPolicy(instanceSettings, instanceIdentity)?.let {
+            log.info(
+                "Instance: admission settled to '${it.key}' — nothing was stored, and " +
+                    "this deployment cannot admit anybody who can sign in",
+            )
         }
         // After the owner is seated, and that ordering is load-bearing: a project with
         // no owner rung falls back to the instance owner's old preference, and on a

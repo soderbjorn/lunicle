@@ -555,6 +555,89 @@ class InstanceIdentityTest {
         }
     }
 
+    // ── The admission policy a deployment starts with (LNL-210) ──────────────
+
+    /**
+     * A deployment that cannot admit all comers does not open on saying it will.
+     *
+     * ANYONE is the standing default and is right for an unbranded install. On the
+     * branded shape — a domain, a pinned chooser, no mail — it describes a deployment
+     * this is not: Who-gets-in opened on "Anyone who can sign in", selected and
+     * greyed, on an instance nobody outside the domain can reach at all.
+     *
+     * The stored value matters as much as the screen. Unpin the chooser or turn mail
+     * on, and a default nobody chose becomes live — the instance would start taking
+     * all comers off a change that was about sign-in ergonomics.
+     */
+    @Test
+    fun `a deployment that cannot admit anyone settles on the policy it can honour`(): Unit = runBlocking {
+        val settings = InMemoryInstanceSettingsStore()
+        assertFalse(settings.current().isAdmissionStored, "Precondition: nothing has been chosen.")
+
+        val settled = settleAdmissionPolicy(settings, BRANDED_IDENTITY)
+
+        assertEquals(AdmissionPolicy.STAFF_DOMAIN_ONLY, settled)
+        assertEquals(AdmissionPolicy.STAFF_DOMAIN_ONLY, settings.current().admission)
+        // ...and it is a stored answer now, so the next boot leaves it alone.
+        assertTrue(settings.current().isAdmissionStored)
+        assertNull(settleAdmissionPolicy(settings, BRANDED_IDENTITY), "A second boot settled again.")
+    }
+
+    /**
+     * A choice somebody made is never settled over, even a stranded one.
+     *
+     * This is the case `AdmissionState.selected` exists to report: an administrator
+     * chose ANYONE, the deployment was pinned afterwards, and the screen shows their
+     * choice greyed with the reason. Overwriting it would erase the one fact that
+     * explains what they are looking at — and would quietly undo a policy the moment
+     * the pin came off.
+     */
+    @Test
+    fun `a stored policy survives, even one this deployment cannot honour`(): Unit = runBlocking {
+        val settings = InMemoryInstanceSettingsStore()
+        settings.setAdmissionPolicy(AdmissionPolicy.ANYONE)
+
+        assertNull(settleAdmissionPolicy(settings, BRANDED_IDENTITY), "Somebody's choice was settled over.")
+        assertEquals(AdmissionPolicy.ANYONE, settings.current().admission)
+    }
+
+    /**
+     * ...and nothing is written where there is nothing to correct.
+     *
+     * Two shapes, and both would be wrong to touch. An unbranded install can honour
+     * ANYONE, so the default already describes it. A deployment with no door at all
+     * can honour nothing — every policy is unavailable there, and the fix is a
+     * missing environment variable rather than a setting, which is what the admission
+     * list already says.
+     */
+    @Test
+    fun `an open deployment and a doorless one are both left alone`(): Unit = runBlocking {
+        val open = InMemoryInstanceSettingsStore()
+        assertNull(settleAdmissionPolicy(open, InstanceIdentity(domain = "acme.com")))
+        assertFalse(open.current().isAdmissionStored, "An open deployment had a policy written for it.")
+
+        val doorless = InMemoryInstanceSettingsStore()
+        assertNull(
+            settleAdmissionPolicy(
+                doorless,
+                InstanceIdentity(
+                    domain = "acme.com",
+                    onlyHostedGoogleAccounts = true,
+                    isCodeSignInAvailable = false,
+                    isGoogleAvailable = false,
+                ),
+            ),
+        )
+        assertFalse(doorless.current().isAdmissionStored, "A deployment nobody can reach was given a policy.")
+    }
+
+    /** The branded shape: a domain, a chooser pinned to it, and no mail. */
+    private val BRANDED_IDENTITY = InstanceIdentity(
+        domain = "acme.com",
+        onlyHostedGoogleAccounts = true,
+        isCodeSignInAvailable = false,
+    )
+
     /** A brand dir holding just this manifest text. */
     private fun manifest(json: String): File {
         val dir = Files.createTempDirectory("brand-identity").toFile()

@@ -52,6 +52,9 @@ class FirestoreInstanceSettingsStore(
             // "admit nobody" — a deployment must not lock every future account out
             // on the strength of a hand-edited field. Matches the SQLite store.
             admission = AdmissionPolicy.byKey(values[ADMISSION_KEY] as? String) ?: AdmissionPolicy.ANYONE,
+            // Presence, not parseability — see the SQLite store, which says why an
+            // unreadable value still counts as somebody's choice.
+            isAdmissionStored = values.containsKey(ADMISSION_KEY),
             allowPublicProjects = values[InstanceSettingKey.ALLOW_PUBLIC_PROJECTS.storageKey] == true,
             staffMayCreateProjects = values[InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS.storageKey] == true,
             memberMayCreateProjects = values[InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS.storageKey] == true,
