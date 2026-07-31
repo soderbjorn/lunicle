@@ -95,7 +95,7 @@ class McpAgentFloorTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     // Both tiers permitted, as in the other MCP files: this is about what an agent may
     // reach once it exists, not about who may bring one.
     private val instanceSettings = InMemoryInstanceSettingsStore(
