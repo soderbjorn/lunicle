@@ -161,6 +161,33 @@
  *    posts land is not a courtesy anybody wants, and a post dated 2019 is not
  *    news. See [announceForumPost].
  *
+ * ── The project's own structure, which an agent may now change (LNL-215) ────
+ *
+ * The five paragraphs above are about capability this surface *adds*. This one is
+ * about capability it stopped withholding, and it is worth separating because it is
+ * not an exception to anything: `list_vocabulary`, `add_vocabulary`,
+ * `rename_vocabulary`, `reorder_vocabulary`, `delete_vocabulary` and
+ * `set_estimate_mode` each map onto a route in [projectSettingsRoutes], ask the same
+ * [AccessControl] question that route asks, and go through the same
+ * [VocabularyRepository]. The first sentence of this file holds for all six.
+ *
+ * What changes is who the audience is. Everything else on this surface is work
+ * *inside* a project — filing, editing, moving, closing — where these six are
+ * decisions *about* one: which columns exist, which of them demand a resolution,
+ * what the ways two issues can be related are called, whether the team estimates at
+ * all. The gate is correspondingly higher and, crucially, is not one rung written
+ * down here: [AccessControl.canEditVocabulary] answers per kind, because sprints and
+ * versions are a maintainer's and the six that define what the board *is* are an
+ * administrator's. This file asks that function and never the rung behind it, so
+ * LNL-191's split — and the next one — reaches the agent without an edit here.
+ *
+ * The delete in `delete_vocabulary` is a real one, and the "no delete of anything"
+ * sentence above is now three exceptions old. It is also the mildest of them: the
+ * refusals that stop an administrator emptying a board of its last status, or
+ * deleting a column three issues are sitting in, are [VocabularyRepository]'s and
+ * are not restated here — which is exactly why the tool goes through it rather than
+ * reaching for a store.
+ *
  * ── Names, not ids, wherever a human would use a name ───────────────────────
  *
  * Statuses, priorities, resolutions, labels and components are all addressed by
@@ -168,6 +195,14 @@
  * asked to "close LUN-12 as fixed" should not first have to fetch a table to
  * learn that "Fixed" is 3. Issues and projects keep ids as well, because those
  * are what the ids are *for* — they are stable and a name is not.
+ *
+ * The vocabulary *editing* tools are the one deliberate departure, and the reason
+ * is the thing being edited: renaming a row by its old name is a request that stops
+ * making sense the moment it succeeds, and reordering one asks for the whole list
+ * anyway. So `rename_vocabulary`, `reorder_vocabulary` and `delete_vocabulary` take
+ * ids, and `list_vocabulary` exists to hand them out. Nothing about that widens what
+ * a caller can see: every id it returns is already on the board response that every
+ * reader of the project gets.
  *
  * @see McpServer
  * @see AccessControl
@@ -179,6 +214,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
@@ -190,6 +226,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
 import se.soderbjorn.lunicle.clientserver.formatByteSize
 
@@ -283,6 +322,29 @@ internal val MCP_INSTRUCTIONS = """
       • Labels and components are optional sets. update_issue replaces them
         wholesale rather than adding to them: send the full set you want, or omit
         the field entirely to leave it alone.
+      • Issues can be LINKED to one another — "Blocked by", "Duplicate of", or
+        whatever this project calls them; get_board lists its relation kinds and
+        omits the field for a project that has none. get_issue reports one issue's
+        links in both directions, already worded from that issue's side, and
+        link_issues and unlink_issues change them. A card counts as BLOCKED when a
+        link whose kind marks blocking points at an issue that is still open —
+        get_board says so per issue and names the blockers.
+      • Estimates are off unless a project turns them on. get_board reports
+        "estimateMode": "none", "time" or "points". Under "time" an estimate is a
+        number of whole MINUTES; under "points" it is whole points; under "none"
+        any estimate at all is refused. estimate_amount and estimate_unit move
+        together — send both or neither.
+      • An issue is assigned to a person, and separately may be marked as work for
+        that person's AGENT rather than for them in person (assignee_is_agent).
+        Handing the issue to somebody else clears that flag unless the same call
+        sets it again, and an issue nobody holds is never flagged.
+
+    Omitting an argument means LEAVE THAT ALONE. That is true of every write tool
+    here and it is deliberately not the same as sending the argument as null,
+    which on the fields that accept one means "clear it": omit `assignee` and the
+    current assignee stands, send it as null and the issue is unassigned. If you
+    have nothing to say about a field, do not mention it — do not fill it in with
+    null to be tidy.
 
     Permissions, and why a refusal is final: you are acting as a specific Lunicle
     user, and you have exactly their rights — no more. Those rights in a project
@@ -299,6 +361,20 @@ internal val MCP_INSTRUCTIONS = """
     or grant anybody a rung on one. Those tools do not exist, and deleting a
     stored attachment on its own exists only for the instance owner. If a task
     needs one of them, say so — do not approximate it.
+
+    Changing what a project IS, as opposed to what is in it: list_vocabulary reads
+    a project's statuses, priorities, resolutions, labels, components, sprints,
+    versions and relation kinds with their ids, and add_vocabulary,
+    rename_vocabulary, reorder_vocabulary and delete_vocabulary change them.
+    set_estimate_mode decides whether the project estimates and in what unit.
+    These ask for a rung most accounts do not hold on most projects — a project
+    administrator for the six that define what the board is, a project maintainer
+    for sprints and versions — so being refused here is an ordinary outcome and is
+    final in the way described above. They are also the tools most worth confirming
+    before you use: adding a status changes every board view for everybody, and
+    renaming a priority rewrites what every card means. Deleting is refused while
+    issues still hold the row, and refused for the last status or priority a
+    project has, so those are two mistakes you cannot make — the rest you can.
 
     Deleting, which you CAN do: delete_issue and delete_comment are permanent and
     there is no trash. Both are gated on the same rights the web app applies, so a
@@ -596,7 +672,21 @@ class McpTools(private val deps: BoardDependencies) {
                 "tells you every status, priority, label and component this project " +
                 "has — it is the `issues` array, and only that, which narrows. Use it " +
                 "on a big board when you only care about one column: the whole board " +
-                "can be large enough to be awkward to read in one piece.",
+                "can be large enough to be awkward to read in one piece.\n\n" +
+                "Two project-level fields are worth knowing before you write anything: " +
+                "`estimateMode` (\"none\", \"time\" or \"points\") says whether this project " +
+                "estimates and in what unit — always present, and \"none\" for most projects, " +
+                "which is your signal that any estimate you send will be refused. " +
+                "`relationKinds` names the ways two of its issues can be linked and is ABSENT " +
+                "when there are none, exactly as `sprints` and `versions` are: nothing to see " +
+                "means nothing to reason about. Per " +
+                "issue you also get `assigneeIsAgent` when the work is flagged for the " +
+                "assignee's agent, `estimate` when one is set, and `isBlocked` with " +
+                "`blockedBy` naming the open issues holding it up. The blocked answer is " +
+                "computed over the WHOLE project even when you filtered to one column, so a " +
+                "blocker sitting somewhere you did not ask about still counts.\n\n" +
+                "It does not report the vocabulary's ids, positions or usage counts — " +
+                "list_vocabulary does, and that is the call to make before changing any of it.",
             inputSchema = schema(
                 "project_id" to integerProp("The project's id, from list_projects."),
                 "project_name" to stringProp("The project's name, if you do not have its id."),
@@ -610,9 +700,17 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "get_issue",
-            description = "Get one issue in full: its description, all its comments, and its " +
+            description = "Get one issue in full: its description, all its comments, its links to " +
+                "other issues, and its " +
                 "history — what changed, who changed it, and when. " +
                 "get_board returns titles only, so use this when the detail matters.\n\n" +
+                "`relations` is this issue's links, in BOTH directions and already worded from " +
+                "this issue's side: the one stored row that reads \"Blocked by FOO-9\" here " +
+                "reads \"Blocks FOO-4\" over there, and you are given the sentence for the issue " +
+                "you asked about rather than the raw row. Each entry carries `relationId` (what " +
+                "unlink_issues takes), `label` (this side's wording), `kind` (the kind's own " +
+                "from-side name, which is what link_issues takes) and the other issue's `id`, " +
+                "`key` and `title`. Absent entirely when the issue has no links.\n\n" +
                 "`history` is oldest first, one entry per change, and is the only way to ask " +
                 "when an issue was moved or by whom: get_board's `updatedAt` is a " +
                 "last-touched stamp for any edit and cannot tell a close from a later typo " +
@@ -651,6 +749,15 @@ class McpTools(private val deps: BoardDependencies) {
                     ASSIGNEE_PROP_DESCRIPTION + " Omit it and the issue starts unassigned, " +
                         "which is what an issue filed in the web app gets.",
                 ),
+                "assignee_is_agent" to boolProp(
+                    ASSIGNEE_IS_AGENT_PROP_DESCRIPTION + " Omit it and the issue starts unflagged, " +
+                        "which is what an issue filed in the web app gets.",
+                ),
+                "estimate_amount" to integerProp(
+                    ESTIMATE_AMOUNT_PROP_DESCRIPTION + " Omit it — and `estimate_unit` with it — and " +
+                        "the issue starts with no estimate.",
+                ),
+                "estimate_unit" to stringProp(ESTIMATE_UNIT_PROP_DESCRIPTION),
                 "sprint" to stringProp(
                     SPRINT_PROP_DESCRIPTION + " Omit it and the issue starts in the backlog.",
                 ),
@@ -694,6 +801,18 @@ class McpTools(private val deps: BoardDependencies) {
                     ASSIGNEE_PROP_DESCRIPTION + " Omit it to leave the current assignee alone — " +
                         "sending null is how you unassign, not how you say nothing.",
                 ),
+                "assignee_is_agent" to boolProp(
+                    ASSIGNEE_IS_AGENT_PROP_DESCRIPTION + " Omit it to leave the flag as it is — with " +
+                        "one consequence worth knowing: handing the issue to somebody ELSE in this " +
+                        "same call clears it, because the previous holder's agent is not on this any " +
+                        "more. Send it as true alongside the new `assignee` if the work is going to " +
+                        "their agent.",
+                ),
+                "estimate_amount" to integerProp(
+                    ESTIMATE_AMOUNT_PROP_DESCRIPTION + " Omit it — and `estimate_unit` with it — to " +
+                        "leave the current estimate alone. Send BOTH as null to clear it.",
+                ),
+                "estimate_unit" to stringProp(ESTIMATE_UNIT_PROP_DESCRIPTION),
                 "sprint" to stringProp(
                     SPRINT_PROP_DESCRIPTION + " Omit it to leave the issue where it is — sending " +
                         "null is how you move it to the backlog, not how you say nothing.",
@@ -775,6 +894,55 @@ class McpTools(private val deps: BoardDependencies) {
                         "use the email address to settle it.",
                 ),
                 required = listOf("issue_id"),
+            ),
+        ),
+        McpTool(
+            name = "link_issues",
+            description = "Link one issue to another under one of the project's relation kinds — " +
+                "\"Blocked by\", \"Duplicate of\", whatever this project calls them. get_board's " +
+                "`relationKinds` is the list; a project with none there links nothing, and there is " +
+                "nothing to add.\n\n" +
+                "READ THE DIRECTION CAREFULLY. The link is stated FROM `issue_id` and the kind's " +
+                "own name is the sentence about it: `issue_id` 4, `to_issue_id` 9, `relation` " +
+                "\"Blocked by\" says \"issue 4 is blocked by issue 9\". Naming the opposite label " +
+                "instead — \"Blocks\", where that is the kind's inverse — is refused rather than " +
+                "quietly reversed, and the refusal tells you the call to make instead, which is the " +
+                "same one with the two issues swapped.\n\n" +
+                "One link is stored once and read from both ends, so there is no second call to " +
+                "make from the other issue and doing it anyway is refused as a duplicate. Both " +
+                "issues must be in the same project. The right this needs is edit on `issue_id` " +
+                "alone; the far issue's is deliberately not asked, exactly as it is not for an epic.",
+            inputSchema = schema(
+                "issue_id" to integerProp(
+                    "The issue the link is stated FROM — the one the `relation` label describes.",
+                ),
+                "to_issue_id" to integerProp(
+                    "The issue at the other end, by its `id` from get_board or get_issue (not the " +
+                        "FOO-123 key). It must be a published issue in the same project.",
+                ),
+                "relation" to stringProp(
+                    "A relation kind's name, exactly as get_board's `relationKinds` gives its " +
+                        "`name`. Case-insensitive. A kind that reads the same in both directions " +
+                        "has only that one name; a kind with an `inverseName` has two, and this " +
+                        "argument takes the first of them — see the note on direction above.",
+                ),
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
+                required = listOf("issue_id", "to_issue_id", "relation"),
+            ),
+        ),
+        McpTool(
+            name = "unlink_issues",
+            description = "Remove one link between two issues. Takes the `relationId` from " +
+                "get_issue's `relations` — not the pair and the kind, because a link is stored " +
+                "once and naming the pair would have to say which direction it meant.\n\n" +
+                "`issue_id` is either end: the link is readable and removable from both, and a " +
+                "`relation_id` belonging to some other pair of issues is refused rather than " +
+                "silently removing something else. Needs edit rights on `issue_id`.",
+            inputSchema = schema(
+                "issue_id" to integerProp("Either issue the link touches — usually the one you are looking at."),
+                "relation_id" to integerProp("The link to remove: `relationId`, from get_issue's `relations`."),
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
+                required = listOf("issue_id", "relation_id"),
             ),
         ),
         McpTool(
@@ -967,6 +1135,195 @@ class McpTools(private val deps: BoardDependencies) {
                 required = listOf("sprint"),
             ),
         ),
+        // ── The project's own structure ──────────────────────────────────────
+        //
+        // Five tools for eight vocabularies rather than four tools apiece; see the
+        // section banner above `vocabularyScope` for the whole argument and what it
+        // costs. Offered to everybody and refused per project, exactly as the sprint
+        // tools are and for the same reason: the rung is a fact about one project, so
+        // hiding them would hide them from a caller who administers a different one.
+
+        McpTool(
+            name = "list_vocabulary",
+            description = "Read what a project is made of, WITH IDS: its statuses, priorities, " +
+                "resolutions, labels, components, sprints, versions and relation kinds, each row " +
+                "with its `id`, its `name`, its `position` in the order and its `usageCount`.\n\n" +
+                "get_board names the same vocabulary and is the right call for ordinary work — you " +
+                "address a status by name everywhere else. This is the call to make before " +
+                "CHANGING any of it, because rename, reorder and delete all take ids: a name is not " +
+                "a stable handle for a row you are about to rename, and a reorder wants the whole " +
+                "list anyway.\n\n" +
+                "Per-kind extras come back only on the kinds that have them: `requiresResolution` on " +
+                "a status, `isDone` on a resolution, `inverseName` and `marksBlocked` on a relation " +
+                "kind, `completedAt` on a finished sprint. `usageCount` counts published issues " +
+                "holding the row — for a status or a priority a non-zero count means a delete will " +
+                "be refused, and for a label it means that many issues would simply lose it.\n\n" +
+                "Reading needs no more than being able to see the project. Changing any of it does; " +
+                "see add_vocabulary.",
+            inputSchema = schema(
+                "project_id" to integerProp("The project's id, from list_projects."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(
+                    VOCABULARY_KIND_PROP_DESCRIPTION + " Omit it to get all eight, which is one call " +
+                        "and usually what you want.",
+                ),
+            ),
+        ),
+        McpTool(
+            name = "add_vocabulary",
+            description = "Add one row to one of a project's vocabularies — a new status, priority, " +
+                "resolution, label, component, sprint, version or relation kind. It lands at the END " +
+                "of that kind's order, always: putting a new column at the front would silently " +
+                "change where every future issue lands, so \"add\" would quietly be \"change the " +
+                "default\". Move it afterwards with reorder_vocabulary, which says what it does.\n\n" +
+                "A PROJECT-ADMINISTRATOR action for the six kinds that define what the board is, and " +
+                "a PROJECT-MAINTAINER one for sprints and versions — the same split the web app " +
+                "applies. A refusal is about the rung the account you are acting as holds on THIS " +
+                "project, and retrying will not change it.\n\n" +
+                "The name must be unique within its kind in that project, compared case-insensitively " +
+                "— a clash is refused with the name it collided with. A new status never demands a " +
+                "resolution and a new relation kind never marks blocking unless you say so here: both " +
+                "flags decide how every card on everybody's board reads, so they are armed " +
+                "deliberately rather than by default. A sprint is created NOT active; start it with " +
+                "set_active_sprint.",
+            inputSchema = schema(
+                "project_id" to integerProp("Which project to add it to."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "name" to stringProp(
+                    "What the new row is called, at most $MAX_MCP_VOCABULARY_NAME_LENGTH characters. " +
+                        "For a relation kind this is the FROM-side label — the sentence about the " +
+                        "issue the link is stated from, so \"Blocked by\" rather than \"Blocks\".",
+                ),
+                "inverse_name" to stringProp(INVERSE_NAME_PROP_DESCRIPTION),
+                "marks_blocked" to boolProp(MARKS_BLOCKED_PROP_DESCRIPTION),
+                required = listOf("kind", "name"),
+            ),
+        ),
+        McpTool(
+            name = "rename_vocabulary",
+            description = "Rename one vocabulary row, or change one of its flags, addressing it by " +
+                "the `id` from list_vocabulary. Renaming rewrites nothing else: every issue points " +
+                "at the row by id, so a renamed status keeps its issues and a renamed relation kind " +
+                "keeps its links.\n\n" +
+                "EVERY FIELD IS OPTIONAL AND OMITTING ONE LEAVES IT ALONE — including the flags, " +
+                "which is worth saying because the underlying write sets them all at once. Omit " +
+                "`name` and the row keeps its name, so this is also how you flip a flag without " +
+                "touching what the row is called. A flag that does not belong to the kind you named " +
+                "is ignored rather than refused; a priority has nothing to put in " +
+                "`requires_resolution`.\n\n" +
+                "Same rungs as add_vocabulary, and the same refusal when you do not hold them.",
+            inputSchema = schema(
+                "project_id" to integerProp("The project the row belongs to."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "id" to integerProp(
+                    "The row to change — its `id` from list_vocabulary. An id belonging to another " +
+                        "project is refused, not applied there.",
+                ),
+                "name" to stringProp(
+                    "A new name, still unique within its kind here. Omit it to leave the name as it " +
+                        "is and change only a flag.",
+                ),
+                "requires_resolution" to boolProp(
+                    "STATUSES ONLY: whether landing in this column demands a resolution saying why " +
+                        "the issue is closed. Omit it to leave the flag as it is. Turning it ON does " +
+                        "not go back and demand one from the issues already there; turning it OFF " +
+                        "does not strip the resolutions they carry.",
+                ),
+                "is_done" to boolProp(
+                    "RESOLUTIONS ONLY: whether this resolution means the work was actually done, as " +
+                        "opposed to \"Won't fix\" or \"Duplicate\". Some projects require a fixed " +
+                        "version when closing under a done resolution. Omit it to leave it as it is.",
+                ),
+                "inverse_name" to stringProp(
+                    INVERSE_NAME_PROP_DESCRIPTION + " Omit it to leave the kind's opposite label as " +
+                        "it is; send it as null to make the kind read the SAME in both directions.",
+                ),
+                "marks_blocked" to boolProp(
+                    MARKS_BLOCKED_PROP_DESCRIPTION + " Omit it to leave the flag as it is.",
+                ),
+                required = listOf("kind", "id"),
+            ),
+        ),
+        McpTool(
+            name = "reorder_vocabulary",
+            description = "Put one of a project's vocabularies in a given order, first to last. For " +
+                "statuses that is the order of the board's COLUMNS, and the first of them is where a " +
+                "new issue lands; for priorities it is the scale, high to low.\n\n" +
+                "`ids` must name EXACTLY that kind's rows in that project — all of them, each once, " +
+                "and none from anywhere else. Anything short of that is refused rather than partly " +
+                "applied, because a half-applied reorder leaves two rows sharing a position and the " +
+                "board ordering them arbitrarily. So read the current order from list_vocabulary and " +
+                "send it back rearranged.\n\n" +
+                "Same rungs as add_vocabulary.",
+            inputSchema = schema(
+                "project_id" to integerProp("Whose vocabulary is being ordered."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "ids" to buildJsonObject {
+                    put("type", "array")
+                    putJsonObject("items") { put("type", "integer") }
+                    put(
+                        "description",
+                        "Every row id of that kind in that project, in the order you want them. " +
+                            "From list_vocabulary.",
+                    )
+                },
+                required = listOf("kind", "ids"),
+            ),
+        ),
+        McpTool(
+            name = "delete_vocabulary",
+            description = "Delete one vocabulary row, permanently. There is no trash, and this is " +
+                "the one write here whose consequences reach issues you are not looking at.\n\n" +
+                "What it will REFUSE, so you do not have to guess: a status, priority or resolution " +
+                "that published issues still hold — you are told how many, and moving them is the " +
+                "fix — and the last status or the last priority a project has, because a project " +
+                "with none of either cannot take an issue and cannot be repaired by filing one about " +
+                "it.\n\n" +
+                "What it will NOT refuse, and you should think about first: deleting a label or a " +
+                "component simply removes it from every issue that had it. Deleting a version or a " +
+                "sprint un-schedules the issues that named it. Deleting a RELATION KIND deletes " +
+                "every link that used it — list_vocabulary's `usageCount` says how many, and after " +
+                "the fact nothing records what was linked. CONFIRM WITH THE PERSON FIRST unless they " +
+                "have already named the exact row they want gone.\n\n" +
+                "Same rungs as add_vocabulary.",
+            inputSchema = schema(
+                "project_id" to integerProp("The project the row belongs to."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "id" to integerProp("The row to delete — its `id` from list_vocabulary."),
+                required = listOf("kind", "id"),
+            ),
+        ),
+        McpTool(
+            name = "set_estimate_mode",
+            description = "Decide whether a project estimates its issues, and in what unit. A " +
+                "PROJECT-ADMINISTRATOR action — it sits with the vocabulary rather than with the " +
+                "sprints, because whether a team estimates at all is a decision about what the board " +
+                "is.\n\n" +
+                "Three modes: \"none\" (the default — no estimate field anywhere, and any estimate " +
+                "sent to create_issue or update_issue is refused), \"time\" (whole MINUTES, rendered " +
+                "as days, hours and minutes with a day fixed at eight hours) and \"points\" (whole " +
+                "points, on whatever scale the team means by them).\n\n" +
+                "Switching mode REINTERPRETS NOTHING. Every estimate already stored carries its own " +
+                "unit, so a project moved from points to time keeps reading its old rows as points; " +
+                "the mode governs only what may be written next. Switching to \"none\" likewise " +
+                "hides the field rather than erasing what is there. get_board reports the mode in " +
+                "force as `estimateMode`.",
+            inputSchema = schema(
+                "project_id" to integerProp("Whose estimate setting is being changed."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "mode" to stringProp(
+                    "\"none\", \"time\" or \"points\", exactly. Anything else is refused with the " +
+                        "three listed rather than folded to \"none\" — a typo here would otherwise " +
+                        "switch a live project's estimates off and report that as success.",
+                ),
+                required = listOf("mode"),
+            ),
+        ),
+
         McpTool(
             name = "delete_issue",
             description = "Delete an issue, permanently. Its comments, its attachments and its " +
@@ -1370,6 +1727,14 @@ class McpTools(private val deps: BoardDependencies) {
         "update_issue" -> updateIssue(user, arguments)
         "move_issue" -> moveIssue(user, arguments)
         "watch_issue" -> watchIssue(user, arguments)
+        "link_issues" -> linkIssues(user, arguments)
+        "unlink_issues" -> unlinkIssues(user, arguments)
+        "list_vocabulary" -> listVocabulary(user, arguments)
+        "add_vocabulary" -> addVocabulary(user, arguments)
+        "rename_vocabulary" -> renameVocabulary(user, arguments)
+        "reorder_vocabulary" -> reorderVocabulary(user, arguments)
+        "delete_vocabulary" -> deleteVocabulary(user, arguments)
+        "set_estimate_mode" -> setEstimateMode(user, arguments)
         "add_comment" -> addComment(user, arguments)
         "update_comment" -> updateComment(user, arguments)
         "update_history_event" -> updateHistoryEvent(user, arguments)
@@ -1447,11 +1812,14 @@ class McpTools(private val deps: BoardDependencies) {
                 statuses.firstOrNull { it.name.equals(name, ignoreCase = true) }
                     ?: return refuseUnknown("status", name, statuses.map { it.name })
             }
+        // Every issue on the board, before the column filter — kept because the
+        // blocked projection below is a fact about the whole project and cannot be
+        // computed from a slice of it. See `blockersByIssue`.
+        val allIssues = deps.issues.forProject(project.id)
         // Narrowed here rather than at the JSON, so the per-issue lookups below —
         // authors, assignees, and one canEditIssue apiece — are paid for the column
         // asked about instead of the whole board.
-        val issues = deps.issues.forProject(project.id)
-            .filter { statusFilter == null || it.statusId == statusFilter.id }
+        val issues = allIssues.filter { statusFilter == null || it.statusId == statusFilter.id }
         val labelsByIssue = deps.issues.labelsForProject(project.id)
         val componentsByIssue = deps.issues.componentsForProject(project.id)
 
@@ -1478,6 +1846,44 @@ class McpTools(private val deps: BoardDependencies) {
         val assignees = issues.mapNotNull { it.assigneeId }.distinct()
             .mapNotNull { id -> deps.users.findById(id)?.let { id to it.resolvedName } }
             .toMap()
+
+        // ── The blocked projection, computed exactly as the web board computes it ──
+        //
+        // A card is blocked when it is on the FROM side of a link whose kind marks
+        // blocking and the issue on the TO side is still open. Both halves are read
+        // over the WHOLE project rather than over the filtered `issues`, and that is
+        // the one thing this must not get wrong: a blocker sitting in a column the
+        // caller filtered out is absent from the response, so deriving this from what
+        // is returned would report a blocked card as clear — silently, and in the
+        // direction that loses information. `boardState`'s comment says the same at
+        // more length; this is the second reader of that rule and not a second copy of
+        // it, since both go through the same two stores.
+        //
+        // "Open" is read off the STATUS's requiresResolution and never off a
+        // resolution's isDone: any closure stops the blocking, "Won't fix" included,
+        // because a blocker nobody will ever do is not blocking anything.
+        val relationKinds = deps.issueRelationKinds.forProject(project.id)
+        val blockingKindIds = relationKinds.filter { it.marksBlocked }.map { it.id }.toSet()
+        val closingStatusIds = statuses.filter { it.requiresResolution }.map { it.id }.toSet()
+        val openById = allIssues.associate { it.id to (it.statusId !in closingStatusIds) }
+        val numberById = allIssues.associate { it.id to it.number }
+        // Issue id → the KEYS of the open issues blocking it. Keys rather than the bare
+        // numbers the web board carries, because an agent addresses an issue as
+        // FOO-123 or by id and has no prefix in hand to build one from. Empty for every
+        // card on a project that has never made a blocking link, which is most of them,
+        // and the whole map is skipped when no kind marks blocking at all.
+        val blockersByIssue: Map<Long, List<String>> =
+            if (blockingKindIds.isEmpty()) {
+                emptyMap()
+            } else {
+                deps.issueRelations.forProject(project.id)
+                    .filter { it.kindId in blockingKindIds && openById[it.toIssueId] == true }
+                    .groupBy({ it.fromIssueId }, { numberById[it.toIssueId] })
+                    .mapValues { (_, numbers) ->
+                        numbers.filterNotNull().sorted().map { "${project.namePrefix}-$it" }
+                    }
+                    .filterValues { it.isNotEmpty() }
+            }
 
         return ok(
             buildJsonObject {
@@ -1532,6 +1938,41 @@ class McpTools(private val deps: BoardDependencies) {
                 if (versions.isNotEmpty()) {
                     putJsonArray("versions") { versions.forEach { add(it.name) } }
                 }
+                // Absent — not empty — when the project links nothing, joining
+                // `sprints` and `versions` in reading as "this board has never heard
+                // of the idea" rather than "it has an empty list of them" (LNL-215).
+                // An agent that sees nothing here has nothing to reason about and
+                // link_issues has nothing to accept.
+                if (relationKinds.isNotEmpty()) {
+                    putJsonArray("relationKinds") {
+                        relationKinds.forEach { kind ->
+                            add(
+                                buildJsonObject {
+                                    // The from-side label, and the one link_issues takes.
+                                    put("name", kind.name)
+                                    // Absent when the kind reads the same in both
+                                    // directions, which is the whole encoding of
+                                    // symmetry — there is no isSymmetric flag that
+                                    // could disagree with a stale second name. See
+                                    // IssueRelationKindRecord.inverseName.
+                                    kind.inverseName?.let { put("inverseName", it) }
+                                    // Always present as a bool, unlike the name above:
+                                    // it is the field that decides whether `isBlocked`
+                                    // can ever be true on this board, and absent-when-
+                                    // false would read as "unknown" rather than "no".
+                                    put("marksBlocked", kind.marksBlocked)
+                                },
+                            )
+                        }
+                    }
+                }
+                // Always present, alone among the optional features here, and
+                // deliberately: "none" is an answer an agent needs rather than a
+                // silence it can ignore. A missing key would leave "this project does
+                // not estimate" and "this server is older than estimates" reading
+                // identically, and the first of those is exactly what an agent asked to
+                // estimate something must be told before it tries and is refused.
+                put("estimateMode", project.estimateMode.key)
                 putJsonArray("issues") {
                     issues.forEach { issue ->
                         add(
@@ -1554,9 +1995,25 @@ class McpTools(private val deps: BoardDependencies) {
                                 // so "nobody is on this" reads as a missing key
                                 // rather than as a value an agent has to interpret.
                                 issue.assigneeId?.let { id -> assignees[id]?.let { put("assignee", it) } }
+                                // Present only when it is true, and it can only be
+                                // true beside an assignee — the repository forces it
+                                // false otherwise, so this never appears on a card with
+                                // nobody on it (LNL-215). Absent-when-false rather than
+                                // a bool on every card, because the flag is rare and an
+                                // agent reading a board should have to notice it rather
+                                // than skip past it forty times.
+                                if (issue.assigneeIsAgent) put("assigneeIsAgent", true)
                                 // Present only on issues an agent filed. Says a
                                 // human did not type this — see resolveAgentName.
                                 issue.agentName?.let { put("agentName", it) }
+                                // Absent when unestimated, like every optional field
+                                // here. The unit rides WITH the amount rather than being
+                                // read off the project's mode, because an estimate
+                                // written before the mode changed still means what it
+                                // said — see EstimateUnit.
+                                issue.estimate?.let { estimate ->
+                                    putJsonObject("estimate") { putEstimate(estimate) }
+                                }
                                 // Absent when the issue is in the backlog, which is
                                 // every issue in a project with no sprints.
                                 issue.sprintId?.let { id -> sprintNames[id]?.let { put("sprint", it) } }
@@ -1571,6 +2028,17 @@ class McpTools(private val deps: BoardDependencies) {
                                 // full; on the board this one id is enough to see the
                                 // shape.
                                 issue.parentId?.let { put("parentId", it) }
+                                // Both absent on a card nothing is holding up, which is
+                                // almost every card. Two fields rather than one because
+                                // they answer two questions an agent asks separately —
+                                // "may I start this" and "on what" — and because
+                                // `isBlocked` false everywhere would be the noisiest key
+                                // on the response. See the blocked projection above for
+                                // why this cannot be derived from the issues returned.
+                                blockersByIssue[issue.id]?.let { blockers ->
+                                    put("isBlocked", true)
+                                    putJsonArray("blockedBy") { blockers.forEach { add(it) } }
+                                }
                                 put("updatedAt", issue.updatedAt)
                                 // Sent for the same reason the web board sends it:
                                 // editing is per issue — authorship is one of the
@@ -1634,6 +2102,46 @@ class McpTools(private val deps: BoardDependencies) {
         // (LNL-55). Both are in this project, so its prefix names their keys.
         val parentRecord = issue.parentId?.let { deps.issues.findById(it) }
         val childRecords = deps.issues.childrenOf(issue.id)
+        // ── This issue's links, resolved to THIS issue's side (LNL-215) ──────────
+        //
+        // One stored row per link, read from both ends and turned into a sentence about
+        // the issue that was asked for: the same row reads "Blocked by FOO-9" here and
+        // "Blocks FOO-4" over there. Which end the reader is on is decided by comparing
+        // against `fromIssueId`, once, here — so the agent is handed the wording rather
+        // than the raw row and has no direction left to get wrong. That is the same
+        // resolution `buildIssueDetail` does for the web issue window, over the same two
+        // stores; what differs is only the shape it is written into.
+        //
+        // Assembled before the JSON, like everything else above, because
+        // buildJsonObject's lambda is not a coroutine body. Skipped entirely for a
+        // draft, whose links cannot exist — IssueRepository.addRelation refuses to make
+        // one — so this is a query guaranteed to come back empty on a half-written
+        // issue.
+        val relationRows = if (issue.isDraft) emptyList() else deps.issueRelations.forIssue(issue.id)
+        val relationKindsById = deps.issueRelationKinds.forProject(issue.projectId).associateBy { it.id }
+        val relations = relationRows.mapNotNull { relation ->
+            // A row whose kind or whose far issue cannot be resolved is dropped rather
+            // than reported wordless, on buildIssueDetail's reasoning: it should be
+            // unreachable — deleting a kind takes its links with it — and a link with no
+            // word for what it is would be a row saying nothing.
+            val kind = relationKindsById[relation.kindId] ?: return@mapNotNull null
+            val other = deps.issues.findById(relation.otherThan(issue.id)) ?: return@mapNotNull null
+            buildJsonObject {
+                // What unlink_issues takes. The relation's own id, never the far
+                // issue's: a pair can be linked under two different kinds at once, so
+                // "the link to FOO-9" is not a unique thing to remove.
+                put("relationId", relation.id)
+                put("label", kind.labelFor(isFromSide = relation.fromIssueId == issue.id))
+                // The kind's own from-side name beside this side's wording, because the
+                // two differ exactly when this issue is on the TO side of a kind that is
+                // not symmetric — and an agent holding only "Blocks" would then have no
+                // way to name the kind back to link_issues, which takes "Blocked by".
+                put("kind", kind.name)
+                put("id", other.id)
+                put("key", "${project.namePrefix}-${other.number}")
+                put("title", other.title)
+            }
+        }
 
         return ok(
             buildJsonObject {
@@ -1654,6 +2162,12 @@ class McpTools(private val deps: BoardDependencies) {
                 put("author", issue.author.displayName(authors))
                 // Absent when nobody holds it. See getBoard's `assignee`.
                 assigneeName?.let { put("assignee", it) }
+                // Present only when true, and only ever beside an assignee — see
+                // getBoard's copy, whose reasoning this is (LNL-215).
+                if (issue.assigneeIsAgent) put("assigneeIsAgent", true)
+                // Absent when unestimated. The unit is the issue's own, not the
+                // project's current mode; see EstimateUnit.
+                issue.estimate?.let { estimate -> putJsonObject("estimate") { putEstimate(estimate) } }
                 // Absent for a backlog issue and for every issue in a project with
                 // no sprint axis, exactly as get_board reports it — see getBoard's
                 // per-issue `sprint`.
@@ -1694,6 +2208,12 @@ class McpTools(private val deps: BoardDependencies) {
                             )
                         }
                     }
+                }
+                // Absent when this issue is linked to nothing, as `children` and
+                // `watchers` are — an empty key would be a line of noise on the great
+                // majority of issues, which are linked to nothing at all.
+                if (relations.isNotEmpty()) {
+                    putJsonArray("relations") { relations.forEach { add(it) } }
                 }
                 putJsonArray("comments") {
                     comments.forEach { comment ->
@@ -1824,6 +2344,21 @@ class McpTools(private val deps: BoardDependencies) {
 
         val assigneeId = resolveAssignee(project.id, arguments, current = null)
             .getOrElse { return refuse(it.message ?: "That assignee cannot be used.") }
+        // Null for absent, which is this flag's spelling of "say nothing" rather than
+        // "false" — see resolveAssigneeIsAgent, and IssueRepository.save, which is
+        // where the whole lifecycle of the flag is decided. On a create the repository
+        // resolves an unstated flag to false, and a stated one on an unassigned issue
+        // to false as well, so nothing here has to know those rules.
+        val assigneeIsAgent = resolveAssigneeIsAgent(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent-assignee flag cannot be used.") }
+
+        // Through the route's own resolveEstimate, so a project's estimate mode governs
+        // an agent's write exactly as it governs the editor's: a project on "none"
+        // refuses an estimate rather than quietly dropping it, and a project on points
+        // refuses minutes. current = null, because an issue created saying nothing about
+        // an estimate has none.
+        val estimate = resolveEstimateArgument(project.id, arguments, current = null)
+            .getOrElse { return refuse(it.message ?: "That estimate cannot be used.") }
 
         // Parsed before createDraft with the rest, so garbage costs nothing — but
         // APPLIED after the issue exists, since attaching needs the new issue's id.
@@ -1849,11 +2384,13 @@ class McpTools(private val deps: BoardDependencies) {
                 priorityId = priority.id,
                 resolutionId = resolutionId,
                 assigneeId = assigneeId,
+                assigneeIsAgent = assigneeIsAgent,
                 sprintId = sprintId,
                 // Full access, the same the web editor has (LNL-134): the agent may
                 // set both versions by name, or leave them null.
                 plannedVersionId = plannedVersionId,
                 fixedVersionId = fixedVersionId,
+                estimate = estimate,
                 labelIds = labelIds,
                 componentIds = componentIds,
                 // The same value the draft was created with, never a second read of
@@ -2049,6 +2586,24 @@ class McpTools(private val deps: BoardDependencies) {
 
         val assigneeId = resolveAssignee(issue.projectId, arguments, current = issue.assigneeId)
             .getOrElse { return refuse(it.message ?: "That assignee cannot be used.") }
+        // The one field here NOT defaulted to the issue's current value, and the
+        // exception is the point. Every neighbour above passes the stored value back
+        // when the argument is absent, because `publish` overwrites its column
+        // unconditionally — but doing that with this flag would drag it across a
+        // handover, so that an agent fixing a typo on an issue reassigned to somebody
+        // else would silently re-mark the new person's work as their robot's. Null
+        // means "not editing this", and IssueRepository.save decides: it keeps the flag
+        // when the assignee is unchanged and clears it when they are not. See its
+        // `resolvedAgentFlag`.
+        val assigneeIsAgent = resolveAssigneeIsAgent(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent-assignee flag cannot be used.") }
+
+        // Current-as-default, and this line is load-bearing: `publish` writes both
+        // estimate columns on every save, so an edit that said nothing about an
+        // estimate and passed nothing here would clear it. Sending both arguments as
+        // null is how an agent actually clears one. See resolveEstimateArgument.
+        val estimate = resolveEstimateArgument(issue.projectId, arguments, current = issue.estimate)
+            .getOrElse { return refuse(it.message ?: "That estimate cannot be used.") }
 
         // The parent, applied BEFORE the content save, so a refused reparent (wrong
         // project, already a child, a cycle) leaves the issue untouched rather than
@@ -2071,11 +2626,13 @@ class McpTools(private val deps: BoardDependencies) {
             priorityId = priorityId,
             resolutionId = resolutionId,
             assigneeId = assigneeId,
+            assigneeIsAgent = assigneeIsAgent,
             sprintId = sprintId,
             // Full access, the same the web editor has (LNL-134): set either version
             // by name, null to clear, or omit to keep — resolveVersion above.
             plannedVersionId = plannedVersionId,
             fixedVersionId = fixedVersionId,
+            estimate = estimate,
             labelIds = labelIds,
             componentIds = componentIds,
             updatedAt = updatedAt,
@@ -2200,6 +2757,168 @@ class McpTools(private val deps: BoardDependencies) {
             else "$who no longer watching issue ${issue.id}.",
         )
     }
+
+    // ── Relations: what one issue says about another (LNL-215) ───────────────
+
+    /**
+     * Link two issues under one of the project's relation kinds.
+     *
+     * ── The permission, which is about ONE of the two issues ──────────────────
+     *
+     * [AccessControl.canEditIssue] on `issue_id` — the issue the link is stated *from*
+     * — and nothing is asked about the far side. That is not this tool going soft: it
+     * is the rule `POST /api/issues/{id}/relations` already applies, for the reason
+     * that route and [IssueRepository.addRelation] both give at length. Belonging in a
+     * relation is a fact somebody states about the issue they are looking at, and an
+     * issue does not own who points at it. The consequence worth being sure about is
+     * that somebody who may edit FOO-4 can make FOO-9 show "Blocks FOO-4" without
+     * being able to edit FOO-9 — which is the same power the epic route already grants
+     * and is bounded the same way, since both issues are in a project the caller can
+     * already read and write in.
+     *
+     * ── Why naming the opposite label is refused rather than reversed ─────────
+     *
+     * A kind has two labels — "Blocked by" and "Blocks" — and only one of them is a
+     * sentence about the from side. An agent that sends the inverse plainly means the
+     * link the other way round, and swapping the two issues for it was the tempting
+     * alternative. It is rejected because it would silently move the permission
+     * check: after the swap the from issue is the *other* one, so the same fact would
+     * be allowed or refused depending on which of its two names the agent happened to
+     * use. A surface where "A blocks B" is refused and "B is blocked by A" succeeds,
+     * for the same caller and the same two issues, is worse than one extra
+     * round-trip — so this refuses, and the refusal spells out the call to make
+     * instead.
+     *
+     * Everything else — same project, no self-link, no duplicate pair in either
+     * direction, both published — is [IssueRepository.addRelation]'s, and comes back
+     * as a [Result] failure whose message names which rule.
+     */
+    private suspend fun linkIssues(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val issue = readableIssue(user, arguments) ?: return noSuchIssue()
+        if (!deps.access.canEditIssue(user, issue)) {
+            return refuse("You cannot link this issue to others.")
+        }
+        val toIssueId = arguments.long(TO_ISSUE_ARGUMENT)
+            ?: return refuse(
+                "`$TO_ISSUE_ARGUMENT` must be an issue id — the `id` from get_board or get_issue, " +
+                    "not the FOO-123 key.",
+            )
+        val named = arguments.string(RELATION_ARGUMENT)
+            ?: return refuse("`$RELATION_ARGUMENT` must name one of this project's relation kinds.")
+        val agentName = resolveAgentName(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
+
+        val kinds = deps.issueRelationKinds.forProject(issue.projectId)
+        val wanted = named.trim()
+        val kind = kinds.firstOrNull { it.name.equals(wanted, ignoreCase = true) }
+            ?: return refuseRelationKind(kinds, wanted, issue, toIssueId)
+
+        deps.issueRepository
+            .addRelation(issue, toIssueId, kind.id, user.asAuthor(), agentName)
+            .getOrElse { return refuse(it.message ?: "That link is not allowed.") }
+
+        // Read after the write rather than before it, so the sentence describes a link
+        // that exists — and read at all because an answer naming FOO-4 and FOO-9 is one
+        // the person can check, where "linked 412 to 507" is not.
+        val here = issueKey(issue)
+        val there = deps.issues.findById(toIssueId)?.let { issueKey(it) } ?: "issue $toIssueId"
+        return ok(
+            "$here is now \"${kind.labelFrom}\" $there. The link is stored once and read from both " +
+                "ends: from $there it reads \"${kind.labelTo}\" $here.",
+        )
+    }
+
+    /**
+     * Unlink two issues, by the relation's own id.
+     *
+     * [linkIssues]' gate, on either end: the link is readable and removable from both
+     * issues, and the repository proves the id actually touches the one named — so a
+     * `relation_id` from another board removes nothing rather than being removable by
+     * anybody who can edit any issue at all.
+     */
+    private suspend fun unlinkIssues(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val issue = readableIssue(user, arguments) ?: return noSuchIssue()
+        if (!deps.access.canEditIssue(user, issue)) {
+            return refuse("You cannot change this issue's links.")
+        }
+        val relationId = arguments.long(RELATION_ID_ARGUMENT)
+            ?: return refuse(
+                "`$RELATION_ID_ARGUMENT` must be a link id — the `relationId` from get_issue's " +
+                    "`relations`, not an issue id.",
+            )
+        val agentName = resolveAgentName(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
+
+        // Read BEFORE the delete, for deleteForum's reason in miniature: afterwards
+        // there is an id and nothing to say about it, and "removed link 88" is not
+        // something anybody can check. The repository reads it again to validate; that
+        // second read is the one that enforces, and this one only writes the sentence.
+        val record = deps.issueRelations.findById(relationId)
+        val farKey = record?.let { row ->
+            deps.issues.findById(row.otherThan(issue.id))?.let { issueKey(it) }
+        }
+
+        deps.issueRepository
+            .removeRelation(issue, relationId, user.asAuthor(), agentName)
+            .getOrElse { return refuse(it.message ?: "That link could not be removed.") }
+
+        val here = issueKey(issue)
+        return ok(
+            if (farKey != null) "$here and $farKey are no longer linked."
+            else "Removed link $relationId from $here.",
+        )
+    }
+
+    /**
+     * "There is no relation kind called…", with the one case that is not a typo
+     * separated out.
+     *
+     * An agent that named a kind's *inverse* label knows exactly what it wants and got
+     * the direction backwards, which is a different mistake from misspelling a name —
+     * so it gets a different sentence, carrying the call that would work. See
+     * [linkIssues] for why this is a refusal rather than a swap.
+     */
+    private fun refuseRelationKind(
+        kinds: List<IssueRelationKindRecord>,
+        named: String,
+        issue: IssueRecord,
+        toIssueId: Long,
+    ): McpToolResult {
+        val reversed = kinds.firstOrNull { it.inverseName?.equals(named, ignoreCase = true) == true }
+        if (reversed != null) {
+            return refuse(
+                "\"$named\" is the OTHER side of this project's \"${reversed.name}\" link, so this " +
+                    "call states it backwards. A link is stored once, from one issue to the other, " +
+                    "and \"${reversed.name}\" is the sentence about the issue it is stored from. To " +
+                    "say what you meant, swap the two: link_issues with issue_id $toIssueId, " +
+                    "to_issue_id ${issue.id}, relation \"${reversed.name}\". Nothing was written.",
+            )
+        }
+        if (kinds.isEmpty()) {
+            return refuse(
+                "This project has no relation kinds, so its issues cannot be linked at all. A " +
+                    "project administrator can add one with add_vocabulary. Nothing was written.",
+            )
+        }
+        return refuse(
+            "There is no relation kind called \"$named\" in this project. Available: " +
+                kinds.joinToString(", ") { kind ->
+                    if (kind.inverseName != null) "\"${kind.name}\" (the far side reads \"${kind.inverseName}\")"
+                    else "\"${kind.name}\" (the same in both directions)"
+                } + ". Name the first of each pair; see link_issues on direction.",
+        )
+    }
+
+    /**
+     * "FOO-123" for an issue, or its id when the project has gone.
+     *
+     * One read per call rather than a map, because the two callers name at most two
+     * issues apiece — this is not `getBoard`, where the same lookup per card would be
+     * the thing to avoid.
+     */
+    private suspend fun issueKey(issue: IssueRecord): String =
+        deps.projects.findById(issue.projectId)?.let { "${it.namePrefix}-${issue.number}" }
+            ?: "issue ${issue.id}"
 
     /**
      * Delete one stored attachment — its row and its bytes — by the id in its URL.
@@ -2379,6 +3098,529 @@ class McpTools(private val deps: BoardDependencies) {
                 } else {
                     "Unfinished work went to the backlog."
                 },
+        )
+    }
+
+    // ── The project's own structure: vocabulary, and the estimate switch ──────
+    //
+    // ── One generic tool per verb, not one tool per kind ──────────────────────
+    //
+    // There are eight vocabularies and four verbs, so the surface here could have been
+    // thirty-two tools — `add_status`, `add_priority`, `rename_label`, `delete_sprint`
+    // — or five that take the kind as an argument. It is five, and the reasoning is
+    // worth writing down because the other answer is the one that reads better in
+    // isolation.
+    //
+    // **What was chosen.** `list_vocabulary`, `add_vocabulary`, `rename_vocabulary`,
+    // `reorder_vocabulary` and `delete_vocabulary`, each taking `kind` as one of the
+    // eight [VocabularyKind.key]s.
+    //
+    // **Why.** Because the thing underneath is already generic and has been since
+    // LNL-28: [VocabularyKind] is one enum, [AccessControl.canEditVocabulary] is one
+    // function that answers per kind, [VocabularyRepository] is one class whose every
+    // method takes the kind, and the web app has one dialog. Thirty-two tools would be
+    // thirty-two wrappers differing by a constant, over code that would immediately
+    // fold them back into one call — and every one of them would be paid for on every
+    // `tools/list` of every conversation, which is the cost this file already weighs in
+    // [MCP_INSTRUCTIONS]. It would also be thirty-two places to forget a kind: the
+    // ninth vocabulary would need four new tools, four new handlers and four new
+    // dispatch lines, where here it needs a line in an enum that already exists.
+    //
+    // **The alternative, and it is not a straw man.** A per-kind surface has schemas
+    // that cannot express nonsense. `add_status(name, requires_resolution)` never
+    // offers `inverse_name`; `rename_priority` has no flags at all. Here, every flag is
+    // on every call, and the tool descriptions have to say "STATUSES ONLY" and
+    // "RELATION KINDS ONLY" in prose rather than in structure — which is weaker,
+    // because prose is what a model skims. A tool named after the thing it changes is
+    // also easier for a model to reach for: `add_status` is one hop from "add a
+    // column", where `add_vocabulary` needs the extra step of knowing that a column is
+    // a status is a vocabulary.
+    //
+    // **The trade-off accepted.** Precision at the schema, in exchange for a surface
+    // that stays the size of the concept rather than the size of the enum, and for one
+    // implementation of each verb rather than eight. The precision is bought back
+    // where it can be: the per-kind extras are ignored for the kinds they do not belong
+    // to rather than refused (the repository's rule, not a new one), an unknown kind is
+    // refused with all eight listed, and every extra names its kind in the first three
+    // words of its description. What is genuinely lost is that a model can send
+    // `is_done` to a label and hear nothing back about it, which is the same silence
+    // the web dialog produces for the same reason.
+    //
+    // Note the one overlap this leaves standing: `create_sprint` predates all of this
+    // and does what `add_vocabulary(kind: "sprint")` now also does, through the same
+    // repository and the same gate. It stays, because it is where the thing that is
+    // *not* generic about a sprint gets said — that a new one is not activated, and
+    // that starting it is a separate call.
+
+    /**
+     * The `kind` argument as a [VocabularyKind], or a refusal listing all eight.
+     *
+     * Matched against the enum's own [VocabularyKind.key] rather than `valueOf`, for
+     * the reason `ProjectSettingsRoutes.vocabularyKind` gives: the keys are wire format
+     * and the constant names are not, so this is one of the two places they are allowed
+     * to be told apart. The agent reads keys off this file's descriptions and off the
+     * URLs nothing here exposes; either way it is the key that is public.
+     */
+    private fun resolveVocabularyKind(arguments: JsonObject): Result<VocabularyKind> {
+        val named = arguments.string(KIND_ARGUMENT)?.trim()
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$KIND_ARGUMENT` must name one of this project's vocabularies: " +
+                        VOCABULARY_KIND_KEYS + ".",
+                ),
+            )
+        val kind = VocabularyKind.entries.firstOrNull { it.key.equals(named, ignoreCase = true) }
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "There is no vocabulary called \"$named\". The eight are: $VOCABULARY_KIND_KEYS.",
+                ),
+            )
+        return Result.success(kind)
+    }
+
+    /**
+     * A project this caller may edit [kind] in, or the refusal that says why not.
+     *
+     * ── The gate is a question, never a rung written down here ────────────────
+     *
+     * [AccessControl.canEditVocabulary] decides, and it is asked with the kind because
+     * that is what the answer depends on: sprints and versions are a maintainer's and
+     * the six that define what the board *is* are an administrator's (LNL-191). This
+     * file must not know which is which — the day that split moves, it should move in
+     * AccessControl and reach every caller, this one included, without an edit. The
+     * only thing read from the rung here is its *name*, and only to write the refusal;
+     * [ProjectRole.prose] exists for that and for nothing else.
+     *
+     * Readable first and editable second, exactly as [sprintAdminProject] and the HTTP
+     * routes' `adminProject`: an id the caller cannot see answers "no such project"
+     * rather than confirming one exists by refusing on rights.
+     *
+     * The refusal itself is [sprintAdminProject]'s sentence with the kind swapped in.
+     * That shape is the one this surface already uses for a per-project rung — it says
+     * which action, which project, that the account lacks the rung, and that nothing
+     * was written — and the whole point of reusing it is that an agent which has
+     * learned to read one of these has learned to read all of them. See
+     * [MCP_INSTRUCTIONS] on why a refusal here is final.
+     */
+    private suspend fun vocabularyScope(
+        user: UserRecord,
+        arguments: JsonObject,
+        kind: VocabularyKind,
+    ): Result<ProjectRecord> {
+        val project = resolveProject(user, arguments)
+            ?: return Result.failure(ResolutionRefusal("No such project."))
+        if (!deps.access.canEditVocabulary(user, project.id, kind)) {
+            return Result.failure(
+                ResolutionRefusal(
+                    "You cannot change the ${kind.plural} in ${project.name} — that is a " +
+                        "${kind.minimumRole.prose} action, and the account you are acting as does " +
+                        "not hold that rung on this project. Nothing was changed.",
+                ),
+            )
+        }
+        return Result.success(project)
+    }
+
+    /**
+     * Run a vocabulary write, turning its two refusals into a [Result].
+     *
+     * [refusable]'s twin for the other repository, and the same argument for it: the
+     * sentences [VocabularyConflict] and [VocabularyRefusal] carry are written for a
+     * human — "3 issues are still in that status" — and the HTTP routes show them
+     * verbatim. Showing them verbatim here too is what makes the two front doors give
+     * one answer, and it is why every write below goes through the repository rather
+     * than a store. Anything else thrown is a bug and propagates to [McpServer]'s
+     * catch, which logs it.
+     *
+     * The 409/400 distinction the routes draw is dropped, and nothing is lost: an MCP
+     * refusal has one shape, `isError` with a sentence, and both of these are exactly
+     * that. See [refuse].
+     */
+    private suspend fun <T> vocabularyWrite(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (conflict: VocabularyConflict) {
+        Result.failure(ResolutionRefusal(conflict.userMessage))
+    } catch (refusal: VocabularyRefusal) {
+        Result.failure(ResolutionRefusal(refusal.userMessage))
+    }
+
+    /**
+     * A boolean argument that defaults to what the row already says.
+     *
+     * The absent-argument convention, applied to a flag: absent leaves [current], and
+     * so does an explicit JSON null, for [JsonObject.isPresent]'s reason — models fill
+     * in every property of a schema and write null for the ones they have nothing to
+     * say about, and a rename that flipped a status's closing flag because of that
+     * would be the silent substitution this whole surface refuses to make.
+     *
+     * A present value that is neither a boolean nor `"true"`/`"false"` is refused
+     * rather than treated as absent. That asymmetry is deliberate: null is a model
+     * being tidy, where `"maybe"` is a request nobody can honour, and answering the
+     * second with "done" would report a change that was not made.
+     */
+    private fun flag(arguments: JsonObject, name: String, current: Boolean): Result<Boolean> {
+        if (!arguments.containsKey(name) || !arguments.isPresent(name)) return Result.success(current)
+        val value = arguments.bool(name)
+            ?: return Result.failure(
+                ResolutionRefusal("`$name` must be true or false, which \"${arguments[name]}\" is not."),
+            )
+        return Result.success(value)
+    }
+
+    /**
+     * Read a project's vocabularies, with the ids the editing tools need.
+     *
+     * ── Why reading is gated on seeing the project and nothing more ───────────
+     *
+     * Every field this returns is already in the board response that
+     * [AccessControl.canReadProject] admits somebody to: `BoardState` carries each
+     * status, priority, resolution, label, component, sprint, version and relation kind
+     * with its **id** and its position, and the relation kinds with their inverse names
+     * and blocking flags. The one thing added is `usageCount`, which is a count of
+     * issues the same caller can already list card by card.
+     *
+     * So a stricter gate here would withhold nothing and would break something real: an
+     * agent that can see a column but cannot ask what its id is could not report on the
+     * board it is looking at. The write tools below are where the rung is asked, which
+     * is the same place the web app asks it — the Structure section is an
+     * administrator's, and the board it configures is everybody's.
+     */
+    private suspend fun listVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val project = resolveProject(user, arguments) ?: return noSuchProject()
+        // Absent `kind` means all eight, which is one round-trip and almost always what
+        // a caller about to change something wants. A named one narrows — unlike
+        // get_board's `status` filter, which narrows the issues and never the
+        // vocabulary, because there the vocabulary IS the orientation being asked for.
+        val kinds = if (arguments.containsKey(KIND_ARGUMENT)) {
+            listOf(resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") })
+        } else {
+            VocabularyKind.entries.toList()
+        }
+        // Every read before the builder, as everywhere in this file: buildJsonObject's
+        // lambda is not a coroutine body.
+        val rows = kinds.associateWith { deps.vocabularies.rows(project.id, it) }
+        // Joined back in for the one field [VocabularyRow] deliberately drops. A
+        // sprint's completion is not a property of "a named row an admin can rename",
+        // so it does not ride on the row — and it is the field that decides whether work
+        // can be scheduled into that sprint, so an agent reading the list needs it. The
+        // settings pane does exactly this join for the same reason; see
+        // `ProjectSettingsRoutes.sprintEntries`.
+        val completedAt = if (VocabularyKind.SPRINT in kinds) {
+            deps.sprints.forProject(project.id).associate { it.id to it.completedAt }
+        } else {
+            emptyMap()
+        }
+
+        return ok(
+            buildJsonObject {
+                putJsonObject("project") {
+                    put("id", project.id)
+                    put("name", project.name)
+                    put("keyPrefix", project.namePrefix)
+                }
+                putJsonObject("vocabularies") {
+                    kinds.forEach { kind ->
+                        putJsonArray(kind.key) {
+                            rows.getValue(kind).forEach { row ->
+                                add(
+                                    buildJsonObject {
+                                        put("id", row.id)
+                                        put("name", row.name)
+                                        put("position", row.position)
+                                        put("usageCount", row.usageCount)
+                                        // Per-kind extras, present only on the kinds
+                                        // that carry them — a priority with a
+                                        // `requiresResolution: false` on it would be a
+                                        // field inviting a write that does nothing.
+                                        when (kind) {
+                                            VocabularyKind.STATUS ->
+                                                put("requiresResolution", row.requiresResolution)
+                                            VocabularyKind.RESOLUTION -> put("isDone", row.isDone)
+                                            VocabularyKind.RELATION_KIND -> {
+                                                // Absent when the kind reads the same
+                                                // both ways: null IS symmetry, and a
+                                                // second field claiming so could
+                                                // disagree with it.
+                                                row.inverseName?.let { put("inverseName", it) }
+                                                put("marksBlocked", row.marksBlocked)
+                                            }
+                                            // Present only on a sprint that has been
+                                            // completed, and its presence is the whole
+                                            // signal: work cannot be scheduled into one
+                                            // that has it.
+                                            VocabularyKind.SPRINT ->
+                                                completedAt[row.id]?.let { put("completedAt", it) }
+                                            VocabularyKind.LABEL,
+                                            VocabularyKind.COMPONENT,
+                                            VocabularyKind.PRIORITY,
+                                            VocabularyKind.VERSION,
+                                            -> {}
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    /** Add a row to one of a project's vocabularies, at the end of the order. */
+    private suspend fun addVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        // The kind first and the gate second, which is the reverse of every other tool
+        // here and has to be: the rung depends on the kind, so there is nothing to check
+        // until it is known. The HTTP route's handlers were rearranged for exactly this
+        // when LNL-191 split the vocabulary in two.
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        val name = arguments.string(NAME_ARGUMENT) ?: return refuse("A ${kind.noun} needs a name.")
+        if (name.trim().length > MAX_MCP_VOCABULARY_NAME_LENGTH) {
+            return refuse("That name is too long — $MAX_MCP_VOCABULARY_NAME_LENGTH characters at most.")
+        }
+        // Both relation-kind extras, accepted on the add rather than left to the rename
+        // that would follow: a kind whose opposite label could only be set by a second
+        // write would be briefly, and visibly, symmetric when it is not. Ignored by the
+        // repository for the other seven kinds. Defaults are the safe states — symmetric,
+        // and not blocking — so an agent adding a label never has to think about either.
+        val inverseName = arguments.string(INVERSE_NAME_ARGUMENT)
+        val marksBlocked = flag(arguments, MARKS_BLOCKED_ARGUMENT, current = false)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+
+        val row = vocabularyWrite {
+            deps.vocabularies.add(project.id, kind, name, inverseName, marksBlocked)
+        }.getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be added.") }
+
+        return ok(
+            buildString {
+                append("Added the ${kind.noun} \"${row.name}\" (id ${row.id}) to ${project.name}, ")
+                append("at the end of its ${kind.plural}. Use reorder_vocabulary to move it.")
+                if (kind == VocabularyKind.SPRINT) {
+                    append(" It is not active — start it with set_active_sprint.")
+                }
+                if (kind == VocabularyKind.STATUS) {
+                    append(
+                        " It does not require a resolution; rename_vocabulary with " +
+                            "requires_resolution is how a column becomes a closing one.",
+                    )
+                }
+            },
+        )
+    }
+
+    /**
+     * Rename a row, or change one of its flags.
+     *
+     * Every field defaults to what the row already says, and that is the whole of this
+     * function's care. [VocabularyStore.rename] writes the name and all three flags in
+     * one statement — it has to, since the web dialog sends back the row it is
+     * rendering — so a value forgotten here is not "unchanged", it is *false*, and an
+     * agent fixing a spelling mistake would silently turn off the flag that makes a
+     * column demand a resolution. The MCP convention and the underlying write disagree
+     * about what an omission means; this is where they are reconciled, and it is the
+     * same reconciliation [updateIssue] performs for the assignee and the versions.
+     */
+    private suspend fun renameVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        val row = namedVocabularyRow(project, kind, arguments)
+            .getOrElse { return refuse(it.message ?: "No such row.") }
+
+        // Absent leaves the name, so this tool doubles as "flip one flag" — which is
+        // what the web dialog's checkboxes are, and there is no reason an agent should
+        // have to re-send a name it is not changing.
+        val name = arguments.string(NAME_ARGUMENT) ?: row.name
+        if (name.trim().length > MAX_MCP_VOCABULARY_NAME_LENGTH) {
+            return refuse("That name is too long — $MAX_MCP_VOCABULARY_NAME_LENGTH characters at most.")
+        }
+        val requiresResolution = flag(arguments, REQUIRES_RESOLUTION_ARGUMENT, row.requiresResolution)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        val isDone = flag(arguments, IS_DONE_ARGUMENT, row.isDone)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        val marksBlocked = flag(arguments, MARKS_BLOCKED_ARGUMENT, row.marksBlocked)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        // The three-way reading `sprint`, `planned_version` and `parent_id` all take:
+        // absent keeps the current opposite label, an explicit null makes the kind
+        // symmetric, and a name sets it. A blank string collapses into the null case,
+        // since the repository normalises blank to null anyway — "I cleared the field"
+        // and "I ticked same-in-both-directions" must not become two stored states that
+        // render identically.
+        val inverseName = if (arguments.containsKey(INVERSE_NAME_ARGUMENT)) {
+            arguments.string(INVERSE_NAME_ARGUMENT)
+        } else {
+            row.inverseName
+        }
+
+        vocabularyWrite {
+            deps.vocabularies.rename(
+                project.id, kind, row, name, requiresResolution, isDone, inverseName, marksBlocked,
+            )
+        }.getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be changed.") }
+
+        return ok(
+            if (name == row.name) "Updated the ${kind.noun} \"${row.name}\" (id ${row.id}) in ${project.name}."
+            else "Renamed the ${kind.noun} \"${row.name}\" to \"$name\" (id ${row.id}) in ${project.name}.",
+        )
+    }
+
+    /** Put one vocabulary in the order given — the whole list, or nothing. */
+    private suspend fun reorderVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        // longs() refuses the whole argument when any element is unreadable rather than
+        // dropping that one, which is exactly what this call needs: the repository
+        // demands the complete set, so a silently dropped element would become a refusal
+        // about a list the caller did not send. See JsonObject.longs.
+        val ids = arguments.longs(IDS_ARGUMENT)
+            ?: return refuse(
+                "`$IDS_ARGUMENT` must be an array of row ids, as numbers — every ${kind.noun} in " +
+                    "this project, in the order you want them. list_vocabulary gives them.",
+            )
+        vocabularyWrite { deps.vocabularies.reorder(project.id, kind, ids) }
+            .getOrElse { return refuse(it.message ?: "That order was refused.") }
+        return ok("Put ${project.name}'s ${kind.plural} in the order given (${ids.size} rows).")
+    }
+
+    /**
+     * Delete a row, or explain why not.
+     *
+     * The refusals — in use, and the last status or priority — are
+     * [VocabularyRepository.delete]'s and are not restated here, which is the point of
+     * going through it. What this adds is the *consequence* sentence for the deletes
+     * that are allowed: the count is read before the row goes, because afterwards there
+     * is nothing left to count, and an agent that has just removed a relation kind
+     * should be told how many links went with it rather than discovering it later.
+     */
+    private suspend fun deleteVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        val row = namedVocabularyRow(project, kind, arguments)
+            .getOrElse { return refuse(it.message ?: "No such row.") }
+        val uses = row.usageCount
+
+        vocabularyWrite { deps.vocabularies.delete(project.id, kind, row) }
+            .getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be deleted.") }
+
+        return ok(
+            buildString {
+                append("Deleted the ${kind.noun} \"${row.name}\" from ${project.name}.")
+                if (uses > 0) {
+                    append(" ")
+                    append(
+                        when (kind) {
+                            // The kinds whose rows cascade or release rather than
+                            // restricting — the delete succeeded, so this is a
+                            // consequence to report, never a warning to have given.
+                            VocabularyKind.RELATION_KIND ->
+                                "$uses ${plural(uses, "link")} that used it went with it, and " +
+                                    "nothing records what was linked."
+                            VocabularyKind.LABEL, VocabularyKind.COMPONENT ->
+                                "$uses ${plural(uses, "issue")} no longer ${if (uses == 1L) "carries" else "carry"} it."
+                            VocabularyKind.SPRINT ->
+                                "$uses ${plural(uses, "issue")} " +
+                                    "${if (uses == 1L) "is" else "are"} back in the backlog."
+                            VocabularyKind.VERSION ->
+                                "$uses ${plural(uses, "issue")} no longer " +
+                                    "${if (uses == 1L) "names" else "name"} it."
+                            // Unreachable: these three restrict on use, so a non-zero
+                            // count would have been refused above. Spelled out rather
+                            // than left to an else, so a schema change that relaxes one
+                            // of them is a compile error here.
+                            VocabularyKind.STATUS, VocabularyKind.PRIORITY, VocabularyKind.RESOLUTION -> ""
+                        },
+                    )
+                }
+                append(" This cannot be undone.")
+            },
+        )
+    }
+
+    /** The `id` argument as a row of [kind] *in this project*, or a refusal. */
+    private suspend fun namedVocabularyRow(
+        project: ProjectRecord,
+        kind: VocabularyKind,
+        arguments: JsonObject,
+    ): Result<VocabularyRow> {
+        val id = arguments.long(VOCABULARY_ID_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$VOCABULARY_ID_ARGUMENT` must be a row id, as a number — the `id` from " +
+                        "list_vocabulary.",
+                ),
+            )
+        // Project-scoped, exactly as the HTTP route's `vocabularyRow` is, and for the
+        // reason [VocabularyRepository.find] gives: an administrator is an administrator
+        // in their own project only, and a client that sent the id it had lying around
+        // must not rename another project's "Closed".
+        val row = deps.vocabularies.find(project.id, kind, id)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "There is no ${kind.noun} with id $id in ${project.name}. Ids are per project; " +
+                        "list_vocabulary gives this one's.",
+                ),
+            )
+        return Result.success(row)
+    }
+
+    /**
+     * Turn a project's estimates on, off, or over to the other unit.
+     *
+     * [AccessControl.canAdministerProject] — the same gate the `/estimates` route asks,
+     * and the one the vocabulary's six board-defining kinds sit behind. Deciding whether
+     * a team estimates at all is a decision about what the board is, not work inside it.
+     *
+     * ── The one place this is deliberately stricter than the HTTP route ───────
+     *
+     * That route folds an unrecognised mode to [EstimateMode.NONE] rather than refusing,
+     * and it is right to: it is protecting a *browser* from a version skew nobody can
+     * see, where degrading to the state that renders nothing beats a screen that will
+     * not open. Here the same fold would mean a typo in one argument silently switching
+     * a live project's estimates off — a write nobody asked for, reported as success,
+     * which is the silent substitution this whole surface exists to refuse. So an
+     * unknown mode is refused with the three that exist.
+     */
+    private suspend fun setEstimateMode(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val project = resolveProject(user, arguments) ?: return noSuchProject()
+        if (!deps.access.canAdministerProject(user, project.id)) {
+            return refuse(
+                "You cannot change whether ${project.name} estimates — that is a " +
+                    "${ProjectRole.ADMIN.prose} action, and the account you are acting as does not " +
+                    "hold that rung on this project. Nothing was changed.",
+            )
+        }
+        val named = arguments.string(MODE_ARGUMENT)
+            ?: return refuse("`$MODE_ARGUMENT` must be one of: $ESTIMATE_MODE_KEYS.")
+        val mode = EstimateMode.entries.firstOrNull { it.key.equals(named.trim(), ignoreCase = true) }
+            ?: return refuse(
+                "There is no estimate mode called \"$named\". The three are: $ESTIMATE_MODE_KEYS. " +
+                    "Nothing was changed.",
+            )
+        val previous = project.estimateMode
+        deps.projects.setEstimateMode(project.id, mode)
+        return ok(
+            buildString {
+                append("${project.name} now estimates in \"${mode.key}\"")
+                if (previous != mode) append(", where it was \"${previous.key}\"") else append(" (unchanged)")
+                append(". ")
+                append(
+                    when (mode) {
+                        EstimateMode.NONE ->
+                            "No estimate can be written here now, and any estimate sent to " +
+                                "create_issue or update_issue is refused. The estimates already " +
+                                "stored are untouched — this hides the field, it does not erase them."
+                        EstimateMode.TIME -> "New estimates are whole minutes (estimate_unit \"minutes\")."
+                        EstimateMode.POINTS -> "New estimates are whole points (estimate_unit \"points\")."
+                    },
+                )
+                append(
+                    " Nothing already estimated is reinterpreted: every issue carries the unit its " +
+                        "estimate was written in.",
+                )
+            },
         )
     }
 
@@ -3913,6 +5155,146 @@ class McpTools(private val deps: BoardDependencies) {
     }
 
     /**
+     * Whether the work is going to the assignee's *agent* rather than to them — or
+     * null, which is this flag's spelling of "say nothing" (LNL-215).
+     *
+     * ── Null is "leave it alone", and it is the ONLY field here where that is so ──
+     *
+     * Every other optional field on `update_issue` defaults to the issue's current
+     * value, because [IssueStore.publish] overwrites its column unconditionally and a
+     * forgotten value would silently clear it. This one deliberately does not, and
+     * [IssueRepository.save]'s `assigneeIsAgent` exists to make that possible: passing
+     * the stored flag back would drag it across a handover, so that an agent fixing a
+     * typo on an issue that has just been reassigned would re-mark the new holder's
+     * work as their robot's. Null means "not editing this", and the repository decides
+     * — keep the flag when the assignee is unchanged, clear it when they are not, and
+     * never set it on an issue nobody holds.
+     *
+     * That is also why this is not simply [JsonObject.bool]: `bool` answers null for
+     * absent and for garbage alike, which would make `"assignee_is_agent": "yes"` a
+     * silent no-op reported as success. Absent and explicit-null say nothing (models
+     * null-fill a schema, per [isPresent]); anything else that is not a boolean is
+     * refused.
+     */
+    private fun resolveAssigneeIsAgent(arguments: JsonObject): Result<Boolean?> {
+        if (!arguments.containsKey(ASSIGNEE_IS_AGENT_ARGUMENT) ||
+            !arguments.isPresent(ASSIGNEE_IS_AGENT_ARGUMENT)
+        ) {
+            return Result.success(null)
+        }
+        val value = arguments.bool(ASSIGNEE_IS_AGENT_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$ASSIGNEE_IS_AGENT_ARGUMENT` must be true or false, which " +
+                        "\"${arguments[ASSIGNEE_IS_AGENT_ARGUMENT]}\" is not. It says whether the " +
+                        "work goes to the assignee's agent rather than to them in person; omit it " +
+                        "to leave the flag exactly as it is.",
+                ),
+            )
+        return Result.success(value)
+    }
+
+    /**
+     * How much work an issue is, as two arguments that are one value (LNL-215).
+     *
+     * ── Why the pair is enforced rather than defaulted ────────────────────────
+     *
+     * An amount with no unit is not an estimate this application can render, and a unit
+     * with no amount is not an estimate at all — see [Estimate], which is one type for
+     * exactly that reason rather than two nullable fields. The tempting shortcut is to
+     * default the unit from the project's [EstimateMode], which would work today and
+     * would be wrong tomorrow: the whole point of stamping the unit on the issue is
+     * that the project's mode governs what may be *written*, never what a stored row
+     * *means*, and a tool that silently borrowed the mode would be the one place those
+     * two got conflated. So both or neither, and one alone is refused by name.
+     *
+     * ── The four readings of the pair ─────────────────────────────────────────
+     *
+     *  - **Neither key present → [current].** Absent means leave alone, as everywhere.
+     *  - **Both present, both values → that estimate,** validated below.
+     *  - **Both present, both JSON null → cleared.** The way to remove an estimate,
+     *    matching how `assignee` and the versions read an explicit null.
+     *  - **Anything else → refused.** One key without the other, or one value beside
+     *    one null, is a half-stated intention and guessing at it is how a save reports
+     *    success for a change it did not make.
+     *
+     * The unit and the project's mode are checked by
+     * [se.soderbjorn.lunicle.resolveEstimate] — the route's own function, so the rule
+     * lives in one place and an agent is bound by it exactly as the editor is. Its
+     * sentence is passed through with one extra line naming the tool that would change
+     * the mode, which is the next step an agent has and a browser does not.
+     */
+    private suspend fun resolveEstimateArgument(
+        projectId: Long,
+        arguments: JsonObject,
+        current: Estimate?,
+    ): Result<Estimate?> {
+        val hasAmount = arguments.containsKey(ESTIMATE_AMOUNT_ARGUMENT)
+        val hasUnit = arguments.containsKey(ESTIMATE_UNIT_ARGUMENT)
+        if (!hasAmount && !hasUnit) return Result.success(current)
+        if (hasAmount != hasUnit) {
+            val sent = if (hasAmount) ESTIMATE_AMOUNT_ARGUMENT else ESTIMATE_UNIT_ARGUMENT
+            val missing = if (hasAmount) ESTIMATE_UNIT_ARGUMENT else ESTIMATE_AMOUNT_ARGUMENT
+            return Result.failure(
+                ResolutionRefusal(
+                    "`$sent` was sent without `$missing`, and the two are one value: an amount with " +
+                        "no unit is a number nothing can render, and a unit with no amount is not " +
+                        "an estimate. Send both, or neither. get_board's `estimateMode` says which " +
+                        "unit this project takes. Nothing was written.",
+                ),
+            )
+        }
+        val statedAmount = arguments.isPresent(ESTIMATE_AMOUNT_ARGUMENT)
+        val statedUnit = arguments.isPresent(ESTIMATE_UNIT_ARGUMENT)
+        if (!statedAmount && !statedUnit) return Result.success(null)
+        if (statedAmount != statedUnit) {
+            return Result.failure(
+                ResolutionRefusal(
+                    "`$ESTIMATE_AMOUNT_ARGUMENT` and `$ESTIMATE_UNIT_ARGUMENT` move together: send " +
+                        "both as values to set an estimate, or both as null to clear it. One of " +
+                        "each is neither. Nothing was written.",
+                ),
+            )
+        }
+
+        val amount = arguments.long(ESTIMATE_AMOUNT_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$ESTIMATE_AMOUNT_ARGUMENT` must be a whole number, which " +
+                        "\"${arguments[ESTIMATE_AMOUNT_ARGUMENT]}\" is not. Minutes or points — " +
+                        "never a fraction, and never \"2h\": send 120 with " +
+                        "`$ESTIMATE_UNIT_ARGUMENT` \"minutes\".",
+                ),
+            )
+        val unitName = arguments.string(ESTIMATE_UNIT_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal("`$ESTIMATE_UNIT_ARGUMENT` must be one of: $ESTIMATE_UNIT_KEYS."),
+            )
+        val unit = EstimateUnit.entries.firstOrNull { it.mcpKey.equals(unitName.trim(), ignoreCase = true) }
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "There is no estimate unit called \"$unitName\". The two are: $ESTIMATE_UNIT_KEYS. " +
+                        "Nothing was written.",
+                ),
+            )
+
+        val resolved = deps.resolveEstimate(projectId, Estimate(amount, unit))
+            .getOrElse { failure ->
+                return Result.failure(
+                    ResolutionRefusal(
+                        // The route's own sentence, and then the one thing it has no
+                        // reason to say to a browser: which tool moves the setting it
+                        // just refused against, and who may use it.
+                        (failure.message ?: "That estimate cannot be used.") +
+                            " get_board reports the mode in force as `estimateMode`; a project " +
+                            "administrator can change it with set_estimate_mode. Nothing was written.",
+                    ),
+                )
+            }
+        return Result.success(resolved)
+    }
+
+    /**
      * Read and sanity-check a backfilled timestamp.
      *
      * Epoch **milliseconds**, like every other time in this schema.
@@ -4129,6 +5511,91 @@ private const val PLANNED_VERSION_ARGUMENT = "planned_version"
 private const val FIXED_VERSION_ARGUMENT = "fixed_version"
 private const val PARENT_ARGUMENT = "parent_id"
 
+// LNL-215: the agent-assignee flag, the two halves of an estimate, the two ends and
+// the kind of a link, and the five arguments the vocabulary tools share.
+private const val ASSIGNEE_IS_AGENT_ARGUMENT = "assignee_is_agent"
+private const val ESTIMATE_AMOUNT_ARGUMENT = "estimate_amount"
+private const val ESTIMATE_UNIT_ARGUMENT = "estimate_unit"
+private const val TO_ISSUE_ARGUMENT = "to_issue_id"
+private const val RELATION_ARGUMENT = "relation"
+private const val RELATION_ID_ARGUMENT = "relation_id"
+private const val KIND_ARGUMENT = "kind"
+private const val NAME_ARGUMENT = "name"
+private const val VOCABULARY_ID_ARGUMENT = "id"
+private const val IDS_ARGUMENT = "ids"
+private const val INVERSE_NAME_ARGUMENT = "inverse_name"
+private const val MARKS_BLOCKED_ARGUMENT = "marks_blocked"
+private const val REQUIRES_RESOLUTION_ARGUMENT = "requires_resolution"
+private const val IS_DONE_ARGUMENT = "is_done"
+private const val MODE_ARGUMENT = "mode"
+
+/**
+ * How long a vocabulary row's name may be, over MCP.
+ *
+ * The same bound `ProjectSettingsRoutes` applies, and it has to be: an agent's status
+ * is rendered in the same column header a human's is. Duplicated as a constant rather
+ * than widening the route's private one, which is [MAX_MCP_TITLE_LENGTH]'s trade and
+ * the same smaller wrong.
+ */
+private const val MAX_MCP_VOCABULARY_NAME_LENGTH = 60
+
+/**
+ * The eight vocabulary keys, in one string, for the refusals that list them.
+ *
+ * Built off the enum rather than written out, so a ninth kind appears in every
+ * refusal the moment it exists — which is exactly the property the generic tool
+ * surface was chosen for. See the section banner above `vocabularyScope`.
+ */
+private val VOCABULARY_KIND_KEYS = VocabularyKind.entries.joinToString(", ") { "\"${it.key}\"" }
+
+/** The three estimate modes, and the two units, for the same reason. */
+private val ESTIMATE_MODE_KEYS = EstimateMode.entries.joinToString(", ") { "\"${it.key}\"" }
+private val ESTIMATE_UNIT_KEYS = EstimateUnit.entries.joinToString(", ") { "\"${it.mcpKey}\"" }
+
+/**
+ * What an [EstimateUnit] is called on this surface.
+ *
+ * Lowercase, matching how [EstimateMode] spells its own [EstimateMode.key] and how
+ * every other vocabulary word reaches an agent. Deliberately NOT the enum's
+ * serialized name, which is `MINUTES` and is wire format for the database column —
+ * the two happen to differ only in case today, and this exists so that a rename on
+ * either side is not silently a rename on the other. Accepted case-insensitively on
+ * the way in; see `resolveEstimateArgument`.
+ */
+private val EstimateUnit.mcpKey: String get() = name.lowercase()
+
+/**
+ * An estimate as the two fields an agent reads back.
+ *
+ * The unit rides with the amount rather than being left to the project's mode,
+ * because a stored estimate keeps meaning what it meant when it was written even
+ * after an administrator switches the project to the other unit. See [EstimateUnit],
+ * where that is the whole design.
+ */
+private fun JsonObjectBuilder.putEstimate(estimate: Estimate) {
+    put("amount", estimate.amount)
+    put("unit", estimate.unit.mcpKey)
+}
+
+/**
+ * A rung as it is named in a refusal — "a project-administrator action".
+ *
+ * Phrasing, not policy. It exists so that `vocabularyScope` can name the rung
+ * [AccessControl.canEditVocabulary] actually asked for without this file deciding
+ * what that rung is: the decision stays one function call, and this only turns its
+ * answer into English. Exhaustive over [ProjectRole] rather than falling back to
+ * [ProjectRole.label], so a new rung is a compile error here and not a sentence
+ * reading "a project-Whatever action".
+ */
+private val ProjectRole.prose: String
+    get() = when (this) {
+        ProjectRole.VIEWER -> "project-viewer"
+        ProjectRole.CONTRIBUTOR -> "project-contributor"
+        ProjectRole.MAINTAINER -> "project-maintainer"
+        ProjectRole.ADMIN -> "project-administrator"
+        ProjectRole.OWNER -> "project-owner"
+    }
+
 /** What an agent asked to happen to an issue's parent (LNL-55). See [McpTools.parentIntent]. */
 private sealed interface ParentIntent {
     /** The argument was absent — leave the parent as it is. */
@@ -4211,6 +5678,72 @@ private const val PARENT_PROP_DESCRIPTION =
         "has a parent, and you cannot give a parent to an issue that already has children of its " +
         "own — you will be refused with the reason. get_issue reports an issue's `parent` and its " +
         "`children`."
+
+/**
+ * The half of `assignee_is_agent` both issue tools share (LNL-215).
+ *
+ * It leads with what the flag is *for*, because the name alone reads as though it
+ * might mean "the assignee is a bot account" — which is precisely what it does not
+ * mean, and getting that backwards would put a robot badge on a person.
+ */
+private const val ASSIGNEE_IS_AGENT_PROP_DESCRIPTION =
+    "Whether the work is going to the assignee's AGENT rather than to them in person — the flag " +
+        "behind the small robot badge beside their name. It is a statement about who does the " +
+        "work, not about what kind of account the assignee has: the issue still belongs to the " +
+        "person, and they are still who gets asked about it. It can only ever be true beside an " +
+        "assignee, so setting it on an unassigned issue is quietly nothing; and handing the issue " +
+        "to somebody else clears it, because the previous holder's agent is not on this any more."
+
+/**
+ * As above, for the two halves of an estimate. One description apiece, shared by both
+ * issue tools, with the "what does absent mean" tail appended per tool — the same
+ * arrangement [ASSIGNEE_PROP_DESCRIPTION] uses and for the same reason.
+ */
+private const val ESTIMATE_AMOUNT_PROP_DESCRIPTION =
+    "How much work this is, as a WHOLE NUMBER — minutes when the project's estimateMode is " +
+        "\"time\", points when it is \"points\". Never a fraction and never a formatted string: " +
+        "two hours is 120 with estimate_unit \"minutes\", not \"2h\" and not 2. Zero is allowed " +
+        "and means estimated at nothing, which is a real answer for a trivial ticket; a negative " +
+        "number is refused. Must be sent together with estimate_unit — one without the other is " +
+        "refused, not half-applied."
+
+private const val ESTIMATE_UNIT_PROP_DESCRIPTION =
+    "\"minutes\" or \"points\", saying what estimate_amount counts. It must match what the " +
+        "project currently offers — get_board's `estimateMode`: \"time\" takes minutes, " +
+        "\"points\" takes points, and \"none\" takes no estimate at all and refuses both " +
+        "arguments. Sent together with estimate_amount, always. The unit is stored on the issue, " +
+        "so an estimate keeps meaning what it meant even if an administrator later switches the " +
+        "project to the other unit."
+
+/** One description of the `kind` argument, shared by all five vocabulary tools. */
+private const val VOCABULARY_KIND_PROP_DESCRIPTION =
+    "Which of the project's eight vocabularies: \"status\" (the board's columns), \"priority\", " +
+        "\"resolution\", \"label\", \"component\", \"sprint\", \"version\" or \"relation-kind\" " +
+        "(the ways two issues can be linked). Case-insensitive; anything else is refused with the " +
+        "eight listed."
+
+/**
+ * One description of `inverse_name`, shared by add and rename.
+ *
+ * It says what null means in the same breath as what a value means, because null here
+ * is not "unset" but a positive statement — the kind reads the same in both directions
+ * — and an agent that read it as "unset" would leave a "Blocked by" with no "Blocks".
+ */
+private const val INVERSE_NAME_PROP_DESCRIPTION =
+    "RELATION KINDS ONLY: the TO-side label, the sentence about the issue at the other end. " +
+        "\"Blocks\" beside a name of \"Blocked by\", \"Duplicated by\" beside \"Duplicate of\". " +
+        "Leave it out — or send null — when the kind reads the SAME in both directions, which is " +
+        "what \"Related to\" is: that is not an unset field, it is how symmetry is spelled. A " +
+        "kind may not be its own opposite, and neither of its two labels may collide with either " +
+        "label of another kind in the project, since they all appear in one picker."
+
+/** One description of `marks_blocked`, shared by add and rename. */
+private const val MARKS_BLOCKED_PROP_DESCRIPTION =
+    "RELATION KINDS ONLY: whether an issue on the FROM side of one of these counts as blocked. " +
+        "Defaults to false, and arming it is a deliberate act — it decides which cards read as " +
+        "blocked on everybody's board. Note what it does not say: whether any given issue is " +
+        "blocked right now, which also needs the issue at the other end to still be open. " +
+        "get_board answers that per issue with `isBlocked`."
 
 private const val AGENT_NAME_PROP_DESCRIPTION =
     "Your own name as the agent doing this on the user's behalf — for example the assistant " +
