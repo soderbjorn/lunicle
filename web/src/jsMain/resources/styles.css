@@ -3167,17 +3167,26 @@ body > .dt-pane-menu {
    server's answer sets on every session response, so it survives a reload and
    there is no control anywhere that turns it off. */
 
-/* The strip above the app while a grant is armed and nobody is signed in.
+/* The strip above the app, up for BOTH impersonation states.
 
-   The one state with no other tell: the caller is genuinely signed out, so the
-   corner is a "Sign in…" button and the board is the public view — which is
-   exactly what is being looked at, and exactly why something has to say so. */
+   Armed, it is the one state with no other tell: the caller is genuinely signed
+   out, so the corner is a "Sign in…" button and the board is the public view —
+   which is exactly what is being looked at, and exactly why something has to say
+   so. Probing, the pill and the tint say it too, but neither of those is a
+   CONTROL, and the way out lives here.
+
+   A FIXED height rather than one that follows its text, because the shell below
+   has to be shortened by exactly this much — and a strip that grew by a line on a
+   narrow window would put the tab bar back underneath it. The text truncates. */
+:root { --impersonation-strip-h: 30px; }
+
 .impersonation-armed-strip {
   display: none;
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
+  height: var(--impersonation-strip-h);
   /* Above the signed-out landing surface (z-index 9000), which is exactly what
      this strip is there to annotate — and above the tinted frame below. Mounted on
      <body> so this number is measured against the root stacking context rather than
@@ -3194,7 +3203,38 @@ body > .dt-pane-menu {
   letter-spacing: .02em;
 }
 
-.impersonation-armed-text { text-wrap: pretty; }
+/* Make room for it rather than covering the tab bar.
+
+   The shell is exactly viewport-height, so a fixed strip sits on top of its first
+   30px — which is the tab strip, the one row you need most while checking what
+   somebody else can see. Offset and shorten by the same token, so the two cannot
+   disagree.
+
+   ── Why `!important`, which is otherwise not used in this file ──────────────
+
+   Because the toolkit mounts `#app` with an INLINE `height: 100vh; margin: 0`,
+   and an inline style beats every selector a stylesheet can write. This is the
+   one case the keyword exists for: overriding a declaration set imperatively by
+   code this repo does not own. The alternative — reaching into `#app.style` from
+   Kotlin — would mean two places writing the same two properties and racing
+   whenever the toolkit re-mounted.
+
+   `100vh` rather than `100%` to mirror the value being overridden, so the two
+   read as the same measurement with a subtraction rather than as two opinions.
+
+   Scoped to a body class, so an instance with the feature switched off — which is
+   very nearly all of them — matches nothing here. */
+body.app-impersonation-strip > #app {
+  margin-top: var(--impersonation-strip-h) !important;
+  height: calc(100vh - var(--impersonation-strip-h)) !important;
+}
+
+/* One line, truncated rather than wrapped — see the fixed height above. */
+.impersonation-armed-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .impersonation-armed-cancel.btn {
   padding: 2px 10px;

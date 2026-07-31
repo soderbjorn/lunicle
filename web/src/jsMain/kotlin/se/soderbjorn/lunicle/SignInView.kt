@@ -98,18 +98,32 @@ class SignInView(
      */
     var googleHostedDomain: String? = null
 
-    /** The account menu's two impersonation controls, never both at once. */
+    /**
+     * The account menu's one impersonation control: starting.
+     *
+     * *Stopping* is not here. It lives in the strip, which is up for the whole time
+     * there is something to stop — see [armedStrip]. A menu item cannot be the exit
+     * from a mode, because finding it requires already knowing the mode has one.
+     */
     private lateinit var impersonateItem: HTMLButtonElement
-    private lateinit var stopImpersonatingButton: HTMLButtonElement
 
     /**
-     * The strip above the app while an impersonation is armed, and its Cancel.
+     * The strip above the app, and the two things in it whose words change.
      *
-     * Only ever visible to a caller who is **signed out** — the one state in which
-     * nothing else on screen says anything is going on, because everything else is
-     * deliberately rendering exactly what a stranger sees.
+     * Up for **both** impersonation states — armed and probing — which is what makes
+     * it the one place the way out lives. It used to be the armed state's alone, on
+     * the reasoning that a probing caller already has the pill and the tint to tell
+     * them; true, and beside the point, because neither of those is a *control*. The
+     * exit was a hover-menu item under the profile button, which is a thing you have
+     * to already know is there.
+     *
+     * So the strip stays, and the button in it says "Cancel" before you have become
+     * anybody and "Stop impersonating" after. One control, always visible, in the
+     * same place both times.
      */
     private lateinit var armedStrip: HTMLElement
+    private lateinit var armedStripText: HTMLElement
+    private lateinit var armedStripButton: HTMLButtonElement
 
     /** The address dialog while it is up. */
     private var addressDialog: ImpersonateAddressDialog? = null
@@ -155,14 +169,11 @@ class SignInView(
         impersonateItem =
             button("Impersonate…", MENU_ITEM_CLASS) { confirmArm() } as HTMLButtonElement
 
-        stopImpersonatingButton =
-            button("Stop impersonating", MENU_ITEM_CLASS) { viewModel.onStopImpersonatingTapped() } as HTMLButtonElement
-
         menuElement = element("div", "account-menu $MENU_PANEL_CLASS")
         menuElement.setAttribute("role", "menu")
-        // Sign out first, then the impersonation control — which of the two
-        // appears is decided in render(), never both.
-        menuElement.children(signOutButton, impersonateItem, stopImpersonatingButton)
+        // Sign out, then "Impersonate…". While probing the menu holds neither — see
+        // render(), which stops offering a menu at all rather than opening an empty one.
+        menuElement.children(signOutButton, impersonateItem)
 
         // The name appears without any surrounding text changing, so a screen
         // reader would announce nothing at all when a sign-in lands. The corner
@@ -179,12 +190,15 @@ class SignInView(
         // underneath. Hoisting it to <body> puts it in the root stacking context
         // where its own z-index means what it says.
         armedStrip = element("div", "impersonation-armed-strip")
-        armedStrip.children(
-            element("span", "impersonation-armed-text", "Impersonation armed — sign in as anyone."),
-            button("Cancel", "btn impersonation-armed-cancel") {
-                viewModel.onStopImpersonatingTapped()
-            },
-        )
+        armedStripText = element("span", "impersonation-armed-text")
+        // One handler for both states, because they are one act: stop whatever this
+        // browser is doing and be the owner again. The server route is the same —
+        // it works off the grant, not off whoever the session belongs to — so an
+        // armed-but-unused grant and a live impersonation end the same way.
+        armedStripButton = button("Cancel", "btn impersonation-armed-cancel") {
+            viewModel.onStopImpersonatingTapped()
+        } as HTMLButtonElement
+        armedStrip.children(armedStripText, armedStripButton)
         armedStrip.style.display = "none"
         document.body?.appendChild(armedStrip)
 
@@ -233,7 +247,12 @@ class SignInView(
         //
         // The class only says *whether a menu exists at all* — signed out, there
         // is nothing to open. When it opens is CSS's business alone.
-        root.classList.toggle("account-signed-in", showAccount)
+        //
+        // And while probing there is nothing to open either: sign-out is withheld
+        // (see below) and stopping moved to the strip, so the menu would be an empty
+        // panel that appears on hover and offers nothing. Better to have no menu
+        // than a menu with nothing in it.
+        root.classList.toggle("account-signed-in", showAccount && !state.isImpersonating)
 
         // The marker, and it is a CLASS for the reason the line above is one: the
         // stylesheet owns what a tinted frame and a corner pill look like, and an
@@ -245,29 +264,41 @@ class SignInView(
 
         // Hidden while impersonating: "Sign out" here would end the probe session
         // and leave the browser holding a live grant with nothing to go back to.
-        // The way out is "Stop impersonating", which restores the owner.
+        // The way out is the strip's button, which restores the owner.
         signOutButton.visible(!state.isImpersonating, displayValue = "block")
         signOutButton.disabled = state.isBusy
 
-        // "Impersonate…" and "Stop impersonating" are the same slot, never both.
-        //
-        // The first hangs off canImpersonate, which already carries BOTH terms — the
-        // caller owns the instance and the deployment has the feature switched on —
-        // so an unarmed instance offers nothing to anybody, the owner included.
-        //
-        // The second hangs off isImpersonating alone, deliberately: while probing,
-        // the account being worn owns nothing and canImpersonate is false. Gating
-        // the way out on the entitlement would take it away exactly when it is the
-        // only thing needed. See SessionBackingViewModel.State.
+        // Starting one hangs off canImpersonate, which already carries BOTH terms —
+        // the caller owns the instance and the deployment has the feature switched
+        // on — so an unarmed instance offers nothing to anybody, the owner included.
         impersonateItem.visible(state.canImpersonate && !state.isImpersonating, displayValue = "block")
         impersonateItem.disabled = state.isBusy
-        stopImpersonatingButton.visible(state.isImpersonating, displayValue = "block")
-        stopImpersonatingButton.disabled = state.isBusy
 
-        // The armed state belongs to a SIGNED-OUT browser, so it is the one thing on
-        // screen saying anything is going on — everything else is rendering what a
-        // stranger sees, which is itself part of what is being checked.
-        armedStrip.visible(state.isImpersonationArmed && !signedIn, displayValue = "flex")
+        // The strip, up for both impersonation states.
+        //
+        // Armed, it is the ONLY thing on screen saying anything is going on —
+        // everything else is rendering exactly what a stranger sees, which is itself
+        // part of what is being checked. Probing, the pill and the tint say it too,
+        // but neither of them is a control, and this is where the way out lives.
+        val strip = state.isImpersonationArmed || state.isImpersonating
+        armedStrip.visible(strip, displayValue = "flex")
+        armedStripText.setTextIfChanged(
+            if (state.isImpersonating) {
+                // Named, because "who am I right now" is the question a probing owner
+                // asks most, and the corner answers it in the account's own voice —
+                // which is exactly the voice that cannot be trusted to say it is
+                // borrowed.
+                "Impersonating ${state.displayName ?: "somebody else"} — writes are theirs."
+            } else {
+                "Impersonation armed — sign in as anyone."
+            },
+        )
+        armedStripButton.setTextIfChanged(if (state.isImpersonating) "Stop impersonating" else "Cancel")
+        armedStripButton.disabled = state.isBusy
+        // The shell is exactly viewport-height, so a fixed strip would sit on top of
+        // the tab bar. The class shortens and offsets it by the strip's own height;
+        // see the stylesheet, where the one number lives.
+        document.body?.classList?.toggle("app-impersonation-strip", strip)
 
         renderAddressDialog(state)
 
