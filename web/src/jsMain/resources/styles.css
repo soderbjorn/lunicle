@@ -1280,58 +1280,68 @@ body > .dt-pane-menu {
   min-height: 40px;
   flex: 1;
   overflow-y: auto;
-  /* Reserve the scrollbar's channel whether or not a thumb is painted in it
-     (LNL-161, and see the hover block below). The thumb comes and goes with
-     hover; the SPACE it occupies must not, or every card in the lane would jump
-     10px sideways the moment the pointer crossed the column edge. Chrome and
-     Safari take a styled ::-webkit-scrollbar out of overlay mode and give it
-     layout width, so without this the gutter would appear and disappear with
-     the thumb.
+  /* Reserve the scrollbar's channel in every lane, overflowing or not. A lane of
+     three cards has no scrollbar of its own, and without `stable` its cards
+     would be a scrollbar's width wider than the long lane beside it — the board
+     is read across, so cards that do not share one grid read as the columns
+     being misaligned rather than as one lane being short.
 
-     Stated for the non-overflowing case too: a lane of three cards has no
-     scrollbar to reserve room for, and `stable` keeps its cards on the same
-     grid as the long lane beside it rather than 10px wider. */
+     (This arrived with LNL-161, where it also stopped the cards jumping as a
+     hover-revealed thumb came and went. That behaviour is gone — LNL-187 below
+     — but the across-the-board alignment it was doing here is not.) */
   scrollbar-gutter: stable;
+  /* LNL-187 — the air on the CARD side of the thumb. The other side already has
+     some: .column's own 10px padding-right sits between this element's border
+     edge and the hairline that closes the column, so the thumb rests ~11px
+     clear of the divider. Inside, it had none, and that is the half of the
+     complaint that made hiding the scrollbar look attractive in the first place.
+
+     12px, because the number has to serve two scrollbars that sit in different
+     places:
+
+       * OVERLAY (macOS and iPadOS by default, which is what the ticket's
+         screenshot shows) — the scrollbar takes no layout width at all, so
+         `scrollbar-gutter` above reserves nothing and the thumb is PAINTED OVER
+         this element's trailing edge: ~6.5px wide, ~1px in from the border. Left
+         to itself it lands on the cards, which is exactly what the screenshot
+         shows it doing. 12px of padding pulls the cards ~5px clear of it.
+       * CLASSIC (Windows, Linux, and macOS set to "Show scroll bars: Always") —
+         the scrollbar has its own 10px of layout width outside the padding box,
+         with the thumb inset 2px inside that by the Scrollbars section at the
+         top. Here the 12px is added to that 2px, for 14px inside against 12px
+         out.
+
+     So the tight case governs, and the roomy one is left a little roomier still.
+     Padding rather than a wider ::-webkit-scrollbar or a bigger thumb inset,
+     because those two reach only the classic scrollbar in a WebKit engine —
+     Chrome ignores them outright once `scrollbar-width` is set, as it is on `*`
+     up top, and neither has any meaning for an overlay thumb. */
+  padding-right: 12px;
 }
 
-/* LNL-161 — the lane's scrollbar is painted only while the pointer is in that
-   column. A board is five to eight lanes side by side, and a permanent thumb
-   down each one drew a set of vertical rules the board does not otherwise have:
-   more lines competing with the hairline that actually separates the columns
-   (see .column) than with the cards they belong to.
+/* LNL-187 — nothing scopes a lane's scrollbar to hover any more.
 
-   The scrollbar is HIDDEN, never removed. `overflow-y: auto` stays put above,
-   so the lane still scrolls by wheel, trackpad, keyboard and drag-to-edge with
-   no pointer in it at all — this only decides whether the thumb is inked.
-   Hiding it the other way, by toggling `scrollbar-width`/`display` on hover,
-   would take the channel away with it and shift the cards; painting the thumb
-   transparent leaves the geometry alone.
+   It was briefly inked only while the pointer was over its column (LNL-161), on
+   the grounds that five to eight permanent thumbs drew a set of vertical rules
+   the board does not otherwise have. That traded a real affordance for a
+   cosmetic one: with no thumb at rest there is nothing to say a lane HAS more
+   cards below the fold, or how far down it you are, until you happen to point at
+   it. The columns are how you read a board, so those two facts should be legible
+   without touching anything.
 
-   Both spellings again, for the reason given in the Scrollbars section at the
-   top: `scrollbar-color` for Firefox and modern Chrome, ::-webkit-scrollbar for
-   Safari. The base rules there are unscoped `*` selectors, so these — one class
-   deeper — win on specificity without !important.
+   There is no rule here to restore, because the fix is a deletion: the
+   `@media (hover: hover)` block that painted the thumb transparent is gone, and
+   the unscoped rules in the Scrollbars section at the top ink it again like every
+   other scroll region in the app. The lane keeps the `scrollbar-gutter` and the
+   `padding-right` above, which are the other half of the complaint — an
+   unpadded thumb crammed against the cards is what made hiding it look
+   attractive in the first place.
 
-   Scoped to `.column:hover` rather than `.column-list:hover`: the ticket says
-   "hovering over that column", and the head is part of the column. Reaching for
-   the ⋮ menu already reveals the lane's thumb, which matches how the head's own
-   controls behave (see .column-menu).
-
-   Only where hover is a real thing. On a touch device `:hover` either never
-   matches — leaving a lane with no scrollbar and no scroll position indicator
-   at all — or sticks on after a tap; and those platforms already fade their
-   overlay scrollbars out on their own. */
-@media (hover: hover) {
-  .column-list { scrollbar-color: transparent transparent; }
-  .column-list::-webkit-scrollbar-thumb { background: transparent; }
-
-  .column:hover .column-list { scrollbar-color: var(--green-dim) transparent; }
-  .column:hover .column-list::-webkit-scrollbar-thumb { background: var(--green-dim); }
-  /* The global thumb:hover highlight, restated. It is `::-webkit-scrollbar-thumb:hover`
-     up top — one pseudo-class, which the rule above outranks — so grabbing the
-     thumb would otherwise have lost its brighten. */
-  .column:hover .column-list::-webkit-scrollbar-thumb:hover { background: var(--green); }
-}
+   Worth knowing before reading a bug report about this: on a platform with
+   OVERLAY scrollbars — macOS unless "Show scroll bars" is set to "Always" — the
+   thumb still fades out when nothing is scrolling, and no stylesheet can hold it
+   there. "Always" here means "as often as this platform shows any scrollbar",
+   which is the most the board can honestly ask for. */
 
 /* The header over each run of cards — a priority's name, or a resolution's in a
    closing column. See BoardColumn.groups.
