@@ -229,6 +229,98 @@ CREATE TABLE issues (
     -- setChildOrder, which is setSortOrder's twin.
     child_order INTEGER NOT NULL DEFAULT 0,
 
+    -- Whether the work should be picked up by the assignee's *agent* rather than
+    -- by the assignee in person (LNL-215).
+    --
+    -- It says THAT an agent should do it, never WHICH agent. Which agent a person
+    -- runs is their own business, and whoever hands the ticket over should not have
+    -- to know or care — so this is a boolean and not a name. The agent acts through
+    -- that person's own MCP session, which is why no permission attaches to this
+    -- column beyond the one that decided the assignment: `AccessControl.canBeAssigned`
+    -- on the ASSIGNEE is the whole check, and a flag that cannot name anybody cannot
+    -- escalate to anybody.
+    --
+    -- ── Not agent_name, and the difference is the tense ─────────────────────
+    --
+    -- `agent_name` above records who held the pen on an act that has already
+    -- happened — an agent filed this on somebody's behalf. This is a forward-looking
+    -- statement about who should pick the work up next. They are different facts
+    -- about different moments, and both may be set on one issue at once.
+    --
+    -- ── Three lifecycle rules, none of which the schema can hold ────────────
+    --
+    --  1. Changing the assignee CLEARS this. The previous assignee's agent is
+    --     definitionally not on it any more, and a flag that survived the handover
+    --     would quietly address the new person's work to the old person's robot.
+    --  2. Closing the issue KEEPS it, along with the assignee. At that point the
+    --     assignment has stopped being a claim about who will do the work and become
+    --     a record of who did.
+    --  3. Which means a REOPENED issue comes back still flagged, and goes to the
+    --     same person's agent. That is a consequence of (2) rather than a separate
+    --     decision, and it is the intended one.
+    --
+    -- All three are enforced in IssueRepository, not in the client and not here:
+    -- (1) is a rule about how two columns of one row move together, which SQLite can
+    -- only express with a trigger this codebase does not use, and (2) and (3) are the
+    -- absence of a rule rather than a rule. See IssueRepository.save.
+    --
+    -- NOT NULL DEFAULT 0, which back-fills every existing issue as "a person does
+    -- this" — the state every issue was in before the column existed, and the state
+    -- every issue in a team that never runs agents stays in forever.
+    assignee_is_agent INTEGER NOT NULL DEFAULT 0,
+
+    -- How much work this is, in the unit `estimate_unit` names — or NULL for both,
+    -- because nobody has said (LNL-215).
+    --
+    -- ── They move together, and one without the other is a bug ──────────────
+    --
+    -- Both NULL is "no estimate", which is what every issue in a project that never
+    -- estimates carries forever. A row with an amount and no unit, or a unit and no
+    -- amount, is not a state this application can produce and not one it can render;
+    -- the repository writes them as a pair, and the pair has exactly one writer. There
+    -- is no CHECK enforcing it, for the reason resolution_id's comment gives about
+    -- rules that span columns being enforced where they are decided.
+    --
+    -- ── Whole numbers, and no REAL column to permit halves ──────────────────
+    --
+    -- INTEGER: whole minutes, or whole points. Half-points are a smell — a scale fine
+    -- enough to need them is a scale nobody agrees on — and widening this to REAL
+    -- purely to permit them would buy a class of rounding bug on every read in
+    -- exchange for a precision no estimate has ever had.
+    estimate_amount INTEGER,
+
+    -- Which unit `estimate_amount` counts: 'minutes' or 'points'.
+    --
+    -- ── The unit is stamped on the issue, not read from the project ─────────
+    --
+    -- This is the column's whole reason for existing, and it is the important
+    -- decision in the feature. The obvious cheaper design is one number here and one
+    -- mode on the project, read at render time. It is wrong: an administrator
+    -- flipping the project from points to time would silently reinterpret every
+    -- existing `3` from "3 points" to "3 minutes", rewriting the meaning of work
+    -- somebody estimated months ago without touching a single issue row — and no
+    -- warning would print, because from the database's side nothing went wrong.
+    --
+    -- With the stamp, the project's `estimate_mode` governs only what the EDITOR
+    -- OFFERS. Rows written under the old mode keep saying what they meant and read
+    -- back in the unit they were written in. That is the same shape as every other
+    -- per-project vocabulary here — the project owns the list, each issue references
+    -- its own choice — and the same reasoning as issue_events.value_text's snapshot:
+    -- a later settings change must not reach backwards and alter what a row says.
+    --
+    -- TEXT holding the constant name rather than an integer, for IssueEvents.sq's
+    -- `kind` reason exactly: the name is already the wire format, so an integer here
+    -- would be a second spelling and a mapping to keep in step with it.
+    --
+    -- ── 1 day = 8 hours, and it is not configurable ─────────────────────────
+    --
+    -- Time estimates are stored as whole MINUTES and rendered as `2d 4h`. The
+    -- day-length that normalisation needs is fixed at EIGHT HOURS, written down here
+    -- and nowhere else. Jira makes it a setting and nobody has ever changed it; a knob
+    -- here would only create the possibility of two boards disagreeing about what `2d`
+    -- means, which is a worse outcome than any team it would serve. See EstimateUnit.
+    estimate_unit TEXT,
+
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (sprint_id) REFERENCES sprints(id) ON DELETE SET NULL,
     FOREIGN KEY (planned_version_id) REFERENCES versions(id) ON DELETE SET NULL,
@@ -307,11 +399,11 @@ RETURNING id, number;
 -- other gesture — the resolution dialog's inline picker on a drag-to-close, which
 -- writes immediately alongside the status move and never opens the editor.
 publish:
-UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, assignee_id = ?, sprint_id = ?, planned_version_id = ?, fixed_version_id = ?, updated_at = ?, is_draft = 0
+UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, assignee_id = ?, assignee_is_agent = ?, sprint_id = ?, planned_version_id = ?, fixed_version_id = ?, estimate_amount = ?, estimate_unit = ?, updated_at = ?, is_draft = 0
 WHERE id = ?;
 
 update:
-UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, sprint_id = ?, planned_version_id = ?, fixed_version_id = ?, updated_at = ? WHERE id = ?;
+UPDATE issues SET title = ?, description = ?, status_id = ?, priority_id = ?, resolution_id = ?, sprint_id = ?, planned_version_id = ?, fixed_version_id = ?, estimate_amount = ?, estimate_unit = ?, updated_at = ? WHERE id = ?;
 
 -- The MCP update_issue path's admin-only correction: an issue's author, its
 -- creation date and its agent label, in one statement. These three columns have
@@ -400,8 +492,15 @@ UPDATE issues SET description = ? WHERE id = ?;
 --
 -- It bumps updated_at, on setStatus's reasoning: picking up an issue is an edit,
 -- and one people watch a board for.
+--
+-- `assignee_is_agent` moves WITH the assignee, in the same statement, and both
+-- directions matter (LNL-215). Taking an issue for yourself carries whatever the
+-- caller asked for; handing it to somebody else carries 0, because the previous
+-- assignee's agent is definitionally not on it any more. Two statements would leave a
+-- window where an issue is assigned to one person and flagged for another person's
+-- robot — the same reasoning setStatus gives for carrying the resolution.
 setAssignee:
-UPDATE issues SET assignee_id = ?, updated_at = ? WHERE id = ?;
+UPDATE issues SET assignee_id = ?, assignee_is_agent = ?, updated_at = ? WHERE id = ?;
 
 -- Schedule one issue, or pass NULL to send it back to the backlog. The card
 -- menu, the planning dialog and MCP all land here; the editor writes the sprint
@@ -459,7 +558,8 @@ DELETE FROM issues WHERE id = ?;
 findById:
 SELECT id, project_id, number, title, description, status_id, priority_id, resolution_id,
        is_draft, created_at, updated_at, sort_order, created_by, created_by_external, agent_name,
-       assignee_id, sprint_id, planned_version_id, fixed_version_id, parent_id, child_order
+       assignee_id, sprint_id, planned_version_id, fixed_version_id, parent_id, child_order,
+       assignee_is_agent, estimate_amount, estimate_unit
 FROM issues WHERE id = ?;
 
 -- How many issues hold each of this project's statuses — the count the settings
@@ -656,7 +756,8 @@ forProject:
 SELECT i.id, i.project_id, i.number, i.title, i.description, i.status_id, i.priority_id,
        i.resolution_id, i.is_draft, i.created_at, i.updated_at, i.sort_order, i.created_by,
        i.created_by_external, i.agent_name, i.assignee_id, i.sprint_id,
-       i.planned_version_id, i.fixed_version_id, i.parent_id, i.child_order
+       i.planned_version_id, i.fixed_version_id, i.parent_id, i.child_order,
+       i.assignee_is_agent, i.estimate_amount, i.estimate_unit
 FROM issues i
 JOIN priorities p ON p.id = i.priority_id
 LEFT JOIN resolutions r ON r.id = i.resolution_id
@@ -677,7 +778,8 @@ ORDER BY r.position,
 childrenOf:
 SELECT id, project_id, number, title, description, status_id, priority_id, resolution_id,
        is_draft, created_at, updated_at, sort_order, created_by, created_by_external, agent_name,
-       assignee_id, sprint_id, planned_version_id, fixed_version_id, parent_id, child_order
+       assignee_id, sprint_id, planned_version_id, fixed_version_id, parent_id, child_order,
+       assignee_is_agent, estimate_amount, estimate_unit
 FROM issues
 WHERE parent_id = ? AND is_draft = 0
 ORDER BY child_order, number;

@@ -81,7 +81,23 @@ enum class VocabularyKind(val key: String, val noun: String, val plural: String)
      * one twice (its planned version and its fixed version), but that is a fact
      * about `issues`, not about the version, so nothing extra rides on the kind.
      */
-    VERSION("version", "version", "versions");
+    VERSION("version", "version", "versions"),
+
+    /**
+     * The ways two issues in this project can be said to be related — "Blocked by",
+     * "Duplicate of", "Related to" (LNL-215).
+     *
+     * The richest row of any kind here: two names plus a flag, where a status has one
+     * name plus a flag and a label has just the name. It is still this enum's
+     * machinery rather than a family of its own, because add / rename / reorder /
+     * delete is exactly what an administrator does to it and [VocabularyRow] already
+     * carries per-kind extras for statuses and resolutions.
+     *
+     * A project may legitimately have none — deleting the last one simply means
+     * nobody here links issues — so it is not [isLoadBearing]. Every project made or
+     * migrated since LNL-215 starts with three; see IssueRelationKinds.sq.
+     */
+    RELATION_KIND("relation-kind", "relation kind", "relation kinds");
 
     /**
      * Whether the database refuses to delete one of these while an issue holds it.
@@ -111,7 +127,14 @@ enum class VocabularyKind(val key: String, val noun: String, val plural: String)
             // both issue references are ON DELETE SET NULL, so deleting a version
             // releases the issues that named it rather than being refused. See
             // Versions.sq.
-            LABEL, COMPONENT, SPRINT, VERSION -> false
+            // RELATION_KIND joins the false side from a third direction again: its
+            // relations are ON DELETE CASCADE, so deleting a kind takes the links
+            // that used it rather than being refused. That is not the SET NULL a
+            // version takes — a relation row without its kind would be two issue ids
+            // and no statement about them, where an issue without a fixed version is
+            // an ordinary issue. The count is still shown before the fact; see
+            // IssueRelationKinds.sq's `delete`.
+            LABEL, COMPONENT, SPRINT, VERSION, RELATION_KIND -> false
         }
 
     /**
@@ -203,6 +226,22 @@ data class VocabularyEntry(
      * board's issues.
      */
     val unfinishedCount: Int = 0,
+    /**
+     * The **to**-side label of a relation kind — "Blocks" beside a [name] of "Blocked
+     * by" — or null because the kind reads the same in both directions (LNL-215).
+     *
+     * **Relation kinds only**, like [completedAt] is sprints only, and null-forever
+     * for every other kind. Null IS the encoding of symmetry: the row's "same in both
+     * directions" checkbox clears and disables this field, and there is no separate
+     * flag that could disagree with it. See IssueRelationKinds.sq's inverse_name.
+     */
+    val inverseName: String? = null,
+    /**
+     * Whether an issue on the *from* side of one of these counts as blocked, and is
+     * dimmed and chipped on the board (LNL-215). Relation kinds only — the same shape
+     * as a status's [requiresResolution], and rendered as the same kind of checkbox.
+     */
+    val marksBlocked: Boolean = false,
 )
 
 /**
@@ -300,6 +339,21 @@ data class ProjectSettingsState(
      * is how you make the first one, exactly like [sprints].
      */
     val versions: List<VocabularyEntry> = emptyList(),
+    /**
+     * The project's relation kinds, in the order the admin arranged (LNL-215).
+     * Rendered in the **Structure** section beside statuses, priorities, resolutions,
+     * labels and components — it is vocabulary about what an issue *is*, not about
+     * when work happens, so it belongs with those rather than with sprints and
+     * versions.
+     */
+    val relationKinds: List<VocabularyEntry> = emptyList(),
+    /**
+     * Whether this project estimates, and in what unit — one of [EstimateMode]'s keys
+     * (LNL-215). Sent to every caller who reaches this state for [showIssueAuthor]'s
+     * reason (the issue window reads it to decide what to offer), and editable only in
+     * the admin half. Defaults to `none`, which renders nothing anywhere.
+     */
+    val estimateMode: String = "none",
     val canMutateProject: Boolean = false,
     /**
      * Whether the caller may shape the sprints and the versions — **Maintainer and
@@ -497,6 +551,7 @@ data class ProjectSettingsState(
         VocabularyKind.RESOLUTION -> resolutions
         VocabularyKind.SPRINT -> sprints
         VocabularyKind.VERSION -> versions
+        VocabularyKind.RELATION_KIND -> relationKinds
     }
 }
 
@@ -504,6 +559,25 @@ data class ProjectSettingsState(
 @Serializable
 data class VocabularyAdd(
     val name: String,
+    /**
+     * The to-side label, for a relation kind — or null for one that reads the same in
+     * both directions (LNL-215). Ignored for every other kind, like the extras on
+     * [VocabularyEdit].
+     *
+     * Accepted at ADD time, unlike a status's closing flag, which is only ever set by
+     * the rename that follows. The settings dialog does add a bare name and then edit
+     * the row, and the MCP tool creates a kind in ONE call — a kind whose opposite
+     * could only be named by a second write would be briefly and visibly symmetric when
+     * it is not, which is a wrong board state rather than an unfinished one.
+     */
+    val inverseName: String? = null,
+    /**
+     * The blocking flag, for a relation kind (LNL-215). Defaults false, and the default
+     * is the decision: this switch is what greys cards on everybody's board, so arming
+     * it is a deliberate act — exactly as a newly added status never demands a
+     * resolution.
+     */
+    val marksBlocked: Boolean = false,
 )
 
 /**
@@ -594,6 +668,44 @@ data class VocabularyEdit(
      * resolution's name and its done flag are one edit; see Resolutions.sq's `update`.
      */
     val isDone: Boolean = false,
+    /**
+     * The to-side label, for a relation kind (LNL-215). Ignored by the server for
+     * every other kind rather than refused, for [requiresResolution]'s reason.
+     *
+     * **Null means symmetric** — the row's "same in both directions" checkbox sends
+     * null, and there is nothing else to send. A blank string is normalised to null
+     * server-side rather than stored, so "I cleared the field" and "I ticked the box"
+     * cannot become two different stored states that render identically.
+     */
+    val inverseName: String? = null,
+    /**
+     * The blocking flag, for a relation kind (LNL-215). Ignored elsewhere, for
+     * [requiresResolution]'s reason. Sent on every rename because a kind's names and
+     * its flag are one edit; see IssueRelationKinds.sq's `update`.
+     */
+    val marksBlocked: Boolean = false,
+)
+
+/**
+ * "This project estimates like this" (LNL-215).
+ *
+ * Its own request beside [ProjectDisplaySettings] and [ProjectRequirements] rather
+ * than a field on either, for the reason those two are separate from each other: a
+ * display choice is about how a board *reads*, a requirement is about what a ticket
+ * must *carry*, and this is about what the editor *offers*. Three different kinds of
+ * switch, three routes, so a stale client sending one cannot reset another in
+ * passing.
+ *
+ * **Admin and above**, enforced at the route, with the vocabulary rather than with
+ * the sprints — deciding whether a team estimates at all is a decision about what the
+ * board is.
+ *
+ * @property mode one of [EstimateMode]'s keys. An unrecognised value is folded to
+ *   `none` rather than refused, for [EstimateMode.fromKey]'s reason.
+ */
+@Serializable
+data class ProjectEstimateSettings(
+    val mode: String = "none",
 )
 
 /**

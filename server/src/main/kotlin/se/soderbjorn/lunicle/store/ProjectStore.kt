@@ -62,6 +62,19 @@ interface ProjectStore {
      */
     suspend fun setBoardDisplay(id: Long, showIssueAuthor: Boolean, hideIssueNumbers: Boolean)
 
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * Its own write rather than a third parameter on [setBoardDisplay], for that
+     * method's own reason turned one notch: those two decide how a board *reads*, and
+     * this decides what the issue editor *offers*. Three kinds of switch, three
+     * writes, so a stale client sending one cannot reset another in passing.
+     *
+     * It never touches any issue's stored unit, which is what makes flipping it
+     * reinterpret nothing already estimated. See Issues.sq's estimate_unit.
+     */
+    suspend fun setEstimateMode(id: Long, mode: se.soderbjorn.lunicle.clientserver.EstimateMode)
+
     suspend fun delete(id: Long)
 
     /** Put the whole project list in the given order. */

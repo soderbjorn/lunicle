@@ -1,0 +1,168 @@
+-- One issue said to be related to another, in one of the project's own ways
+-- (LNL-215). What the ways are lives in IssueRelationKinds.sq.
+--
+-- ── ONE row, rendered in both directions. Never two ─────────────────────────
+--
+-- "A is blocked by B" and "B blocks A" are the same fact, and this table stores it
+-- once: `from_issue_id` → `to_issue_id`, with the kind's `name` always being the
+-- from-side label and its `inverse_name` the to-side one (or `name` again when the
+-- kind is symmetric). The reverse direction is a *rendering* concern, answered by
+-- reading this table on `to_issue_id` when an issue is opened.
+--
+-- Storing both directions to make that read cheaper is the trap, and it is worth
+-- naming because it looks so reasonable. Two rows are two sources of truth for one
+-- fact: they drift under partial failure — a crash between the two inserts, a
+-- delete that removes one — and nothing in either backend will ever notice, because
+-- from the database's side both rows are perfectly valid. The reverse read is one
+-- indexed query on SQLite and one `where` on Firestore. That is the cheaper side of
+-- the trade by a wide margin.
+--
+-- Note that the HISTORY deliberately writes two events for one row — one on each
+-- issue — and that is not a contradiction. This table is state, where two rows can
+-- disagree; history is per-issue and append-only, where both issues genuinely had
+-- something happen to them. See IssueEvents.sq's value_relation_kind.
+--
+-- ── The rules are in IssueRepository, not here ──────────────────────────────
+--
+-- Same project (for the issues *and* the kind), no self-relation, no duplicate pair
+-- in EITHER direction for the same kind, and both issues published. Only the first
+-- of those is expressible in SQL, and only through the composite key below; the
+-- rest span rows or tables SQLite's CHECK cannot see, exactly as `setParent`'s
+-- one-level and no-cycle rules do. See IssueRepository.addRelation, which is where
+-- a refusal becomes a 400 that says WHICH rule.
+
+CREATE TABLE issue_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Carried even though both issues already know their project, and for two
+    -- concrete reasons rather than tidiness:
+    --
+    --  1. It is what makes the composite key below possible, which is the whole
+    --     structural gain of vocabulary over an enum — see `kind_id`.
+    --  2. The board's blocked projection is "every relation in this project whose
+    --     kind marks blocked", which is one filtered query on this column. Without
+    --     it that read would be a join through `issues`, and on Firestore — which
+    --     has no join — it would be unanswerable without reading the project's
+    --     issues first purely to know which ids to ask about.
+    project_id INTEGER NOT NULL,
+
+    -- The issue the relation is stated FROM: the one whose editor added the link,
+    -- and the one the kind's `name` describes. "This issue is Blocked by that one."
+    from_issue_id INTEGER NOT NULL,
+
+    -- The issue on the other end, which the kind's `inverse_name` describes.
+    to_issue_id INTEGER NOT NULL,
+
+    -- Which of the project's relation kinds this is.
+    --
+    -- Composite-keyed against `project_id` exactly as `status_id`, `priority_id` and
+    -- `resolution_id` are on `issues`, and this is a strict gain over the enum this
+    -- could have been: the DATABASE forbids a relation naming another project's
+    -- vocabulary, rather than a route remembering to check. No ON DELETE clause of
+    -- its own — the kind's cascade below is what takes these rows.
+    kind_id INTEGER NOT NULL,
+
+    created_at INTEGER NOT NULL,
+
+    -- Deleting either issue takes the relation with it. There is no "orphaned
+    -- relation" state worth keeping: a row naming an issue that no longer exists is
+    -- half a statement, and unlike a version reference there is nothing left for it
+    -- to mean once one end is gone.
+    FOREIGN KEY (from_issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    -- Composite, and cascading: a relation row without its kind is not a weakened
+    -- statement, it is no statement at all. See IssueRelationKinds.sq's `delete`.
+    FOREIGN KEY (kind_id, project_id) REFERENCES issue_relation_kinds(id, project_id) ON DELETE CASCADE,
+
+    -- The same pair under the same kind, once. This catches the *stated* direction
+    -- only — "A blocked by B" twice — and NOT the reversed duplicate, "B blocks A"
+    -- added when "A blocked by B" already exists, because that is a different pair
+    -- of column values and no index over these columns can see it as the same fact.
+    --
+    -- So this is a backstop, not the guarantee. The real check is in
+    -- IssueRepository, which looks in both directions before it writes — and it has
+    -- to be, because **Firestore cannot enforce uniqueness at all** and the two
+    -- backends must refuse the same things. Do not read this index as the rule.
+    UNIQUE (from_issue_id, to_issue_id, kind_id)
+);
+
+-- "Who points at me?" — the reverse read, run when an issue is opened. Without it
+-- that question is a full scan of every relation in the instance, on a table that
+-- grows with the boards.
+CREATE INDEX issue_relations_to_idx ON issue_relations (to_issue_id);
+
+-- The board's projection reads every relation in one project. `from_issue_id` is
+-- already covered by the leading column of the UNIQUE index above; this is the
+-- project-wide one.
+CREATE INDEX issue_relations_project_idx ON issue_relations (project_id);
+
+insert:
+INSERT INTO issue_relations (project_id, from_issue_id, to_issue_id, kind_id, created_at)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id;
+
+-- Remove one link. By id, because the caller is looking at the rendered row and has
+-- one — and because "delete the relation between these two under this kind" would
+-- have to say which direction it meant, which is precisely the ambiguity the
+-- one-row rule exists to remove.
+delete:
+DELETE FROM issue_relations WHERE id = ?;
+
+findById:
+SELECT id, project_id, from_issue_id, to_issue_id, kind_id, created_at
+FROM issue_relations WHERE id = ?;
+
+-- Every relation touching one issue, in either direction, oldest first.
+--
+-- One query rather than two, unioned in SQL rather than in Kotlin: the caller wants
+-- them grouped by kind and direction anyway, and it can read the direction off
+-- whether `from_issue_id` is the issue it asked about. Ordered by id so a list does
+-- not reshuffle itself between two loads — `created_at` ties in the same millisecond
+-- whenever anyone adds two links in one sitting, exactly as IssueEvents.sq's
+-- `forIssue` documents.
+forIssue:
+SELECT id, project_id, from_issue_id, to_issue_id, kind_id, created_at
+FROM issue_relations
+WHERE from_issue_id = ? OR to_issue_id = ?
+ORDER BY id;
+
+-- Every relation in one project — the board's blocked projection (LNL-215).
+--
+-- Deliberately unfiltered by kind, even though the board only cares about the kinds
+-- that mark blocked. Filtering here would mean either an IN clause built from a list
+-- SQLDelight would have to bind variadically, or a join to `issue_relation_kinds`
+-- that the Firestore backend cannot make — and the caller has already read the
+-- project's kinds (it needs them for the picker), so the filter is free in Kotlin.
+-- A project's relation rows are a small multiple of its issues, which the board
+-- already loads in full.
+forProject:
+SELECT id, project_id, from_issue_id, to_issue_id, kind_id, created_at
+FROM issue_relations
+WHERE project_id = ?;
+
+-- How many relations use each of this project's kinds — the number the delete
+-- confirmation quotes before it cascades. Shown, never enforced: the cascade takes
+-- them regardless, so this is a sentence like a sprint's count rather than a gate
+-- like a status's. See IssueRelationKinds.sq's `delete`.
+usageByKind:
+SELECT kind_id, COUNT(*) AS uses FROM issue_relations
+WHERE project_id = ?
+GROUP BY kind_id;
+
+-- The ids of every relation using one kind, for the sweep that runs when a kind is
+-- deleted. Ids only, because the caller deletes them one by one — see
+-- IssueRelationStore.deleteForKind for why that is not a `DELETE ... WHERE kind_id`
+-- statement instead.
+forKind:
+SELECT id FROM issue_relations WHERE kind_id = ?;
+
+-- Every relation naming this issue, deleted — both directions.
+--
+-- Redundant on SQLite, where both issue references are ON DELETE CASCADE, and
+-- load-bearing on Firestore, which has no cascade at all: the relation documents
+-- would otherwise outlive the issue, naming an id nothing resolves. Exactly the
+-- shape IssueEvents.sq's `deleteForIssue` and Attachments.sq's take, and called from
+-- the same backend-agnostic `IssueRepository.delete`. See LNL-177.
+deleteForIssue:
+DELETE FROM issue_relations WHERE from_issue_id = ? OR to_issue_id = ?;

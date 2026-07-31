@@ -96,6 +96,21 @@ data class ProjectSummary(
      * board had before anybody chose.
      */
     val hideIssueNumbers: Boolean = false,
+    /**
+     * Whether this project estimates, and in what unit — `none`, `time` or `points`
+     * (LNL-215), as [EstimateMode.key].
+     *
+     * Rides on the summary like the flags above, because the issue editor reads it
+     * off the board it already loads to decide what the estimate control offers: three
+     * inputs, one, or none at all. A **string** rather than the enum, so a value from a
+     * newer server decodes rather than failing the whole board — [EstimateMode.fromKey]
+     * folds anything it does not recognise to `none`, which renders nothing.
+     *
+     * Defaults to [EstimateMode.NONE]'s key, so an older server that does not send it,
+     * or a project made before the column existed, estimates nothing — and its board is
+     * visually indistinguishable from before the feature landed.
+     */
+    val estimateMode: String = "none",
 )
 
 /**
@@ -255,6 +270,89 @@ data class ProjectPermissionsView(
 )
 
 /**
+ * What an estimate's number counts (LNL-215).
+ *
+ * Stamped on each issue rather than derived from its project's [EstimateMode] at
+ * render time, and that is the important decision in the feature: if the meaning of
+ * a stored `3` came from a project setting, an administrator flipping that setting
+ * would silently reinterpret every existing estimate from "3 points" to "3 minutes".
+ * With the stamp, the project setting governs only what the editor OFFERS, and rows
+ * already written keep saying what they meant. See Issues.sq's `estimate_unit`.
+ *
+ * Serialized by name, and the name is also what the column stores — so these strings
+ * are wire format and a rename is a migration rather than a refactor, exactly as
+ * [IssueEventKind] documents.
+ */
+@Serializable
+enum class EstimateUnit {
+    /**
+     * Whole minutes. Rendered normalised — `1h 30m`, never `90m`; `2d 4h`, never
+     * `20h` — with **one day fixed at eight hours**. That constant is not
+     * configurable and is written down in Issues.sq: Jira makes it a setting and
+     * nobody has ever changed it, and a knob would only let two boards disagree
+     * about what `2d` means.
+     */
+    MINUTES,
+
+    /** Whole points, on whatever scale the team means by them. Rendered `3 points`. */
+    POINTS,
+}
+
+/**
+ * Whether a project estimates at all, and in what unit (LNL-215).
+ *
+ * A project setting an administrator sets, which decides what the issue editor
+ * offers — and nothing else. It never decides how an existing estimate is read; see
+ * [EstimateUnit].
+ */
+@Serializable
+enum class EstimateMode(val key: String) {
+    /**
+     * Nobody estimates here. **The default, and it must leave every board visually
+     * unchanged** — no estimate cell, no popover, no read-mode line, not even a
+     * greyed control. Most projects will stay here forever, and a feature nobody has
+     * configured is off rather than broken.
+     */
+    NONE("none"),
+
+    /** Days, hours and minutes — three inputs, stored as whole minutes. */
+    TIME("time"),
+
+    /** One number, stored as whole points. */
+    POINTS("points");
+
+    companion object {
+        /**
+         * The mode this key names, or [NONE].
+         *
+         * Unknown decodes to [NONE] rather than throwing, for [IssueEventKind]'s
+         * reason one level down: a stored or transmitted value a build does not
+         * recognise must degrade to the state that renders nothing, not to a screen
+         * that will not open.
+         */
+        fun fromKey(key: String?): EstimateMode = entries.firstOrNull { it.key == key } ?: NONE
+    }
+}
+
+/**
+ * An estimate: how much work, in which unit (LNL-215).
+ *
+ * A pair rather than two independent nullable fields on every type that carries one,
+ * because they move together and one without the other is not a state this
+ * application can produce or render. The absence of an estimate is a null
+ * [IssueDetail.estimate], not a half-filled pair — which is the same shape a null
+ * `resolution_id` takes for "not closed".
+ *
+ * @property amount whole minutes, or whole points. Never fractional; see
+ *   Issues.sq's `estimate_amount` for why there is no REAL column.
+ */
+@Serializable
+data class Estimate(
+    val amount: Long,
+    val unit: EstimateUnit,
+)
+
+/**
  * One card on the board.
  *
  * @property number the per-project number. The card renders "FOO-123: title"
@@ -333,6 +431,65 @@ data class IssueSummary(
      * older-client reason as [childCount].
      */
     val parentNumber: Long? = null,
+    /**
+     * Who is working on this, or null for nobody — and their display name, resolved
+     * server-side (LNL-215).
+     *
+     * New on the summary, not merely newly rendered: these lived on [IssueDetail]
+     * only, because until now nothing on a card showed them. The card's initials
+     * avatar needs both — the name to draw `RS` from and to disclose on hover, the id
+     * to have something stable to key on — and neither can be derived from the other
+     * or looked up client-side, since the board carries no directory.
+     *
+     * [assigneeName] is resolved to `display_name ?: provider_name` and is null once
+     * the account is gone, the same rule and the same degradation [CommentView] takes.
+     * Both defaulted for [childCount]'s older-client reason: null means "unassigned",
+     * which is exactly what a client that never learned about these should render —
+     * which is nothing at all.
+     */
+    val assigneeId: Long? = null,
+    val assigneeName: String? = null,
+    /**
+     * Whether the work should be picked up by [assigneeId]'s *agent* rather than by
+     * them in person (LNL-215). Drawn as the agent icon badged onto the corner of the
+     * assignee avatar, so it is only ever meaningful when [assigneeId] is set.
+     * Defaulted false — "a person does this" — for the older-client reason above.
+     */
+    val assigneeIsAgent: Boolean = false,
+    /**
+     * Whether this card is **blocked**: it is on the *from* side of a relation whose
+     * kind marks blocked, and the issue on the other end is still open (LNL-215).
+     *
+     * Computed server-side over the project's whole relation set and its whole issue
+     * set, NOT derived client-side from [BoardState.issues] — and that is the same
+     * distinction [childCount] exists for. A blocker sitting in a column the reader
+     * has hidden, or scoped out of their sprint, is absent from the list the client
+     * holds, so a client-side derivation would silently report a blocked card as
+     * clear. The server counts over the authoritative set; see BoardRoutes.buildBoard.
+     *
+     * "Still open" means the blocker's status has `requiresResolution == false`. Any
+     * closure stops the blocking, including "Will not fix" and "Duplicate" — a blocker
+     * nobody will ever do is not blocking anything. Note this is read off the STATUS's
+     * flag and not off a resolution's `isDone`: [StatusItem] is shared by statuses,
+     * priorities and resolutions, and its `isDone` is only ever populated for
+     * resolutions.
+     *
+     * Defaulted false for [childCount]'s reason: an older client renders an
+     * unremarkable card, which is the right failure.
+     */
+    val isBlocked: Boolean = false,
+    /**
+     * The *numbers* of the open issues blocking this one — the 98 in "LNL-98"
+     * (LNL-215).
+     *
+     * Carried rather than resolved client-side for [isBlocked]'s reason exactly: the
+     * blockers may sit in a hidden column or outside the reader's scope, so a lookup
+     * over the board's own list would come back short and the hover text would name
+     * fewer blockers than there are. The prefix that turns these into keys is the
+     * reader's own — a relation's two ends share a project. Empty whenever [isBlocked]
+     * is false.
+     */
+    val blockedByNumbers: List<Long> = emptyList(),
 )
 
 /**
@@ -360,6 +517,89 @@ data class IssueRef(
     val statusId: Long,
     val resolutionId: Long? = null,
     val canEdit: Boolean = false,
+)
+
+/**
+ * One of a project's ways for two issues to be related — "Blocked by" / "Blocks"
+ * (LNL-215).
+ *
+ * Per-project vocabulary an administrator edits, like statuses and priorities, and
+ * on the wire for the same reason those are: the client renders the picker and the
+ * relation labels from it, and cannot make either up.
+ *
+ * @property inverseName the label for the *to* side, or null because the kind reads
+ *   the same in both directions. **Null is the encoding of symmetry** — there is no
+ *   separate flag that could disagree with it — so a renderer wanting the to-side
+ *   label reads `inverseName ?: name`. See IssueRelationKinds.sq.
+ * @property marksBlocked whether the issue on the *from* side of one of these counts
+ *   as blocked. An affordance here, like every flag on this wire: the board's
+ *   `isBlocked` is computed server-side over the whole project, and this exists so
+ *   the settings row can render its checkbox and the picker can warn.
+ */
+@Serializable
+data class IssueRelationKindItem(
+    val id: Long,
+    val name: String,
+    val inverseName: String? = null,
+    val marksBlocked: Boolean = false,
+    val position: Int = 0,
+)
+
+/**
+ * One link between two issues, as the issue window renders it (LNL-215).
+ *
+ * **The row is stored once and rendered twice.** `issue_relations` holds one row
+ * per link, from → to; this type is that row seen *from one issue's side*, which is
+ * why it carries [label] and [other] rather than a from and a to. The same stored
+ * row becomes `Blocked by LNL-9` on one issue and `Blocks LNL-4` on the other, and
+ * neither client has to know which end it is looking at. See IssueRelations.sq for
+ * why storing both directions would be the trap it looks like a convenience.
+ *
+ * @property label this side's word for the link, resolved server-side from the
+ *   kind's `name` or `inverseName`. Sent rather than derived, so the client does not
+ *   have to re-implement "which end am I" against [kindId].
+ * @property kindId which kind it is, for grouping the list and for nothing else. The
+ *   client groups by this rather than by [label] because two kinds could legitimately
+ *   read alike from one side — "Blocked by" and a symmetric "Blocked by (soft)" —
+ *   and grouping on a word would silently merge them.
+ * @property other the issue at the far end, as a compact reference. [IssueRef]
+ *   rather than an id, so the row renders "FOO-123: title" and links without a
+ *   second load; its `canEdit` is about the *other* issue and is deliberately not
+ *   what gates removing this link — see [IssueRelationRequest].
+ * @property canRemove whether this caller may unlink it, which is `canEditIssue` on
+ *   the issue whose window this is, not on [other]. An affordance; the route
+ *   re-derives it.
+ */
+@Serializable
+data class IssueRelationView(
+    val id: Long,
+    val kindId: Long,
+    val label: String,
+    val other: IssueRef,
+    val canRemove: Boolean = false,
+)
+
+/**
+ * "Link this issue to that one, like this" (LNL-215).
+ *
+ * Its own request rather than a field on [IssueUpdate], for [IssueParentUpdate]'s
+ * reason: linking is an immediate gesture from the relation picker, not one of the
+ * fields the editor's Save commits, and a body that could also carry a title would
+ * make it a way to overwrite fields nobody edited.
+ *
+ * Posted to the **from** issue's id — the one whose window the link is being added
+ * in — and gated by `canEditIssue` on it alone. The far side is not asked, for the
+ * parent route's reason: an issue does not own who points at it.
+ *
+ * The server enforces same-project (for both issues *and* the kind), no
+ * self-relation, no duplicate pair in **either** direction under the same kind, and
+ * both issues published. A refusal is a 400 that says which rule. See
+ * IssueRepository.addRelation.
+ */
+@Serializable
+data class IssueRelationRequest(
+    val toIssueId: Long,
+    val kindId: Long,
 )
 
 /**
@@ -425,6 +665,13 @@ data class BoardState(
      * for the settings form's copy, which is still owner-only because *editing* it is.
      */
     val gitHubRepository: String? = null,
+    /**
+     * The project's relation kinds, in the order the administrator arranged
+     * (LNL-215). Empty for a project whose kinds have all been deleted, and the
+     * emptiness is the contract [sprints] sets: no kinds means no relation picker
+     * anywhere. Every project made or migrated since LNL-215 starts with three.
+     */
+    val relationKinds: List<IssueRelationKindItem> = emptyList(),
 )
 
 /**
@@ -510,6 +757,62 @@ enum class IssueEventKind {
      * issue was unassigned. See [IssueEventView.value] for why null is load-bearing.
      */
     ASSIGNEE_CHANGED,
+
+    /**
+     * The issue was scheduled into a sprint, or sent back to the backlog (LNL-215).
+     *
+     * Carries the sprint's name as it stood, in [IssueEventView.value]. **Null means
+     * the backlog**, and is load-bearing exactly as it is on [ASSIGNEE_CHANGED]: a
+     * history that could not tell "moved out of the sprint" from "we do not know"
+     * would be silent about the second most common thing anybody does to a sprint.
+     */
+    SPRINT_CHANGED,
+
+    /**
+     * The planned release changed (LNL-215). Carries the version's name as it stood,
+     * or null because it was cleared. A snapshot, for [STATUS_CHANGED]'s reason.
+     */
+    PLANNED_VERSION_CHANGED,
+
+    /** As [PLANNED_VERSION_CHANGED], for the release the work actually shipped in. */
+    FIXED_VERSION_CHANGED,
+
+    /**
+     * The issue was moved under an epic, or out from under one (LNL-215). Carries the
+     * new parent's KEY snapshot — `"LNL-98"` — in [IssueEventView.value], or null
+     * because it was detached.
+     *
+     * Note the deliberate asymmetry with [CHILD_ADDED] below: an issue has at most one
+     * parent, so its own history records a *change*; an epic has many children, so its
+     * history records arrivals and departures. One reparent therefore writes a
+     * `PARENT_CHANGED` on the child and a `CHILD_ADDED` on the new epic — and a
+     * `CHILD_REMOVED` on the old one, if there was one.
+     */
+    PARENT_CHANGED,
+
+    /** A child arrived under this epic (LNL-215). Carries the child's key. See [PARENT_CHANGED]. */
+    CHILD_ADDED,
+
+    /** A child left this epic (LNL-215). Carries the child's key. See [PARENT_CHANGED]. */
+    CHILD_REMOVED,
+
+    /**
+     * This issue was linked to another (LNL-215).
+     *
+     * Carries the OTHER issue's key in [IssueEventView.value] and the relation kind's
+     * label — as it stood, for this issue's side of the link — in
+     * [IssueEventView.relationKind].
+     *
+     * One relation row writes TWO of these, one on each issue: adding "A blocked by B"
+     * writes `Blocked by`/`B` on A and `Blocks`/`A` on B. That does not contradict the
+     * one-row rule in IssueRelations.sq — that rule is about state, where two rows can
+     * drift; this is per-issue and append-only, and both issues genuinely had something
+     * happen to them.
+     */
+    RELATION_ADDED,
+
+    /** A link was removed (LNL-215). Same two fields, same pair of events, as [RELATION_ADDED]. */
+    RELATION_REMOVED,
 }
 
 /**
@@ -559,6 +862,24 @@ data class IssueEventView(
     val authorName: String? = null,
     val agentName: String? = null,
     val createdAt: Long = 0,
+    /**
+     * The relation kind's label, for [IssueEventKind.RELATION_ADDED] and
+     * [IssueEventKind.RELATION_REMOVED]; null for every other kind (LNL-215).
+     *
+     * A **snapshot for this issue's side of the link** — `"Blocked by"` on the from
+     * side, `"Blocks"` on the to side, the same word twice when the kind is symmetric
+     * — frozen at write time for [value]'s reason: relation kinds are user-editable
+     * vocabulary, so renaming or deleting one must not reach backwards and alter what
+     * the event says happened.
+     *
+     * Its own field rather than a second entry in [values], because that list is
+     * documented as carrying *the whole set* a kind refers to; using it as a
+     * positional tuple would contradict its own contract. And a field rather than a
+     * pre-built sentence because the sentence is the client's — see this type's
+     * preamble, and `IssueBackingViewModel.historyDescription`, which interpolates
+     * this into "linked this as Blocked by LNL-9".
+     */
+    val relationKind: String? = null,
 )
 
 /**
@@ -722,6 +1043,44 @@ data class IssueDetail(
      * board for [sprints]' reason: a deep-linked window has no board to read.
      */
     val linkableIssues: List<IssueRef> = emptyList(),
+    /**
+     * Whether the work should go to [assigneeId]'s *agent* rather than to them in
+     * person (LNL-215). Round-trips: the editor sends it back on save, and the read
+     * face renders the agent icon beside the assignee's name from it. Meaningless —
+     * and forced false by the server — when nobody is assigned.
+     */
+    val assigneeIsAgent: Boolean = false,
+    /**
+     * How much work this is, or null because nobody has said (LNL-215).
+     *
+     * A pair rather than two fields, because the amount and its unit move together
+     * and one without the other cannot be rendered. The unit is the ISSUE'S, not the
+     * project's — see [EstimateUnit] — so an issue estimated in points still reads as
+     * points on a project that has since switched to time.
+     */
+    val estimate: Estimate? = null,
+    /**
+     * This issue's links to other issues, both directions, already resolved to this
+     * issue's side (LNL-215). Grouped by kind for rendering; see [IssueRelationView].
+     * Empty for the overwhelming majority of issues.
+     *
+     * Loaded when an issue is OPENED, never when a board is. The board takes a
+     * deliberately narrower projection — [IssueSummary.isBlocked] — rather than this
+     * list, because a board rendering every link of every card would be paying for
+     * something no card shows.
+     */
+    val relations: List<IssueRelationView> = emptyList(),
+    /**
+     * The project's relation kinds, for the "add a link" picker (LNL-215). Sent with
+     * the issue rather than read off the board for [sprints]' reason — the issue
+     * window opens from a deep link with no board loaded.
+     *
+     * **Empty unless [canEdit]**, the [assignableUsers] narrowing: a reader cannot
+     * add a link, so the vocabulary they would pick from is a list shipped for
+     * nothing. Note the *rendered* [relations] are NOT narrowed — the links
+     * themselves are part of the issue every reader can see.
+     */
+    val relationKinds: List<IssueRelationKindItem> = emptyList(),
 )
 
 /**
@@ -809,6 +1168,34 @@ data class IssueUpdate(
     val fixedVersionId: Long? = null,
     val labelIds: List<Long> = emptyList(),
     val componentIds: List<Long> = emptyList(),
+    /**
+     * Whether the work goes to [assigneeId]'s agent rather than to them in person
+     * (LNL-215).
+     *
+     * False is "a person does this", not "leave it alone", for [assigneeId]'s reason:
+     * this is the editor's whole field set and it is sent on every save. The server
+     * forces it false when [assigneeId] is null — a flag about nobody is not a state
+     * — and, separately, clears it whenever the assignee CHANGES, because the previous
+     * assignee's agent is definitionally not on it any more. See Issues.sq.
+     *
+     * No permission of its own: `canBeAssigned` on the person named is the whole
+     * check, since the agent acts through that person's own MCP session.
+     */
+    val assigneeIsAgent: Boolean = false,
+    /**
+     * How much work this is, or null because it is being CLEARED (LNL-215).
+     *
+     * Null is "no estimate", not "leave alone", for [assigneeId]'s reason — the editor
+     * sends its whole field set every save. That is the documented opposite of what
+     * the MCP tools do with an absent argument, and it is safe here because a form
+     * always knows every one of its own fields.
+     *
+     * The server refuses a unit the project's [EstimateMode] does not offer, so a
+     * stale editor cannot write points into a project that has switched to time — but
+     * it never rewrites an estimate already stored, which is the whole point of
+     * stamping the unit.
+     */
+    val estimate: Estimate? = null,
 )
 
 /**
@@ -827,6 +1214,16 @@ data class IssueUpdate(
 @Serializable
 data class IssueAssignment(
     val assigneeId: Long? = null,
+    /**
+     * Whether the work goes to that person's agent rather than to them in person
+     * (LNL-215).
+     *
+     * **No new permission check.** `canBeAssigned` on the person named remains the
+     * whole gate, because the agent acts through that person's own MCP session — this
+     * flag cannot name anybody and so cannot escalate to anybody. Forced false by the
+     * server when [assigneeId] is null.
+     */
+    val assigneeIsAgent: Boolean = false,
 )
 
 /**

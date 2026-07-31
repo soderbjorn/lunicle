@@ -108,6 +108,24 @@ data class ProjectRecord(
      * about the migration and stops at this class.
      */
     val hideIssueNumbersStored: Boolean? = null,
+    /**
+     * Whether this project estimates, and in what unit (LNL-215).
+     *
+     * On the record for [showIssueAuthor]'s reason: it reaches [ProjectSummary], and
+     * the issue window reads it off the board it already loads to decide what the
+     * estimate control offers — three inputs, one, or nothing at all.
+     *
+     * [EstimateMode.NONE] is the default and the state nearly every project stays in,
+     * and it renders **nothing**: no cell, no popover, no read-mode line. It governs
+     * only what the editor offers and never how a stored estimate is read — that unit
+     * is stamped on the issue. See Issues.sq's estimate_unit.
+     *
+     * Last in the record, with a default, for [hideIssueNumbersStored]'s reason: the
+     * positional constructions in this file and in the Firestore store did not all
+     * have to be rewritten to add it.
+     */
+    val estimateMode: se.soderbjorn.lunicle.clientserver.EstimateMode =
+        se.soderbjorn.lunicle.clientserver.EstimateMode.NONE,
 ) {
     /**
      * Whether the board hides issue numbers — the answer every reader wants.
@@ -226,6 +244,7 @@ class ProjectStore(
                 it.show_issue_author != 0L,
                 it.created_at,
                 it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
         }
 
@@ -300,6 +319,21 @@ class ProjectStore(
     }
 
     /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * Its own write rather than a third field on [setBoardDisplay], for that method's
+     * own reason turned one notch: those two decide how a board *reads*, and this
+     * decides what an editor *offers*. A stale client sending the display pair must
+     * not be able to reset this in passing. See Projects.sq's setEstimateMode.
+     */
+    override suspend fun setEstimateMode(
+        id: Long,
+        mode: se.soderbjorn.lunicle.clientserver.EstimateMode,
+    ): Unit = withContext(DatabaseDispatcher) {
+        database.projectsQueries.setEstimateMode(mode.key, id)
+    }
+
+    /**
      * Rewrite the whole instance's project order in one transaction.
      *
      * The whole list rather than a pair of swaps, for [ForumStore.setOrder]'s
@@ -331,6 +365,7 @@ class ProjectStore(
                 it.show_issue_author != 0L,
                 it.created_at,
                 it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
     }
 
@@ -350,6 +385,7 @@ class ProjectStore(
                 it.show_issue_author != 0L,
                 it.created_at,
                 it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
     }
 
@@ -375,6 +411,7 @@ class ProjectStore(
                 it.show_issue_author != 0L,
                 it.created_at,
                 it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
     }
 
