@@ -10,14 +10,13 @@
  *
  * ── Which keys, and why not all of them ─────────────────────────────────────
  *
- * Only [UiSettingKeys.persisted] travels: the theme selection and the user's own
- * themes. Everything else the shell writes — window layout, sidebar state,
- * hotkeys — stays in memory and dies with the tab, deliberately. The redesign
- * wants the board maximised on every launch (see main.kt), and a persister that
- * durably remembered layout would quietly undo that decision from a different
- * file. Two keys is also the whole of what LNL-20 asked for.
+ * Only [UiSettingKeys.persisted] travels: the theme selection, the user's own
+ * themes, where the panes sit, and how wide they dragged the sidebar. Everything
+ * else the shell writes — collapsed sidebar sections, hotkeys — stays in memory
+ * and dies with the tab, deliberately: a key reaches this list when some part of
+ * the app would be *wrong* without it across a reload, not merely different.
  *
- * That the *custom themes* key is one of the two is not a bonus. The toolkit's
+ * That the *custom themes* key is on the list is not a bonus. The toolkit's
  * theme manager lets a user build and edit themes, and the selection names the
  * chosen one by string — so persisting the choice without the themes would store
  * a reference to something that no longer exists anywhere. On the next load the

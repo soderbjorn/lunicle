@@ -1415,6 +1415,12 @@ private fun start() {
         // code — that is the whole point of adopting the toolkit's tree instead
         // of inventing one.
         showSidebar = true,
+        // Embedded, the sidebar opens narrower than the toolkit's own 240px —
+        // see [EMBEDDED_SIDEBAR_WIDTH_PX]. A seed, not a rule: the toolkit
+        // reads the width the user last dragged to and that always wins, so
+        // nobody who has set a width of their own is moved by this. Null on
+        // the full site, which keeps the toolkit's default.
+        defaultSidebarWidthPx = if (isEmbedded()) EMBEDDED_SIDEBAR_WIDTH_PX else null,
         showTabStrip = true,
         // No bottom bar; the identity line rides the topbar's leading edge.
         showBottomBar = false,
@@ -2493,7 +2499,38 @@ private class Dialogs(
 }
 
 /**
- * The "Open the full site" link shown in the top bar's leading slot when the
+ * How wide the left sidebar opens when the tracker is embedded in another
+ * site's page, in CSS pixels (LNL-188).
+ *
+ * The toolkit's own default is 240px, which is a fair width for a window that
+ * is all tracker and too generous for a panel inside somebody else's layout:
+ * the board is boxed into whatever the host's slot leaves, and on Lunamux the
+ * last column fell off the right edge. The sidebar is the cheapest column to
+ * take it out of, because the widest thing in it is chrome rather than content
+ * — the brand line and [fullSiteLink]'s way out.
+ *
+ * The number comes off that line. `.sidebar-brand` wraps, so the brand reads as
+ * "Lunicle" over "OPEN FULL SITE ↗", and the wider of the two rows is the link:
+ * 138px to its arrow, plus the header's own 12px of trailing padding. That is
+ * the cut the ticket asked for — just after the way out — and it is what
+ * shortening the wording ("Open the full site" → "Open full site") bought
+ * another twenty-odd pixels of.
+ *
+ * Below this the link would clip, which is the floor rather than a target: the
+ * tabs/panes tree below it clips its rows to an ellipsis (with the toolkit's
+ * hover tooltip behind them) and would go on being useful much narrower, but
+ * the one row that cannot say less is the one offering the way out.
+ *
+ * A **seed**, handed to the toolkit as `AppShellSpec.defaultSidebarWidthPx`: it
+ * applies to a browser that has never dragged the handle, and a width the user
+ * did choose is stored under `UiSettingKeys.SIDEBAR_WIDTH` and outranks it. So
+ * an embedded reader gets a tighter board while a signed-in user who widened
+ * the sidebar keeps what they set — embedded or not.
+ */
+private const val EMBEDDED_SIDEBAR_WIDTH_PX: Int = 152
+
+/**
+ * The "Open full site" link shown in the sidebar's brand line when the
  * app [isEmbedded].
  *
  * The destination is this frame's own URL, not a hard-coded host: the frame is
@@ -2514,7 +2551,10 @@ private class Dialogs(
 private fun fullSiteLink(): HTMLElement {
     val link = document.createElement("a") as HTMLAnchorElement
     link.className = "topbar-full-site-link"
-    link.textContent = "Open the full site ↗"
+    // "Open full site", not "Open the full site": three characters of article
+    // are three characters of sidebar width, and the sidebar is what LNL-188
+    // is trying to give back to the board.
+    link.textContent = "Open full site ↗"
     link.href = window.location.href
     link.target = "_blank"
     link.rel = "noopener"

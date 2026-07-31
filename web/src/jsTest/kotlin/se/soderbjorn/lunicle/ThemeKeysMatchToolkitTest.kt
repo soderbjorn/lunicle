@@ -36,8 +36,13 @@ class ThemeKeysMatchToolkitTest {
         assertEquals(PersistKeys.LAYOUT_STATE, UiSettingKeys.LAYOUT_STATE)
     }
 
+    @Test
+    fun `the sidebar-width key is still the toolkit's`() {
+        assertEquals(PersistKeys.SIDEBAR_WIDTH, UiSettingKeys.SIDEBAR_WIDTH)
+    }
+
     /**
-     * The allowlist is the three toolkit keys plus Lunicle's own two, and
+     * The allowlist is the four toolkit keys plus Lunicle's own two, and
      * nothing else.
      *
      * The set is what the server's allowlist is written against, so a key added
@@ -59,6 +64,7 @@ class ThemeKeysMatchToolkitTest {
                 PersistKeys.THEME_V2_SELECTION,
                 PersistKeys.THEME_V2_CUSTOM,
                 PersistKeys.LAYOUT_STATE,
+                PersistKeys.SIDEBAR_WIDTH,
                 UiSettingKeys.PROJECT_PREFS,
                 UiSettingKeys.WORKSPACE,
             ),
