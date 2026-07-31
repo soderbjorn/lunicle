@@ -227,7 +227,12 @@ class AddPeoplePanel(
             isKnownAddress -> Trailer.NONE
             // The refusal outranks the offer: a deployment that will not accept an account
             // for this address must not first be shown offering to create one.
-            access.newAddressRefusal != null -> Trailer.REFUSED
+            //
+            // Asked OF THE TYPED ADDRESS, which is the whole of it. `newAddressRefusal`
+            // alone is the deployment's standing sentence about an address off its domain,
+            // and reading it as "this address is refused" refused every new address on a
+            // domain-restricted instance — including the on-domain ones it exists to admit.
+            access.newAddressRefusalFor(typed) != null -> Trailer.REFUSED
             else -> Trailer.OFFER
         }
     }
@@ -327,7 +332,7 @@ class AddPeoplePanel(
             element("span", "add-people-avatar add-people-avatar-refused", "!"),
             element("div", "add-people-row-text").children(
                 element("div", "add-people-refused-title", "$typed cannot be added"),
-                element("div", "add-people-refused-note", access.newAddressRefusal.orEmpty()),
+                element("div", "add-people-refused-note", access.newAddressRefusalFor(typed).orEmpty()),
             ),
         )
     }
@@ -343,7 +348,10 @@ class AddPeoplePanel(
         val hidden = picker.totalMatches - picker.candidates.size
         footerNote.setTextIfChanged(
             when {
-                access.newAddressRefusal != null && trailerKind(picker, access) == Trailer.REFUSED ->
+                // The trailer's own answer, not a second reading of the refusal beside it:
+                // the two disagreed, and the footer was the half that said "nothing will be
+                // added" under a perfectly addable address.
+                trailerKind(picker, access) == Trailer.REFUSED ->
                     "Nothing will be added for that address."
                 added == 1 -> "1 person added — adjust any role in the list above."
                 added > 1 -> "$added people added — adjust any role in the list above."

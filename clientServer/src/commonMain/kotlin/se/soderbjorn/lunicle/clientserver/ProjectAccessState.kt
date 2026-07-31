@@ -249,6 +249,13 @@ data class PersonRow(
  *   who may hold an account. So this is null under `anyone` even on a deployment with a
  *   domain, and non-null under the two domain policies.
  *
+ *   Sentence about an address **off the domain**, and never about one on it — which is
+ *   why a screen asks [newAddressRefusalFor] rather than reading this. Reading it
+ *   directly is the defect that shipped: a domain-restricted deployment has a non-null
+ *   refusal standing at all times, so the picker refused every new address including the
+ *   on-domain ones — the entire population such a deployment admits — and printed
+ *   "admits framna.com addresses only" underneath a framna.com address.
+ *
  *   Scoped to a *new* address on purpose. An account that already exists is addable
  *   whatever its domain and whatever the policy says — it is already through the door,
  *   and admission is checked once at account creation. That is why the picker can offer
@@ -272,7 +279,41 @@ data class ProjectAccessState(
     val addressAdvice: String = "",
     val staffDomain: String? = null,
     val newAddressRefusal: String? = null,
-)
+) {
+    /**
+     * [newAddressRefusal], asked of the address somebody actually typed: the sentence when
+     * this deployment would refuse to create an account for [address], null when it would
+     * take it.
+     *
+     * ── The refusal is about being outside, not about being new ─────────────────
+     *
+     * Both domain policies refuse exactly one thing — a new account **off** [staffDomain] —
+     * and the server computes [newAddressRefusal] by probing a synthetic outside address, so
+     * on a domain-restricted deployment it is non-null forever. Applying it to whatever was
+     * typed therefore refuses everybody, on-domain colleagues included, which is the only
+     * kind of person such a deployment can be asked to add.
+     *
+     * So this is the term that was missing, and it belongs here rather than in a screen: the
+     * refusal and the reason it applies are one thought, and a panel re-deriving "is this
+     * address one of ours" is a second opinion that can differ from the server's.
+     *
+     * The rule is the server's `UserKind.forEmail`, deliberately spelled the same way —
+     * last `@`, whole domain, case-insensitive. No subdomain match: `a@x.acme.com` is not
+     * staff at `acme.com` there, and it must not be addable here on a reading this file
+     * invented.
+     *
+     * An **explanation, never enforcement.** The people POST asks `admitsNewAccount` again
+     * and is the one that refuses; this decides which row to draw.
+     */
+    fun newAddressRefusalFor(address: String): String? {
+        val refusal = newAddressRefusal ?: return null
+        val domain = staffDomain?.trim()?.takeIf { it.isNotEmpty() } ?: return refusal
+        val at = address.trim().lastIndexOf('@')
+        if (at < 0) return refusal
+        val typedDomain = address.trim().substring(at + 1)
+        return if (typedDomain.equals(domain, ignoreCase = true)) null else refusal
+    }
+}
 
 /**
  * One account the people picker may offer, as a row in its list.
