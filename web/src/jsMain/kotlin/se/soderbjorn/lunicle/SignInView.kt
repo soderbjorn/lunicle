@@ -221,7 +221,7 @@ class SignInView(
         // A probing owner is genuinely signed in as somebody, so the corner is the
         // ordinary signed-in corner carrying that person's real name — which is the
         // point: it is what they would see. The impersonation is said separately, by
-        // the pill and the tint, which cannot be mistaken for the account's own
+        // the strip and the tint, which cannot be mistaken for the account's own
         // label and cannot be dismissed.
         val signedIn = state.user != null
         val showAccount = signedIn
@@ -255,11 +255,14 @@ class SignInView(
         root.classList.toggle("account-signed-in", showAccount && !state.isImpersonating)
 
         // The marker, and it is a CLASS for the reason the line above is one: the
-        // stylesheet owns what a tinted frame and a corner pill look like, and an
-        // inline style set from here would beat every rule it was meant to cooperate
-        // with. It is toggled off the server's answer on every session emission, so
-        // it survives a hard reload and there is nothing on screen that dismisses it.
-        root.classList.toggle("account-impersonating", state.isImpersonating)
+        // stylesheet owns what a tinted frame looks like, and an inline style set
+        // from here would beat every rule it was meant to cooperate with. It is
+        // toggled off the server's answer on every session emission, so it survives
+        // a hard reload and there is nothing on screen that dismisses it.
+        //
+        // One class, on <body>, because one thing hangs off it now: the tint around
+        // the whole window. The corner pill this used to mark as well has gone — the
+        // strip says the same thing in a sentence, two rows above.
         document.body?.classList?.toggle("app-impersonating", state.isImpersonating)
 
         // Hidden while impersonating: "Sign out" here would end the probe session
@@ -278,8 +281,9 @@ class SignInView(
         //
         // Armed, it is the ONLY thing on screen saying anything is going on —
         // everything else is rendering exactly what a stranger sees, which is itself
-        // part of what is being checked. Probing, the pill and the tint say it too,
-        // but neither of them is a control, and this is where the way out lives.
+        // part of what is being checked. Probing, the tint says it too, but a frame
+        // is not a control and cannot name anybody — this is where the way out and
+        // the name both live.
         val strip = state.isImpersonationArmed || state.isImpersonating
         armedStrip.visible(strip, displayValue = "flex")
         armedStripText.setTextIfChanged(

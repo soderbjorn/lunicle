@@ -3327,7 +3327,7 @@ body > .dt-pane-menu {
    a disabled row, which here is the admin's own name in the impersonation list. */
 .account-menu-item.dt-hover-menu-item:disabled { opacity: .5; cursor: default; }
 
-/* ── Impersonation: the armed strip, the pill and the tint ─────────────────
+/* ── Impersonation: the armed strip and the tint ───────────────────────────
 
    The submenu that used to live here has gone with the address list it folded
    out of. There is nothing to fold out any more: the owner is signed out first
@@ -3344,13 +3344,22 @@ body > .dt-pane-menu {
    Armed, it is the one state with no other tell: the caller is genuinely signed
    out, so the corner is a "Sign in…" button and the board is the public view —
    which is exactly what is being looked at, and exactly why something has to say
-   so. Probing, the pill and the tint say it too, but neither of those is a
-   CONTROL, and the way out lives here.
+   so. Probing, the tint says it too, but a frame is not a CONTROL and cannot name
+   anybody, and both the name and the way out live here.
 
    A FIXED height rather than one that follows its text, because the shell below
    has to be shortened by exactly this much — and a strip that grew by a line on a
-   narrow window would put the tab bar back underneath it. The text truncates. */
-:root { --impersonation-strip-h: 30px; }
+   narrow window would put the tab bar back underneath it. The text truncates.
+
+   The colour is a LITERAL rather than `var(--red)`, which is the theme's danger
+   token. A marker's job is to look the same alarming thing on every instance, and
+   a theme is free to make its danger colour a pale coral — one that reads as an
+   error *in* the palette and gives white type about 2:1 sitting under it. This
+   one red is picked against white type (≈5.6:1) and no theme can retint it. */
+:root {
+  --impersonation-strip-h: 30px;
+  --impersonation-red: #c62828;
+}
 
 .impersonation-armed-strip {
   display: none;
@@ -3368,7 +3377,7 @@ body > .dt-pane-menu {
   justify-content: center;
   gap: 12px;
   padding: 6px 12px;
-  background: var(--amber, #b8760f);
+  background: var(--impersonation-red);
   color: #fff;
   font-size: 12px;
   font-weight: 600;
@@ -3381,6 +3390,22 @@ body > .dt-pane-menu {
    30px — which is the tab strip, the one row you need most while checking what
    somebody else can see. Offset and shorten by the same token, so the two cannot
    disagree.
+
+   ── Why the offset is the BODY's padding and not `#app`'s margin ────────────
+
+   Because a top margin on the first child COLLAPSES out through <body> — body
+   carries no padding or border of its own, so there is nothing for the margin to
+   collapse against — and lands on the body's outer edge instead. The shell was
+   then the right height and in the right place, but the document had grown by the
+   strip's 30px: a scrollbar appeared, and the page could be scrolled by exactly
+   that much. Scrolled, the strip stays put (it is fixed) and the whole shell
+   slides underneath it, so the top bar loses its first 30px of a 54px row —
+   half-clipped tabs, half-clipped icons, and the whole thing an idle trackpad
+   flick away from happening. Padding cannot collapse, so this cannot recur.
+
+   Body is `border-box` (as is everything here), so the padding comes out of its
+   height rather than adding to it, and the two declarations below sum to exactly
+   100vh with nothing left over to scroll.
 
    ── Why `!important`, which is otherwise not used in this file ──────────────
 
@@ -3396,8 +3421,11 @@ body > .dt-pane-menu {
 
    Scoped to a body class, so an instance with the feature switched off — which is
    very nearly all of them — matches nothing here. */
+body.app-impersonation-strip {
+  padding-top: var(--impersonation-strip-h);
+}
+
 body.app-impersonation-strip > #app {
-  margin-top: var(--impersonation-strip-h) !important;
   height: calc(100vh - var(--impersonation-strip-h)) !important;
 }
 
@@ -3418,38 +3446,32 @@ body.app-impersonation-strip > #app {
 
 .impersonation-armed-cancel.btn:hover { background: rgba(255, 255, 255, .3); }
 
-/* The corner pill, beside the name of whoever is being worn.
+/* The corner pill that used to sit beside the name is GONE. It said the same
+   word as the strip two rows above it, in the same colour, at the same moment —
+   and the strip says it in a sentence, names who is being worn, and carries the
+   way out. A second badge for the same fact reads as chrome rather than as an
+   alarm; the marker is stronger for being said once and said properly.
 
-   ::after on the account button rather than an element of its own, so nothing in
-   the DOM can be removed to make it go away — and so it cannot be missed by a
-   render path that forgot to draw it. */
-.account-impersonating .account-btn::after {
-  content: "impersonating";
-  margin-left: 8px;
-  padding: 1px 7px;
-  border-radius: 100px;
-  background: var(--amber, #b8760f);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
+   What remains is two things that are not each other: the strip (a sentence and
+   a control) and the tint (a frame around the whole window). */
 
 /* The tint: a border drawn inside the viewport's edge, on top of everything.
 
    `pointer-events: none` is load-bearing — this covers the entire window, and
    without it the whole app would be unclickable. An inset box-shadow rather than
    a real border so no layout moves when it appears: a border on <body> would
-   reflow the board by a few pixels every time an impersonation started. */
+   reflow the board by a few pixels every time an impersonation started.
+
+   The strip's red, not a second colour: frame and strip are one marker seen at
+   two scales, and two ambers-and-reds around the same window would read as two
+   unrelated things being wrong. */
 body.app-impersonating::after {
   content: "";
   position: fixed;
   inset: 0;
   z-index: 899;
   pointer-events: none;
-  box-shadow: inset 0 0 0 3px var(--amber, #b8760f);
+  box-shadow: inset 0 0 0 3px var(--impersonation-red);
 }
 
 /* ── The profile modal's Connections section ────────────────────────────────
