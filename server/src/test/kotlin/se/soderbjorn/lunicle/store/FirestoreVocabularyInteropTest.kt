@@ -44,8 +44,13 @@ class FirestoreVocabularyInteropTest {
 
     private val issues by lazy { FirestoreIssueStore(fixture.firestore) }
 
+    // The links between issues (LNL-215), which the vocabulary store needs for a
+    // relation kind's usage count and for the cascade its delete performs. Real rather
+    // than a stub, so this fixture holds the same two stores production wires together.
+    private val relations by lazy { se.soderbjorn.lunicle.FirestoreIssueRelationStore(fixture.firestore) }
+
     // The editor path — one generic VocabularyStore, exactly what the settings dialog holds.
-    private val editor by lazy { FirestoreVocabularyStore(fixture.firestore, issues) }
+    private val editor by lazy { FirestoreVocabularyStore(fixture.firestore, issues, relations) }
 
     // The board path — the concrete stores the board reads columns and vocabulary from.
     private val boardStatuses by lazy { FirestoreStatusStore(fixture.firestore) }

@@ -54,8 +54,15 @@ class FirestorePermissionMigrationTest {
      * Deliberate: this is also the test that the step is *wired up*. A migration
      * that is written and not appended to [FirestoreMigrations.ALL] is a migration
      * that never runs, and nothing else would notice.
+     *
+     * Picked out **by its version** rather than as the chain's only element, which is
+     * what it was until the chain grew a second step (LNL-215). `single()` was a
+     * quietly load-bearing assertion that there would only ever be one migration —
+     * something no chain of migrations can promise — so the version identifies this
+     * one now. It stays a lookup in the registered list, because that is the half of
+     * this property that is the point.
      */
-    private val migration get() = FirestoreMigrations.ALL.single()
+    private val migration get() = FirestoreMigrations.ALL.single { it.version == PERMISSION_MODEL_VERSION }
 
     @BeforeTest
     fun requireEmulator() = assumeTrue("Firestore emulator not configured", FirestoreEmulator.isAvailable)
@@ -305,5 +312,18 @@ class FirestorePermissionMigrationTest {
         @Suppress("UNCHECKED_CAST")
         val values = (snapshot.get("values") as? Map<String, Any?>).orEmpty()
         return (values["owner_user_id"] as? Number)?.toLong()
+    }
+
+    private companion object {
+        /**
+         * The permission rework's place in the chain — a literal, spelled here, rather
+         * than a reference to the migration's own `version`.
+         *
+         * The same discipline the migration's `OLD_*` constants keep: a test that
+         * followed the live value would still pass if somebody renumbered a released
+         * step, which is exactly the mistake worth failing over. A released version is
+         * frozen the moment a production database has checkpointed past it.
+         */
+        const val PERMISSION_MODEL_VERSION = 1
     }
 }

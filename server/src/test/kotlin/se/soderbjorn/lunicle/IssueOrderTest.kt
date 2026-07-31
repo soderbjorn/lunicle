@@ -74,7 +74,7 @@ class IssueOrderTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     private val instanceSettings = InMemoryInstanceSettingsStore()
     private val access = AccessControl(roles, instanceSettings)
 
@@ -297,9 +297,14 @@ class IssueOrderTest {
             priorityId = priorityId,
             resolutionId = null,
             assigneeId = null,
+            // Nobody is assigned, so the agent flag is meaningless here — and false is
+            // what the repository would force it to anyway. See Issues.sq (LNL-215).
+            assigneeIsAgent = false,
             sprintId = null,
             plannedVersionId = null,
             fixedVersionId = null,
+            // This file is about board ORDER, and an estimate is not a sort key.
+            estimate = null,
         )
         return id
     }

@@ -47,7 +47,10 @@ class SqlDelightSprintStoreContractTest : SprintStoreContract() {
     private val projectRepository = ProjectRepository(db, projects, attachments, attachmentStore)
     private val issueRepository = IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val vocabulary =
-        VocabularyRepository(db, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(
+            db, labels, components, statuses, priorities, resolutions, sprints, versions,
+            issues = issues,
+        )
 
     private var seq = 0
 

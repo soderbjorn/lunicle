@@ -12,8 +12,10 @@
  * [IssueStore.setSprint] are read back; the usage counts the vocabulary editor
  * reads include filed issues and leave drafts out, while
  * [IssueStore.deleteDraftsWithStatus] and [IssueStore.sweepAbandonedDrafts] are
- * what clear those drafts away (LNL-183); and [IssueStore.setGroupOrder] ranks a
- * whole group 1..n.
+ * what clear those drafts away (LNL-183); [IssueStore.setGroupOrder] ranks a
+ * whole group 1..n; and the two fields LNL-215 put on the row — the agent flag and
+ * the estimate — round-trip through every write that touches them, the estimate
+ * always as a **pair** so a cleared one cannot leave its unit behind.
  *
  * A subclass per backend supplies the store and a project seeded — through the
  * real `ProjectRepository`/`IssueRepository` — with its default board columns, a
@@ -26,9 +28,12 @@ package se.soderbjorn.lunicle.store
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.Author
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
 
 abstract class IssueStoreContract {
     protected abstract val store: IssueStore
@@ -62,8 +67,109 @@ abstract class IssueStoreContract {
         assertTrue(number > 0, "a per-project number is allocated")
         assertTrue(store.forProject(p.projectId).none { it.id == id }, "a draft appears on nobody's board")
 
-        store.publish(id, "Now visible", "body", p.statusIds.first(), p.priorityId, null, null, null, null, null)
+        store.publish(
+            id, "Now visible", "body", p.statusIds.first(), p.priorityId, null,
+            assigneeId = null, assigneeIsAgent = false,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null, estimate = null,
+        )
         assertTrue(store.forProject(p.projectId).any { it.id == id }, "publishing puts it on the board read")
+    }
+
+    /**
+     * A fresh issue is nobody's, is not an agent's, and is unestimated (LNL-215).
+     *
+     * The defaults are the whole "every existing board looks the same afterwards"
+     * promise, and the two backends reach them differently — `NOT NULL DEFAULT 0` plus
+     * two NULL columns against three document fields written explicitly on insert —
+     * so what a fresh row reads as belongs here rather than in either backend's own
+     * test.
+     */
+    @Test
+    fun `a fresh issue carries no agent flag and no estimate`() = runBlocking {
+        val p = newProject()
+        val id = fileIssue(p, p.statusIds.first())
+        val issue = store.findById(id)!!
+        assertTrue(!issue.assigneeIsAgent, "a person does this, until somebody says otherwise")
+        assertNull(issue.estimate, "and nobody has said how much work it is")
+    }
+
+    /**
+     * The agent flag round-trips through both writes that touch it (LNL-215).
+     *
+     * Deliberately asserted with **nobody assigned**, which is not the state the
+     * product produces: `IssueRepository` forces the flag false when [assigneeId] is
+     * null, and that rule is asserted where it lives. What a store owes is that the
+     * value it was handed is the value it stores, in both directions — and this
+     * fixture has no user directory to name a real assignee against, since the SQLite
+     * `assignee_id` is a foreign key into `users`.
+     *
+     * Both writes are covered because they are genuinely two paths: [publish] is the
+     * editor committing its whole field set, [setAssignee] is "Assign to me" and the
+     * MCP hand-off, and a store that wired only the first would leave every re-assign
+     * silently dropping the flag.
+     */
+    @Test
+    fun `the agent flag round-trips through publish and setAssignee`() = runBlocking {
+        val p = newProject()
+        val (id, _) = store.insertDraft(p.projectId, "Draft", p.statusIds.first(), p.priorityId, Author.Nobody)
+        store.publish(
+            id, "For the robot", "", p.statusIds.first(), p.priorityId, null,
+            assigneeId = null, assigneeIsAgent = true,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null, estimate = null,
+        )
+        assertTrue(store.findById(id)!!.assigneeIsAgent, "publish wrote the flag")
+
+        store.setAssignee(id, null, assigneeIsAgent = false)
+        assertTrue(!store.findById(id)!!.assigneeIsAgent, "and setAssignee can take it back off")
+
+        store.setAssignee(id, null, assigneeIsAgent = true)
+        assertTrue(store.findById(id)!!.assigneeIsAgent, "and put it back on, in the same statement as the assignee")
+    }
+
+    /**
+     * The estimate is a **pair**, and clearing it clears both halves (LNL-215).
+     *
+     * The clearing half is the one worth a test. Two columns that mean nothing apart
+     * invite a store that writes the amount and leaves the unit, and the resulting row
+     * — a stale `POINTS` with no number — is invisible until the next person types a
+     * number into a project that has since switched to time, and gets an estimate in
+     * the wrong unit. Reading a half-pair back as *no* estimate is the other half of
+     * the same defence and is pinned by the same assertion.
+     *
+     * The unit round-trips as itself rather than being re-derived from the project's
+     * mode, which is the point of stamping it on the issue: this issue is estimated in
+     * points on a project that has never said it estimates at all.
+     */
+    @Test
+    fun `an estimate round-trips as a pair and clears as a pair`() = runBlocking {
+        val p = newProject()
+        val (id, _) = store.insertDraft(p.projectId, "Draft", p.statusIds.first(), p.priorityId, Author.Nobody)
+        store.publish(
+            id, "Estimated", "", p.statusIds.first(), p.priorityId, null,
+            assigneeId = null, assigneeIsAgent = false,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null,
+            estimate = Estimate(3, EstimateUnit.POINTS),
+        )
+        assertEquals(Estimate(3, EstimateUnit.POINTS), store.findById(id)!!.estimate, "publish stores the pair")
+
+        // The editor's own update path — a different statement, and the one an issue
+        // spends the rest of its life going through.
+        store.update(
+            id, "Estimated", "", p.statusIds.first(), p.priorityId, null,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null,
+            estimate = Estimate(90, EstimateUnit.MINUTES),
+        )
+        assertEquals(
+            Estimate(90, EstimateUnit.MINUTES),
+            store.findById(id)!!.estimate,
+            "and update rewrites both halves, unit included",
+        )
+
+        store.update(
+            id, "Estimated", "", p.statusIds.first(), p.priorityId, null,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null, estimate = null,
+        )
+        assertNull(store.findById(id)!!.estimate, "null clears the pair rather than leaving a unit behind")
     }
 
     @Test

@@ -113,7 +113,7 @@ class UnreadTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     private val forumStore = ForumStore(database)
     private val forums = ForumRepository(forumStore, attachments, attachmentStore)
     private val forumPostStore = ForumPostStore(database)

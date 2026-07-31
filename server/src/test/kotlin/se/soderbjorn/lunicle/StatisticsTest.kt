@@ -74,7 +74,7 @@ class StatisticsTest {
     private val issueRepository =
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     private val events = IssueEventStore(database)
     private val history = IssueHistory(events, statuses, labels, components, users)
     private val snapshots = ProjectStatisticsStore(database)

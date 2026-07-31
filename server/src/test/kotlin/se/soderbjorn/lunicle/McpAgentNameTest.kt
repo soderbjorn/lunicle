@@ -90,7 +90,7 @@ class McpAgentNameTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     // Agent access is permitted per tier and defaults to off (LNL-192). These files
     // are about what an agent may *do*, not about who may bring one, so both tiers are
     // permitted here and the user's own switch stays the interesting half.

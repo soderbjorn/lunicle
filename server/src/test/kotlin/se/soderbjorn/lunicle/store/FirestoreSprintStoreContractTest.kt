@@ -35,7 +35,12 @@ class FirestoreSprintStoreContractTest : SprintStoreContract() {
     private fun nextId(): Long = ++seq
 
     private val issues by lazy { FirestoreIssueStore(fixture.firestore) }
-    private val vocabulary by lazy { FirestoreVocabularyStore(fixture.firestore, issues) }
+    // The links between issues (LNL-215), which the vocabulary store needs for a
+    // relation kind's usage count and for the cascade its delete performs. Real rather
+    // than a stub, so this fixture holds the same two stores production wires together.
+    private val relations by lazy { se.soderbjorn.lunicle.FirestoreIssueRelationStore(fixture.firestore) }
+
+    private val vocabulary by lazy { FirestoreVocabularyStore(fixture.firestore, issues, relations) }
     private val projects by lazy { FirestoreProjectStore(fixture.firestore) }
 
     override val store: SprintStore by lazy { FirestoreSprintStore(fixture.firestore, projects, issues) }
@@ -49,7 +54,11 @@ class FirestoreSprintStoreContractTest : SprintStoreContract() {
         val statusId = nextId()
         val priorityId = nextId()
         val (id, _) = issues.insertDraft(projectId, "Issue", statusId, priorityId, Author.Nobody)
-        issues.publish(id, "Issue $id", "", statusId, priorityId, null, null, null, null, null)
+        issues.publish(
+            id, "Issue $id", "", statusId, priorityId, null,
+            assigneeId = null, assigneeIsAgent = false,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null, estimate = null,
+        )
         return id
     }
 
