@@ -544,10 +544,16 @@ class HttpLunicleApi(
      * @throws ApiFailure 409 if the name is blank or taken, carrying the server's
      *   own sentence, which the dialog shows verbatim.
      */
-    override suspend fun addVocabulary(projectId: Long, kind: VocabularyKind, name: String): ProjectSettingsState =
+    override suspend fun addVocabulary(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String?,
+        marksBlocked: Boolean,
+    ): ProjectSettingsState =
         httpClient.post(baseUrl + ApiRoutes.vocabulary(projectId, kind)) {
             contentType(ContentType.Application.Json)
-            setBody(VocabularyAdd(name))
+            setBody(VocabularyAdd(name, inverseName, marksBlocked))
         }.requireSuccess()
 
     /**
@@ -564,10 +570,12 @@ class HttpLunicleApi(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean,
+        inverseName: String?,
+        marksBlocked: Boolean,
     ): ProjectSettingsState =
         httpClient.put(baseUrl + ApiRoutes.vocabularyItem(projectId, kind, itemId)) {
             contentType(ContentType.Application.Json)
-            setBody(VocabularyEdit(name, requiresResolution, isDone))
+            setBody(VocabularyEdit(name, requiresResolution, isDone, inverseName, marksBlocked))
         }.requireSuccess()
 
     /**
@@ -652,6 +660,17 @@ class HttpLunicleApi(
         httpClient.post(baseUrl + ApiRoutes.projectDisplay(projectId)) {
             contentType(ContentType.Application.Json)
             setBody(ProjectDisplaySettings(showIssueAuthor, hideIssueNumbers))
+        }.requireSuccess()
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * @throws ApiFailure 403 for a caller who does not administer this project.
+     */
+    override suspend fun setProjectEstimateMode(projectId: Long, mode: String): ProjectSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.projectEstimates(projectId)) {
+            contentType(ContentType.Application.Json)
+            setBody(ProjectEstimateSettings(mode))
         }.requireSuccess()
 
     // ── Forums ───────────────────────────────────────────────────────────────
@@ -1085,6 +1104,31 @@ class HttpLunicleApi(
             contentType(ContentType.Application.Json)
             setBody(ChildOrder(childIds))
         }.requireSuccess()
+
+    /**
+     * Link this issue to another (LNL-215).
+     *
+     * @return the refreshed [IssueDetail], so the relations list re-renders from the
+     *   server's truth.
+     * @throws ApiFailure 400 when the link breaks a rule — another project, itself, a
+     *   pair already linked under this kind in either direction, or an unpublished
+     *   issue. The message says which.
+     */
+    override suspend fun addIssueRelation(id: Long, toIssueId: Long, kindId: Long): IssueDetail =
+        httpClient.post(baseUrl + ApiRoutes.issueRelations(id)) {
+            contentType(ContentType.Application.Json)
+            setBody(IssueRelationRequest(toIssueId, kindId))
+        }.requireSuccess()
+
+    /**
+     * Remove one link, by its own id (LNL-215).
+     *
+     * @throws ApiFailure 400 when the link does not belong to this issue — which is
+     *   what stops an id from another board being removable by anyone who can edit any
+     *   issue at all.
+     */
+    override suspend fun removeIssueRelation(id: Long, relationId: Long): IssueDetail =
+        httpClient.delete(baseUrl + ApiRoutes.issueRelation(id, relationId)).requireSuccess()
 
     /**
      * Make a sprint the one the board scopes to, or pass null for none.

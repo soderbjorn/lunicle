@@ -57,6 +57,12 @@ import se.soderbjorn.lunicle.clientserver.NotificationSubscriptionRequest
 import se.soderbjorn.lunicle.clientserver.ProjectListState
 import se.soderbjorn.lunicle.clientserver.ProjectPermissionsView
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
+import se.soderbjorn.lunicle.clientserver.IssueRelationKindItem
+import se.soderbjorn.lunicle.clientserver.IssueRelationRequest
+import se.soderbjorn.lunicle.clientserver.IssueRelationView
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
 import se.soderbjorn.lunicle.clientserver.SprintItem
 import se.soderbjorn.lunicle.clientserver.StatusItem
@@ -169,6 +175,26 @@ class BoardDependencies(
     /** Activating, completing and populating sprints — the verbs a vocabulary has no name for. */
     val sprintRepository: se.soderbjorn.lunicle.store.SprintStore,
     val issues: se.soderbjorn.lunicle.store.IssueStore,
+    /**
+     * The links between issues and the vocabulary that names them (LNL-215).
+     *
+     * Both here as well as inside [issueRepository], and not a duplicate for the reason
+     * [roles] gives: the repository holds them to *decide* a write — same project, no
+     * duplicate pair, both published — and never exposes them. These answer the read
+     * questions the board and the issue window ask, which are a different question with
+     * a different audience.
+     *
+     * Defaulted to forgetful in-memory stores, on [instanceSettings]' reasoning rather
+     * than the notifiers' nullability: these are read on every board paint and every
+     * issue open, so a null would put a guard at each of those call sites forever to
+     * serve a case only a test reaches. An empty store answers the *right* thing — no
+     * links, nothing blocked — which is exactly a project nobody has linked anything
+     * in. [Application.module] always passes the backend's own. See
+     * InMemoryIssueRelationStores.
+     */
+    val issueRelations: se.soderbjorn.lunicle.store.IssueRelationStore = InMemoryIssueRelationStore(),
+    val issueRelationKinds: se.soderbjorn.lunicle.store.IssueRelationKindStore =
+        InMemoryIssueRelationKindStore(issueRelations),
     val issueRepository: IssueRepository,
     val comments: se.soderbjorn.lunicle.store.CommentStore,
     val attachments: se.soderbjorn.lunicle.store.AttachmentStore,
@@ -1040,12 +1066,57 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
     val childCounts: Map<Long, Int> = issueRows.mapNotNull { it.parentId }.groupingBy { it }.eachCount()
     val numberById: Map<Long, Long> = issueRows.associate { it.id to it.number }
 
+    // ── The blocked projection (LNL-215) ────────────────────────────────────
+    //
+    // A card is blocked when it is on the FROM side of a relation whose kind marks
+    // blocked, and the issue on the TO side is still OPEN. Both halves are computed
+    // here, over the project-wide sets, for `childCounts`' reason exactly: a blocker
+    // sitting in a column the reader has hidden or scoped out is absent from the list
+    // this response carries, so a client-side derivation would report a blocked card
+    // as clear — silently, and in the direction that loses information.
+    //
+    // The cost is ONE new read. `issueRows` above is already every non-draft issue in
+    // the project, so each blocker's own state is in memory; the statuses are read
+    // below for the vocabulary anyway; and the kinds are read for the picker. Only the
+    // relation rows are new.
+    //
+    // Deliberately NOT denormalised onto the issue row. A `has_open_blockers` column
+    // would need maintaining not merely on relation writes but on every status change
+    // of every blocker — a fan-out write on the hottest path in the app, and a column
+    // that can drift. One extra read is the right side of that trade.
+    val relationKindRows = issueRelationKinds.forProject(project.id)
+    val statusRows = statuses.forProject(project.id)
+    // "Open" is read off the STATUS's requires_resolution, and NOT off a resolution's
+    // isDone. The names invite the mistake: `StatusItem` is one wire type shared by
+    // statuses, priorities and resolutions, and its `isDone` is only ever populated for
+    // resolutions — there is no such flag on a status at all. Any closure stops the
+    // blocking, including "Will not fix" and "Duplicate": a blocker nobody will ever do
+    // is not blocking anything.
+    val closingStatusIds = statusRows.filter { it.requiresResolution }.map { it.id }.toSet()
+    val blockingKindIds = relationKindRows.filter { it.marksBlocked }.map { it.id }.toSet()
+    val openById: Map<Long, Boolean> = issueRows.associate { it.id to (it.statusId !in closingStatusIds) }
+    // Issue id → the numbers of the open issues blocking it. Empty for every card on a
+    // project that has never made a blocking link, which is most of them — and the
+    // filter runs over the kinds rather than in SQL for the reason IssueRelations.sq's
+    // `forProject` gives.
+    val blockersByIssue: Map<Long, List<Long>> =
+        if (blockingKindIds.isEmpty()) emptyMap()
+        else issueRelations.forProject(project.id)
+            .filter { it.kindId in blockingKindIds && openById[it.toIssueId] == true }
+            .groupBy({ it.fromIssueId }, { numberById[it.toIssueId] })
+            .mapValues { (_, numbers) -> numbers.filterNotNull().sorted() }
+            .filterValues { it.isNotEmpty() }
+    // One lookup for every assignee named on this board, resolved in a single pass —
+    // `authorNames`' distinct() is what keeps a board where one person holds forty
+    // issues from being forty reads. Separate from `names` above, which covers authors:
+    // an assignee is very often somebody who has filed nothing here.
+    val assigneeNames = authorNames(issueRows.mapNotNull { it.assigneeId }.map(Author::Account))
+
     return BoardState(
         // The rung is in hand: `permissionsFor` above derived it, and the board is
         // only built for a caller who reached one.
         project = project.toSummary(permissions.rung),
-        statuses = statuses.forProject(project.id)
-            .map { StatusItem(it.id, it.name, it.position.toInt(), it.requiresResolution) },
+        statuses = statusRows.map { StatusItem(it.id, it.name, it.position.toInt(), it.requiresResolution) },
         priorities = priorities.forProject(project.id).map { StatusItem(it.id, it.name, it.position.toInt()) },
         resolutions = resolutions.forProject(project.id)
             .map { StatusItem(it.id, it.name, it.position.toInt(), isDone = it.isDone) },
@@ -1091,11 +1162,32 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
                 parentId = issue.parentId,
                 childCount = childCounts[issue.id] ?: 0,
                 parentNumber = issue.parentId?.let { numberById[it] },
+                assigneeId = issue.assigneeId,
+                assigneeName = issue.assigneeId?.let { assigneeNames[it] },
+                // Only ever true beside an assignee — the repository forces it false
+                // otherwise — so the card never draws a robot badge with nothing to
+                // badge. See Issues.sq's assignee_is_agent.
+                assigneeIsAgent = issue.assigneeIsAgent,
+                isBlocked = blockersByIssue.containsKey(issue.id),
+                blockedByNumbers = blockersByIssue[issue.id].orEmpty(),
             )
         },
         permissions = permissions.toView(),
+        // Every project made or migrated since LNL-215 has three; a project whose kinds
+        // have all been deleted sends an empty list, and the client renders no relation
+        // picker at all. Presence is the flag, like `sprints`.
+        relationKinds = relationKindRows.map { it.toItem() },
     )
 }
+
+/** A relation kind, as the picker and the relation rows need it. See IssueRelationKinds.sq. */
+private fun IssueRelationKindRecord.toItem() = IssueRelationKindItem(
+    id = id,
+    name = name,
+    inverseName = inverseName,
+    marksBlocked = marksBlocked,
+    position = position.toInt(),
+)
 
 // ── Issues ───────────────────────────────────────────────────────────────────
 
@@ -1253,6 +1345,18 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
                 return@put
             }
 
+        // The estimate, checked against what this project actually offers. A stale
+        // editor holding a points field open while an admin switched the project to
+        // time must not be able to write points — but note what this deliberately does
+        // NOT do: it never rewrites an estimate already stored, which is the whole
+        // reason the unit is stamped on the issue rather than read from the project.
+        // See resolveEstimate.
+        val estimate = deps.resolveEstimate(issue.projectId, body.estimate)
+            .getOrElse { failure ->
+                call.respond(HttpStatusCode.BadRequest, failure.message ?: "Bad estimate.")
+                return@put
+            }
+
         deps.issueRepository.save(
             issue = issue,
             title = title,
@@ -1261,7 +1365,13 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             priorityId = body.priorityId,
             resolutionId = resolution,
             assigneeId = body.assigneeId,
+            // Stated, not null: the editor sends its whole field set, so this is the
+            // user's answer. The repository still forces it false when nobody is
+            // assigned, and still owns the "changing the assignee clears it" rule for
+            // the callers that DO leave it unstated. See IssueRepository.save.
+            assigneeIsAgent = body.assigneeIsAgent,
             sprintId = body.sprintId,
+            estimate = estimate,
             plannedVersionId = plannedVersion,
             fixedVersionId = fixedVersion,
             labelIds = body.labelIds,
@@ -1327,6 +1437,15 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
         // lets this tell a real move from a card dropped back where it started.
         // See IssueHistory.recordStatusChanged.
         deps.history?.recordStatusChanged(issue, body.statusId, user.asAuthor(), agentName = null)
+        // And the release, when the close wrote one (LNL-215). A separate event rather
+        // than a field on the status one, because the two are separate facts that
+        // happen to travel together on this one path: the editor can set a fixed
+        // version without moving the issue at all, and a history that only recorded it
+        // on a drag would be silent about half the writes. Guarded inside
+        // recordFixedVersionChanged, so a close that changed nothing records nothing.
+        if (resolution != null) {
+            deps.history?.recordFixedVersionChanged(issue, fixedVersion, user.asAuthor(), agentName = null)
+        }
         call.respond(HttpStatusCode.NoContent)
     }
 
@@ -1552,7 +1671,13 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             }
         }
 
-        deps.issues.setAssignee(issue.id, requested)
+        // The flag travels in the same statement as the assignee, both directions: a
+        // request naming somebody else carries whatever it asked for, and a request
+        // naming nobody carries false, because a flag about no one is not a state. The
+        // "changing the assignee clears it" rule is satisfied structurally here — this
+        // body is the whole field set for this route, so an unstated flag IS false.
+        // See Issues.sq's setAssignee.
+        deps.issues.setAssignee(issue.id, requested, requested != null && body.assigneeIsAgent)
         // An assignment is an update to the issue, and it goes through the store
         // directly rather than issueRepository.save — so the notification is fired
         // here, exactly as the drag route does. See BoardDependencies.notifications.
@@ -1601,7 +1726,7 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
         }
-        deps.issueRepository.setParent(issue, body.parentId).getOrElse { failure ->
+        deps.issueRepository.setParent(issue, body.parentId, user.asAuthor()).getOrElse { failure ->
             call.respond(HttpStatusCode.BadRequest, failure.message ?: "That parent is not allowed.")
             return@post
         }
@@ -1635,6 +1760,120 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
         }
         call.respond(deps.buildIssueDetail(issue, user))
     }
+
+    /**
+     * Link this issue to another (LNL-215).
+     *
+     * `canEditIssue` on **this** issue — the one the link is being added *from*, whose
+     * window the user is in. The far side's edit right is not asked, and that is the
+     * parent route's rule rather than a shortcut: belonging in a relation is a fact
+     * somebody states about the issue they are looking at, and an issue does not own
+     * who points at it. Note the consequence, because it is the one worth being sure
+     * about: somebody who may edit LNL-4 can make LNL-9 show "Blocks LNL-4" without
+     * being able to edit LNL-9. That is the same power the parent route already grants,
+     * and it is bounded the same way — both issues are in a project the caller can
+     * already read and write in.
+     *
+     * The same-project, no-self, no-duplicate and both-published rules are
+     * IssueRepository's; a refusal comes back as the 400 it returns, saying which rule.
+     */
+    post("/api/issues/{id}/relations") {
+        val user = call.caller(deps)
+        val issue = call.readableIssue(deps, user) ?: return@post
+        if (!deps.access.canEditIssue(user, issue)) {
+            call.respond(HttpStatusCode.Forbidden, "You cannot link this issue to others.")
+            return@post
+        }
+        val body = call.receiveOrNull<IssueRelationRequest>() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        deps.issueRepository.addRelation(issue, body.toIssueId, body.kindId, user.asAuthor())
+            .getOrElse { failure ->
+                call.respond(HttpStatusCode.BadRequest, failure.message ?: "That link is not allowed.")
+                return@post
+            }
+        call.respond(deps.buildIssueDetail(issue, user))
+    }
+
+    /**
+     * Unlink two issues (LNL-215). The mirror of the route above, under the same gate
+     * and for the same reason.
+     *
+     * Addressed by the RELATION's id in the path rather than by the pair and the kind,
+     * because the caller is looking at a rendered row and has one — and because naming
+     * the pair would have to say which direction it meant, which is exactly the
+     * ambiguity storing one row per link removes. The repository checks the link
+     * actually touches this issue, so an id from another board removes nothing.
+     */
+    delete("/api/issues/{id}/relations/{relationId}") {
+        val user = call.caller(deps)
+        val issue = call.readableIssue(deps, user) ?: return@delete
+        if (!deps.access.canEditIssue(user, issue)) {
+            call.respond(HttpStatusCode.Forbidden, "You cannot change this issue's links.")
+            return@delete
+        }
+        val relationId = call.parameters["relationId"]?.toLongOrNull() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Bad link id.")
+            return@delete
+        }
+        deps.issueRepository.removeRelation(issue, relationId, user.asAuthor()).getOrElse { failure ->
+            call.respond(HttpStatusCode.BadRequest, failure.message ?: "That link could not be removed.")
+            return@delete
+        }
+        call.respond(deps.buildIssueDetail(issue, user))
+    }
+}
+
+/** A refused estimate, carrying the sentence the client should show (LNL-215). */
+internal class EstimateRefusal(override val message: String) : Exception(message)
+
+/**
+ * Validate an estimate against what this project offers — [resolveResolution]'s and
+ * [resolveFixedVersion]'s sibling (LNL-215).
+ *
+ * Two things, and the second is the interesting one:
+ *
+ *  - A negative amount is refused. Zero is allowed and means "estimated at nothing",
+ *    which is a real answer a team may want for a trivial ticket; a negative one is
+ *    not an answer at all.
+ *  - The unit must be one this project's [EstimateMode] currently offers. A stale
+ *    editor holding a points field open while an administrator switched the project to
+ *    time must not be able to write points, and a project on `none` accepts no estimate
+ *    at all — the feature is off there, and off means the write is refused rather than
+ *    silently dropped, because a save that quietly discarded a number the user typed
+ *    would be worse than one that says why.
+ *
+ * What this deliberately does **not** do is touch estimates already stored. Flipping a
+ * project from points to time reinterprets nothing: the unit is stamped on each issue,
+ * so an old row still reads as points and only the next write is constrained. That is
+ * the whole reason `issues.estimate_unit` exists — see Issues.sq.
+ *
+ * @return the estimate to store, or an [EstimateRefusal] naming what is wrong. Null in
+ *   and null out is always fine: clearing an estimate is legal on every project,
+ *   including one that has switched the feature off.
+ */
+internal suspend fun BoardDependencies.resolveEstimate(
+    projectId: Long,
+    estimate: Estimate?,
+): Result<Estimate?> {
+    if (estimate == null) return Result.success(null)
+    if (estimate.amount < 0) {
+        return Result.failure(EstimateRefusal("An estimate cannot be negative."))
+    }
+    val mode = projects.findById(projectId)?.estimateMode ?: EstimateMode.NONE
+    val offered = when (mode) {
+        EstimateMode.NONE -> null
+        EstimateMode.TIME -> EstimateUnit.MINUTES
+        EstimateMode.POINTS -> EstimateUnit.POINTS
+    }
+    if (offered == null) {
+        return Result.failure(EstimateRefusal("This project does not use estimates."))
+    }
+    if (estimate.unit != offered) {
+        return Result.failure(EstimateRefusal("This project estimates in ${mode.key}, not in that unit."))
+    }
+    return Result.success(estimate)
 }
 
 /**
@@ -1723,6 +1962,40 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
     val linkableIssues =
         if (canEdit) issues.forProject(issue.projectId).filter { it.id != issue.id }.map { it.toRef() }
         else emptyList()
+    // ── This issue's links, resolved to THIS issue's side (LNL-215) ─────────
+    //
+    // One stored row per link, read in both directions and turned into a sentence about
+    // the issue whose window this is: the same row becomes "Blocked by LNL-9" here and
+    // "Blocks LNL-4" over there. Which end the reader is on is decided by comparing
+    // against `fromIssueId`, once, here — so no client has to re-derive it and no two
+    // clients can disagree.
+    //
+    // Loaded when an issue is OPENED, never when a board is; the board takes the
+    // narrower `isBlocked` projection instead. Skipped entirely for a draft, whose
+    // links cannot exist yet — the repository refuses to make one — so this is a query
+    // guaranteed to come back empty on the screen that opens most often.
+    val relationRows = if (issue.isDraft) emptyList() else issueRelations.forIssue(issue.id)
+    val kindRows = issueRelationKinds.forProject(issue.projectId)
+    val kindsById = kindRows.associateBy { it.id }
+    val relations = relationRows.mapNotNull { relation ->
+        // A row whose kind cannot be resolved is dropped rather than rendered
+        // label-less, on IssueEventStore.forIssue's reasoning: it should be
+        // unreachable — the cascade takes a kind's relations with it — and a link with
+        // no word for what it is would be a row saying nothing.
+        val kind = kindsById[relation.kindId] ?: return@mapNotNull null
+        val otherId = relation.otherThan(issue.id)
+        val other = issues.findById(otherId) ?: return@mapNotNull null
+        IssueRelationView(
+            id = relation.id,
+            kindId = kind.id,
+            label = kind.labelFor(isFromSide = relation.fromIssueId == issue.id),
+            other = other.toRef(),
+            // The right to unlink is `canEditIssue` on THIS issue, not on the far one —
+            // the parent route's rule, for its reason: an issue does not own who points
+            // at it, and so does not own who stops.
+            canRemove = canEdit,
+        )
+    }
     return IssueDetail(
         id = issue.id,
         projectId = issue.projectId,
@@ -1768,6 +2041,9 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
                 authorName = event.author.displayName(names),
                 agentName = event.agentName,
                 createdAt = event.createdAt,
+                // The snapshot, always — a relation kind is vocabulary, and this is
+                // `value`'s rule rather than `valueUserId`'s. See IssueEvents.sq.
+                relationKind = event.relationKind,
             )
         },
         canEdit = canEdit,
@@ -1815,6 +2091,14 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
         parent = parent,
         children = children,
         linkableIssues = linkableIssues,
+        assigneeIsAgent = issue.assigneeIsAgent,
+        estimate = issue.estimate,
+        // The links themselves go to every reader — they are part of the issue anybody
+        // looking at it can see. The vocabulary to ADD one is narrowed to a caller who
+        // could, the `assignableUsers` rule: a list somebody cannot act on is a list
+        // shipped for nothing.
+        relations = relations,
+        relationKinds = if (canEdit) kindRows.map { it.toItem() } else emptyList(),
     )
 }
 
@@ -2589,6 +2873,9 @@ private fun ProjectRecord.toSummary(rung: ProjectRole): ProjectSummary =
         requireFixedVersionOnResolve = requireFixedVersionOnResolve,
         showIssueAuthor = showIssueAuthor,
         hideIssueNumbers = hideIssueNumbers,
+        // The key rather than the enum, so a value from a newer server decodes instead
+        // of failing the whole board. See ProjectSummary.estimateMode.
+        estimateMode = estimateMode.key,
     )
 
 private fun ProjectPermissions.toView(): ProjectPermissionsView = ProjectPermissionsView(

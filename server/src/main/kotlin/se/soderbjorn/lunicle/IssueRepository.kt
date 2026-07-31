@@ -53,6 +53,15 @@ class IssueRepository(
      * class's preamble for why that split exists rather than being a smell.
      */
     private val history: IssueHistory? = null,
+    /**
+     * The links between issues, and the project vocabulary that names them (LNL-215).
+     *
+     * Both nullable so the tests that assemble this class for an unrelated write do not
+     * have to supply them; [addRelation] and [removeRelation] refuse rather than
+     * pretend when they are absent, and [delete]'s sweep is simply empty.
+     */
+    private val relations: se.soderbjorn.lunicle.store.IssueRelationStore? = null,
+    private val relationKinds: se.soderbjorn.lunicle.store.IssueRelationKindStore? = null,
 ) {
     /**
      * Create the hidden draft the editor writes into.
@@ -125,6 +134,20 @@ class IssueRepository(
      *   purpose: see [IssueStore.publish]. A caller that is not editing the field
      *   — the MCP tools, which do not expose it — passes `issue.assigneeId`
      *   straight back, which reads as the deliberate no-op it is.
+     * @param assigneeIsAgent whether the work goes to [assigneeId]'s *agent* rather
+     *   than to them in person, or **null for "leave it as it is"** (LNL-215).
+     *
+     *   The nullability is what makes the "changing the assignee clears it" rule
+     *   reachable at all, and it is the one parameter here that reads differently from
+     *   its neighbours. `assigneeId` and the version fields take null as *cleared*,
+     *   because the editor sends its whole field set — and a caller that is not editing
+     *   those passes the current value back. Doing that with this flag would drag it
+     *   across a handover, which is precisely the bug the rule exists to prevent. So
+     *   "not editing this" is spelled null, and the decision is made below rather than
+     *   by whoever called.
+     * @param estimate how much work this is, or null to clear it. The editor's whole
+     *   field set again, so null means cleared; a caller not editing it passes
+     *   `issue.estimate` back, which reads as the deliberate no-op it is.
      * @param updatedAt what to stamp, or null for now — which is every caller but
      *   the backfill one. An admin backfilling over MCP must pass the same value
      *   it gave [createDraft], because publishing stamps `updated_at`
@@ -157,9 +180,11 @@ class IssueRepository(
         priorityId: Long,
         resolutionId: Long?,
         assigneeId: Long?,
+        assigneeIsAgent: Boolean? = null,
         sprintId: Long?,
         plannedVersionId: Long?,
         fixedVersionId: Long?,
+        estimate: se.soderbjorn.lunicle.clientserver.Estimate? = null,
         labelIds: List<Long>,
         componentIds: List<Long>,
         updatedAt: Long? = null,
@@ -178,6 +203,38 @@ class IssueRepository(
         // would turn a typo fix into "you have been assigned this" for somebody who
         // has held the issue for a week. See IssueNotifier.issueAssigned.
         val previousAssignee = issue.assigneeId
+        // ── The agent flag's lifecycle, decided here and nowhere else ────────────
+        //
+        // Three rules, all of them about how two columns move together, which is
+        // exactly what a repository is for: the schema cannot hold them without a
+        // trigger this codebase does not use, and the client must not be trusted with
+        // them because MCP is a second client that would have to agree.
+        //
+        //  1. **Changing the assignee clears it**, unless this very save re-states it.
+        //     The previous assignee's agent is definitionally not on this any more, so
+        //     a flag that survived a handover would quietly address the new person's
+        //     work to the old person's robot. The `null` case below is what makes that
+        //     rule reachable: a caller that is not editing the field says so, rather
+        //     than passing the old value back and dragging it across the handover.
+        //  2. **Nobody assigned means nobody's agent.** A flag about no one is not a
+        //     state, and allowing it would put a robot badge on a card with no avatar.
+        //  3. **Closing keeps both**, which is the absence of a rule rather than one: at
+        //     that point the assignment has stopped being a claim about who *will* do
+        //     the work and become a record of who did. The intended consequence is that
+        //     a reopened issue comes back still flagged and goes to the same person's
+        //     agent. See Issues.sq's assignee_is_agent.
+        val resolvedAgentFlag = when {
+            assigneeId == null -> false
+            // Stated: the editor sends its whole field set, so this is the user's
+            // answer whether or not the assignee also moved. "Give this to Ada's agent"
+            // is one gesture, not two.
+            assigneeIsAgent != null -> assigneeIsAgent
+            // Unstated, and the assignee is unchanged — so there is nothing to decide
+            // and the stored flag stands.
+            assigneeId == previousAssignee -> issue.assigneeIsAgent
+            // Unstated, and the assignee changed. Rule 1.
+            else -> false
+        }
         // Read before the write, because the write destroys them:
         // setLabelsAndComponents is wholesale — delete-then-insert — so once it
         // has run there is nowhere left to discover what the labels used to be,
@@ -188,8 +245,8 @@ class IssueRepository(
         val previousLabels = if (history != null && !issue.isDraft) issues.labelsFor(issue.id) else emptyList()
         val previousComponents = if (history != null && !issue.isDraft) issues.componentsFor(issue.id) else emptyList()
         issues.publish(
-            issue.id, title, description, statusId, priorityId, resolutionId, assigneeId, sprintId,
-            plannedVersionId, fixedVersionId, updatedAt,
+            issue.id, title, description, statusId, priorityId, resolutionId, assigneeId,
+            resolvedAgentFlag, sprintId, plannedVersionId, fixedVersionId, estimate, updatedAt,
         )
         issues.setLabelsAndComponents(issue.id, issue.projectId, labelIds, componentIds)
 
@@ -209,6 +266,9 @@ class IssueRepository(
                 description = description,
                 statusId = statusId,
                 assigneeId = assigneeId,
+                sprintId = sprintId,
+                plannedVersionId = plannedVersionId,
+                fixedVersionId = fixedVersionId,
                 labelIds = labelIds,
                 componentIds = componentIds,
                 author = actor,
@@ -278,9 +338,19 @@ class IssueRepository(
      * route can turn it into a 400 that says which rule — the same shape
      * `resolveResolution` and friends use. Detaching (null) always succeeds.
      */
-    suspend fun setParent(issue: IssueRecord, parentId: Long?): Result<Unit> {
+    suspend fun setParent(
+        issue: IssueRecord,
+        parentId: Long?,
+        actor: Author = Author.Nobody,
+        agentName: String? = null,
+    ): Result<Unit> {
+        val previousParent = issue.parentId
         if (parentId == null) {
             issues.setParent(issue.id, null)
+            // Recorded on this issue AND on the epic it just left, which is the whole
+            // point of the asymmetry — see IssueHistory.recordParentChanged. LNL-55
+            // shipped reparenting with no history at all; LNL-215 is where it gained one.
+            history?.recordParentChanged(issue, previousParent, null, actor, agentName)
             return Result.success(Unit)
         }
         if (parentId == issue.id) {
@@ -313,6 +383,118 @@ class IssueRepository(
         // renumber 1..n, which also makes any previously-unranked siblings explicit.
         val ordered = issues.childrenOf(parentId).map { it.id }.filter { it != issue.id } + issue.id
         issues.setChildOrder(ordered)
+        history?.recordParentChanged(issue, previousParent, parentId, actor, agentName)
+        return Result.success(Unit)
+    }
+
+    /**
+     * Link one issue to another under one of the project's relation kinds, and enforce
+     * the four rules the schema cannot (LNL-215).
+     *
+     * The rules live here for [setParent]'s reason exactly — "several reads that decide
+     * a write", applied identically by the web route and by the MCP tool — and one of
+     * them has a second reason that is worth being blunt about: **Firestore cannot
+     * enforce uniqueness at all**, so the duplicate check below is the real guarantee
+     * on *both* backends and the SQLite UNIQUE index is a backstop rather than the rule.
+     *
+     *  - **Same project**, for the two issues *and* the kind. The composite key would
+     *    refuse a foreign kind and nothing would refuse a foreign issue; both are
+     *    checked here so a refusal is a 400 that says so rather than a 500.
+     *  - **No self-relation.** "This issue is blocked by itself" is not a statement.
+     *  - **No duplicate pair, in EITHER direction, under the same kind.** Adding "A
+     *    blocked by B" when "B blocks A" already exists must be refused, not stored a
+     *    second time — they are the same fact, and the whole one-row design rests on
+     *    them not both being written. The reversed case is the one no index can catch;
+     *    see IssueRelations.sq.
+     *  - **Both issues published.** Linking to a draft would point at an issue nobody
+     *    can see yet, the same reasoning [setParent]'s draft rule gives.
+     *
+     * Note what is deliberately *not* a rule: the far issue's edit right. Permission is
+     * `canEditIssue` on [issue] alone — the one the link is being added *from* — which
+     * is the parent route's reasoning again: an issue does not own who points at it.
+     * The route has already asked; this does not re-ask.
+     *
+     * Returns a [Result] carrying the refusal message rather than throwing, so the
+     * route turns it into a 400 that says which rule.
+     */
+    suspend fun addRelation(
+        issue: IssueRecord,
+        toIssueId: Long,
+        kindId: Long,
+        actor: Author = Author.Nobody,
+        agentName: String? = null,
+    ): Result<IssueRelationRecord> {
+        val store = relations ?: return Result.failure(
+            IllegalStateException("This deployment has no issue relations configured."),
+        )
+        val kinds = relationKinds ?: return Result.failure(
+            IllegalStateException("This deployment has no issue relations configured."),
+        )
+        if (toIssueId == issue.id) {
+            return Result.failure(IllegalArgumentException("An issue cannot be related to itself."))
+        }
+        val other = issues.findById(toIssueId)
+            ?: return Result.failure(IllegalArgumentException("No such issue to link to."))
+        if (other.projectId != issue.projectId) {
+            return Result.failure(IllegalArgumentException("A related issue must be in the same project."))
+        }
+        if (other.isDraft || issue.isDraft) {
+            return Result.failure(
+                IllegalArgumentException("That issue is not published yet, so it cannot be linked."),
+            )
+        }
+        val kind = kinds.findByIdInProject(kindId, issue.projectId)
+            ?: return Result.failure(IllegalArgumentException("That relation kind does not belong to this project."))
+        // Both directions. `forIssue` already returns them, so this costs the one read
+        // the write needed anyway rather than a second targeted query.
+        val existing = store.forIssue(issue.id).firstOrNull {
+            it.kindId == kind.id && (it.otherThan(issue.id) == toIssueId)
+        }
+        if (existing != null) {
+            return Result.failure(
+                IllegalArgumentException("Those two issues are already linked as \"${kind.name}\"."),
+            )
+        }
+        val id = store.insert(issue.projectId, issue.id, toIssueId, kind.id)
+        val record = store.findById(id)
+            ?: return Result.failure(IllegalStateException("That link could not be saved."))
+        // Two events, one on each issue, each carrying its own side's label. Not a
+        // violation of the one-row rule — see IssueHistory.recordRelationChanged.
+        history?.recordRelationChanged(record, kind, added = true, author = actor, agentName = agentName)
+        return Result.success(record)
+    }
+
+    /**
+     * Unlink two issues (LNL-215).
+     *
+     * By the relation's id, because the caller is looking at a rendered row and has
+     * one — and because "remove the link between these two under this kind" would have
+     * to say which direction it meant, which is the ambiguity the one-row rule removes.
+     *
+     * Permission is [addRelation]'s: `canEditIssue` on the issue whose window the
+     * removal was made from, which the route has already asked. What is checked here is
+     * only that the link actually touches that issue — otherwise an id from another
+     * board would be removable by anyone who can edit any issue at all.
+     */
+    suspend fun removeRelation(
+        issue: IssueRecord,
+        relationId: Long,
+        actor: Author = Author.Nobody,
+        agentName: String? = null,
+    ): Result<Unit> {
+        val store = relations ?: return Result.failure(
+            IllegalStateException("This deployment has no issue relations configured."),
+        )
+        val record = store.findById(relationId)
+            ?: return Result.failure(IllegalArgumentException("No such link."))
+        if (record.fromIssueId != issue.id && record.toIssueId != issue.id) {
+            return Result.failure(IllegalArgumentException("That link does not belong to this issue."))
+        }
+        // Read before the delete, so the two history events can still name the kind's
+        // two labels. After the delete there is a row id and nothing to say about it.
+        val kind = relationKinds?.findByIdInProject(record.kindId, record.projectId)
+        store.delete(relationId)
+        kind?.let { history?.recordRelationChanged(record, it, added = false, author = actor, agentName = agentName) }
         return Result.success(Unit)
     }
 
@@ -390,6 +572,11 @@ class IssueRepository(
         val doomed = attachmentStore.keysForIssue(issue.id)
         attachmentStore.deleteForIssue(issue.id)
         comments.deleteForIssue(issue.id)
+        // Both directions, and explicitly, for the reason every other child here is
+        // swept by name: SQLite would cascade these for free and Firestore has no
+        // cascade at all, so a link left implicit would outlive its issue on one
+        // backend and not the other. See LNL-177.
+        relations?.deleteForIssue(issue.id)
         history?.deleteForIssue(issue.id)
         subscriptions?.deleteIssueSubscriptions(issue.id)
         issues.delete(issue.id)

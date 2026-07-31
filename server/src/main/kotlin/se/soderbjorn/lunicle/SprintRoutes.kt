@@ -81,8 +81,29 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed completion.")
             return@post
         }
+        // Read BEFORE the write, and this one has to be: `complete` moves the
+        // unfinished work in a statement whose WHERE names the sprint being emptied, so
+        // afterwards there is no way to tell which issues it moved from which were
+        // never in it. Same reason recordSaved takes the labels as they stood.
+        //
+        // "Unfinished" is the server's answer, read off each status's requires_resolution
+        // rather than off a column named "Closed" — the rule Issues.sq's moveUnfinished
+        // states, restated here so the events describe exactly the rows the write moved.
+        val closingStatuses = deps.statuses.forProject(project.id)
+            .filter { it.requiresResolution }.map { it.id }.toSet()
+        val rolling = deps.issues.forProject(project.id)
+            .filter { it.sprintId == sprintId && it.statusId !in closingStatuses }
         deps.runSprintWrite(call) {
             deps.sprintRepository.complete(project.id, sprintId!!, body.moveUnfinishedTo)
+            // One event per issue that actually moved, for the reason the membership
+            // route above states at length: history is a log nobody is interrupted by,
+            // and completing a sprint is one of the two ways an issue's sprint changes
+            // in bulk. The finished work is deliberately untouched — it stays in the
+            // sprint it was done in, so nothing happened to it to record.
+            val actor = call.caller(deps).asAuthor()
+            rolling.forEach {
+                deps.history?.recordSprintChanged(it, body.moveUnfinishedTo, actor, agentName = null)
+            }
             call.respond(deps.buildBoard(project, call.caller(deps)))
         }
     }
@@ -148,6 +169,33 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
 
         deps.runSprintWrite(call) {
             deps.sprintRepository.setMembership(project.id, sprintId, body.issueIds)
+            // ── Bulk sprint writes DO record history, unlike bulk mail ──────────
+            //
+            // This is the deliberate opposite of the notification decision documented
+            // in SprintRepository's preamble, and the distinction is the point: a wall
+            // of near-identical *e-mails* makes people mute their notifications,
+            // whereas a history is a log nobody is interrupted by — and "how did this
+            // issue end up in Sprint 4" is exactly the question it exists to answer.
+            // Planning is where most issues get their sprint, so a history that skipped
+            // it would be silent about the common case and loud about the rare one.
+            //
+            // Recorded HERE rather than inside the repository, which is the split
+            // IssueHistory's own preamble describes: the write does not pass through
+            // `IssueRepository`, this call site has the actor, and doing it at the route
+            // means one implementation serves both backends rather than one per
+            // orchestrator. `current` and `incoming` above are the before-state, read
+            // before the write for exactly the reason recordSaved's labels are.
+            //
+            // Each recordSprintChanged is guarded on the sprint actually changing, so
+            // an unchanged member of a re-saved plan records nothing.
+            val actor = user.asAuthor()
+            val wanted = body.issueIds.distinct().toSet()
+            current.filter { it.id !in wanted }.forEach {
+                deps.history?.recordSprintChanged(it, null, actor, agentName = null)
+            }
+            incoming.forEach {
+                deps.history?.recordSprintChanged(it, sprintId, actor, agentName = null)
+            }
             call.respond(deps.buildBoard(project, call.caller(deps)))
         }
     }
@@ -178,6 +226,12 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
             // fired here, exactly as the drag and assign routes do. See
             // BoardDependencies.notifications.
             user?.let { deps.notifications.issueUpdated(issue, it.id, "scheduled") }
+            // And a history line, which scheduling left none of until LNL-215 — "how
+            // did this issue end up in Sprint 4" is exactly the question a history
+            // exists to answer. `issue` is the record as it stood BEFORE the write, so
+            // the guard inside recordSprintChanged can tell a real move from a menu
+            // click that chose the sprint the issue is already in.
+            deps.history?.recordSprintChanged(issue, body.sprintId, user.asAuthor(), agentName = null)
             val saved = deps.issues.findById(issue.id) ?: run {
                 call.respond(HttpStatusCode.NotFound, "That issue no longer exists.")
                 return@runSprintWrite

@@ -794,6 +794,11 @@ internal val se.soderbjorn.lunicle.clientserver.VocabularyKind.minimumRole: Proj
         se.soderbjorn.lunicle.clientserver.VocabularyKind.STATUS,
         se.soderbjorn.lunicle.clientserver.VocabularyKind.PRIORITY,
         se.soderbjorn.lunicle.clientserver.VocabularyKind.RESOLUTION,
+        // Relation kinds join them (LNL-215), and the gate is not merely "it is
+        // vocabulary too": one of these carries `marks_blocked`, which decides which
+        // cards on everybody's board render as blocked. That is a decision about what
+        // the board *is*, in the same sense adding a status is.
+        se.soderbjorn.lunicle.clientserver.VocabularyKind.RELATION_KIND,
         -> ProjectRole.ADMIN
     }
 

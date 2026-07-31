@@ -83,7 +83,23 @@ interface LunicleApi {
 
     suspend fun projectSettings(projectId: Long): ProjectSettingsState
     suspend fun setProjectNewIssueNotification(projectId: Long, subscribed: Boolean): ProjectSettingsState
-    suspend fun addVocabulary(projectId: Long, kind: VocabularyKind, name: String): ProjectSettingsState
+    /**
+     * Add a vocabulary row.
+     *
+     * @param inverseName a relation kind's to-side label, or null for a symmetric one
+     *   (LNL-215). Ignored by the server for every other kind. Accepted at add time —
+     *   unlike a status's closing flag, which only the rename sets — so a kind is never
+     *   briefly and visibly symmetric on its way to not being.
+     * @param marksBlocked a relation kind's blocking flag. Defaults false: it decides
+     *   which cards go grey on everybody's board.
+     */
+    suspend fun addVocabulary(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String? = null,
+        marksBlocked: Boolean = false,
+    ): ProjectSettingsState
     suspend fun editVocabulary(
         projectId: Long,
         kind: VocabularyKind,
@@ -91,6 +107,10 @@ interface LunicleApi {
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean = false,
+        /** A relation kind's to-side label, or null for symmetric (LNL-215). Ignored elsewhere. */
+        inverseName: String? = null,
+        /** A relation kind's blocking flag (LNL-215). Ignored elsewhere. */
+        marksBlocked: Boolean = false,
     ): ProjectSettingsState
 
     suspend fun deleteVocabulary(projectId: Long, kind: VocabularyKind, itemId: Long): ProjectSettingsState
@@ -113,6 +133,15 @@ interface LunicleApi {
         showIssueAuthor: Boolean,
         hideIssueNumbers: Boolean,
     ): ProjectSettingsState
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * @param mode one of [EstimateMode]'s keys. An unrecognised value folds to `none`
+     *   server-side rather than being refused — `none` renders nothing, which is the
+     *   safe direction for a value a build has never heard of.
+     */
+    suspend fun setProjectEstimateMode(projectId: Long, mode: String): ProjectSettingsState
 
     // ── Forums ───────────────────────────────────────────────────────────────
 
@@ -228,6 +257,17 @@ interface LunicleApi {
     suspend fun setIssueSprint(id: Long, sprintId: Long?): IssueDetail
     suspend fun setIssueParent(id: Long, parentId: Long?): IssueDetail
     suspend fun reorderChildren(id: Long, childIds: List<Long>): IssueDetail
+
+    /**
+     * Link this issue to another under one of the project's relation kinds (LNL-215).
+     *
+     * @return the refreshed [IssueDetail], so the relations list re-renders from the
+     *   server's truth rather than from what the client guessed.
+     */
+    suspend fun addIssueRelation(id: Long, toIssueId: Long, kindId: Long): IssueDetail
+
+    /** Remove one link, by its own id (LNL-215). Returns the refreshed [IssueDetail]. */
+    suspend fun removeIssueRelation(id: Long, relationId: Long): IssueDetail
     suspend fun activateSprint(projectId: Long, sprintId: Long?): BoardState
     suspend fun completeSprint(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?): BoardState
 
