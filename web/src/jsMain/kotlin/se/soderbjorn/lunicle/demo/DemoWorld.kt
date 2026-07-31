@@ -51,6 +51,8 @@ import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.DeploymentFacts
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
 import se.soderbjorn.lunicle.clientserver.InstanceOwnership
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.CommentView
@@ -58,6 +60,8 @@ import se.soderbjorn.lunicle.clientserver.IssueDetail
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
 import se.soderbjorn.lunicle.clientserver.IssueEventView
 import se.soderbjorn.lunicle.clientserver.IssueRef
+import se.soderbjorn.lunicle.clientserver.IssueRelationKindItem
+import se.soderbjorn.lunicle.clientserver.IssueRelationView
 import se.soderbjorn.lunicle.clientserver.IssueSummary
 import se.soderbjorn.lunicle.clientserver.NotificationKind
 import se.soderbjorn.lunicle.clientserver.NotificationListState
@@ -447,6 +451,69 @@ internal class DemoSprint(
     var completedAt: Long? = null,
 )
 
+/**
+ * One of a project's ways for two issues to be related — "Blocked by" / "Blocks"
+ * (LNL-215).
+ *
+ * Its own entity rather than a fourth reuse of [DemoNamed], which labels, components
+ * and versions all ride on. Those three really are an id, a name and an order; this
+ * carries a *second* name and a flag, and folding it in would put two fields on every
+ * label that could only ever be null and false. The wire draws the same line — see
+ * [IssueRelationKindItem], which is not [VocabularyItem] either.
+ *
+ * @property inverseName the to-side label, or null because the kind reads the same in
+ *   both directions. **Null is the whole encoding of symmetry**, exactly as it is on
+ *   the server — there is no `isSymmetric` flag beside it that could disagree with a
+ *   stale second name. Nothing reads this field directly; [labelFor] spells the `?:`
+ *   once, on the server's reasoning in IssueRelationKinds.sq.
+ * @property marksBlocked whether an issue on the *from* side of one of these counts as
+ *   blocked on the board. A flag rather than `name == "Blocked by"`, for the reason a
+ *   closing column is a flag rather than a name: the seed names the row and an
+ *   administrator may rename it the moment the demo opens.
+ */
+internal class DemoRelationKind(
+    val id: Long,
+    var name: String,
+    var inverseName: String? = null,
+    var marksBlocked: Boolean = false,
+    var position: Int = 0,
+) {
+    /**
+     * What to call this link, read from one end or the other.
+     *
+     * The one place the `inverseName ?: name` fallback is spelled, so no projection
+     * has to remember that a symmetric kind reads the same word twice. Mirrors
+     * `IssueRelationKindRecord.labelFor`.
+     */
+    fun labelFor(isFromSide: Boolean): String = if (isFromSide) name else (inverseName ?: name)
+}
+
+/**
+ * One link between two issues (LNL-215).
+ *
+ * **Stored once, from → to, and rendered in both directions.** The demo could trivially
+ * have written two rows — one per direction — and made every read a simple lookup; it
+ * deliberately does not, because that is the trap IssueRelations.sq spells out and a
+ * demo that took the shortcut would be teaching a data model the product does not have.
+ * Two rows are two sources of truth for one fact, and they drift the first time one is
+ * removed and the other is not. The side a reader is on is decided once, at projection
+ * time, by comparing against [fromIssueId] — see [DemoWorld.issueDetail].
+ *
+ * Scoped to a project by construction rather than by a column: a relation only ever
+ * lives in the [DemoProject] whose two issues it joins, which is the same containment
+ * every other list on that class has. The server carries a `project_id` because its
+ * rows live in one flat table; here the list *is* the scope.
+ */
+internal class DemoRelation(
+    val id: Long,
+    val fromIssueId: Long,
+    val toIssueId: Long,
+    val kindId: Long,
+) {
+    /** The issue at the other end, seen from [issueId]. Mirrors `IssueRelationRecord.otherThan`. */
+    fun otherThan(issueId: Long): Long = if (fromIssueId == issueId) toIssueId else fromIssueId
+}
+
 /** One issue. Mutable, because the demo edits it in place. */
 internal class DemoIssue(
     val id: Long,
@@ -461,6 +528,27 @@ internal class DemoIssue(
     var authorId: Long? = null,
     var agentName: String? = null,
     var assigneeId: Long? = null,
+    /**
+     * Whether the work goes to [assigneeId]'s *agent* rather than to them in person
+     * (LNL-215).
+     *
+     * Only ever meaningful beside an assignee, and the demo keeps that invariant where
+     * the server keeps it — in the write, not in the projection. See
+     * [DemoLunicleApi.saveIssue], which mirrors the three-rule lifecycle
+     * `IssueRepository.save` documents: nobody assigned means false, changing the
+     * assignee clears it, and closing keeps it.
+     */
+    var assigneeIsAgent: Boolean = false,
+    /**
+     * How much work this is, or null because nobody has said (LNL-215).
+     *
+     * The wire's [Estimate] stored verbatim rather than an amount and a unit held
+     * apart, and that is not laziness: the unit is stamped on the ISSUE and not derived
+     * from its project, so an amount without its unit is not a state this world can
+     * render. Storing the pair is what makes flipping a project's estimate mode leave
+     * every existing estimate saying what it meant — see the wire's `EstimateUnit`.
+     */
+    var estimate: Estimate? = null,
     var sprintId: Long? = null,
     var parentId: Long? = null,
     var plannedVersionId: Long? = null,
@@ -495,6 +583,17 @@ internal class DemoEvent(
     val authorId: Long? = null,
     val agentName: String? = null,
     val createdAt: Long = 0,
+    /**
+     * The relation kind's label for THIS issue's side of the link, on a
+     * `RELATION_ADDED` or `RELATION_REMOVED` event; null on every other kind (LNL-215).
+     *
+     * A snapshot, frozen when the event is written, for the reason every other value on
+     * this class is one: relation kinds are vocabulary an administrator can rename, and
+     * a rename must not reach backwards and alter what the history says happened. Its
+     * own field rather than a second entry in [values] because that list is documented
+     * as carrying *the whole set* a kind refers to — see [IssueEventView.relationKind].
+     */
+    val relationKind: String? = null,
 )
 
 /** One stored notification, for the bell and its panel. */
@@ -526,12 +625,43 @@ internal class DemoProject(
     var showIssueAuthor: Boolean = false,
     var hideIssueNumbers: Boolean = false,
     var notifyOnNewIssue: Boolean = false,
+    /**
+     * Whether this project estimates, and in what unit (LNL-215).
+     *
+     * The **enum** rather than the key string the wire carries, so that the fold of an
+     * unrecognised value happens once, at the write, exactly where the server does it —
+     * `setProjectEstimateMode` takes a `String` and the route runs it through
+     * [EstimateMode.fromKey] before storing. Keeping a raw string here would push that
+     * fold into every reader and give the demo a fourth mode nobody can render.
+     *
+     * [EstimateMode.NONE] by default, which must leave a board visually identical to
+     * one from before the feature existed. One of the three seeded projects stays here
+     * forever on purpose; see DemoFixturesKlinik.
+     */
+    var estimateMode: EstimateMode = EstimateMode.NONE,
     val statuses: MutableList<DemoStatus> = mutableListOf(),
     val priorities: MutableList<DemoStatus> = mutableListOf(),
     val resolutions: MutableList<DemoStatus> = mutableListOf(),
     val labels: MutableList<DemoNamed> = mutableListOf(),
     val components: MutableList<DemoNamed> = mutableListOf(),
     val versions: MutableList<DemoNamed> = mutableListOf(),
+    /**
+     * The ways two issues here can be said to be related, in the order an administrator
+     * arranged (LNL-215).
+     *
+     * Every project in this world is seeded with the same three the real
+     * `ProjectRepository` seeds — see [seedDefaultRelationKinds] — because a demo whose
+     * relation picker was empty on two boards out of three would read as a feature that
+     * does not work rather than as one nobody has configured. **Emptiness is still the
+     * contract**, though: delete all three from the settings dialog and the picker goes
+     * away, exactly as it does on a real board.
+     */
+    val relationKinds: MutableList<DemoRelationKind> = mutableListOf(),
+    /**
+     * The links between this project's issues — **one row per link**, never two. See
+     * [DemoRelation], which is where that rule and its reason live.
+     */
+    val relations: MutableList<DemoRelation> = mutableListOf(),
     val sprints: MutableList<DemoSprint> = mutableListOf(),
     var activeSprintId: Long? = null,
     val issues: MutableList<DemoIssue> = mutableListOf(),
@@ -764,6 +894,9 @@ internal class DemoWorld {
         requireFixedVersionOnResolve = p.requireFixedVersionOnResolve,
         showIssueAuthor = p.showIssueAuthor,
         hideIssueNumbers = p.hideIssueNumbers,
+        // The key, not the enum: the wire carries a string so a mode from a newer build
+        // decodes rather than failing a whole board. See ProjectSummary.estimateMode.
+        estimateMode = p.estimateMode.key,
     )
 
     /**
@@ -802,7 +935,15 @@ internal class DemoWorld {
         )
     }
 
-    fun issueSummary(issue: DemoIssue): IssueSummary = IssueSummary(
+    /**
+     * One card, with the numbers of whatever is blocking it (LNL-215).
+     *
+     * [blockedBy] is handed in rather than computed here, and that is the same division
+     * of labour `BoardRoutes.buildBoard` makes: the answer is a fact about the project's
+     * whole relation set, so working it out per card would re-scan every link for every
+     * card on the board. [blockersByIssue] computes it once for the whole board.
+     */
+    fun issueSummary(issue: DemoIssue, blockedBy: List<Long> = emptyList()): IssueSummary = IssueSummary(
         id = issue.id,
         number = issue.number,
         title = issue.title,
@@ -818,29 +959,85 @@ internal class DemoWorld {
         canEdit = true,
         sprintId = issue.sprintId,
         parentId = issue.parentId,
+        assigneeId = issue.assigneeId,
+        assigneeName = userName(issue.assigneeId),
+        // Only ever true beside an assignee, which the writes guarantee rather than this
+        // projection — see DemoIssue.assigneeIsAgent. So the card never draws a robot
+        // badge with no avatar to badge it onto.
+        assigneeIsAgent = issue.assigneeIsAgent,
+        isBlocked = blockedBy.isNotEmpty(),
+        blockedByNumbers = blockedBy,
     )
 
-    fun boardState(p: DemoProject): BoardState = BoardState(
-        project = projectSummary(p),
-        statuses = p.statuses.sortedBy { it.position }.map(::statusItem),
-        priorities = p.priorities.sortedBy { it.position }.map(::statusItem),
-        resolutions = p.resolutions.sortedBy { it.position }.map(::statusItem),
-        labels = p.labels.sortedBy { it.position }.map(::vocabItem),
-        components = p.components.sortedBy { it.position }.map(::vocabItem),
-        sprints = p.sprints.sortedBy { it.position }.map(::sprintItem),
-        activeSprintId = p.activeSprintId,
-        versions = p.versions.sortedBy { it.position }.map(::vocabItem),
-        issues = orderedIssues(p).map(::issueSummary),
-        // Owner + sysadmin: every affordance is offered. See the file preamble.
-        permissions = ProjectPermissionsView(
-            canCreateIssue = true,
-            canComment = true,
-            canChangeUnownedIssues = true,
-            canMutateProject = true,
-            canMutateProjectIdentity = true,
-            canBeAssigned = true,
-        ),
-    )
+    /**
+     * Issue id → the numbers of the still-open issues blocking it (LNL-215).
+     *
+     * The board's whole blocked projection, computed once per board for
+     * [issueSummary]'s reason. It mirrors `BoardRoutes.buildBoard` clause for clause,
+     * and two of those clauses are worth restating because both are easy to get subtly
+     * wrong and neither shows up as an error:
+     *
+     *  - **Only the *from* side is blocked.** The stored row says "A blocked by B", so A
+     *    is the card that dims; B, which reads "Blocks A" from its own side, is working
+     *    normally. A demo that dimmed both ends would make the whole one-row design look
+     *    like a bug.
+     *  - **"Open" is read off the blocker's STATUS**, via `requiresResolution`, and NOT
+     *    off a resolution's `isDone`. Any closure stops the blocking, "Will not fix" and
+     *    "Duplicate" included: a blocker nobody will ever do is not blocking anything.
+     *    The invitation to the mistake is that [DemoStatus] is one class shared by
+     *    statuses, priorities and resolutions, and its `isDone` is only ever populated
+     *    for resolutions — so reading it off a status silently answers false forever.
+     *
+     * Empty for every project that has never made a blocking link, which is two of the
+     * three seeded here and every board a visitor creates.
+     */
+    private fun blockersByIssue(p: DemoProject): Map<Long, List<Long>> {
+        val blockingKindIds = p.relationKinds.filter { it.marksBlocked }.map { it.id }.toSet()
+        if (blockingKindIds.isEmpty()) return emptyMap()
+        val closingStatusIds = p.statuses.filter { it.requiresResolution }.map { it.id }.toSet()
+        val published = p.issues.filter { !it.isDraft }
+        val numberById = published.associate { it.id to it.number }
+        val openById = published.associate { it.id to (it.statusId !in closingStatusIds) }
+        return p.relations
+            .filter { it.kindId in blockingKindIds && openById[it.toIssueId] == true }
+            .groupBy({ it.fromIssueId }, { numberById[it.toIssueId] })
+            .mapValues { (_, numbers) -> numbers.filterNotNull().sorted() }
+            .filterValues { it.isNotEmpty() }
+    }
+
+    /** A relation kind, as the picker and the settings row need it. */
+    private fun relationKindItem(k: DemoRelationKind): IssueRelationKindItem =
+        IssueRelationKindItem(k.id, k.name, k.inverseName, k.marksBlocked, k.position)
+
+    fun boardState(p: DemoProject): BoardState {
+        val blockers = blockersByIssue(p)
+        return BoardState(
+            project = projectSummary(p),
+            statuses = p.statuses.sortedBy { it.position }.map(::statusItem),
+            priorities = p.priorities.sortedBy { it.position }.map(::statusItem),
+            resolutions = p.resolutions.sortedBy { it.position }.map(::statusItem),
+            labels = p.labels.sortedBy { it.position }.map(::vocabItem),
+            components = p.components.sortedBy { it.position }.map(::vocabItem),
+            sprints = p.sprints.sortedBy { it.position }.map(::sprintItem),
+            activeSprintId = p.activeSprintId,
+            versions = p.versions.sortedBy { it.position }.map(::vocabItem),
+            issues = orderedIssues(p).map { issueSummary(it, blockers[it.id].orEmpty()) },
+            // Owner + sysadmin: every affordance is offered. See the file preamble.
+            permissions = ProjectPermissionsView(
+                canCreateIssue = true,
+                canComment = true,
+                canChangeUnownedIssues = true,
+                canMutateProject = true,
+                canMutateProjectIdentity = true,
+                canBeAssigned = true,
+            ),
+            // The board carries the vocabulary but NOT the links themselves: a card shows
+            // whether it is blocked and nothing else, so shipping every relation of every
+            // card would be paying for something nothing renders. The links arrive when an
+            // issue is opened — see IssueDetail.relations.
+            relationKinds = p.relationKinds.sortedBy { it.position }.map(::relationKindItem),
+        )
+    }
 
     // ── Issue detail ──────────────────────────────────────────────────────────
 
@@ -870,6 +1067,7 @@ internal class DemoWorld {
         authorName = userName(e.authorId),
         agentName = e.agentName,
         createdAt = e.createdAt,
+        relationKind = e.relationKind,
     )
 
     /** Everyone who may be assigned or @mentioned — the whole crew. */
@@ -887,6 +1085,35 @@ internal class DemoWorld {
             .filter { it.completedAt == null || it.id == issue.sprintId }
             .sortedBy { it.position }
             .map(::sprintItem)
+        // ── This issue's links, resolved to THIS issue's side (LNL-215) ─────────
+        //
+        // One stored row read in both directions and turned into a sentence about the
+        // issue whose window this is: the same row becomes "Blocked by AST-11" here and
+        // "Blocks AST-46" over there. Which end the reader is on is decided once, here,
+        // by comparing against `fromIssueId` — so nothing downstream re-derives it and
+        // no two screens can disagree about which way a link points.
+        //
+        // A row whose kind or far issue cannot be resolved is dropped rather than
+        // rendered half-built, mirroring the route: a link with no word for what it is,
+        // or no issue at the other end, is a row that says nothing. It should be
+        // unreachable in this world — deleting either takes the relations with it — and
+        // dropping it is the cheap insurance rather than the expected path.
+        val relations = p.relations
+            .filter { it.fromIssueId == issue.id || it.toIssueId == issue.id }
+            .mapNotNull { relation ->
+                val kind = p.relationKinds.firstOrNull { it.id == relation.kindId } ?: return@mapNotNull null
+                val other = p.issues.firstOrNull { it.id == relation.otherThan(issue.id) } ?: return@mapNotNull null
+                IssueRelationView(
+                    id = relation.id,
+                    kindId = kind.id,
+                    label = kind.labelFor(isFromSide = relation.fromIssueId == issue.id),
+                    other = issueRef(other),
+                    // The right to unlink is the right to edit THIS issue, never the far
+                    // one — an issue does not own who points at it, and so does not own
+                    // who stops. The demo visitor may edit everything, so this is true.
+                    canRemove = true,
+                )
+            }
         return IssueDetail(
             id = issue.id,
             projectId = p.id,
@@ -932,6 +1159,17 @@ internal class DemoWorld {
             parent = parent?.let(::issueRef),
             children = children.map(::issueRef),
             linkableIssues = linkable.map(::issueRef),
+            assigneeIsAgent = issue.assigneeIsAgent,
+            estimate = issue.estimate,
+            relations = relations,
+            // The picker's vocabulary, sent with the issue rather than read off the board
+            // because an issue window opens from a deep link with no board loaded — the
+            // same reason `sprints` and `versions` ride here. Note the rendered
+            // `relations` above are NOT narrowed the way the real route narrows this
+            // list: the links are part of the issue every reader can see, and only the
+            // vocabulary you would pick *from* is an editor's. The demo visitor can edit
+            // everything, so both are populated here regardless.
+            relationKinds = p.relationKinds.sortedBy { it.position }.map(::relationKindItem),
         )
     }
 
@@ -950,6 +1188,21 @@ internal class DemoWorld {
     private fun usageOfVersion(p: DemoProject, id: Long) =
         p.published.count { it.plannedVersionId == id || it.fixedVersionId == id }
 
+    /**
+     * How many links use this relation kind (LNL-215).
+     *
+     * Counted over the *relations*, not over the issues, which is the one usage count
+     * here that is not a count of cards — and it is why the settings row's sentence
+     * about deleting one reads differently from a label's. Deleting a kind takes its
+     * links with it (they cascade; see [deleteVocabularyRow]), so the number in front of
+     * an administrator is how many statements about this project are about to stop
+     * existing.
+     *
+     * No draft filter, unlike every count above it: a relation cannot touch a draft at
+     * all — the write refuses one — so there is nothing here to leave out.
+     */
+    private fun usageOfRelationKind(p: DemoProject, id: Long) = p.relations.count { it.kindId == id }
+
     private val DemoProject.published: List<DemoIssue> get() = issues.filter { !it.isDraft }
 
     private fun statusEntry(p: DemoProject, s: DemoStatus, usage: Int) =
@@ -957,6 +1210,25 @@ internal class DemoWorld {
 
     private fun namedEntry(v: DemoNamed, usage: Int) =
         VocabularyEntry(v.id, v.name, v.position, usageCount = usage)
+
+    /**
+     * A relation-kind row, with the two fields only a relation kind carries (LNL-215) —
+     * the richest row of any vocabulary here, where a label is just a name.
+     *
+     * [DemoRelationKind.inverseName] travels **as stored**, null and all, rather than
+     * through `labelFor`: null is what tells the Structure section's row to tick "same
+     * in both directions" and grey the second field, so resolving the fallback on the
+     * way out would present every symmetric kind as one that merely happens to repeat
+     * itself.
+     */
+    private fun relationKindEntry(k: DemoRelationKind, usage: Int) = VocabularyEntry(
+        k.id,
+        k.name,
+        k.position,
+        usageCount = usage,
+        inverseName = k.inverseName,
+        marksBlocked = k.marksBlocked,
+    )
 
     /**
      * A sprint row, with the two fields only a sprint carries (LNL-196): when it was
@@ -1277,6 +1549,16 @@ internal class DemoWorld {
         resolutions = p.resolutions.sortedBy { it.position }.map { statusEntry(p, it, usageOfResolution(p, it.id)) },
         sprints = p.sprints.sortedBy { it.position }.map { sprintEntry(p, it, usageOfSprint(p, it.id)) },
         versions = p.versions.sortedBy { it.position }.map { namedEntry(it, usageOfVersion(p, it.id)) },
+        // Rendered in the Structure section beside the statuses and the labels, because
+        // it is vocabulary about what an issue *is* rather than about when work happens
+        // (LNL-215). See ProjectSettingsState.relationKinds.
+        relationKinds = p.relationKinds.sortedBy { it.position }
+            .map { relationKindEntry(it, usageOfRelationKind(p, it.id)) },
+        // The key, for ProjectSummary.estimateMode's reason. Sent to everybody who
+        // reaches this state — the issue window reads it to decide what the estimate
+        // control offers — and editable only in the admin half, which the demo visitor
+        // has anyway.
+        estimateMode = p.estimateMode.key,
         canMutateProject = true,
         // Maintainer and above, which an owner is. The demo has no caller below it, so the
         // read-only halves of Sprints and Versions never show here — see the server's

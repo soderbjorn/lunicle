@@ -31,6 +31,9 @@ import se.soderbjorn.lunicle.clientserver.ConversationDetail
 import se.soderbjorn.lunicle.clientserver.ConversationDraft
 import se.soderbjorn.lunicle.clientserver.ConversationListState
 import se.soderbjorn.lunicle.clientserver.DiscussionUnreadState
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
 import se.soderbjorn.lunicle.clientserver.ForumDraftRef
 import se.soderbjorn.lunicle.clientserver.ForumListState
 import se.soderbjorn.lunicle.clientserver.ForumPostDetail
@@ -310,9 +313,15 @@ internal class DemoLunicleApi(
         return world.projectSettingsState(p)
     }
 
-    override suspend fun addVocabulary(projectId: Long, kind: VocabularyKind, name: String): ProjectSettingsState {
+    override suspend fun addVocabulary(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String?,
+        marksBlocked: Boolean,
+    ): ProjectSettingsState {
         val p = requireProject(projectId)
-        addVocabularyRow(world, p, kind, name.trim())
+        addVocabularyRow(world, p, kind, name.trim(), inverseName, marksBlocked)
         return world.projectSettingsState(p)
     }
 
@@ -323,9 +332,11 @@ internal class DemoLunicleApi(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean,
+        inverseName: String?,
+        marksBlocked: Boolean,
     ): ProjectSettingsState {
         val p = requireProject(projectId)
-        editVocabularyRow(p, kind, itemId, name.trim(), requiresResolution, isDone)
+        editVocabularyRow(p, kind, itemId, name.trim(), requiresResolution, isDone, inverseName, marksBlocked)
         return world.projectSettingsState(p)
     }
 
@@ -377,6 +388,27 @@ internal class DemoLunicleApi(
         val p = requireProject(projectId)
         p.showIssueAuthor = showIssueAuthor
         p.hideIssueNumbers = hideIssueNumbers
+        return world.projectSettingsState(p)
+    }
+
+    /**
+     * Whether this project estimates, and in what unit (LNL-215).
+     *
+     * The unrecognised-key fold happens here, at the write, exactly where the real route
+     * does it — [EstimateMode.fromKey] answers `none` for anything it does not know
+     * rather than refusing. That is the safe direction and it is worth the demo keeping:
+     * `none` renders nothing, so a key from a newer build costs a visitor a setting that
+     * does nothing, not a settings pane that will not open.
+     *
+     * Note what this deliberately does **not** touch: the estimates already on this
+     * project's issues. The mode governs what the editor OFFERS and nothing else — every
+     * stored estimate carries its own unit, so switching this board from points to time
+     * leaves "3 points" reading as 3 points. That is the whole reason a unit is stamped
+     * per issue; see DemoIssue.estimate.
+     */
+    override suspend fun setProjectEstimateMode(projectId: Long, mode: String): ProjectSettingsState {
+        val p = requireProject(projectId)
+        p.estimateMode = EstimateMode.fromKey(mode)
         return world.projectSettingsState(p)
     }
 
@@ -625,10 +657,21 @@ internal class DemoLunicleApi(
         return world.issueDetail(p, issue)
     }
 
+    /**
+     * Hand the issue to somebody, or to nobody.
+     *
+     * The agent flag goes to false, always — and that is not this file taking a shortcut,
+     * it is what the route does. `IssueAssignment.assigneeIsAgent` defaults false and
+     * this is the *button's* endpoint: "Assign to me" and "Unassign me" have no opinion
+     * about anybody's agent, so the flag they send is the default one and the server
+     * writes `requested != null && false`. Giving work to an agent is the editor's
+     * gesture; see [saveIssue], which is where the three-rule lifecycle lives.
+     */
     override suspend fun setIssueAssignee(id: Long, assigneeId: Long?): IssueDetail {
         val (p, issue) = requireIssue(id)
         if (issue.assigneeId != assigneeId) {
             issue.assigneeId = assigneeId
+            issue.assigneeIsAgent = false
             issue.updatedAt = world.now()
             addEvent(p, issue, IssueEventKind.ASSIGNEE_CHANGED, value = world.userName(assigneeId))
         }
@@ -642,6 +685,9 @@ internal class DemoLunicleApi(
         val oldDescription = issue.description
         val oldStatusId = issue.statusId
         val oldAssigneeId = issue.assigneeId
+        val oldSprintId = issue.sprintId
+        val oldPlannedVersionId = issue.plannedVersionId
+        val oldFixedVersionId = issue.fixedVersionId
         val oldLabels = issue.labelIds.toSet()
         val oldComponents = issue.componentIds.toSet()
 
@@ -653,6 +699,26 @@ internal class DemoLunicleApi(
         // Honour the closing rule: a resolution only rides when the target column demands one.
         issue.resolutionId = if (targetStatus?.requiresResolution == true) update.resolutionId else null
         issue.assigneeId = update.assigneeId
+        // ── The agent flag's lifecycle (LNL-215) ────────────────────────────────
+        //
+        // Two of the three rules `IssueRepository.save` documents, and they are rules
+        // about how two columns move together rather than about what the client sent:
+        //
+        //  1. **Nobody assigned means nobody's agent.** A flag about no one is not a
+        //     state, and allowing it would put a robot badge on a card with no avatar.
+        //  2. **Closing keeps it**, which is the absence of a rule rather than one — the
+        //     assignment has stopped being a claim about who will do the work and become
+        //     a record of who did.
+        //
+        // The server's third rule — "changing the assignee clears it, unless this save
+        // re-states it" — needs a caller that can leave the field *unstated*, which is
+        // what the repository's nullable parameter is for. The editor is not such a
+        // caller: `IssueUpdate` is its whole field set and always says, so on this path
+        // the answer is simply the one the user gave. That is the same reading this
+        // method already takes of a null `assigneeId`, and it is why the demo can honour
+        // the rule without carrying the tri-state the MCP tools need.
+        issue.assigneeIsAgent = update.assigneeId != null && update.assigneeIsAgent
+        issue.estimate = resolveEstimate(p, issue, update.estimate)
         issue.sprintId = update.sprintId
         issue.plannedVersionId = update.plannedVersionId
         issue.fixedVersionId = update.fixedVersionId
@@ -678,31 +744,109 @@ internal class DemoLunicleApi(
             if (issue.componentIds.toSet() != oldComponents) {
                 addEvent(p, issue, IssueEventKind.COMPONENTS_CHANGED, values = componentNames(p, issue.componentIds))
             }
+            // The three fields that used to leave no trace at all (LNL-215). Scheduling
+            // an issue, planning it for a release and recording which release it shipped
+            // in are exactly the changes somebody asks "when did this happen" about, and
+            // until now the answer was nowhere. Each carries the NAME as it stands, or
+            // null because it was cleared — null being a real answer here, the way it is
+            // on an assignee change, and not an absence of one.
+            //
+            // The estimate deliberately joins neither list: there is no estimate event
+            // kind on the wire, so a demo that invented one would be writing history the
+            // real server cannot.
+            if (issue.sprintId != oldSprintId) {
+                addEvent(p, issue, IssueEventKind.SPRINT_CHANGED, value = sprintName(p, issue.sprintId))
+            }
+            if (issue.plannedVersionId != oldPlannedVersionId) {
+                addEvent(
+                    p, issue, IssueEventKind.PLANNED_VERSION_CHANGED,
+                    value = versionName(p, issue.plannedVersionId),
+                )
+            }
+            if (issue.fixedVersionId != oldFixedVersionId) {
+                addEvent(p, issue, IssueEventKind.FIXED_VERSION_CHANGED, value = versionName(p, issue.fixedVersionId))
+            }
         }
         return world.issueDetail(p, issue)
+    }
+
+    /**
+     * What estimate this save may actually write (LNL-215) — the demo's copy of
+     * `BoardRoutes.resolveEstimate`.
+     *
+     * Three answers, and the third is the interesting one:
+     *
+     *  - **Null clears.** Legal on every project whatever its mode: taking an estimate
+     *    off an issue is never something a setting should be able to forbid.
+     *  - **A unit the project offers is written.** `time` stores minutes, `points`
+     *    stores points, and a project on `none` offers neither.
+     *  - **Anything else leaves the stored estimate exactly where it was.** The real
+     *    route refuses the whole save with a 400; a demo must not raise an error dialog,
+     *    so the closest honest thing is to refuse the one field. Note what the obvious
+     *    alternative — dropping the mismatch to null — would do: it would *rewrite an
+     *    estimate already stored* on the strength of a project setting, which is the one
+     *    behaviour this whole feature is built to prevent. See `EstimateUnit`.
+     *
+     * A negative amount is refused the same way. Zero is not: "estimated at nothing" is
+     * a thing somebody can mean, and the server allows it.
+     */
+    private fun resolveEstimate(p: DemoProject, issue: DemoIssue, requested: Estimate?): Estimate? {
+        if (requested == null) return null
+        val offered = when (p.estimateMode) {
+            EstimateMode.NONE -> null
+            EstimateMode.TIME -> EstimateUnit.MINUTES
+            EstimateMode.POINTS -> EstimateUnit.POINTS
+        }
+        if (requested.amount < 0 || requested.unit != offered) return issue.estimate
+        return requested
     }
 
     override suspend fun setIssueStatus(id: Long, statusId: Long, resolutionId: Long?, fixedVersionId: Long?) {
         val (p, issue) = requireIssue(id)
         val target = p.statuses.firstOrNull { it.id == statusId } ?: notFound("That status")
         val changed = issue.statusId != statusId
+        val oldFixedVersionId = issue.fixedVersionId
         issue.statusId = statusId
         issue.resolutionId = if (target.requiresResolution) resolutionId else null
         if (target.requiresResolution && fixedVersionId != null) issue.fixedVersionId = fixedVersionId
         issue.updatedAt = world.now()
         if (changed) addEvent(p, issue, IssueEventKind.STATUS_CHANGED, value = target.name)
+        // Guarded on the change rather than on the close, so dragging a card into the
+        // closing column twice does not record the same version twice (LNL-215). The
+        // resolution dialog is where most fixed versions are actually set, so a history
+        // that only heard about the editor's would be silent about the common path.
+        if (issue.fixedVersionId != oldFixedVersionId) {
+            addEvent(p, issue, IssueEventKind.FIXED_VERSION_CHANGED, value = versionName(p, issue.fixedVersionId))
+        }
     }
 
     override suspend fun setIssueSprint(id: Long, sprintId: Long?): IssueDetail {
         val (p, issue) = requireIssue(id)
+        val changed = issue.sprintId != sprintId
         issue.sprintId = sprintId
         issue.updatedAt = world.now()
+        // Null is "the backlog" and is recorded as such — see IssueEventKind.SPRINT_CHANGED,
+        // where a null value is load-bearing rather than an absence. Guarded on the
+        // change, so putting an issue in the sprint it is already in records nothing.
+        if (changed) addEvent(p, issue, IssueEventKind.SPRINT_CHANGED, value = sprintName(p, sprintId))
         return world.issueDetail(p, issue)
     }
 
+    /**
+     * Move an issue under an epic, or out from under one (LNL-55), and record it on both
+     * (LNL-215).
+     *
+     * One gesture, up to three events, and the asymmetry is deliberate: an issue has at
+     * most one parent, so its own history records a *change*; an epic has many children,
+     * so its history records arrivals and departures. Reparenting therefore writes
+     * `PARENT_CHANGED` on the child, `CHILD_REMOVED` on the epic it left if there was
+     * one, and `CHILD_ADDED` on the one it joined. Each carries the other end's KEY —
+     * `AST-42` — snapshotted, because a title can be edited and a key cannot.
+     */
     override suspend fun setIssueParent(id: Long, parentId: Long?): IssueDetail {
         val (p, issue) = requireIssue(id)
         if (parentId == id) return world.issueDetail(p, issue)
+        val oldParentId = issue.parentId
         issue.parentId = parentId
         if (parentId != null) {
             // Append to the bottom of the epic's work order (LNL-55).
@@ -710,6 +854,81 @@ internal class DemoLunicleApi(
             issue.childIndex = maxIndex + 1
         }
         issue.updatedAt = world.now()
+        if (oldParentId != parentId) {
+            addEvent(p, issue, IssueEventKind.PARENT_CHANGED, value = issueKey(p, parentId))
+            val childKey = "${p.prefix}-${issue.number}"
+            p.issues.firstOrNull { it.id == oldParentId }
+                ?.let { addEvent(p, it, IssueEventKind.CHILD_REMOVED, value = childKey) }
+            p.issues.firstOrNull { it.id == parentId }
+                ?.let { addEvent(p, it, IssueEventKind.CHILD_ADDED, value = childKey) }
+        }
+        return world.issueDetail(p, issue)
+    }
+
+    /**
+     * Link this issue to another under one of the project's relation kinds (LNL-215).
+     *
+     * The four rules `IssueRepository.addRelation` enforces, mirrored here — and mirrored
+     * because they are not schema constraints anywhere: the real server enforces them in
+     * the repository precisely because neither backend can. A demo that let any of them
+     * through would be teaching a data model the product refuses.
+     *
+     *  - **Same project**, which this world gets by construction: both the far issue and
+     *    the kind are looked up inside [p] alone, so an id from another board simply is
+     *    not found.
+     *  - **No self-relation.** "This issue is blocked by itself" is not a statement.
+     *  - **No duplicate pair, in EITHER direction, under the same kind.** Adding "A
+     *    blocked by B" when "B blocks A" already exists is the same fact said twice, and
+     *    the whole one-row design rests on them not both being written. The reversed case
+     *    is the one a unique index cannot catch; [DemoRelation.otherThan] is what makes
+     *    checking it one comparison.
+     *  - **Both issues published.** A link to a draft would point at an issue nobody can
+     *    see yet.
+     *
+     * A refusal returns the issue unchanged rather than throwing, which is this file's
+     * standing idiom — a demo should not be able to raise an error dialog — and the same
+     * thing [setIssueParent] does with a self-parent.
+     */
+    override suspend fun addIssueRelation(id: Long, toIssueId: Long, kindId: Long): IssueDetail {
+        val (p, issue) = requireIssue(id)
+        val unchanged = { world.issueDetail(p, issue) }
+        if (toIssueId == id) return unchanged()
+        val other = p.issues.firstOrNull { it.id == toIssueId } ?: return unchanged()
+        if (issue.isDraft || other.isDraft) return unchanged()
+        val kind = p.relationKinds.firstOrNull { it.id == kindId } ?: return unchanged()
+        val alreadyLinked = p.relations.any {
+            it.kindId == kind.id &&
+                (it.fromIssueId == issue.id || it.toIssueId == issue.id) &&
+                it.otherThan(issue.id) == toIssueId
+        }
+        if (alreadyLinked) return unchanged()
+        p.relations.add(DemoRelation(world.allocId(), issue.id, toIssueId, kind.id))
+        recordRelationChanged(p, issue, other, kind, added = true)
+        return world.issueDetail(p, issue)
+    }
+
+    /**
+     * Unlink two issues, by the link's own id (LNL-215).
+     *
+     * By id because the caller is looking at a rendered row and has one — and because
+     * "remove the link between these two under this kind" would have to say which
+     * direction it meant, which is the ambiguity storing one row removes. What is checked
+     * here is only that the link actually touches this issue: an id from another board
+     * must not be removable from a window it has nothing to do with.
+     */
+    override suspend fun removeIssueRelation(id: Long, relationId: Long): IssueDetail {
+        val (p, issue) = requireIssue(id)
+        val relation = p.relations.firstOrNull { it.id == relationId }
+        if (relation == null || (relation.fromIssueId != issue.id && relation.toIssueId != issue.id)) {
+            return world.issueDetail(p, issue)
+        }
+        // Both read before the removal, so the two events can still name the kind's two
+        // labels and the far issue's key. Afterwards there is a row id and nothing to say
+        // about it.
+        val kind = p.relationKinds.firstOrNull { it.id == relation.kindId }
+        val other = p.issues.firstOrNull { it.id == relation.otherThan(issue.id) }
+        p.relations.remove(relation)
+        if (kind != null && other != null) recordRelationChanged(p, issue, other, kind, added = false)
         return world.issueDetail(p, issue)
     }
 
@@ -766,6 +985,12 @@ internal class DemoLunicleApi(
         val (p, issue) = requireIssue(id)
         // Detach any children so they do not dangle under a gone epic (LNL-55).
         p.issues.filter { it.parentId == issue.id }.forEach { it.parentId = null }
+        // And take its links with it, from both ends (LNL-215) — the cascade the schema
+        // applies. A relation is a statement about two issues, so one of them going means
+        // the statement goes; leaving the row would put an unresolvable far end on the
+        // other issue's window, which the projection would then silently drop, which is a
+        // link that exists in the data and nowhere on screen.
+        p.relations.removeAll { it.fromIssueId == issue.id || it.toIssueId == issue.id }
         p.comments.removeAll { it.issueId == issue.id }
         p.events.removeAll { it.issueId == issue.id }
         p.issues.remove(issue)
@@ -844,6 +1069,7 @@ internal class DemoLunicleApi(
         kind: IssueEventKind,
         value: String? = null,
         values: List<String> = emptyList(),
+        relationKind: String? = null,
     ) {
         p.events.add(
             DemoEvent(
@@ -854,7 +1080,42 @@ internal class DemoLunicleApi(
                 values = values,
                 authorId = world.demoUserId,
                 createdAt = world.now(),
+                relationKind = relationKind,
             ),
+        )
+    }
+
+    /**
+     * A link's arrival or departure, recorded on **both** issues (LNL-215).
+     *
+     * Two events for one relation row, and that is deliberately not a contradiction of
+     * the one-row rule [DemoRelation] states. That rule is about *state*, where a second
+     * row would be a second source of truth that can drift; this is per-issue and
+     * append-only, and both issues genuinely had something happen to them — somebody
+     * reading the blocker's history needs to see that it now blocks something.
+     *
+     * Each event carries the label for **its own side**: `Blocked by` on the from issue,
+     * `Blocks` on the to issue, the same word twice when the kind is symmetric. That is
+     * what makes each history read as a sentence about the issue it belongs to rather
+     * than about the pair.
+     */
+    private fun recordRelationChanged(
+        p: DemoProject,
+        from: DemoIssue,
+        to: DemoIssue,
+        kind: DemoRelationKind,
+        added: Boolean,
+    ) {
+        val eventKind = if (added) IssueEventKind.RELATION_ADDED else IssueEventKind.RELATION_REMOVED
+        addEvent(
+            p, from, eventKind,
+            value = "${p.prefix}-${to.number}",
+            relationKind = kind.labelFor(isFromSide = true),
+        )
+        addEvent(
+            p, to, eventKind,
+            value = "${p.prefix}-${from.number}",
+            relationKind = kind.labelFor(isFromSide = false),
         )
     }
 
@@ -863,4 +1124,31 @@ internal class DemoLunicleApi(
 
     private fun componentNames(p: DemoProject, ids: List<Long>): List<String> =
         ids.mapNotNull { id -> p.components.firstOrNull { it.id == id }?.name }
+
+    /**
+     * The name a history event should snapshot for a sprint or a version, or null.
+     *
+     * Null carries meaning on both of the kinds that use these — "moved to the backlog",
+     * "the planned release was cleared" — so an absent id resolves to a null value
+     * rather than to a placeholder word. The name is read *now* and frozen into the
+     * event, which is what makes a renamed sprint read by its old name in history: the
+     * issue was scheduled into the thing then called that. See IssueEvents.sq.
+     */
+    private fun sprintName(p: DemoProject, id: Long?): String? =
+        id?.let { sid -> p.sprints.firstOrNull { it.id == sid }?.name }
+
+    /** @see sprintName */
+    private fun versionName(p: DemoProject, id: Long?): String? =
+        id?.let { vid -> p.versions.firstOrNull { it.id == vid }?.name }
+
+    /**
+     * An issue's key — the `AST-42` a parent or child event snapshots — or null for no
+     * issue at all, which on a `PARENT_CHANGED` means "detached".
+     *
+     * The key rather than the title, because a key survives a rename and a title does
+     * not, and because it is what the reader can actually click. See
+     * IssueEventKind.PARENT_CHANGED.
+     */
+    private fun issueKey(p: DemoProject, issueId: Long?): String? =
+        issueId?.let { iid -> p.issues.firstOrNull { it.id == iid }?.let { "${p.prefix}-${it.number}" } }
 }
