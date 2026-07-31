@@ -31,7 +31,7 @@ class SqlDelightForumStoreContractTest : ForumStoreContract() {
     override val store: ForumStore = se.soderbjorn.lunicle.ForumStore(db)
 
     override suspend fun newProject(): Long =
-        projectRepository.create("Project ${seq}", "FM${seq++}", isPublic = false).id
+        projectRepository.create("Project ${seq}", "FM${seq++}").id
 
     @AfterTest
     fun tearDown() {

@@ -203,9 +203,9 @@ class ConversationView(
         }
 
         headingElement.setTextIfChanged(state.heading)
-        // False for a system administrator reading somebody else's thread, which is
-        // the only case where reading and replying come apart. See
-        // AccessControl.canWriteInConversation.
+        // False for a non-participant reading somebody else's thread, which is the
+        // only case where reading and replying come apart — and false for everybody
+        // since LNL-190. See AccessControl.canWriteInConversation.
         composerElement.visible(detail.canReply)
         // Only when they have actually changed: setMentionNames hides the popup, so
         // handing it the same list on every tick would close a menu mid-selection.

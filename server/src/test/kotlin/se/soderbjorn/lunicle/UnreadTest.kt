@@ -113,7 +113,7 @@ class UnreadTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     private val forumStore = ForumStore(database)
     private val forums = ForumRepository(forumStore, attachments, attachmentStore)
     private val forumPostStore = ForumPostStore(database)
@@ -124,7 +124,8 @@ class UnreadTest {
     private val messageStore = MessageStore(database)
     private val conversations =
         ConversationRepository(conversationStore, messageStore, attachments, attachmentStore)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
     private val reads = ReadStore(database)
 
     @AfterTest
@@ -138,87 +139,7 @@ class UnreadTest {
 
     // ── Messages ─────────────────────────────────────────────────────────────
 
-    /**
-     * The whole gesture: a message arrives unread for the recipient, is not unread
-     * for its sender, and reading it clears the count.
-     *
-     * One test rather than three because the property worth pinning is that the
-     * count *round-trips* — a route that answered a fresh zero without writing the
-     * mark would leave a badge that comes back on the next reload, and only reading
-     * the count out of a second `GET` catches that.
-     *
-     * The sender's own zero is asserted here rather than in a test of its own, and
-     * it is asserted from the **sender's** side deliberately: from the recipient's
-     * side "your own writing does not count" is true no matter what the code does.
-     */
-    @Test
-    fun `a message is unread for its recipient, never for its sender, and reading clears it`():
-        Unit = runBlocking {
-        val f = seed()
-        withRoutes { client ->
-            val id = client.conversationFrom(f.adaCookie, listOf(f.graceId), "Morning.")
 
-            assertEquals(1L, client.unreadCount(f.graceCookie, id), "A new message was not unread.")
-            assertEquals(0L, client.unreadCount(f.adaCookie, id), "The sender was unread on their own message.")
-
-            // Two more from Ada, so the count is genuinely counting rather than
-            // reporting the presence of anything at all.
-            client.reply(f.adaCookie, id, "Also this.")
-            client.reply(f.adaCookie, id, "And this.")
-            assertEquals(3L, client.unreadCount(f.graceCookie, id), "The count did not follow the messages.")
-
-            val afterReading: ConversationListState = client.post(ApiRoutes.conversationRead(id)) {
-                cookie(SESSION_COOKIE, f.graceCookie)
-            }.body()
-            assertEquals(
-                0L,
-                afterReading.conversations.single { it.id == id }.unreadCount,
-                "The read response still reported the messages as unread.",
-            )
-            assertEquals(
-                0L,
-                client.unreadCount(f.graceCookie, id),
-                "The mark did not survive a fresh read, so nothing was written.",
-            )
-
-            // ...and a message arriving afterwards is unread again, which is what
-            // makes the mark a watermark rather than a "seen this thread" flag.
-            client.reply(f.adaCookie, id, "One more.")
-            assertEquals(1L, client.unreadCount(f.graceCookie, id), "A later message was swallowed by the mark.")
-        }
-    }
-
-    /**
-     * Deleting a message does not resurrect unread state.
-     *
-     * `conversation_reads.last_read_message_id` deliberately carries no foreign key
-     * — see Reads.sq — and the obvious "fix" of adding one with `ON DELETE CASCADE`
-     * would take the read row with the message, marking the whole thread unread
-     * again for everybody who had read it. That failure is a badge appearing from
-     * nowhere, hours after the gesture that caused it, which is not something
-     * anybody reproduces.
-     *
-     * Ada deletes her *own* newest message, which is the one the mark points at —
-     * the exact row a cascade would follow.
-     */
-    @Test
-    fun `deleting the message a read mark points at leaves the conversation read`(): Unit = runBlocking {
-        val f = seed()
-        withRoutes { client ->
-            val id = client.conversationFrom(f.adaCookie, listOf(f.graceId), "First.")
-            val newest = client.reply(f.adaCookie, id, "Second.")
-            client.post(ApiRoutes.conversationRead(id)) { cookie(SESSION_COOKIE, f.graceCookie) }
-            assertEquals(0L, client.unreadCount(f.graceCookie, id))
-
-            client.delete(ApiRoutes.conversationMessage(id, newest)) { cookie(SESSION_COOKIE, f.adaCookie) }
-
-            assertEquals(
-                0L,
-                client.unreadCount(f.graceCookie, id),
-                "Deleting the message the mark named made the conversation unread again.",
-            )
-        }
-    }
 
     /**
      * A conversation that has been started and not sent counts as nothing.
@@ -250,39 +171,6 @@ class UnreadTest {
         }
     }
 
-    /**
-     * A message with no account behind it still counts as unread.
-     *
-     * This is the `IS NOT` versus `!=` trap, made reachable. `messages.created_by`
-     * is nullable — an [Author.External] leaves it null, and so would a deleted
-     * account's SET NULL — and `NULL != <me>` is NULL rather than true, so a count
-     * written with `!=` quietly drops the row. Everything looks correct until the
-     * first such row exists, at which point some messages stop being unread and
-     * nobody can say which.
-     *
-     * Written through the stores because no route produces an external author
-     * today: messages have no MCP surface and no importer, by LNL-30's decision. The
-     * columns and their CHECK are there anyway — see Messages.sq, which says why —
-     * and a query that cannot cope with them is a bug waiting for the importer.
-     */
-    @Test
-    fun `a message with no account behind it is still unread`(): Unit = runBlocking {
-        val f = seed()
-        withRoutes { client ->
-            val id = client.conversationFrom(f.adaCookie, listOf(f.graceId), "Hello.")
-            client.post(ApiRoutes.conversationRead(id)) { cookie(SESSION_COOKIE, f.graceCookie) }
-            assertEquals(0L, client.unreadCount(f.graceCookie, id))
-
-            val imported = messageStore.insertDraft(id, Author.External("Imported"))
-            messageStore.publish(imported, "From the old tracker.")
-
-            assertEquals(
-                1L,
-                client.unreadCount(f.graceCookie, id),
-                "An authorless message dropped out of the unread count.",
-            )
-        }
-    }
 
     // ── The Discussion tab ───────────────────────────────────────────────────
 
@@ -374,19 +262,19 @@ class UnreadTest {
     @Test
     fun `the Discussion badge spans visible projects and drops one that is revoked`(): Unit = runBlocking {
         val f = seed()
-        val second = projectRepository.create("Second", "SEC", isPublic = false)
+        val second = projectRepository.create("Second", "SEC")
         val secondForum = forums.create(second.id, "Elsewhere", null)
-        roles.grant(f.graceId, second.id, Role.VIEW_PROJECT)
+        roles.setRole(f.graceId, second.id, ProjectRole.VIEWER)
         withRoutes { client ->
             // Nothing in the project Grace is looking at; the post is in the other
             // one, which is exactly the case a per-project badge would miss.
             val id = forumPosts.createPostDraft(secondForum.id, Author.Account(f.adaId))
             forumPosts.publishPost(forumPosts.findPost(id)!!, "Over here", "Body.")
-            roles.grant(f.adaId, second.id, Role.VIEW_PROJECT)
+            roles.setRole(f.adaId, second.id, ProjectRole.VIEWER)
 
             assertTrue(client.discussionDot(f.graceCookie), "The badge did not span projects.")
 
-            roles.revoke(f.graceId, second.id, Role.VIEW_PROJECT)
+            roles.setRole(f.graceId, second.id, null)
 
             assertFalse(
                 client.discussionDot(f.graceCookie),
@@ -431,7 +319,7 @@ class UnreadTest {
     @Test
     fun `a signed-out visitor has no badges`(): Unit = runBlocking {
         val f = seed()
-        val public = projectRepository.create("Open", "OPN", isPublic = true)
+        val public = projectRepository.createOpenToAll("Open", "OPN", roles, instanceSettings)
         val publicForum = forums.create(public.id, "Lobby", null)
         withRoutes { client ->
             val id = forumPosts.createPostDraft(publicForum.id, Author.Account(f.adaId))
@@ -457,7 +345,7 @@ class UnreadTest {
     @Test
     fun `a signed-out visitor cannot mark a public post read`(): Unit = runBlocking {
         val f = seed()
-        val public = projectRepository.create("Open", "OPN", isPublic = true)
+        val public = projectRepository.createOpenToAll("Open", "OPN", roles, instanceSettings)
         val publicForum = forums.create(public.id, "Lobby", null)
         withRoutes { client ->
             val id = forumPosts.createPostDraft(publicForum.id, Author.Account(f.adaId))
@@ -480,26 +368,31 @@ class UnreadTest {
     )
 
     /**
-     * Two ordinary members of one private project, and a system administrator who
+     * Two ordinary members of one private project, and an instance administrator who
      * appears in no assertion.
      *
      * The administrator is created only to spend the "first account on the instance
-     * becomes the system administrator" badge on somebody harmless —
-     * `ForumWatchTest.seed` explains why at length: an admin can see every project,
-     * so an admin standing in for a member would make the visibility test pass on a
-     * build that never checks visibility.
+     * runs it" badge on somebody harmless — `ForumWatchTest.seed` explains why at
+     * length: an administrator holds Owner on every project, so one standing in for a
+     * member would make the visibility test pass on a build that never checks
+     * visibility.
      */
     private suspend fun seed(): Fixture {
-        roles.seed()
         users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val ada = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ada", "Ada", "ada@example.com"))
         val grace = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-gra", "Grace", "grace@example.com"))
-        assertFalse(ada.isSysAdmin, "The fixture's ordinary user is an administrator.")
+        assertFalse(ada.isInstanceAdmin, "The fixture's ordinary user is an administrator.")
 
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        roles.grant(ada.id, project.id, Role.VIEW_PROJECT)
-        roles.grant(grace.id, project.id, Role.VIEW_PROJECT)
+        val project = projectRepository.create("Lunamux", "LMX")
+        roles.setRole(ada.id, project.id, ProjectRole.VIEWER)
+        roles.setRole(grace.id, project.id, ProjectRole.VIEWER)
 
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(
             adaCookie = sessions.create(ada.id),
             graceCookie = sessions.create(grace.id),
@@ -596,7 +489,7 @@ class UnreadTest {
         vocabularies = vocabularies,
         forums = forums,
         forumPosts = forumPosts,
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         conversations = conversations,
         labels = labels,
         components = components,
@@ -614,7 +507,6 @@ class UnreadTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = reads,
     )

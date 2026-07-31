@@ -39,7 +39,7 @@ class SqlDelightAttachmentStoreContractTest : AttachmentStoreContract() {
     override val store: AttachmentStore = attachmentStore
 
     override suspend fun newIssue(): Pair<Long, Long> {
-        val project = projectRepository.create("Project ${seq}", "AT${seq++}", isPublic = false)
+        val project = projectRepository.create("Project ${seq}", "AT${seq++}")
         val (issueId, _) = issueRepository.createDraft(project.id, Author.Nobody)
         val issue = issues.findById(issueId)!!
         issueRepository.save(

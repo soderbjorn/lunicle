@@ -59,18 +59,13 @@ class FirestoreProjectStore(
      * position is `max + 1` (0 on an empty instance), matching Projects.sq's
      * `nextPosition`, so a new project sorts last until a reorder moves it.
      */
-    override suspend fun insert(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
-    ): ProjectRecord {
+    override suspend fun insert(name: String, namePrefix: String): ProjectRecord {
         val createdAt = now()
         return firestore.runTransaction { txn ->
             val existing = txn.get(collection()).get().documents
             val position = (existing.mapNotNull { it.getLong(POSITION) }.maxOrNull() ?: -1L) + 1L
             val id = counters.next(txn, COUNTER).getValue(COUNTER)
-            writeInTransaction(txn, id, name, namePrefix, isPublic, visibleToAllSignedIn, position, createdAt)
+            writeInTransaction(txn, id, name, namePrefix, position, createdAt)
         }.await()
     }
 
@@ -89,8 +84,6 @@ class FirestoreProjectStore(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
         position: Long,
         createdAt: Long,
     ): ProjectRecord {
@@ -101,15 +94,27 @@ class FirestoreProjectStore(
                 NAME to name,
                 NAME_FOLD to name.lowercase(),
                 NAME_PREFIX to namePrefix,
-                IS_PUBLIC to isPublic,
-                VISIBLE_TO_ALL_SIGNED_IN to visibleToAllSignedIn,
-                // Defaults a fresh row carries — see the class preamble.
-                DISCUSSIONS to true,
-                MESSAGES to true,
+                // Defaults a fresh row carries — see the class preamble. The two
+                // forum flags are written off and read off (LNL-190); the fields
+                // stay so a re-enable has somewhere to put the answer.
+                DISCUSSIONS to PROJECT_FORUM_FEATURES_ENABLED,
+                MESSAGES to PROJECT_FORUM_FEATURES_ENABLED,
                 REQUIRE_LABEL to false,
                 REQUIRE_COMPONENT to false,
                 REQUIRE_FIXED_VERSION to false,
                 SHOW_ISSUE_AUTHOR to false,
+                // Written explicitly on a fresh project, so a board made after LNL-194
+                // is never in the "not yet decided" state the migration leaves migrated
+                // rows in — there is no old per-user preference to copy for a project
+                // nobody has ever looked at. See toRecord, where absence is the
+                // migration's marker.
+                HIDE_ISSUE_NUMBERS to false,
+                // Nobody estimates until somebody says so (LNL-215). Written
+                // explicitly, like the flags above and unlike HIDE_ISSUE_NUMBERS,
+                // because absence carries no second meaning here: there is no
+                // migration looking for a "not yet decided" project, and `none` is
+                // both the default and the state a fresh board should be in.
+                ESTIMATE_MODE to se.soderbjorn.lunicle.clientserver.EstimateMode.NONE.key,
                 POSITION to position,
                 CREATED_AT to createdAt,
                 ACTIVE_SPRINT to null,
@@ -123,26 +128,24 @@ class FirestoreProjectStore(
             id = id,
             name = name,
             namePrefix = namePrefix,
-            isPublic = isPublic,
-            visibleToAllSignedIn = visibleToAllSignedIn,
-            discussionsEnabled = true,
-            messagesEnabled = true,
+            discussionsEnabled = PROJECT_FORUM_FEATURES_ENABLED,
+            messagesEnabled = PROJECT_FORUM_FEATURES_ENABLED,
             requireLabel = false,
             requireComponent = false,
             requireFixedVersionOnResolve = false,
             showIssueAuthor = false,
             createdAt = createdAt,
+            hideIssueNumbersStored = false,
+            estimateMode = se.soderbjorn.lunicle.clientserver.EstimateMode.NONE,
         )
     }
 
-    override suspend fun update(id: Long, name: String, namePrefix: String, isPublic: Boolean, visibleToAllSignedIn: Boolean) {
+    override suspend fun update(id: Long, name: String, namePrefix: String) {
         doc(id).update(
             mapOf(
                 NAME to name,
                 NAME_FOLD to name.lowercase(),
                 NAME_PREFIX to namePrefix,
-                IS_PUBLIC to isPublic,
-                VISIBLE_TO_ALL_SIGNED_IN to visibleToAllSignedIn,
             ),
         ).await()
     }
@@ -166,8 +169,33 @@ class FirestoreProjectStore(
         ).await()
     }
 
-    override suspend fun setShowIssueAuthor(id: Long, showIssueAuthor: Boolean) {
-        doc(id).update(mapOf(SHOW_ISSUE_AUTHOR to showIssueAuthor)).await()
+    override suspend fun setBoardDisplay(id: Long, showIssueAuthor: Boolean, hideIssueNumbers: Boolean) {
+        doc(id).update(
+            mapOf(
+                SHOW_ISSUE_AUTHOR to showIssueAuthor,
+                HIDE_ISSUE_NUMBERS to hideIssueNumbers,
+            ),
+        ).await()
+    }
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * Its own write rather than a third field on [setBoardDisplay], for that method's
+     * own reason turned one notch: those two decide how a board *reads*, and this
+     * decides what the issue editor *offers*. Three kinds of switch, three writes, so
+     * a stale client sending one cannot reset another in passing.
+     *
+     * Stored as [se.soderbjorn.lunicle.clientserver.EstimateMode.key] — the `none` /
+     * `time` / `points` string the SQLite column holds — rather than the enum's
+     * `name`, so a row of either backend says the same word and a value from a newer
+     * build folds to `none` on read rather than failing.
+     *
+     * It touches no issue's stored unit, which is what makes flipping it reinterpret
+     * nothing already estimated.
+     */
+    override suspend fun setEstimateMode(id: Long, mode: se.soderbjorn.lunicle.clientserver.EstimateMode) {
+        doc(id).update(ESTIMATE_MODE, mode.key).await()
     }
 
     override suspend fun delete(id: Long) {
@@ -192,7 +220,7 @@ class FirestoreProjectStore(
         collection().whereEqualTo(NAME_FOLD, name.lowercase()).limit(1).get().await()
             .documents.firstOrNull()?.toRecord()
 
-    /** Every project, in the order a system administrator arranged (position, 0 first). */
+    /** Every project, in the order the instance owner arranged (position, 0 first). */
     override suspend fun selectAll(): List<ProjectRecord> =
         collection().get().await().documents
             .sortedBy { it.getLong(POSITION) ?: 0L }
@@ -263,14 +291,45 @@ class FirestoreProjectStore(
         const val NAME = "name"
         const val NAME_FOLD = "nameFold"
         const val NAME_PREFIX = "namePrefix"
-        const val IS_PUBLIC = "isPublic"
-        const val VISIBLE_TO_ALL_SIGNED_IN = "visibleToAllSignedIn"
+        // `isPublic` and `visibleToAllSignedIn` were fields here until LNL-191.
+        // Visibility is now the project's audience rows, which live on this same
+        // document under the key below and are read and written by
+        // FirestoreRoleStore — a project's audiences belong with the project, not in
+        // a collection of their own that every read would have to join to.
+        const val AUDIENCE_ROLES = "audienceRoles"
         const val DISCUSSIONS = "discussionsEnabled"
         const val MESSAGES = "messagesEnabled"
         const val REQUIRE_LABEL = "requireLabel"
         const val REQUIRE_COMPONENT = "requireComponent"
         const val REQUIRE_FIXED_VERSION = "requireFixedVersionOnResolve"
         const val SHOW_ISSUE_AUTHOR = "showIssueAuthor"
+
+        /**
+         * Whether the board hides issue numbers (LNL-194).
+         *
+         * **Absent is not false.** It means "nobody has decided this project's
+         * answer yet", which is the state every document written before LNL-194 is in
+         * and what the startup copy of the owner's old per-user preference consumes.
+         * That is why [DocumentSnapshot.toRecord] reads it into a nullable rather than
+         * defaulting it like the flags above — see
+         * [ProjectRecord.hideIssueNumbersStored] and copyBoardDisplayFromOwners. It
+         * mirrors the SQLite column being nullable with no DEFAULT.
+         */
+        const val HIDE_ISSUE_NUMBERS = "hideIssueNumbers"
+
+        /**
+         * Whether this project estimates, and in what unit — one of
+         * [se.soderbjorn.lunicle.clientserver.EstimateMode]'s keys (LNL-215).
+         *
+         * Absent **is** `none`, unlike [HIDE_ISSUE_NUMBERS] above: there is no
+         * migration that needs to tell "not yet decided" from "decided off", because
+         * off is what every project that has never been asked should be. That is also
+         * what makes this backend need no migration step for the field at all — a
+         * document written before LNL-215 reads back as a project that estimates
+         * nothing, which is exactly what `estimate_mode TEXT NOT NULL DEFAULT 'none'`
+         * gives the SQLite rows.
+         */
+        const val ESTIMATE_MODE = "estimateMode"
         const val POSITION = "position"
         const val CREATED_AT = "createdAt"
         const val ACTIVE_SPRINT = "activeSprintId"
@@ -285,13 +344,10 @@ private fun DocumentSnapshot.toRecord(): ProjectRecord = ProjectRecord(
     id = getLong("id")!!,
     name = getString("name").orEmpty(),
     namePrefix = getString("namePrefix").orEmpty(),
-    isPublic = getBoolean("isPublic") ?: false,
-    // Absent on a doc written before the middle read tier existed — defaults false,
-    // the members-only/public behaviour it had then, exactly like the SQLite column's
-    // DEFAULT 0. See LNL-138 and the class preamble on why absent = default here.
-    visibleToAllSignedIn = getBoolean("visibleToAllSignedIn") ?: false,
-    discussionsEnabled = getBoolean("discussionsEnabled") ?: true,
-    messagesEnabled = getBoolean("messagesEnabled") ?: true,
+    // Not read from the document at all: discussions and private messages are
+    // retired, so a doc written while the switches still existed reads off (LNL-190).
+    discussionsEnabled = PROJECT_FORUM_FEATURES_ENABLED,
+    messagesEnabled = PROJECT_FORUM_FEATURES_ENABLED,
     requireLabel = getBoolean("requireLabel") ?: false,
     requireComponent = getBoolean("requireComponent") ?: false,
     requireFixedVersionOnResolve = getBoolean("requireFixedVersionOnResolve") ?: false,
@@ -299,4 +355,11 @@ private fun DocumentSnapshot.toRecord(): ProjectRecord = ProjectRecord(
     // hidden-author behaviour it had then, exactly like the SQLite column's DEFAULT 0.
     showIssueAuthor = getBoolean("showIssueAuthor") ?: false,
     createdAt = getLong("createdAt") ?: 0L,
+    // NOT defaulted, unlike every flag above: absent means "not yet decided", which is
+    // what the startup copy looks for. See HIDE_ISSUE_NUMBERS.
+    hideIssueNumbersStored = getBoolean("hideIssueNumbers"),
+    // Absent, or a key a newer build wrote, folds to NONE — which renders nothing at
+    // all, so an unreadable value costs a project its estimate control rather than its
+    // board. See EstimateMode.fromKey and ESTIMATE_MODE.
+    estimateMode = se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(getString("estimateMode")),
 )

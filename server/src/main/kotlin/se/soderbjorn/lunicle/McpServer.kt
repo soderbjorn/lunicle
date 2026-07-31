@@ -16,11 +16,11 @@
  * uses, and it is why this transport adds no capability. The agent is just
  * another caller.
  *
- * A consequence worth noticing rather than rebuilding: **role changes propagate
+ * A consequence worth noticing rather than rebuilding: **rung changes propagate
  * instantly.** Because every request re-derives permissions through AccessControl
- * rather than baking them into the token, an admin removing someone's role
- * immediately narrows their agent too. No token invalidation is needed and none
- * exists.
+ * rather than baking them into the token, a project administrator lowering
+ * somebody's rung immediately narrows their agent too. No token invalidation is
+ * needed and none exists.
  *
  * @see OAuthServer
  * @see McpTools
@@ -79,7 +79,7 @@ private const val SERVER_VERSION = "1.0.0"
  *
  * Honouring an impersonation here would be incoherent in both directions.
  * Impersonation is keyed by session id and this request has no session — but more
- * to the point, an admin who starts impersonating in their browser must not
+ * to the point, an owner who starts impersonating in their browser must not
  * silently redirect an agent that a *different* human approved days ago. The
  * effective user is a property of a browser tab; a token is a property of a
  * grant. See Impersonations, whose whole subject is that the client never says
@@ -105,9 +105,9 @@ private suspend fun resolveMcpUser(call: ApplicationCall, deps: McpDependencies)
     // request, without any token being deleted — and either half coming back
     // restores them without a second trip through the browser.
     //
-    // canUseMcp, never one of its two terms: an admin must permit it AND the user
-    // must have switched it on. See UserRecord.canUseMcp.
-    if (!user.canUseMcp) return null
+    // canUseMcp, never one of its two terms: the account's tier must be permitted
+    // AND the user must have switched it on. See canUseMcp.
+    if (!deps.instanceSettings.canUseMcp(user)) return null
 
     // Note what is NOT checked: that record.resource names this server. It does
     // not need to be. The audience guarantee here is structural rather than a
@@ -259,6 +259,14 @@ private suspend fun processMessage(
     // Notifications need no response, whatever they say.
     if (method.startsWith("notifications/")) return null
 
+    // Hoisted out of the two builders below because both are permission questions
+    // and permission questions read stores (LNL-191) — a `buildJsonObject` lambda is
+    // not a suspend context, so the answer has to arrive before the builder starts.
+    // Computed unconditionally rather than per branch: two small reads on the two
+    // handshake methods is not a cost worth a lazy.
+    val instructions = tools.instructionsFor(user)
+    val offeredTools = tools.toolsFor(user)
+
     val result: JsonObject = when (method) {
         "initialize" -> buildJsonObject {
             // Echo the client's version rather than asserting ours. The protocol
@@ -281,14 +289,14 @@ private suspend fun processMessage(
             }
             // Lands in the agent's system prompt. See MCP_INSTRUCTIONS, and
             // instructionsFor for why the text depends on who is asking.
-            put("instructions", tools.instructionsFor(user))
+            put("instructions", instructions)
         }
 
         "ping" -> JsonObject(emptyMap())
 
         "tools/list" -> buildJsonObject {
             putJsonArray("tools") {
-                tools.toolsFor(user).forEach { tool ->
+                offeredTools.forEach { tool ->
                     add(
                         buildJsonObject {
                             put("name", tool.name)

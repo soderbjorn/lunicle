@@ -40,8 +40,8 @@
 -- ── Visibility is deliberately NOT in the recipient queries ─────────────────
 --
 -- LNL-63 requires that somebody who loses sight of a project stops receiving its
--- forum e-mail. That rule is `AccessControl.canReadProject`'s — public project,
--- or a system administrator, or a member — and it is *not* spelled again in SQL
+-- forum e-mail. That rule is `AccessControl.canReadProject`'s — reaching any rung
+-- at all, by an audience row or by your own — and it is *not* spelled again in SQL
 -- below, even though it could be. `ProjectAudience` turns the same rule into a
 -- set, and `ForumNotificationService` intersects these rows with it at send
 -- time. Two copies of a visibility rule, one of them in a language where nobody

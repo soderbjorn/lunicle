@@ -66,15 +66,16 @@ class FirestoreBootSmokeTest {
         // the (empty) emulator schema to the build's target and returns without error.
         stores.migrate()
 
-        // Boot step 2: the global role vocabulary seed, idempotent as at startup.
-        assertTrue(stores.roles.seed() > 0, "roles should seed")
+        // There is no role vocabulary to seed since LNL-191: a rung's name is the only
+        // thing stored and its description lives on the ProjectRole enum, so the
+        // startup seed that used to stand here has nothing to write.
 
         // A user — the first account on an empty instance, so it is the admin (the
         // upsert transaction's first-user rule).
         val user = stores.users.upsert(
             ProviderIdentity(AuthProvider.GOOGLE, providerId = "smoke-1", providerName = "Ada", email = "ada@example.test"),
         )
-        assertTrue(user.isSysAdmin, "the first account is the instance admin")
+        assertTrue(user.isInstanceAdmin, "the first account is the instance admin")
 
         // Seam 1: a session resolves back to that user through the injected resolveUser.
         val token = stores.sessions.create(user.id)
@@ -82,7 +83,8 @@ class FirestoreBootSmokeTest {
 
         // A project — the row plus its five seeded vocabularies, through
         // FirestoreProjectRepository (the store.ProjectProvisioning impl).
-        val project = stores.projectRepository.create("Smoke Project", "SMK", isPublic = true)
+        val project = stores.projectRepository
+            .createOpenToAll("Smoke Project", "SMK", stores.roles, stores.instanceSettings)
         assertEquals("Smoke Project", project.name)
         assertEquals("SMK", project.namePrefix)
 

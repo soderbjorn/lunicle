@@ -48,7 +48,7 @@ private fun board(hidden: List<Long> = emptyList()): MainScreenBackingViewModel.
     MainScreenBackingViewModel.State(
         boards = mapOf(
             PROJECT_ID to BoardState(
-                project = ProjectSummary(PROJECT_ID, "Test", "TST", isPublic = true),
+                project = ProjectSummary(PROJECT_ID, "Test", "TST"),
                 statuses = listOf(
                     StatusItem(DONE, "Done", 2),
                     StatusItem(NEW, "New", 0),

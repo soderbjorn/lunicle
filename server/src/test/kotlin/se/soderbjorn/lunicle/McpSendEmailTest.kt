@@ -13,10 +13,11 @@
  * — on the wire, by capturing what the sender was handed, and on the schema, by
  * asserting there is no recipient property to send.
  *
- * The second claim, from LNL-67, is that only a system administrator can make
- * this instance send at all — see [AccessControl.canSendAgentMail] for why that
- * is the answer. It is pinned in three places because it is enforced in two and
- * described in a third: the tool is absent from a non-admin's `tools/list`, the
+ * The second claim, from LNL-67 and narrowed by LNL-191, is that only the instance
+ * OWNER can make this instance send at all — see [AccessControl.canSendAgentMail]
+ * for why that is the answer, and note it is the owner rather than any instance
+ * administrator. It is pinned in three places because it is enforced in two and
+ * described in a third: the tool is absent from a non-owner's `tools/list`, the
  * call is refused even when the name is sent anyway, and the instructions do not
  * describe a tool the caller was not offered.
  *
@@ -66,6 +67,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class McpSendEmailTest {
     private val file: File = Files.createTempFile("lunicle-sendmail", ".db").toFile().also { it.delete() }
@@ -92,8 +94,14 @@ class McpSendEmailTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -196,7 +204,7 @@ class McpSendEmailTest {
         )
     }
 
-    // ── Only a system administrator can make the instance send ───────────────
+    // ── Only the instance owner can make the instance send ───────────────────
 
     /**
      * The LNL-67 test: an ordinary user's agent is refused, and nothing leaves.
@@ -215,7 +223,7 @@ class McpSendEmailTest {
             val result = client.callTool(token, "send_email", """{"subject":"Hi","body":"There"}""")
             assertTrue(result.isError, "An ordinary user's agent sent e-mail.")
             assertTrue(
-                result.text.contains("system administrators"),
+                result.text.contains("restricted to the owner"),
                 "The refusal did not say who may do this. Got: ${result.text}",
             )
         }
@@ -243,17 +251,17 @@ class McpSendEmailTest {
                 "send_email" in client.listTools(admin),
                 "An admin was not offered send_email at all.",
             )
-            // The filter must take exactly the admin-gated tools away, not narrow
-            // the surface any further. Since LNL-78 that is send_email AND the
-            // forum tools, which are gated the same way — and update_history_event,
-            // which is whole-tool admin-only for the same reason. So the two lists
+            // The filter must take exactly the owner-gated tools away, not narrow
+            // the surface any further. That is send_email, update_history_event and
+            // delete_attachment — plus the forum tools, which since LNL-190 are
+            // offered to nobody at all rather than to the owner. So the two lists
             // differ by exactly that set and nothing else. A build that dropped an
             // ordinary tool for an ordinary user would fail here.
             assertEquals(
                 client.listTools(admin) - "send_email" - "update_history_event" -
                     "delete_attachment" - forumToolNames,
                 client.listTools(ordinary),
-                "Filtering the admin-only tools changed something else about the tool list.",
+                "Filtering the owner-only tools changed something else about the tool list.",
             )
         }
     }
@@ -416,20 +424,24 @@ class McpSendEmailTest {
      * pass the refusal test by not exercising it.
      */
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
-        assertTrue(admin.isSysAdmin, "The fixture's sender is not the instance admin.")
+        assertTrue(admin.isInstanceAdmin, "The fixture's sender is not the instance admin.")
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's ordinary user is somehow an admin.")
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's ordinary user is somehow an admin.")
+        val project = projectRepository.create("Lunamux", "LMX")
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, ordinary.id, project.id)
     }
 
     /** A real access token for [userId], with MCP enabled — see McpAgentNameTest.tokenFor. */
     private suspend fun tokenFor(userId: Long): String {
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client = clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
         return tokens.issueTokens(userId, client.clientId, "mcp", "http://localhost/mcp").accessToken
@@ -554,8 +566,8 @@ class McpSendEmailTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies(sender: ResendEmailTransport? = null) = BoardDependencies(
@@ -568,7 +580,7 @@ class McpSendEmailTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -590,7 +602,6 @@ class McpSendEmailTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
         agentMail = sender,

@@ -100,6 +100,82 @@ abstract class IssueEventStoreContract {
         assertTrue(history.all { it.createdAt == 1_000L }, "and one timestamp for the whole batch")
     }
 
+    /**
+     * The relation kind an event snapshots, and the null on every event that is not
+     * about a link (LNL-215).
+     *
+     * Its own scalar rather than a second entry in `values`, and the two halves of
+     * that decision are both asserted here: a `RELATION_ADDED` carries the *label for
+     * this issue's side* alongside the other issue's key in `value`, and a
+     * `LABELS_CHANGED` sitting next to it carries no relation kind at all — because
+     * `values` means "the whole set this kind refers to", and a backend that had
+     * quietly stored the label in there would have contradicted that on every labels
+     * event in the history.
+     *
+     * Both directions of one link are written, because that is what one link does:
+     * "A blocked by B" appends `Blocked by`/`B` to A and `Blocks`/`A` to B, and the
+     * two events are the only place the from-side and to-side labels ever appear
+     * together. A store that dropped the field would still pass a single-event test
+     * where both labels happened to be the same word.
+     */
+    @Test
+    fun `a relation event carries its kind label and other kinds carry none`() = runBlocking {
+        val from = newIssue()
+        val to = newIssue()
+        store.append(
+            from,
+            listOf(
+                NewIssueEvent(IssueEventKind.RELATION_ADDED, value = "LNL-9", relationKind = "Blocked by"),
+                NewIssueEvent(IssueEventKind.LABELS_CHANGED, values = listOf("Bug")),
+            ),
+            author = Author.Nobody,
+            createdAt = 1_000,
+        )
+        store.append(
+            to,
+            listOf(NewIssueEvent(IssueEventKind.RELATION_ADDED, value = "LNL-4", relationKind = "Blocks")),
+            author = Author.Nobody,
+            createdAt = 1_000,
+        )
+
+        val fromSide = store.forIssue(from)
+        assertEquals("Blocked by", fromSide.first().relationKind, "the from-side label is snapshotted")
+        assertEquals("LNL-9", fromSide.first().value, "beside the other issue's key")
+        assertNull(fromSide.last().relationKind, "an event about anything else carries no relation kind")
+        assertEquals(
+            "Blocks",
+            store.forIssue(to).single().relationKind,
+            "and the same link reads by its opposite label on the other issue",
+        )
+    }
+
+    /**
+     * Reattribution moves who and when; the relation kind is *what*, and stays.
+     *
+     * Pinned separately from the general reattribution test because this field arrived
+     * later than that test did, and the failure mode is silent: an update that names
+     * only some of an event's fields leaves the rest alone on both backends, so a
+     * store could lose this one only by writing it away deliberately. Cheap to assert,
+     * and it is the field an admin correcting an import is least likely to notice
+     * going missing.
+     */
+    @Test
+    fun `reattribute leaves an event's relation kind alone`() = runBlocking {
+        val issue = newIssue()
+        store.append(
+            issue,
+            listOf(NewIssueEvent(IssueEventKind.RELATION_REMOVED, value = "LNL-9", relationKind = "Blocked by")),
+            author = Author.Nobody,
+            createdAt = 1_000,
+        )
+        val id = store.forIssue(issue).single().id
+
+        store.reattribute(id, author = Author.External("Imported"), createdAt = 5_000, agentName = null)
+
+        assertEquals("Blocked by", store.forIssue(issue).single().relationKind, "the snapshot is untouched")
+        assertEquals("Blocked by", store.findById(id)?.relationKind, "and findById reads it too")
+    }
+
     @Test
     fun `findById returns one event without its child values`() = runBlocking {
         val issue = newIssue()

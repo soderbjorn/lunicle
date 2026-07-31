@@ -20,24 +20,24 @@ CREATE TABLE projects (
     -- Upper-cased server-side by convention.
     name_prefix TEXT NOT NULL COLLATE NOCASE UNIQUE,
 
-    -- The one read gate that says yes to a caller with no session at all.
-    -- Enforced in AccessControl.canReadProject, never in the browser.
-    is_public INTEGER NOT NULL DEFAULT 0,
-
-    -- The middle read tier (LNL-138): yes to any signed-in account, no to a caller
-    -- with no session. `is_public` says yes to a stranger; this says yes to
-    -- everyone with a login and nobody without one, so a project can be browsable
-    -- across the instance without being exposed to the anonymous web. It grants
-    -- reading only — every write gate stays membership-scoped, so a project turned
-    -- on here is read-only to the signed-in users it newly admits. Enforced in
-    -- AccessControl.canReadProject beside is_public, never in the browser.
+    -- ── Where `is_public` and `visible_to_all_signed_in` went (LNL-191) ──────
     --
-    -- Independent of is_public rather than an enum replacing it: a fresh row
-    -- defaults 0 like is_public, and the two OR together in the read rule, so
-    -- turning on "public" already implies signed-in visibility and this adds the
-    -- signed-in-only middle. Default 0 — the tier every project had before this
-    -- column existed. See 30.sqm, which adds it to an existing volume.
-    visible_to_all_signed_in INTEGER NOT NULL DEFAULT 0,
+    -- Both columns lived here until 33.sqm dropped them, and this paragraph is
+    -- their forwarding address because a project's visibility is the first thing
+    -- anybody looks for in this table.
+    --
+    -- They were two booleans that could each say one thing: "readable by a caller
+    -- with no session" and "readable by any account". Neither could say at what
+    -- *rung* — a public project was public and read-only, and there was no way to
+    -- express "anybody on this instance may file bugs here" short of a grant per
+    -- person. They are replaced wholesale by `project_audience_roles`: at most
+    -- three rows per project, one per audience (guest, member, staff), each naming
+    -- a rung. `is_public = 1` is now a `guest → viewer` row and
+    -- `visible_to_all_signed_in = 1` is a `member → viewer` row, and both are now
+    -- one mechanism rather than two special cases the read rule had to OR together.
+    --
+    -- See Roles.sq, and AccessControl.effectiveRole for the rule that combines an
+    -- audience row with a person's own.
 
     -- Whether this project offers a discussion forum and private messages. Two
     -- flags a project administrator sets, independently — a project may want
@@ -91,6 +91,49 @@ CREATE TABLE projects (
     -- every project had before this column existed. See 32.sqm; 24.sqm's reasoning
     -- for a DEFAULT that reproduces the prior state applies verbatim.
     show_issue_author INTEGER NOT NULL DEFAULT 0,
+
+    -- Whether this project's board and issue windows hide the issue number — the
+    -- FOO-123 key, prefix and all (LNL-194). The second board-display setting
+    -- beside show_issue_author, and set by the same administrator gesture.
+    --
+    -- It was a per-USER preference until LNL-194, living inside each account's
+    -- `ui_settings` PROJECT_PREFS blob, and moving it here is a change of who it is
+    -- for: a project's board reads one way for everybody looking at it, so the
+    -- choice belongs to the project. See 34.sqm.
+    --
+    -- NULLABLE, alone among the display and requirement flags, and the NULL is not
+    -- laziness: it means "nobody has decided this project's answer yet", which is
+    -- what every migrated row starts as and what the startup copy consumes. Once a
+    -- value is written the column is never NULL again. Readers treat NULL as 0 —
+    -- see ProjectRecord.hideIssueNumbers, which is the only shape the wire ever
+    -- sees. See copyBoardDisplayFromOwners.
+    hide_issue_numbers INTEGER,
+
+    -- Whether this project estimates work at all, and in what unit: 'none', 'time'
+    -- or 'points' (LNL-215).
+    --
+    -- ── 'none' is the default, and must leave every board unchanged ─────────
+    --
+    -- Most projects will never estimate anything, so the third state is not an
+    -- afterthought beside the reporter's time-or-points — it is the one nearly every
+    -- row will hold. On 'none' the issue window renders no estimate cell, no popover
+    -- and no read-mode line: nothing at all, not a greyed control. That is
+    -- GitHubStatistics.kt's house rule applied here — a feature nobody has configured
+    -- is OFF, never broken — and 29.sqm's reasoning for a DEFAULT that reproduces the
+    -- prior state applies verbatim.
+    --
+    -- ── This governs the EDITOR, not the meaning of stored values ───────────
+    --
+    -- The unit an existing estimate is read in comes from `issues.estimate_unit`, not
+    -- from here. This column decides only what the editor OFFERS: three inputs
+    -- (days/hours/minutes) on 'time', one on 'points', none on 'none'. Flipping it
+    -- therefore changes what people can enter next and reinterprets nothing already
+    -- entered — which is the whole reason the unit is stamped on the issue. See
+    -- Issues.sq's estimate_unit for the long version of why that matters.
+    --
+    -- TEXT holding the constant name rather than an integer, for issue_events.kind's
+    -- reason: the name is already the wire format.
+    estimate_mode TEXT NOT NULL DEFAULT 'none',
 
     created_at INTEGER NOT NULL,
 
@@ -182,38 +225,64 @@ CREATE TABLE projects (
     FOREIGN KEY (active_sprint_id) REFERENCES sprints(id) ON DELETE SET NULL
 );
 
+-- A fresh project. `hide_issue_numbers` is named explicitly, and 0 rather than left
+-- to the column's NULL: the null means "not yet decided" and is the startup copy's
+-- marker (see copyBoardDisplayFromOwners), and a board nobody has ever looked at has
+-- no old per-user preference to copy — so it decides here, now, that numbers show.
 insert:
-INSERT INTO projects (name, name_prefix, is_public, visible_to_all_signed_in, position, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at;
+INSERT INTO projects (name, name_prefix, position, created_at, hide_issue_numbers)
+VALUES (?, ?, ?, ?, 0)
+RETURNING id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at;
 
 update:
-UPDATE projects SET name = ?, name_prefix = ?, is_public = ?, visible_to_all_signed_in = ? WHERE id = ?;
+UPDATE projects SET name = ?, name_prefix = ? WHERE id = ?;
 
 -- The two forum feature flags, together, project-administrator only (LNL-96).
--- Its own query rather than folded into `update`, because that one is the
--- system-administrator identity write (name, prefix, visibility) and these are a
--- narrower role's — keeping them apart keeps a project administrator's toggle
--- from having to carry the identity fields it may not change. See
--- ProjectStore.setFeatures.
+-- Its own query rather than folded into `update`, because that one is the project
+-- OWNER's identity write (name, prefix) and these sit one rung below it — keeping
+-- them apart keeps an administrator's toggle from having to carry the identity
+-- fields they may not change. See ProjectStore.setFeatures.
+--
+-- This said "system-administrator identity write (name, prefix, visibility)", and
+-- neither half survived LNL-191: the write asks `canOwnProject`, and visibility
+-- left this table altogether for the audience rows in `project_audience_roles`.
 setFeatures:
 UPDATE projects SET discussions_enabled = ?, messages_enabled = ? WHERE id = ?;
 
 -- The two new-ticket requirement flags, together, project-administrator only
 -- (LNL-106). Its own query rather than folded into `update` for setFeatures'
--- reason: `update` is the system-administrator identity write (name, prefix,
--- visibility), and these are a project administrator's, who may not touch those.
+-- reason: `update` is the project owner's identity write (name, prefix), and these
+-- are a project administrator's, who may not touch those.
 -- See ProjectStore.setRequirements.
 setRequirements:
 UPDATE projects SET require_label = ?, require_component = ?, require_fixed_version_on_resolve = ? WHERE id = ?;
 
--- The one board-display flag, project-administrator only (LNL-157). Its own query
--- rather than folded into setRequirements, because that one is a "requirement" set
--- (what a ticket must carry) and this is a display choice (what the card shows) —
--- keeping them apart keeps the two concerns from having to travel together, and a
--- display setting is cleanly not a requirement. See ProjectStore.setShowIssueAuthor.
-setShowIssueAuthor:
-UPDATE projects SET show_issue_author = ? WHERE id = ?;
+-- Both board-display flags, project-administrator only (LNL-157, LNL-194). Its own
+-- query rather than folded into setRequirements, because that one is a "requirement"
+-- set (what a ticket must carry) and these are display choices (how the board reads)
+-- — keeping them apart keeps the two concerns from having to travel together, and a
+-- display setting is cleanly not a requirement.
+--
+-- The pair together, never one at a time, for setRequirements' reason: the Board
+-- display group renders two switches and sends both, so a stale client cannot
+-- resurrect the other by omitting it. Writing hide_issue_numbers here is also what
+-- takes the row out of the "not yet decided" state 34.sqm left it in. See
+-- ProjectStore.setBoardDisplay.
+setBoardDisplay:
+UPDATE projects SET show_issue_author = ?, hide_issue_numbers = ? WHERE id = ?;
+
+-- Whether this project estimates, and in what unit — project-administrator only
+-- (LNL-215). Its own query rather than folded into setBoardDisplay for that one's
+-- own reason turned one notch further: those two decide how a board *reads*, and
+-- this decides what an editor *offers*, which is a different kind of switch — and a
+-- stale client sending the display pair must not be able to reset it in passing.
+--
+-- The route validates the string against EstimateMode before it gets here; a store
+-- makes no decisions. Note this deliberately does not touch any issue's
+-- `estimate_unit`, which is what makes flipping it reinterpret nothing already
+-- estimated. See Issues.sq.
+setEstimateMode:
+UPDATE projects SET estimate_mode = ? WHERE id = ?;
 
 -- One row at a time, inside the transaction that rewrites the whole instance's
 -- order. See ProjectRepository.reorder and Labels.sq's setPosition.
@@ -230,19 +299,19 @@ delete:
 DELETE FROM projects WHERE id = ?;
 
 findById:
-SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at
 FROM projects WHERE id = ?;
 
 -- Name lookup for the embed's ?project= parameter. NOCASE on the column makes
 -- this case-insensitive without a function on either side, so the UNIQUE index
 -- is still usable.
 findByName:
-SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at
 FROM projects WHERE name = ?;
 
 -- Every project, for the picker and for the Unicode-fold uniqueness check.
 --
--- Ordered by the position a system administrator arranged (LNL-93), 0 first, and
+-- Ordered by the position the instance owner arranged (LNL-93), 0 first, and
 -- no longer by name: the picker shows projects in the chosen order, and the
 -- uniqueness check does not care which order it reads them in. Ties — which the
 -- non-UNIQUE `position` column permits transiently mid-reorder — break by id so
@@ -252,7 +321,7 @@ FROM projects WHERE name = ?;
 -- needs the whole list to do it. A store makes no decisions. See §2 — the route
 -- is what must never ship a private project's name to a signed-out visitor.
 selectAll:
-SELECT id, name, name_prefix, is_public, visible_to_all_signed_in, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at
 FROM projects ORDER BY position, id;
 
 -- Which sprint this project is working on. Its own query rather than a column on

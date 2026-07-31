@@ -13,6 +13,21 @@ CREATE TABLE sessions (
     user_id INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
 
+    -- Which owner-impersonation grant minted this session, or NULL for every
+    -- session anybody proved an identity for — which is all but a handful, on the
+    -- rare deployment that has the feature switched on at all.
+    --
+    -- A LABEL, not a capability. Holding this value grants nothing: the grant it
+    -- names lives only in the server's memory (see ProbeGrants), so a leaked copy
+    -- of this table is a list of ids that resolve to nothing anywhere. That is
+    -- what makes it safe at rest, and it is why the capability is deliberately not
+    -- stored beside it.
+    --
+    -- Two things read it. The marker on screen — you are told, and cannot dismiss
+    -- it, that you are wearing somebody's face — and the sweep below, which is
+    -- what makes turning the feature off end every impersonation in flight.
+    probe_id TEXT,
+
     -- ON DELETE CASCADE so deleting a user cannot leave a session pointing at
     -- nobody. Enforced only because Database.kt sets `PRAGMA foreign_keys = ON`
     -- — SQLite ignores foreign keys by default, which makes this line look like
@@ -25,14 +40,21 @@ CREATE TABLE sessions (
 findUser:
 SELECT users.id, users.provider, users.provider_id, users.provider_name,
        users.display_name, users.email, users.email_verified,
-       users.is_sys_admin, users.mcp_enabled, users.mcp_allowed
+       users.kind, users.instance_role, users.mcp_enabled, users.signed_in_at
 FROM sessions
 JOIN users ON users.id = sessions.user_id
 WHERE sessions.id = ?;
 
+-- Deliberately NOT folded into findUser above, which is the hottest query in the
+-- server: widening its SELECT would make every authenticated request on every
+-- deployment carry a column only an armed one can ever use. This is a separate
+-- primary-key lookup, asked only when the gate is on. See SessionStore.probeIdFor.
+findProbeId:
+SELECT probe_id FROM sessions WHERE id = ?;
+
 insert:
-INSERT INTO sessions (id, user_id, created_at)
-VALUES (?, ?, ?);
+INSERT INTO sessions (id, user_id, created_at, probe_id)
+VALUES (?, ?, ?, ?);
 
 -- Idempotent by construction: deleting an unknown id affects zero rows and is
 -- not an error. Signing out twice is not a failure.
@@ -44,6 +66,17 @@ DELETE FROM sessions WHERE id = ?;
 -- user who simply closes the tab and never signs out.
 deleteOlderThan:
 DELETE FROM sessions WHERE created_at < ?;
+
+-- Every session minted without proof of identity, whoever it belongs to.
+--
+-- Run at startup, UNCONDITIONALLY — whatever the impersonation gate says. Grants
+-- never outlive a process, so every probe session present at boot is orphaned by
+-- definition and there is nothing here to preserve. Gating it would leave the one
+-- hole worth caring about: turn the feature off while somebody is probing, and
+-- their session would survive the restart as an ORDINARY session for the person
+-- they were wearing, unmarked. See ImpersonationConfig.
+deleteProbeSessions:
+DELETE FROM sessions WHERE probe_id IS NOT NULL;
 
 countAll:
 SELECT count(*) FROM sessions;

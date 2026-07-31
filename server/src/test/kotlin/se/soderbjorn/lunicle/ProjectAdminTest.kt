@@ -8,27 +8,32 @@
  * failures worth testing are the quiet ones, where it grants too much:
  *
  *  - **It is per-project.** A project administrator of one board must be an
- *    ordinary user on every other. The obvious wrong implementation asks
- *    `hasRole` without a project id, or reuses a check that ignores it, and it
+ *    ordinary user on every other. The obvious wrong implementation asks the
+ *    question without a project id, or reuses a check that ignores it, and it
  *    looks perfect on a one-project instance — which is exactly what a dev
- *    machine is.
- *  - **It is not the system administrator.** Creating and deleting projects,
- *    impersonation and MCP backfill authorship stay instance-wide. `isSysAdmin`
- *    short-circuits everything; the new role must not acquire the same habit.
- *  - **It cannot promote a peer.** A role that can grant itself escalates: the
- *    first project administrator makes a second, who makes a third, and the
- *    system administrator who granted the first has no say in it. This is the
+ *    machine is. [AccessControl.effectiveRole] takes an id by signature, so the
+ *    first of those is hard to write; the second is what these tests are for.
+ *  - **It is not an instance administrator, and still less the instance owner.**
+ *    Creating a project is per tier and off until somebody turns it on (LNL-192);
+ *    deleting boards across the instance, impersonation and MCP backfill authorship
+ *    narrowed to the instance **owner** (LNL-191). Reaching [InstanceRole.ADMIN]
+ *    short-circuits [AccessControl.effectiveRole] to [ProjectRole.OWNER] on every
+ *    board at once; this rung must not acquire the same habit.
+ *  - **It cannot promote a peer.** A rung that can grant itself escalates: the
+ *    first project administrator makes a second, who makes a third, and the project
+ *    owner who granted the first has no say in it. This is the
  *    one rule with no backstop elsewhere, so it is asserted from the route.
- *  - **The bundle stops at authorship.** The role implies the four issue-scoped
- *    roles, deliberately. It does not imply owning other people's words —
- *    `canEditComment` is authorship, not a grant, and running a board is not a
- *    licence to rewrite what somebody said on it.
+ *  - **The bundle stops at authorship.** The rung contains every rung below it,
+ *    deliberately — that is what cumulative means. It does not imply owning other
+ *    people's words: `canEditComment` is authorship, not a rung, and running a
+ *    board is not a licence to rewrite what somebody said on it. Running the
+ *    *instance* is (LNL-201), which is the line this file's rung sits below.
  *
  * Through the real routes with real session cookies, for VocabularyTest's
  * reason: a test against [AccessControl] alone would pass on a route that never
  * called it, and the gates that moved here are gates in routes.
  *
- * @see Role.PROJECT_ADMIN
+ * @see ProjectRole.ADMIN
  * @see AccessControl.canAdministerProject
  * @see AccessControl.canGrant
  */
@@ -53,7 +58,7 @@ import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.ProjectFeatures
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
-import se.soderbjorn.lunicle.clientserver.RoleGrant
+import se.soderbjorn.lunicle.clientserver.RungGrant
 import se.soderbjorn.lunicle.clientserver.SprintActivation
 import se.soderbjorn.lunicle.clientserver.VocabularyAdd
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
@@ -63,6 +68,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
@@ -93,8 +99,9 @@ class ProjectAdminTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -142,24 +149,24 @@ class ProjectAdminTest {
         assertEquals(sprint.id, projects.activeSprintId(f.projectId))
     }
 
-    /** And the ordinary issue work, which the role bundles rather than requiring four more boxes. */
+    /** And the ordinary issue work, which the rung contains rather than requiring four more grants. */
     @Test
     fun `a project administrator may file issues without holding create_issue`(): Unit = runBlocking {
         val f = seed()
         val admin = users.findById(f.projectAdminId)!!
         assertFalse(
-            roles.rolesFor(f.projectAdminId, f.projectId).contains(Role.CREATE_ISSUE),
-            "The fixture granted create_issue outright, so this proves nothing.",
+            setOfNotNull(roles.roleFor(f.projectAdminId, f.projectId)).contains(ProjectRole.CONTRIBUTOR),
+            "The fixture seated them as a contributor outright, so this proves nothing.",
         )
-        assertTrue(access.canCreateIssue(admin, f.projectId), "The bundle does not reach create_issue.")
-        assertTrue(access.canComment(admin, f.projectId), "The bundle does not reach comment_on_issue.")
-        assertTrue(access.canBeAssigned(admin, f.projectId), "The bundle does not reach be_assigned_issue.")
+        assertTrue(access.canCreateIssue(admin, f.projectId), "The bundle does not reach filing an issue.")
+        assertTrue(access.canComment(admin, f.projectId), "The bundle does not reach commenting.")
+        assertTrue(access.canBeAssigned(admin, f.projectId), "The bundle does not reach being assigned.")
 
-        // change_unowned_issues, asked the way the routes ask it: about an issue.
+        // Editing somebody else's issue, asked the way the routes ask it: about an issue.
         val (issueId, _) = issueRepository.createDraft(f.projectId, Author.Account(f.sysAdminId))
         assertTrue(
             access.canEditIssue(admin, issues.findById(issueId)!!),
-            "The bundle does not reach change_unowned_issues.",
+            "The bundle does not reach editing somebody else's issue.",
         )
     }
 
@@ -171,22 +178,21 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.CREATE_ISSUE.key, isGranted = true))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = ProjectRole.CONTRIBUTOR.key))
             }
             assertEquals(HttpStatusCode.OK, response.status, "A project administrator could not grant a role.")
         }
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.CREATE_ISSUE))
+        assertTrue((roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.CONTRIBUTOR))
     }
 
     // ── Where it stops ───────────────────────────────────────────────────────
 
     /**
-     * THE test of this file: the role cannot grant itself.
+     * THE test of this file: the rung cannot grant itself.
      *
      * Without this, one project administrator promotes a second, who promotes a
-     * third, and the system administrator who granted the first is no longer the
-     * only route in. There is no backstop anywhere else — the grant route is the
-     * only door.
+     * third, and whoever granted the first is no longer the only route in. There is
+     * no backstop anywhere else — the grant route is the only door.
      */
     @Test
     fun `a project administrator cannot make somebody else a project administrator`(): Unit = runBlocking {
@@ -195,22 +201,22 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.PROJECT_ADMIN.key, isGranted = true))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key))
             }
             assertEquals(
                 HttpStatusCode.Forbidden,
                 response.status,
-                "A project administrator promoted a peer. The role can now escalate without a system " +
-                    "administrator ever being asked.",
+                "A project administrator promoted a peer. The rung can now escalate without an " +
+                    "owner ever being asked.",
             )
         }
         assertFalse(
-            roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN),
+            (roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.ADMIN),
             "The grant landed despite the refusal.",
         )
     }
 
-    /** A system administrator is the one who can. The mirror of the test above. */
+    /** An instance administrator is, holding OWNER on every board. The mirror of the test above. */
     @Test
     fun `a system administrator can make somebody a project administrator`(): Unit = runBlocking {
         val f = seed()
@@ -218,11 +224,11 @@ class ProjectAdminTest {
             val response = client.post("/api/projects/${f.projectId}/roles") {
                 cookie(SESSION_COOKIE, f.sysAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(RoleGrant(userId = f.outsiderId, roleKey = Role.PROJECT_ADMIN.key, isGranted = true))
+                setBody(RungGrant(userId = f.outsiderId, roleKey = ProjectRole.ADMIN.key))
             }
             assertEquals(HttpStatusCode.OK, response.status)
         }
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN))
+        assertTrue((roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.ADMIN))
     }
 
     /**
@@ -269,7 +275,7 @@ class ProjectAdminTest {
             val created = client.post("/api/projects") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(ProjectUpdate("Theirs", "THR", isPublic = false))
+                setBody(ProjectUpdate("Theirs", "THR"))
             }
             assertEquals(HttpStatusCode.Forbidden, created.status, "A project administrator created a project.")
         }
@@ -277,12 +283,12 @@ class ProjectAdminTest {
     }
 
     /**
-     * The bundle reaches roles, not authorship.
+     * The bundle reaches rungs, not authorship.
      *
-     * `canEditComment` is about who wrote it, and the four roles this role
-     * implies are all grants. Running a board does not make somebody else's words
-     * yours to rewrite — the same line McpDeleteTest draws for
-     * `change_unowned_issues`, and for the same reason.
+     * `canEditComment` is about who wrote it, and everything the admin rung contains
+     * is a rung. Running a board does not make somebody else's words yours to
+     * rewrite — the same line McpDeleteTest draws for the maintainer rung, and for
+     * the same reason.
      */
     @Test
     fun `a project administrator cannot edit someone elses comment`(): Unit = runBlocking {
@@ -301,36 +307,53 @@ class ProjectAdminTest {
     // ── The affordance ───────────────────────────────────────────────────────
 
     /**
-     * The settings dialog opens for a project administrator, with the admin half
-     * — and with the one box they may not tick flagged.
+     * The Access section opens for a project administrator, with the two senior rungs
+     * greyed and worded (LNL-194).
      *
-     * `canMutateProject` and `canGrantSeniorRoles` differ for exactly this
-     * caller and nobody else, which is why they are two fields rather than one.
+     * The rung options are where `canMutateProject` and "may promote" part company, and
+     * they part company for exactly this caller and nobody else — which is why the
+     * greying is per rung rather than one flag on the response.
      */
     @Test
-    fun `the settings state tells a project administrator what they may not grant`(): Unit = runBlocking {
+    fun `the access state tells a project administrator what they may not grant`(): Unit = runBlocking {
         val f = seed()
         withRoutes { client ->
             val theirs: ProjectSettingsState = client.get("/api/projects/${f.projectId}/settings") {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
             }.body()
             assertTrue(theirs.canMutateProject, "A project administrator got the read-only dialog.")
-            assertFalse(
-                theirs.canGrantSeniorRoles,
-                "The dialog would offer a project administrator the promote box, which the route refuses.",
+            val theirRungs = theirs.access?.rungs.orEmpty().associateBy { it.key }
+            assertTrue(theirRungs.isNotEmpty(), "The Access section was omitted for an administrator.")
+            assertTrue(
+                theirRungs.getValue(ProjectRole.MAINTAINER.key).isSelectable,
+                "A project administrator lost the rungs they may hand out.",
             )
-            assertTrue(theirs.members.isNotEmpty(), "The admin half was omitted.")
+            assertFalse(
+                theirRungs.getValue(ProjectRole.ADMIN.key).isSelectable,
+                "The screen would offer a project administrator a rung the route refuses.",
+            )
+            assertNotNull(
+                theirRungs.getValue(ProjectRole.OWNER.key).unavailableReason,
+                "A rung out of reach was greyed without saying why.",
+            )
+            assertTrue(theirs.access?.canGrant == true, "A project administrator cannot add anybody.")
 
             val sysAdmin: ProjectSettingsState = client.get("/api/projects/${f.projectId}/settings") {
                 cookie(SESSION_COOKIE, f.sysAdminCookie)
             }.body()
-            assertTrue(sysAdmin.canGrantSeniorRoles, "A system administrator lost the promote box.")
+            assertTrue(
+                sysAdmin.access?.rungs.orEmpty().all { it.isSelectable },
+                "An instance administrator lost a rung.",
+            )
 
             val outsider: ProjectSettingsState = client.get("/api/projects/${f.projectId}/settings") {
                 cookie(SESSION_COOKIE, f.outsiderCookie)
             }.body()
             assertFalse(outsider.canMutateProject)
-            assertTrue(outsider.members.isEmpty(), "The members directory leaked to a non-administrator.")
+            assertNull(
+                outsider.access,
+                "The Access section — which carries e-mail addresses — leaked below Maintainer.",
+            )
         }
     }
 
@@ -358,7 +381,7 @@ class ProjectAdminTest {
             )
 
             val sys = access.permissionsFor(users.findById(f.sysAdminId)!!, f.projectId)
-            assertTrue(sys.canMutateProjectIdentity, "A system administrator lost the rename/delete half.")
+            assertTrue(sys.canMutateProjectIdentity, "An instance administrator lost the rename/delete half.")
 
             val outsider = access.permissionsFor(users.findById(f.outsiderId)!!, f.projectId)
             assertFalse(outsider.canMutateProject)
@@ -406,32 +429,49 @@ class ProjectAdminTest {
         assertFalse(stored.messagesEnabled, "The column was not written.")
     }
 
-    /** The two flags move independently: switching messages off leaves discussions on. */
+    /**
+     * A project administrator asking for discussions back does not get them.
+     *
+     * This test read "the two flags move independently" until LNL-190 retired both
+     * features: the route still takes the pair and still writes the columns, but
+     * every read fills them from `PROJECT_FORUM_FEATURES_ENABLED`, so the answer to
+     * "switch discussions on" is now no. The route is unreachable from the web app —
+     * the Features section is gone — so this is about the one caller left, somebody
+     * posting the old body by hand.
+     */
     @Test
-    fun `the two feature flags are independent`(): Unit = runBlocking {
+    fun `switching a feature back on does not switch it back on`(): Unit = runBlocking {
         val f = seed()
 
         withRoutes { client ->
             val settings: ProjectSettingsState = client.post(ApiRoutes.projectFeatures(f.projectId)) {
                 cookie(SESSION_COOKIE, f.projectAdminCookie)
                 contentType(ContentType.Application.Json)
-                setBody(ProjectFeatures(discussionsEnabled = true, messagesEnabled = false))
+                setBody(ProjectFeatures(discussionsEnabled = true, messagesEnabled = true))
             }.body()
-            assertTrue(settings.discussionsEnabled, "Discussions were switched off by a messages-only change.")
-            assertFalse(settings.messagesEnabled)
+            assertFalse(settings.discussionsEnabled, "Discussions came back on for the asking.")
+            assertFalse(settings.messagesEnabled, "Messages came back on for the asking.")
+
+            val board: BoardState = client.get("/api/projects/${f.projectId}/board") {
+                cookie(SESSION_COOKIE, f.projectAdminCookie)
+            }.body()
+            assertFalse(board.project.discussionsEnabled, "The board's project says discussions are on.")
+            assertFalse(board.project.messagesEnabled, "The board's project says messages are on.")
         }
 
         val stored = projects.findById(f.projectId)!!
-        assertTrue(stored.discussionsEnabled)
+        assertFalse(stored.discussionsEnabled)
         assertFalse(stored.messagesEnabled)
     }
 
     /**
-     * Someone who does not administer the project cannot change its features, and
-     * the flags are untouched afterwards.
+     * Someone who does not administer the project cannot change its features.
      *
-     * The store is re-read directly, for the file's usual reason: a 403 that had
-     * already written would still read as a 403.
+     * The status is the whole of it now. This used to re-read the store afterwards —
+     * a 403 that had already written would still read as a 403 — but since LNL-190
+     * every read of the two flags answers false whatever is in the column, so a
+     * write is no longer observable from here. The retired feature is pinned by the
+     * test above; this one is about the gate.
      */
     @Test
     fun `an outsider cannot change a project's features`(): Unit = runBlocking {
@@ -447,10 +487,6 @@ class ProjectAdminTest {
                 }.status,
             )
         }
-
-        val stored = projects.findById(f.projectId)!!
-        assertTrue(stored.discussionsEnabled, "A refused request switched discussions off anyway.")
-        assertTrue(stored.messagesEnabled, "A refused request switched messages off anyway.")
     }
 
     // ── Fixture ──────────────────────────────────────────────────────────────
@@ -468,29 +504,34 @@ class ProjectAdminTest {
     )
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isSysAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(projectAdmin.isSysAdmin, "The fixture's project administrator is a system one.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
+        assertFalse(projectAdmin.isInstanceAdmin, "The fixture's project administrator runs the instance too.")
 
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        val other = projectRepository.create("Elsewhere", "ELS", isPublic = false)
-        // The ONLY grant of substance. No create_issue, no comment_on_issue —
-        // the bundle has to supply those, or the tests above prove nothing.
-        roles.grant(projectAdmin.id, project.id, Role.PROJECT_ADMIN)
+        val project = projectRepository.create("Lunamux", "LMX")
+        val other = projectRepository.create("Elsewhere", "ELS")
+        // The ONLY grant of substance, and no lower rung written beside it — the
+        // ladder has to supply those, or the tests above prove nothing.
+        roles.setRole(projectAdmin.id, project.id, ProjectRole.ADMIN)
         // Bare visibility, and nothing else, for the two callers whose refusals
         // this file is about. Since LNL-57 a private project is invisible to
         // somebody holding nothing in it, and an invisible project answers 404
         // to everything — which would satisfy every "…is Forbidden" assertion
-        // below without the admin gate existing at all. `view_project` grants
-        // no ability whatsoever (see Role.VIEW_PROJECT), so these two lines
+        // below without the admin gate existing at all. The bottom rung grants
+        // no ability whatsoever (see ProjectRole.VIEWER), so these two lines
         // move the refusals back to being about administering rather than about
         // seeing, which is what the tests claim to check.
-        roles.grant(outsider.id, project.id, Role.VIEW_PROJECT)
-        roles.grant(projectAdmin.id, other.id, Role.VIEW_PROJECT)
+        roles.setRole(outsider.id, project.id, ProjectRole.VIEWER)
+        roles.setRole(projectAdmin.id, other.id, ProjectRole.VIEWER)
 
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(
             sysAdminId = sysAdmin.id,
             sysAdminCookie = sessions.create(sysAdmin.id),
@@ -532,7 +573,7 @@ class ProjectAdminTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -554,7 +595,6 @@ class ProjectAdminTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

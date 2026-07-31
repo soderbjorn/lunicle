@@ -48,7 +48,18 @@ interface IssueStore {
         agentName: String? = null,
     ): Pair<Long, Long>
 
-    /** Write the editor's fields and make the issue visible. One statement. */
+    /**
+     * Write the editor's fields and make the issue visible. One statement.
+     *
+     * @param assigneeIsAgent whether the work goes to [assigneeId]'s agent rather than
+     *   to them in person (LNL-215). Written here with the assignee rather than
+     *   through [setAssignee], because both are editor fields that stage until Save.
+     *   The caller has already applied the "changing the assignee clears it" rule and
+     *   forced it false when nobody is assigned; a store makes no decisions.
+     * @param estimate how much work this is, or null to clear it. A pair, so a cleared
+     *   estimate nulls both columns in the one statement rather than leaving a unit
+     *   behind for the next amount to inherit.
+     */
     suspend fun publish(
         id: Long,
         title: String,
@@ -57,9 +68,11 @@ interface IssueStore {
         priorityId: Long,
         resolutionId: Long?,
         assigneeId: Long?,
+        assigneeIsAgent: Boolean,
         sprintId: Long?,
         plannedVersionId: Long?,
         fixedVersionId: Long?,
+        estimate: se.soderbjorn.lunicle.clientserver.Estimate?,
         updatedAt: Long? = null,
     )
 
@@ -75,8 +88,16 @@ interface IssueStore {
     /** How many issues reference each of a project's versions — planned and fixed summed. */
     suspend fun usageByVersion(projectId: Long): Map<Long, Long>
 
-    /** Hand an issue to somebody, or take it back off them with null. */
-    suspend fun setAssignee(id: Long, assigneeId: Long?)
+    /**
+     * Hand an issue to somebody, or take it back off them with null.
+     *
+     * @param assigneeIsAgent whether the work goes to that person's agent (LNL-215).
+     *   Written in the same statement as the assignee, both directions: taking an
+     *   issue carries what the caller asked for, and handing it to somebody else
+     *   carries false. Two writes would leave a window where an issue is assigned to
+     *   one person and flagged for another person's robot.
+     */
+    suspend fun setAssignee(id: Long, assigneeId: Long?, assigneeIsAgent: Boolean = false)
 
     /** Every issue whose description might mention somebody, as id-to-description pairs. */
     suspend fun withPossibleMentions(): List<Pair<Long, String>>
@@ -98,6 +119,7 @@ interface IssueStore {
         sprintId: Long?,
         plannedVersionId: Long?,
         fixedVersionId: Long?,
+        estimate: se.soderbjorn.lunicle.clientserver.Estimate?,
     )
 
     /** Rewrite an issue's attribution columns — author, creation date, agent label. */

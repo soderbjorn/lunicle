@@ -22,7 +22,7 @@ class SqlDelightVersionStoreContractTest : VersionStoreContract() {
     override val store: VersionStore = se.soderbjorn.lunicle.VersionStore(db)
 
     override suspend fun newProject(): Long =
-        projects.insert("Project $seq", "VR${seq++}", isPublic = false).id
+        projects.insert("Project $seq", "VR${seq++}").id
 
     @AfterTest
     fun tearDown() = fixture.close()

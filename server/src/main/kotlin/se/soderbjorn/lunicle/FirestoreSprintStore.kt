@@ -104,6 +104,34 @@ class FirestoreSprintStore(
     }
 
     /**
+     * Clear a sprint's completion stamp, and nothing else (LNL-196).
+     *
+     * Not the inverse of [complete]: the rolled-forward work stays where it went and
+     * the project's active pointer is untouched. Idempotent on an already-open sprint,
+     * like [activate]. See `SprintRepository.reopen` for the full reasoning.
+     *
+     * Existence and ownership are checked by hand rather than through [requireOpen],
+     * which is the one call site that must NOT insist on openness — a completed sprint
+     * is exactly what this is for.
+     *
+     * @throws SprintRefusal if the sprint is not this project's.
+     */
+    override suspend fun reopen(projectId: Long, sprintId: Long) {
+        val snap = sprintDoc(sprintId).get().await()
+        if (!snap.exists() ||
+            snap.getString(FirestoreVocabularyStore.KIND) != VocabularyKind.SPRINT.name ||
+            snap.getLong(FirestoreVocabularyStore.PROJECT_ID) != projectId
+        ) {
+            throw SprintRefusal("That sprint is not in this project.")
+        }
+        // An explicit null rather than a field delete: `toSprint` reads the field with
+        // getLong, which answers null for both — but a missing field and a null one are
+        // different documents, and the SQLite side writes NULL into a column that is
+        // always present. Keeping the field makes the two backends round-trip the same.
+        sprintDoc(sprintId).update(FirestoreVocabularyStore.COMPLETED_AT, null).await()
+    }
+
+    /**
      * Set exactly which issues are in a sprint — the complete set, not a delta.
      *
      * Refused for a completed sprint (work put there could never leave it) or one

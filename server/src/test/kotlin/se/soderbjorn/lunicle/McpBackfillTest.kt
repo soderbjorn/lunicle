@@ -1,5 +1,5 @@
 /**
- * The admin-only backfill parameters on `create_issue`, `add_comment` and
+ * The owner-only backfill parameters on `create_issue`, `add_comment` and
  * `update_issue`.
  *
  * ── Why these are worth a file ──────────────────────────────────────────────
@@ -79,6 +79,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class McpBackfillTest {
     private val file: File = Files.createTempFile("lunicle-mcp", ".db").toFile().also { it.delete() }
@@ -105,8 +106,14 @@ class McpBackfillTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -158,7 +165,7 @@ class McpBackfillTest {
             )
             assertTrue(result.isError, "A non-admin's `author` was accepted or silently ignored.")
             assertTrue(
-                result.text.contains("Only a system administrator"),
+                result.text.contains("Only the instance owner"),
                 "The refusal must say who may do this. Got: ${result.text}",
             )
         }
@@ -231,7 +238,7 @@ class McpBackfillTest {
                 """{"project_id":${fixture.projectId},"title":"Imported","created_at":"last Tuesday"}""",
             )
             assertTrue(result.isError, "A bad `created_at` from a non-admin was quietly ignored.")
-            assertTrue(result.text.contains("Only a system administrator"), result.text)
+            assertTrue(result.text.contains("Only the instance owner"), result.text)
         }
         assertEquals(emptyList(), issues.forProject(fixture.projectId))
     }
@@ -364,7 +371,7 @@ class McpBackfillTest {
             )
             assertTrue(result.isError, "A non-admin wrote an issue under an invented author.")
             assertTrue(
-                result.text.contains("Only a system administrator"),
+                result.text.contains("Only the instance owner"),
                 "The refusal must say why. Got: ${result.text}",
             )
         }
@@ -732,7 +739,7 @@ class McpBackfillTest {
             )
             assertTrue(result.isError, "A non-admin backdated an edit.")
             assertTrue(
-                result.text.contains("Only a system administrator"),
+                result.text.contains("Only the instance owner"),
                 "The refusal must say who may do this. Got: ${result.text}",
             )
         }
@@ -870,28 +877,34 @@ class McpBackfillTest {
      * The instance admin, one ordinary user who may file and comment, and a project.
      *
      * The admin is whoever signs in first — see Users.sq's upsert — so the order
-     * here is load-bearing rather than incidental. The ordinary user is granted
-     * `create_issue` and `comment_on_issue` explicitly, because otherwise every
-     * non-admin test below would be refused for the wrong reason and would pass
-     * against a server with no backfill check at all.
+     * here is load-bearing rather than incidental. The ordinary user is seated as a
+     * Contributor explicitly, because otherwise every non-admin test below would be
+     * refused for the wrong reason and would pass against a server with no backfill
+     * check at all.
      *
-     * `roles.seed()` first, as Application.module does at every startup: `grant` is
-     * an INSERT..SELECT that turns a role_key into a role_id, so against an
-     * unseeded `roles` table it selects nothing, inserts nothing, and reports
-     * success. Every non-admin test then fails with "You cannot create issues in
-     * this project" — a refusal, from the wrong rule, that looks exactly like the
-     * one being tested for.
+     * This used to carry a second warning, about calling `roles.seed()` first the way
+     * Application.module did at every startup: granting went through an INSERT..SELECT
+     * that turned a role_key into a role_id, so against an unseeded `roles` table it
+     * selected nothing, inserted nothing and reported success — and every non-admin
+     * test then failed with "You cannot create issues in this project", a refusal from
+     * the wrong rule that looked exactly like the one being tested for. LNL-191
+     * retired that table. A rung is one string on one row, so there is nothing to seed
+     * and nothing left to get wrong here.
      */
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        roles.grant(ordinary.id, project.id, Role.CREATE_ISSUE)
-        roles.grant(ordinary.id, project.id, Role.COMMENT_ON_ISSUE)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        val project = projectRepository.create("Lunamux", "LMX")
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, ordinary.id, project.id)
     }
 
@@ -962,7 +975,6 @@ class McpBackfillTest {
         // fail every test here identically and for the wrong reason. mcp_allowed
         // is off by default (6.sqm ships it that way), so the permission has to be
         // granted explicitly; mcp_enabled is the user's own switch.
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client = clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
         return tokens.issueTokens(userId, client.clientId, "mcp", "http://localhost/mcp").accessToken
@@ -1019,8 +1031,8 @@ class McpBackfillTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies() = BoardDependencies(
@@ -1033,7 +1045,7 @@ class McpBackfillTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -1055,7 +1067,6 @@ class McpBackfillTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

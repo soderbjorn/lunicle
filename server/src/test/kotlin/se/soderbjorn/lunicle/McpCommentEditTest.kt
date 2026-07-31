@@ -4,9 +4,10 @@
  * The tool is two rules stacked, and every test here pins one of them:
  *
  *  - **May you touch this comment at all?** [AccessControl.canEditComment] — your
- *    own, or anyone's if you are an admin. The web app's `PUT /api/comments/{id}`
- *    asks exactly this, and the MCP tool must not be a softer door onto the same
- *    write. So a non-owner is refused, and an owner is not.
+ *    own, or anyone's if you run the instance (an administrator, or the owner above
+ *    them; LNL-201). The web app's `PUT /api/comments/{id}` asks exactly this, and the
+ *    MCP tool must not be a softer door onto the same write. So a non-author is
+ *    refused, and an author is not.
  *  - **May you also re-attribute or re-date it?** The admin-only backfill gate,
  *    [AccessControl.canAttributeWrites], reused verbatim from the create tools.
  *    An ordinary owner may rewrite their words and label the row as agent-written,
@@ -56,6 +57,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class McpCommentEditTest {
     private val file: File = Files.createTempFile("lunicle-comment-edit", ".db").toFile().also { it.delete() }
@@ -82,8 +84,14 @@ class McpCommentEditTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -119,10 +127,10 @@ class McpCommentEditTest {
     /**
      * Someone else's comment is not yours to rewrite.
      *
-     * The comment is the admin's; an ordinary user with the comment role on the
+     * The comment is the admin's; an ordinary user seated as a Contributor on the
      * same project — able to write their own — is refused editing this one, and
-     * nothing changes. `comment_on_issue` is a right to your own words, never a
-     * right to edit another account's, exactly as canEditComment says.
+     * nothing changes. A rung is a right to your own words, never a right to edit
+     * another account's, exactly as canEditComment says.
      */
     @Test
     fun `editing another account's comment is refused`(): Unit = runBlocking {
@@ -204,12 +212,12 @@ class McpCommentEditTest {
      * An ordinary owner may edit, but not re-attribute.
      *
      * The two rules pulled apart: this user CAN edit the comment (it is theirs), so
-     * the refusal here is not canEditComment — it is the admin-only attribution
-     * gate, refusing `author` for a non-admin exactly as it does on add_comment.
-     * Nothing is written.
+     * the refusal here is not canEditComment — it is the attribution gate, which is
+     * the instance OWNER's alone, refusing `author` exactly as it does on
+     * add_comment. Nothing is written.
      */
     @Test
-    fun `a non-admin owner cannot re-attribute their comment`(): Unit = runBlocking {
+    fun `a comment's author cannot re-attribute it without owning the instance`(): Unit = runBlocking {
         val fixture = seed()
         val issueId = published(fixture)
         val commentId = commentBy(issueId, Author.Account(fixture.ordinaryId), body = "mine")
@@ -221,8 +229,8 @@ class McpCommentEditTest {
                 "update_comment",
                 """{"comment_id":$commentId,"body":"mine still","author":"Admin"}""",
             )
-            assertTrue(result.isError, "A non-admin set an author on a comment edit.")
-            assertTrue(result.text.contains("admin"), "The refusal must name the gate. Got: ${result.text}")
+            assertTrue(result.isError, "Somebody who does not own the instance set an author on a comment edit.")
+            assertTrue(result.text.contains("owner"), "The refusal must name the gate. Got: ${result.text}")
         }
 
         val comment = comments.findById(commentId)!!
@@ -335,15 +343,20 @@ class McpCommentEditTest {
 
     /** As McpAgentNameTest.seed: the instance admin, one ordinary filer, and a private project. */
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        roles.grant(ordinary.id, project.id, Role.CREATE_ISSUE)
-        roles.grant(ordinary.id, project.id, Role.COMMENT_ON_ISSUE)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        val project = projectRepository.create("Lunamux", "LMX")
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, ordinary.id, project.id)
     }
 
@@ -382,7 +395,6 @@ class McpCommentEditTest {
         // fail every test here identically and for the wrong reason. mcp_allowed
         // is off by default (6.sqm ships it that way), so the permission has to be
         // granted explicitly; mcp_enabled is the user's own switch.
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client = clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
         return tokens.issueTokens(userId, client.clientId, "mcp", "http://localhost/mcp").accessToken
@@ -426,8 +438,8 @@ class McpCommentEditTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies() = BoardDependencies(
@@ -440,7 +452,7 @@ class McpCommentEditTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -462,7 +474,6 @@ class McpCommentEditTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

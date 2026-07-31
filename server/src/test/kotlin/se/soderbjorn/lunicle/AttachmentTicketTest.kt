@@ -14,10 +14,10 @@
  *  - **Expiry not being checked.** Same: every test that mints and immediately
  *    redeems passes against a store that never expires anything.
  *  - **The redeem route learning to read attribution from the request.** The one
- *    that matters most. `author_external` is admin-only because the *mint* asks
- *    [AccessControl.canAttributeWrites]; if the upload ever accepts a query
- *    parameter or a signed-in user's identity, that check stops being the last
- *    word and the admin-only capability is admin-only in name.
+ *    that matters most. `author_external` is the instance owner's alone because the
+ *    *mint* asks [AccessControl.canAttributeWrites]; if the upload ever accepts a
+ *    query parameter or a signed-in user's identity, that check stops being the
+ *    last word and the owner-only capability is owner-only in name.
  *  - **The mint skipping the edit check.** An upload endpoint gated on "do you
  *    hold a token" and nothing else is an open file host with our name on it —
  *    the thing BoardRoutes' own comment warns about on the session routes.
@@ -69,6 +69,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class AttachmentTicketTest {
 
@@ -138,7 +139,8 @@ class AttachmentTicketTest {
     fun `a user who cannot edit an issue cannot mint a ticket for it`(): Unit = runBlocking {
         val fixture = seed()
         val (issueId, _) = published(fixture)
-        // The admin's issue; `ordinary` holds create_issue but not change_unowned_issues.
+        // The admin's issue; `ordinary` is a contributor, so they may file their own
+        // but not edit somebody else's — that is the maintainer rung.
         val token = tokenFor(fixture.ordinaryId)
 
         withServer { client ->
@@ -169,7 +171,7 @@ class AttachmentTicketTest {
         assertEquals(0, tickets.size())
     }
 
-    /** `author_external` is admin-only here exactly as it is on create_issue. */
+    /** `author_external` is the owner's alone here exactly as it is on create_issue. */
     @Test
     fun `a non-admin cannot mint a ticket claiming an external author`(): Unit = runBlocking {
         val fixture = seed()
@@ -183,12 +185,12 @@ class AttachmentTicketTest {
                 """{"issue_id":$issueId,"filename":"x.png","author_external":"octocat"}""",
             )
             assertTrue(result.isError, "A non-admin minted a ticket attributing a file to an invented author.")
-            assertTrue(result.text.contains("Only a system administrator"), "Wrong refusal: ${result.text}")
+            assertTrue(result.text.contains("Only the instance owner"), "Wrong refusal: ${result.text}")
         }
         assertEquals(0, tickets.size(), "A ticket was minted despite the refusal.")
     }
 
-    /** Its own issue is fine — this is not an admin-only tool. */
+    /** Its own issue is fine — the tool itself is nobody's exclusive. */
     @Test
     fun `an ordinary user can mint a ticket for their own issue`(): Unit = runBlocking {
         val fixture = seed()
@@ -360,8 +362,14 @@ class AttachmentTicketTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -397,15 +405,19 @@ class AttachmentTicketTest {
     private class Fixture(val adminId: Long, val ordinaryId: Long, val projectId: Long)
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        roles.grant(ordinary.id, project.id, Role.CREATE_ISSUE)
-        roles.grant(ordinary.id, project.id, Role.COMMENT_ON_ISSUE)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        val project = projectRepository.create("Lunamux", "LMX")
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, ordinary.id, project.id)
     }
 
@@ -438,7 +450,6 @@ class AttachmentTicketTest {
         // fail every test here for the wrong reason. mcp_allowed is off by default
         // (6.sqm), so the permission has to be granted; mcp_enabled is the user's
         // own switch.
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client = clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
         return tokens.issueTokens(userId, client.clientId, "mcp", "http://localhost/mcp").accessToken
@@ -498,8 +509,8 @@ class AttachmentTicketTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies() = BoardDependencies(
@@ -512,7 +523,7 @@ class AttachmentTicketTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -534,7 +545,6 @@ class AttachmentTicketTest {
         attachmentTickets = tickets,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

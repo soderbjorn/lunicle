@@ -95,10 +95,11 @@ class ForumTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     private val forumStore = ForumStore(database)
     private val forums = ForumRepository(forumStore, attachments, attachmentStore)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -393,23 +394,28 @@ class ForumTest {
     )
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val member = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-mem", "Mem", "mem@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertFalse(projectAdmin.isSysAdmin, "The fixture's project administrator is a system one.")
+        assertFalse(projectAdmin.isInstanceAdmin, "The fixture's project administrator is a system one.")
 
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        val other = projectRepository.create("Elsewhere", "ELS", isPublic = false)
-        val public = projectRepository.create("Open", "OPN", isPublic = true)
-        roles.grant(projectAdmin.id, project.id, Role.PROJECT_ADMIN)
-        roles.grant(projectAdmin.id, other.id, Role.PROJECT_ADMIN)
+        val project = projectRepository.create("Lunamux", "LMX")
+        val other = projectRepository.create("Elsewhere", "ELS")
+        val public = projectRepository.createOpenToAll("Open", "OPN", roles, instanceSettings)
+        roles.setRole(projectAdmin.id, project.id, ProjectRole.ADMIN)
+        roles.setRole(projectAdmin.id, other.id, ProjectRole.ADMIN)
         // Bare visibility, so the member's refusals below are about administering
-        // rather than about seeing. See Role.VIEW_PROJECT.
-        roles.grant(member.id, project.id, Role.VIEW_PROJECT)
+        // rather than about seeing. See ProjectRole.VIEWER.
+        roles.setRole(member.id, project.id, ProjectRole.VIEWER)
         // ...and deliberately nothing for the outsider anywhere.
 
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(
             adminCookie = sessions.create(projectAdmin.id),
             memberCookie = sessions.create(member.id),
@@ -438,7 +444,7 @@ class ForumTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -460,7 +466,6 @@ class ForumTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

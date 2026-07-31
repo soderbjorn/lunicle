@@ -60,18 +60,6 @@ sealed interface ActiveDialog {
     /** The project dialog, creating. */
     data object NewProject : ActiveDialog
 
-    /**
-     * The instance settings dialog: the account directory.
-     *
-     * Carries nothing. It is not about a project, and the
-     * one thing it would otherwise carry — "is this caller an admin" — is not an
-     * argument to it: the route it opens onto refuses a non-admin outright, so a
-     * dialog opened by one would render its own 403. See
-     * [MainScreenBackingViewModel.State.canOpenAdminSettings], which is why that
-     * does not happen, and AdminRoutes, which is why it would not matter if it did.
-     */
-    data object AdminSettings : ActiveDialog
-
     // EditProject and Statistics used to be cases here. Both are PANES now
     // (LNL-160): a project surface opens beside the board rather than over it, so
     // "which dialog is up" is no longer the question being asked about either.
@@ -168,24 +156,11 @@ sealed interface ActiveDialog {
         val prefix: String,
     ) : ActiveDialog
 
-    /**
-     * "This sprint is over — where does the unfinished work go?"
-     *
-     * The question has to be asked rather than defaulted, because "roll it into
-     * the next sprint" and "put it back in the backlog" are genuinely different
-     * intentions and getting it wrong is tedious to undo — the issues are spread
-     * across two places and nothing records which ones moved.
-     *
-     * @property openSprints where the work could go, this one excluded. Empty is
-     *   normal and fine: the dialog then offers only the backlog.
-     */
-    data class CompleteSprint(
-        val projectId: Long,
-        val sprintId: Long,
-        val sprintName: String,
-        val unfinishedCount: Int,
-        val openSprints: List<SprintItem>,
-    ) : ActiveDialog
+    // `CompleteSprint` stood here — "this sprint is over, where does the unfinished work
+    // go?" — and is gone (LNL-196). The question is still asked, and by the same view
+    // (`CompleteSprintDialog`); it is raised from the project's Sprints section now
+    // rather than from this board's scope picker, so the prompt it is built from is
+    // `EditProjectBackingViewModel.PendingSprintCompletion`.
 }
 
 /**
@@ -643,7 +618,7 @@ class MainScreenBackingViewModel(
         }
 
         /**
-         * What to say when a tab has no panes at all, or null when it has some.
+         * What to show when a tab has no panes at all, or null when it has some.
          *
          * The app-level nothing, as against [BoardScreen.emptyMessage], which is
          * one board's. Several different nothings, and they mean different things
@@ -654,25 +629,72 @@ class MainScreenBackingViewModel(
          * a control the reader does not have is worse than no message, because it
          * reads as the app being broken.
          */
-        val emptyTabMessage: String? get() = when {
+        val emptyTab: EmptyTab? get() = when {
             !isLoaded -> null
-            // The "+" in the top bar: "New project…" lives in the shell's add
-            // menu. Pointing a brand new admin anywhere else sends them to a
-            // control that cannot do this.
-            projects.isEmpty() && canCreateProject ->
-                "No projects yet. Use the + button in the top bar to make one."
+            // The card carries the button itself (LNL-212), so the instruction
+            // names it rather than sending the reader hunting through chrome for
+            // a control that may or may not be there. It said "use the + button
+            // in the top bar" for a while after that row was removed, which is
+            // exactly the failure the paragraph above warns about.
+            projects.isEmpty() && canCreateProject -> EmptyTab(
+                headline = "No projects yet",
+                detail = "Make the first one to get started.",
+                canCreateProject = true,
+            )
             // Signed in and still shown nothing: either the instance is empty or
             // every project on it is private to somebody else, and this reader
             // cannot tell those apart and should not have to. Deliberately not
             // told to use the "+" — they do not have it, only an admin does.
-            projects.isEmpty() && isSignedIn ->
-                "No projects to show. Ask an administrator to create one, " +
-                    "or to give you access to an existing one."
-            projects.isEmpty() ->
-                "No projects to show. Sign in if you have an account here."
-            else -> "Nothing open in this tab. Use + to add a board."
+            projects.isEmpty() && isSignedIn -> EmptyTab(
+                headline = "No projects to show",
+                detail = "Ask an administrator to create one, or to give you " +
+                    "access to an existing one.",
+            )
+            // Nobody is signed in and nothing here is theirs to see — the one
+            // reader for whom the app has no content, no tab worth showing and no
+            // control worth offering except the way in. See [EmptyTab.isVisitor].
+            projects.isEmpty() -> EmptyTab(
+                headline = "No projects to show",
+                detail = "Sign in if you have an account here.",
+                isVisitor = true,
+            )
+            else -> EmptyTab(
+                headline = "Nothing open in this tab",
+                detail = "Use + to add a board.",
+            )
         }
     }
+
+    /**
+     * The empty state of a tab with no panes — see [State.emptyTab].
+     *
+     * Split into a headline and a detail rather than handed over as one sentence
+     * because the surface sets them in different type: the headline is what the
+     * eye lands on across a whole empty canvas, the detail is the instruction
+     * under it. One string would have the view guessing where the break goes.
+     *
+     * @property isVisitor whether nobody is signed in and nothing here is this
+     *   reader's to see — so the app has no content, no tab worth showing and no
+     *   control worth offering them except the way in. The view treats it as
+     *   permission to take the whole window and say so, rather than tuck the
+     *   sentence into a canvas framed by chrome that can do nothing for them; and
+     *   as a request for a sign-in button, which it grants only if the server has
+     *   a method configured — a door that opens on nothing is worse than none.
+     *   See EmptyTabSurface and SignInView.
+     * @property canCreateProject whether this reader may make a project, and so
+     *   whether the card offers them that. False on the "nothing open in this
+     *   tab" branch even for somebody who may: they have projects already, and
+     *   what they need is a board in front of them, not another project. Held
+     *   here rather than re-tested in the view for [isVisitor]'s reason — which
+     *   door a card offers is a fact about who is reading, worked out once,
+     *   where every other such fact is worked out.
+     */
+    data class EmptyTab(
+        val headline: String,
+        val detail: String,
+        val isVisitor: Boolean = false,
+        val canCreateProject: Boolean = false,
+    )
 
     /**
      * One project's board, and everything drawn from it.
@@ -766,9 +788,16 @@ class MainScreenBackingViewModel(
          * whether the caller may configure the project, whether the current scope
          * is a sprint at all, and whether that sprint is still open.
          *
-         * Completing and activating are absent on a finished sprint rather than
-         * disabled: a greyed-out "Complete" on something already complete is a
-         * control explaining a state the row above it already showed.
+         * Activating and planning are absent on a finished sprint rather than
+         * disabled: a greyed-out "Plan" on something already over is a control
+         * explaining a state the row above it already showed.
+         *
+         * **Completing a sprint is not here** (LNL-196). It ended everybody's columns
+         * from a control that reads as a view switch, and it was within reach of whoever
+         * happened to be looking at the board rather than of the people planning it —
+         * so it is a per-row action in the project's Sprints section now, beside the date
+         * it sets and at the rung that owns the sprints. What stays here is the three
+         * things that are about *this view* or about making the next sprint.
          */
         val sprintScopeItems: List<ScopeItem> get() {
             val scopes = listOf(
@@ -785,7 +814,6 @@ class MainScreenBackingViewModel(
                     if (board?.activeSprintId != scoped.id) {
                         add(ScopeItem(ACTION_ACTIVATE_SPRINT, "Make ${scoped.name} active"))
                     }
-                    add(ScopeItem(ACTION_COMPLETE_SPRINT, "Complete ${scoped.name}…"))
                 }
             }
             return scopes + actions
@@ -1012,7 +1040,7 @@ class MainScreenBackingViewModel(
          * What this board's pane should say instead of columns, or null when it
          * has some to draw.
          *
-         * One board's nothing, as against [State.emptyTabMessage], which is the
+         * One board's nothing, as against [State.emptyTab], which is the
          * app's. Loading is null rather than a message: the pane draws a spinner
          * for that (LNL-135), and a sentence that is about to be replaced by
          * cards reads as an error for the beat it is up.
@@ -1061,12 +1089,16 @@ class MainScreenBackingViewModel(
             "${project?.namePrefix ?: "?"}-${issue.number}: ${issue.title}"
 
         /**
-         * Whether this user has hidden the issue number on this project's board and
-         * issue detail (LNL-105). A per-user, per-project view choice, read from the
-         * same [State.projectPrefs] blob the hidden columns live in.
+         * Whether this project's board and issue windows hide the issue number
+         * (LNL-105, LNL-194).
+         *
+         * A **project** setting since LNL-194 — read off the board's own summary, the
+         * way `showIssueAuthor` beside it is. It was a per-user, per-project view
+         * choice in the [State.projectPrefs] blob the hidden columns still live in;
+         * moving it means every reader of one board sees the same thing, which is what
+         * a shared board should mean.
          */
-        val hideIssueNumbers: Boolean get() =
-            state.projectPrefs[projectId]?.hideIssueNumbers ?: false
+        val hideIssueNumbers: Boolean get() = project?.hideIssueNumbers == true
     }
 
     /**
@@ -1393,9 +1425,11 @@ class MainScreenBackingViewModel(
             !hidden && statusId in current -> current - statusId
             else -> return
         }
-        // copy() rather than a fresh record, so a sibling preference on the same
-        // project — the hide-issue-numbers choice (LNL-105) — is carried across a
-        // column hide/show rather than reset to its default.
+        // copy() rather than a fresh record, so a sibling preference on the same project
+        // would be carried across a column hide/show rather than reset. There is none
+        // today — hide-issue-numbers was the other one and became the project's in
+        // LNL-194 — and this stays a copy because the record is the shape a future
+        // per-user-per-project choice grows on. See UserProjectPrefs.
         val record = (state.projectPrefs[projectId] ?: UserProjectPrefs()).copy(hiddenColumnIds = next)
         val nextPrefs = state.projectPrefs.toMutableMap().apply {
             if (record == UserProjectPrefs()) remove(projectId) else put(projectId, record)
@@ -1404,29 +1438,11 @@ class MainScreenBackingViewModel(
         persistProjectPrefs(nextPrefs)
     }
 
-    /** Whether this user is hiding issue numbers on [projectId]'s board (LNL-105). */
-    fun isHidingIssueNumbers(projectId: Long): Boolean =
-        _stateFlow.value.projectPrefs[projectId]?.hideIssueNumbers ?: false
-
-    /**
-     * Turn the issue number off (or back on) for one project, per user (LNL-105).
-     *
-     * The sibling of [setColumnHidden], through the same [projectPrefs] blob and the
-     * same prune-to-absence rule, but keyed on the [projectId] the settings dialog
-     * names rather than the board's current project — the dialog can be open on a
-     * project the board is not currently showing. A no-op change touches nothing.
-     */
-    fun setIssueNumbersHidden(projectId: Long, hidden: Boolean) {
-        val state = _stateFlow.value
-        val existing = state.projectPrefs[projectId] ?: UserProjectPrefs()
-        if (existing.hideIssueNumbers == hidden) return
-        val record = existing.copy(hideIssueNumbers = hidden)
-        val nextPrefs = state.projectPrefs.toMutableMap().apply {
-            if (record == UserProjectPrefs()) remove(projectId) else put(projectId, record)
-        }
-        _stateFlow.value = state.copy(projectPrefs = nextPrefs)
-        persistProjectPrefs(nextPrefs)
-    }
+    // `isHidingIssueNumbers` and `setIssueNumbersHidden` were here (LNL-105) and are
+    // gone (LNL-194). The switch is the project's now, so the settings pane writes it
+    // through the project-display route like every other project setting, and the
+    // board reads the answer off ProjectSummary rather than off this view model's
+    // preference blob. See BoardScreen.hideIssueNumbers.
 
     /**
      * Write the whole preferences blob back to the account, in the background.
@@ -1451,19 +1467,6 @@ class MainScreenBackingViewModel(
 
     fun onNewProjectTapped() {
         _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.NewProject)
-    }
-
-    /**
-     * The instance settings button was tapped.
-     *
-     * Guarded on the same affordance the button is shown by, so a stale click —
-     * the session changing between render and mouseup — opens nothing rather than
-     * a dialog that immediately renders a 403.
-     */
-    fun onAdminSettingsTapped() {
-        val state = _stateFlow.value
-        if (!state.canOpenAdminSettings) return
-        _stateFlow.value = state.copy(dialog = ActiveDialog.AdminSettings)
     }
 
     /**
@@ -1633,23 +1636,6 @@ class MainScreenBackingViewModel(
                 activate(projectId, sprint.id)
             }
 
-            ACTION_COMPLETE_SPRINT -> {
-                val sprint = scoped ?: return
-                // Counted here rather than in the dialog, because "unfinished"
-                // means "not in a column that requires a resolution" and the
-                // status list is right here. The dialog gets a number, not a rule.
-                val closing = board.statuses.filter { it.requiresResolution }.map { it.id }.toSet()
-                _stateFlow.value = current.copy(
-                    dialog = ActiveDialog.CompleteSprint(
-                        projectId = board.project.id,
-                        sprintId = sprint.id,
-                        sprintName = sprint.name,
-                        unfinishedCount = board.issues
-                            .count { it.sprintId == sprint.id && it.statusId !in closing },
-                        openSprints = board.sprints.filter { it.isOpen && it.id != sprint.id },
-                    ),
-                )
-            }
         }
     }
 
@@ -1760,13 +1746,10 @@ class MainScreenBackingViewModel(
         else -> board.defaultScope()
     }
 
-    /** The completion dialog was answered. */
-    fun onSprintCompleted(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?) {
-        _stateFlow.value = _stateFlow.value.copy(dialog = ActiveDialog.None, isBusy = true)
-        replaceBoard(projectId, "Could not complete that sprint.") {
-            storage.completeSprint(projectId, sprintId, moveUnfinishedTo)
-        }
-    }
+    // `onSprintCompleted` stood here and is gone with the board's Complete row (LNL-196).
+    // The write lives in EditProjectBackingViewModel now, beside the section that raises
+    // the question. The board still catches up — a settings write tells it to reload, which
+    // is how every other change made in that pane reaches it.
 
     private fun activate(projectId: Long, sprintId: Long) {
         _stateFlow.value = _stateFlow.value.copy(isBusy = true)
@@ -1862,7 +1845,7 @@ class MainScreenBackingViewModel(
                     resolutions = board.resolutions,
                     versions = board.versions,
                     requireFixedVersion = board.project.requireFixedVersionOnResolve,
-                    canManageVersions = board.permissions.canMutateProject,
+                    canManageVersions = board.permissions.canManageSprintsAndVersions,
                 ),
             )
             return
@@ -2296,7 +2279,11 @@ class MainScreenBackingViewModel(
         const val ACTION_NEW_SPRINT: Long = -2L
         const val ACTION_PLAN_SPRINT: Long = -3L
         const val ACTION_ACTIVATE_SPRINT: Long = -4L
-        const val ACTION_COMPLETE_SPRINT: Long = -5L
+        // -5L was ACTION_COMPLETE_SPRINT and is gone (LNL-196). Completing a sprint
+        // rewrites what everybody's columns mean, and it was offered from a control that
+        // reads as a view switch, within reach of everybody looking at the board rather
+        // than of the people planning it. It is a per-row action in the Sprints section
+        // now, beside the date it sets. The sentinel is deliberately left unreused.
 
         /** Whether a picked dropdown id is an action rather than a scope. */
         fun isSprintAction(id: Long): Boolean = id <= ACTION_NEW_SPRINT

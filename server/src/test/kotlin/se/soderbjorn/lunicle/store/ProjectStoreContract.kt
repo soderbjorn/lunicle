@@ -18,49 +18,44 @@ import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.RepositoryConfig
 import se.soderbjorn.lunicle.RepositoryRef
 import se.soderbjorn.lunicle.TokenSource
+import se.soderbjorn.lunicle.clientserver.EstimateMode
 
 abstract class ProjectStoreContract {
     protected abstract val store: ProjectStore
 
     private var seq = 0
-    private suspend fun insertProject(public: Boolean = false) =
-        store.insert("Project ${seq}", "PR${seq++}", public)
+    private suspend fun insertProject() = store.insert("Project ${seq}", "PR${seq++}")
 
     @Test
     fun `an inserted project round-trips through findById`() = runBlocking {
-        val created = store.insert("Lunamux", "LMX", isPublic = true)
+        val created = store.insert("Lunamux", "LMX")
         val read = store.findById(created.id)!!
         assertEquals("Lunamux", read.name)
         assertEquals("LMX", read.namePrefix)
-        assertEquals(true, read.isPublic)
     }
 
+    /**
+     * The two visibility tests that stood here are gone with the columns (LNL-191).
+     *
+     * `is_public` and `visible_to_all_signed_in` were the only fields this store
+     * carried that were *about permissions* rather than about a project, and they
+     * are now audience rows in the role store — where they are covered by
+     * [RoleStoreContract]'s audience section. There is nothing to assert here in
+     * their place: a project row no longer has an opinion about who may read it,
+     * which is the whole change.
+     */
     @Test
-    fun `the signed-in-visibility flag round-trips and defaults off`() = runBlocking {
-        // Default off, the tier a project has until its owner opts in (LNL-138).
-        val default = store.insert("Members Only", "MEM", isPublic = false)
-        assertEquals(false, store.findById(default.id)!!.visibleToAllSignedIn)
-        // Set on insert, read back on and independent of is_public.
-        val opened = store.insert("Browsable", "BRW", isPublic = false, visibleToAllSignedIn = true)
-        val read = store.findById(opened.id)!!
-        assertEquals(true, read.visibleToAllSignedIn)
-        assertEquals(false, read.isPublic)
-    }
-
-    @Test
-    fun `update writes the signed-in-visibility flag alongside is_public`() = runBlocking {
-        val p = store.insert("Toggling", "TGL", isPublic = false, visibleToAllSignedIn = false)
-        store.update(p.id, "Toggling", "TGL", isPublic = false, visibleToAllSignedIn = true)
-        assertEquals(true, store.findById(p.id)!!.visibleToAllSignedIn)
-        store.update(p.id, "Toggling", "TGL", isPublic = true, visibleToAllSignedIn = false)
+    fun `update rewrites the name and the prefix`() = runBlocking {
+        val p = store.insert("Before", "BEF")
+        store.update(p.id, "After", "AFT")
         val read = store.findById(p.id)!!
-        assertEquals(false, read.visibleToAllSignedIn)
-        assertEquals(true, read.isPublic)
+        assertEquals("After", read.name)
+        assertEquals("AFT", read.namePrefix)
     }
 
     @Test
     fun `findByName finds a project and misses cleanly`() = runBlocking {
-        val created = store.insert("Findable", "FND", isPublic = false)
+        val created = store.insert("Findable", "FND")
         assertEquals(created.id, store.findByName("Findable")?.id)
         assertNull(store.findByName("Nonexistent"))
     }
@@ -78,8 +73,11 @@ abstract class ProjectStoreContract {
     @Test
     fun `the feature and requirement flags flip`() = runBlocking {
         val p = insertProject()
-        // Defaults: features on, requirements off.
-        store.setFeatures(p.id, discussionsEnabled = false, messagesEnabled = false)
+        // Requirements default off. The two feature flags no longer round-trip at
+        // all — every backend reads them as false since LNL-190 retired discussions
+        // and private messages — so what is pinned here is that both stores agree
+        // they are off, whatever setFeatures was asked for.
+        store.setFeatures(p.id, discussionsEnabled = true, messagesEnabled = true)
         // All three requirement flags together, each flipped off its default, so the
         // fix-version flag (LNL-134) is pinned to round-trip like the other two.
         store.setRequirements(p.id, requireLabel = true, requireComponent = true, requireFixedVersionOnResolve = true)
@@ -92,14 +90,67 @@ abstract class ProjectStoreContract {
     }
 
     @Test
-    fun `the show-issue-author display flag flips and defaults off`() = runBlocking {
+    fun `the two board-display flags flip together and default off`() = runBlocking {
         val p = insertProject()
-        // Default off — the board hid the author before this flag existed (LNL-157).
+        // Default off — the board hid the author and showed the number before either
+        // flag existed (LNL-157, LNL-194).
         assertEquals(false, store.findById(p.id)!!.showIssueAuthor)
-        store.setShowIssueAuthor(p.id, true)
+        assertEquals(false, store.findById(p.id)!!.hideIssueNumbers)
+        store.setBoardDisplay(p.id, showIssueAuthor = true, hideIssueNumbers = true)
         assertEquals(true, store.findById(p.id)!!.showIssueAuthor)
-        store.setShowIssueAuthor(p.id, false)
+        assertEquals(true, store.findById(p.id)!!.hideIssueNumbers)
+        // Independently, so a write of the pair cannot be passing one value twice.
+        store.setBoardDisplay(p.id, showIssueAuthor = false, hideIssueNumbers = true)
         assertEquals(false, store.findById(p.id)!!.showIssueAuthor)
+        assertEquals(true, store.findById(p.id)!!.hideIssueNumbers)
+    }
+
+    /**
+     * A **fresh** project has already decided its board display; only a migrated one
+     * has not.
+     *
+     * The three-valued column is the startup copy's marker — see
+     * copyBoardDisplayFromOwners — and a new board has no old per-user preference to
+     * copy, so `insert` must settle it rather than leaving a row the copy would visit.
+     * Pinned in the contract because the two backends express "not yet decided"
+     * differently: a NULL column and an absent document field.
+     */
+    @Test
+    fun `a freshly inserted project has already decided its board display`() = runBlocking {
+        val p = insertProject()
+        assertEquals(false, store.findById(p.id)!!.hideIssueNumbersStored)
+        assertEquals(false, p.hideIssueNumbersStored, "the record `insert` returns must agree with the row")
+    }
+
+    /**
+     * The estimate mode round-trips, and a fresh project estimates nothing (LNL-215).
+     *
+     * The default is the whole of the "leave every existing board visually unchanged"
+     * promise: `none` renders no estimate cell, no popover and no read-mode line, and
+     * it is what a project made before the field existed must read as. The two
+     * backends express that differently — a `NOT NULL DEFAULT 'none'` column and an
+     * absent document field folded by `EstimateMode.fromKey` — which is exactly why it
+     * belongs in the contract rather than in one backend's own test.
+     *
+     * All three values are exercised, and the return to [EstimateMode.NONE] is not
+     * padding: turning estimation back off is a thing an administrator does, and a
+     * store that only ever wrote a non-empty mode would pass a test that stopped at
+     * `POINTS`.
+     */
+    @Test
+    fun `the estimate mode round-trips and a fresh project estimates nothing`() = runBlocking {
+        val p = insertProject()
+        assertEquals(EstimateMode.NONE, store.findById(p.id)!!.estimateMode, "a new project estimates nothing")
+        assertEquals(EstimateMode.NONE, p.estimateMode, "and the record `insert` returns agrees with the row")
+
+        store.setEstimateMode(p.id, EstimateMode.TIME)
+        assertEquals(EstimateMode.TIME, store.findById(p.id)!!.estimateMode)
+
+        store.setEstimateMode(p.id, EstimateMode.POINTS)
+        assertEquals(EstimateMode.POINTS, store.findById(p.id)!!.estimateMode)
+
+        store.setEstimateMode(p.id, EstimateMode.NONE)
+        assertEquals(EstimateMode.NONE, store.findById(p.id)!!.estimateMode, "and estimation can be turned back off")
     }
 
     @Test

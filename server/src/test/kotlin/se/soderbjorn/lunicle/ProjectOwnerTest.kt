@@ -11,8 +11,8 @@
  *    administrator ([ProjectAdminTest]), all granted here. Through the real routes,
  *    because those are gates in routes and a test against [AccessControl] alone
  *    would pass on a route that never called it.
- *  - **It may promote.** An owner hands out `project_admin` and `project_owner`,
- *    the two the administrator's [AccessControl.canGrant] tier refuses. That the
+ *  - **It may promote.** An owner hands out `admin` and `owner`, the two rungs
+ *    the administrator's [AccessControl.canGrant] tier refuses. That the
  *    escalation stops with the owner rather than the administrator is the decision
  *    LNL-107 made, so it is asserted from the grant route.
  *  - **It is per-project.** An owner of one board is an ordinary user on every
@@ -22,7 +22,7 @@
  *    wire, and a blank field on save keeps it. Both are asserted, because both are
  *    the difference between "a secret an owner set" and "a secret on every screen".
  *
- * @see Role.PROJECT_OWNER
+ * @see ProjectRole.OWNER
  * @see AccessControl.canOwnProject
  * @see AccessControl.canGrant
  */
@@ -46,7 +46,7 @@ import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
-import se.soderbjorn.lunicle.clientserver.RoleGrant
+import se.soderbjorn.lunicle.clientserver.RungGrant
 import se.soderbjorn.lunicle.clientserver.TokenModes
 import java.io.File
 import java.nio.file.Files
@@ -84,8 +84,9 @@ class ProjectOwnerTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -105,7 +106,7 @@ class ProjectOwnerTest {
             val response = client.put("/api/projects/${f.projectId}") {
                 cookie(SESSION_COOKIE, f.ownerCookie)
                 contentType(ContentType.Application.Json)
-                setBody(ProjectUpdate(name = "Renamed", namePrefix = "LMX", isPublic = true))
+                setBody(ProjectUpdate(name = "Renamed", namePrefix = "LMX"))
             }
             assertEquals(HttpStatusCode.OK, response.status, "An owner could not rename their project.")
         }
@@ -135,7 +136,7 @@ class ProjectOwnerTest {
                 client.put("/api/projects/${f.projectId}") {
                     cookie(SESSION_COOKIE, f.projectAdminCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(ProjectUpdate(name = "Nope", namePrefix = "LMX", isPublic = false))
+                    setBody(ProjectUpdate(name = "Nope", namePrefix = "LMX"))
                 }.status,
                 "A project administrator renamed the project.",
             )
@@ -155,17 +156,18 @@ class ProjectOwnerTest {
     fun `an owner promotes an administrator and another owner`(): Unit = runBlocking {
         val f = seed()
         withRoutes { client ->
-            listOf(Role.PROJECT_ADMIN, Role.PROJECT_OWNER).forEach { role ->
+            listOf(ProjectRole.ADMIN, ProjectRole.OWNER).forEach { role ->
                 val response = client.post("/api/projects/${f.projectId}/roles") {
                     cookie(SESSION_COOKIE, f.ownerCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(RoleGrant(f.outsiderId, role.key, isGranted = true))
+                    setBody(RungGrant(f.outsiderId, role.key))
                 }
                 assertEquals(HttpStatusCode.OK, response.status, "An owner could not grant ${role.key}.")
             }
         }
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN))
-        assertTrue(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_OWNER))
+        // One rung per person, so the second grant replaces the first rather than
+        // adding to it — the owner rung is where they end up, and it contains admin.
+        assertEquals(ProjectRole.OWNER, roles.roleFor(f.outsiderId, f.projectId))
     }
 
     /** The administrator's tier still refuses the senior roles — the escalation stops at the owner. */
@@ -178,11 +180,11 @@ class ProjectOwnerTest {
                 client.post("/api/projects/${f.projectId}/roles") {
                     cookie(SESSION_COOKIE, f.projectAdminCookie)
                     contentType(ContentType.Application.Json)
-                    setBody(RoleGrant(f.outsiderId, Role.PROJECT_ADMIN.key, isGranted = true))
+                    setBody(RungGrant(f.outsiderId, ProjectRole.ADMIN.key))
                 }.status,
             )
         }
-        assertFalse(roles.hasRole(f.outsiderId, f.projectId, Role.PROJECT_ADMIN))
+        assertFalse((roles.roleFor(f.outsiderId, f.projectId) == ProjectRole.ADMIN))
     }
 
     // ── Per-project ──────────────────────────────────────────────────────────
@@ -215,7 +217,7 @@ class ProjectOwnerTest {
         val owner = access.permissionsFor(users.findById(f.ownerId)!!, f.projectId)
         assertTrue(owner.canMutateProject, "An owner lost the settings sections.")
         assertTrue(owner.canMutateProjectIdentity, "An owner lost the rename/delete half.")
-        assertTrue(owner.canGrantSeniorRoles, "An owner lost the promote boxes.")
+        assertTrue(owner.canGrantSeniorRoles, "An owner lost the two senior rungs.")
 
         // The same owner, elsewhere, is nobody in particular.
         val elsewhere = access.permissionsFor(users.findById(f.ownerId)!!, f.otherProjectId)
@@ -261,7 +263,6 @@ class ProjectOwnerTest {
                     ProjectUpdate(
                         name = "Lunamux",
                         namePrefix = "LMX",
-                        isPublic = false,
                         repositoryUrl = "soderbjorn/lunicle",
                         githubTokenMode = TokenModes.LITERAL,
                         githubTokenLiteral = "ghp_secretvalue",
@@ -298,7 +299,6 @@ class ProjectOwnerTest {
                     ProjectUpdate(
                         name = "Lunamux",
                         namePrefix = "LMX",
-                        isPublic = false,
                         repositoryUrl = "soderbjorn/other",
                         githubTokenMode = TokenModes.LITERAL,
                         githubTokenLiteral = "",
@@ -326,27 +326,32 @@ class ProjectOwnerTest {
     )
 
     private suspend fun seed(): Fixture {
-        roles.seed()
-        // The first account is the system administrator, who owns everything by the
-        // flag; this fixture's owner is deliberately NOT that account, so the tests
-        // are about the role rather than about isSysAdmin short-circuiting.
+        // The first account is the instance administrator, who reaches Owner on every
+        // board without a row; this fixture's owner is deliberately NOT that account, so
+        // the tests are about the rung rather than about the administrator short-circuit.
         val sysAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-sys", "Sys", "sys@example.com"))
         val owner = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-owner", "Ona", "ona@example.com"))
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-pa", "Pat", "pat@example.com"))
         val outsider = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-out", "Out", "out@example.com"))
-        assertTrue(sysAdmin.isSysAdmin, "The first account is meant to be the system administrator.")
-        assertFalse(owner.isSysAdmin, "The fixture's owner is a system administrator, which defeats the point.")
+        assertTrue(sysAdmin.isInstanceAdmin, "The first account is meant to be the instance administrator.")
+        assertFalse(owner.isInstanceAdmin, "The fixture's owner runs the instance, which defeats the point.")
 
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        val other = projectRepository.create("Elsewhere", "ELS", isPublic = false)
-        roles.grant(owner.id, project.id, Role.PROJECT_OWNER)
-        roles.grant(projectAdmin.id, project.id, Role.PROJECT_ADMIN)
+        val project = projectRepository.create("Lunamux", "LMX")
+        val other = projectRepository.create("Elsewhere", "ELS")
+        roles.setRole(owner.id, project.id, ProjectRole.OWNER)
+        roles.setRole(projectAdmin.id, project.id, ProjectRole.ADMIN)
         // Bare visibility elsewhere, so the owner can see the other project and its
         // refusals are about ownership rather than about the project being invisible
         // (LNL-57) — the same care ProjectAdminTest's fixture takes.
-        roles.grant(owner.id, other.id, Role.VIEW_PROJECT)
-        roles.grant(outsider.id, project.id, Role.VIEW_PROJECT)
+        roles.setRole(owner.id, other.id, ProjectRole.VIEWER)
+        roles.setRole(outsider.id, project.id, ProjectRole.VIEWER)
 
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(
             ownerId = owner.id,
             ownerCookie = sessions.create(owner.id),
@@ -383,7 +388,7 @@ class ProjectOwnerTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         conversations = ConversationRepository(
             ConversationStore(database), MessageStore(database), attachments, attachmentStore,
         ),
@@ -403,7 +408,6 @@ class ProjectOwnerTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

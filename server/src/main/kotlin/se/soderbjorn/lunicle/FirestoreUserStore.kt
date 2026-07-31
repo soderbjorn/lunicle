@@ -73,7 +73,7 @@ class FirestoreUserStore(
      * lookup queries and the "is anyone here" query run first, the counter is read
      * and then bumped, and the document is written last.
      */
-    override suspend fun upsert(identity: ProviderIdentity): UserRecord {
+    override suspend fun upsert(identity: ProviderIdentity, kind: UserKind): UserRecord {
         // Normalised once, here, so the lookup and the write it may lead to are
         // looking at the same spelling — see the class preamble.
         val email = normalizeEmail(identity.email)
@@ -87,9 +87,27 @@ class FirestoreUserStore(
                     // Refresh exactly what refreshOnSignIn does: the provider's name,
                     // and the verified flag (arriving here proved the address again).
                     // provider/providerId keep the values the row was created with.
-                    txn.update(byEmail.reference, mapOf(PROVIDER_NAME to identity.providerName, EMAIL_VERIFIED to true))
+                    txn.update(
+                        byEmail.reference,
+                        mapOf(
+                            PROVIDER_NAME to identity.providerName,
+                            EMAIL_VERIFIED to true,
+                            // Follows, because it is derived rather than chosen — see
+                            // Users.sq's refreshOnSignIn.
+                            KIND to kind.key,
+                            // The arrival stamp (LNL-194). Written on every sign-in, so
+                            // a row an administrator added ahead of time stops being
+                            // pending the moment its owner turns up here.
+                            SIGNED_IN_AT to createdAt,
+                        ),
+                    )
                     return@runTransaction byEmail.toUser()!!
-                        .copy(providerName = identity.providerName, isEmailVerified = true)
+                        .copy(
+                            providerName = identity.providerName,
+                            isEmailVerified = true,
+                            kind = kind,
+                            signedInAt = createdAt,
+                        )
                 }
             }
 
@@ -108,10 +126,22 @@ class FirestoreUserStore(
                 val newVerified = if (email != null) true else (byPair.getBoolean(EMAIL_VERIFIED) ?: false)
                 txn.update(
                     byPair.reference,
-                    mapOf(PROVIDER_NAME to identity.providerName, EMAIL to newEmail, EMAIL_VERIFIED to newVerified),
+                    mapOf(
+                        PROVIDER_NAME to identity.providerName,
+                        EMAIL to newEmail,
+                        EMAIL_VERIFIED to newVerified,
+                        KIND to kind.key,
+                        SIGNED_IN_AT to createdAt,
+                    ),
                 )
                 return@runTransaction byPair.toUser()!!
-                    .copy(providerName = identity.providerName, email = newEmail, isEmailVerified = newVerified)
+                    .copy(
+                        providerName = identity.providerName,
+                        email = newEmail,
+                        isEmailVerified = newVerified,
+                        kind = kind,
+                        signedInAt = createdAt,
+                    )
             }
 
             // ── Or create — the first ever becomes the instance admin ─────────
@@ -134,9 +164,12 @@ class FirestoreUserStore(
                 // normalised address reaching here is one a provider confirmed or a
                 // code proved. See ProviderIdentity.email and Users.sq.
                 isEmailVerified = email != null,
-                isSysAdmin = instanceIsEmpty,
+                kind = kind,
+                isInstanceAdmin = instanceIsEmpty,
                 isMcpEnabled = false,
-                isMcpAllowed = false,
+                // Reaching this branch is a sign-in, so the arrival stamp and the added
+                // stamp are the same instant. Only addByEmail writes a row without one.
+                signedInAt = createdAt,
             )
             txn.set(
                 doc(id),
@@ -148,14 +181,95 @@ class FirestoreUserStore(
                     DISPLAY_NAME to null,
                     EMAIL to email,
                     EMAIL_VERIFIED to (email != null),
-                    IS_SYS_ADMIN to instanceIsEmpty,
+                    KIND to kind.key,
+                    // The document form of the same 'admin'-or-null the column holds:
+                    // ownership is a setting, not a value here. See Users.sq.
+                    INSTANCE_ROLE to InstanceRole.ADMIN.key.takeIf { instanceIsEmpty },
                     MCP_ENABLED to false,
-                    MCP_ALLOWED to false,
-                    CREATED_AT to createdAt,
+                    ADDED_AT to createdAt,
+                    SIGNED_IN_AT to createdAt,
                 ),
             )
             record
         }.await()
+    }
+
+    /**
+     * Add an account for [email] without a sign-in, or return the one that already
+     * holds the address (LNL-194).
+     *
+     * One transaction, for [upsert]'s reason: the address lookup is the stand-in for
+     * SQLite's partial unique index on `email`, so "find then maybe create" has to be
+     * serialised or two administrators adding the same person would make two rows.
+     *
+     * `SIGNED_IN_AT` is written as an explicit null rather than left absent, and the
+     * distinction is load-bearing — see [DocumentSnapshot.toUser], which reads an
+     * *absent* field as "this document predates LNL-194, and every account that did
+     * has signed in".
+     */
+    override suspend fun addByEmail(email: String, kind: UserKind): UserRecord {
+        val address = normalizeEmail(email)
+            ?: error("addByEmail was given an address that normalizes to nothing: \"$email\"")
+        val addedAt = now()
+        return firestore.runTransaction { txn ->
+            val existing = txn.get(collection().whereEqualTo(EMAIL, address).limit(1)).get()
+                .documents.firstOrNull()
+            if (existing != null) return@runTransaction existing.toUser()!!
+            val id = counters.next(txn, COUNTER).getValue(COUNTER)
+            // Deliberately never the instance administrator, however empty the
+            // collection is: being added by somebody is the opposite of being the
+            // first person through the door. Mirrors addPending's missing subquery.
+            val record = UserRecord(
+                id = id,
+                provider = AuthProvider.EMAIL,
+                providerId = address,
+                providerName = address.substringBefore('@'),
+                displayNameOverride = null,
+                email = address,
+                isEmailVerified = false,
+                kind = kind,
+                isInstanceAdmin = false,
+                isMcpEnabled = false,
+                signedInAt = null,
+            )
+            txn.set(
+                doc(id),
+                mapOf(
+                    ID to id,
+                    PROVIDER to AuthProvider.EMAIL.name,
+                    PROVIDER_ID to address,
+                    PROVIDER_NAME to record.providerName,
+                    DISPLAY_NAME to null,
+                    EMAIL to address,
+                    EMAIL_VERIFIED to false,
+                    KIND to kind.key,
+                    INSTANCE_ROLE to null,
+                    MCP_ENABLED to false,
+                    ADDED_AT to addedAt,
+                    SIGNED_IN_AT to null,
+                ),
+            )
+            record
+        }.await()
+    }
+
+    /**
+     * The document [upsert] would find for this identity, or null when it would
+     * create one — the same two lookups in the same order, outside a transaction
+     * because nothing is written. See the interface for why admission needs it.
+     */
+    override suspend fun findExisting(identity: ProviderIdentity): UserRecord? {
+        val email = normalizeEmail(identity.email)
+        if (email != null) {
+            collection().whereEqualTo(EMAIL, email).limit(1).get().await()
+                .documents.firstOrNull()?.let { return it.toUser() }
+        }
+        return collection()
+            .whereEqualTo(PROVIDER, identity.provider.name)
+            .whereEqualTo(PROVIDER_ID, identity.providerId)
+            .limit(1)
+            .get().await()
+            .documents.firstOrNull()?.toUser()
     }
 
     override suspend fun findById(id: Long): UserRecord? =
@@ -193,8 +307,12 @@ class FirestoreUserStore(
         doc(id).update(MCP_ENABLED, isEnabled).await()
     }
 
-    override suspend fun setMcpAllowed(id: Long, isAllowed: Boolean) {
-        doc(id).update(MCP_ALLOWED, isAllowed).await()
+    override suspend fun setKind(id: Long, kind: UserKind) {
+        doc(id).update(KIND, kind.key).await()
+    }
+
+    override suspend fun setInstanceAdmin(id: Long, isAdmin: Boolean) {
+        doc(id).update(INSTANCE_ROLE, InstanceRole.ADMIN.key.takeIf { isAdmin }).await()
     }
 
     private companion object {
@@ -208,10 +326,30 @@ class FirestoreUserStore(
         const val DISPLAY_NAME = "displayName"
         const val EMAIL = "email"
         const val EMAIL_VERIFIED = "emailVerified"
-        const val IS_SYS_ADMIN = "isSysAdmin"
+        const val KIND = "kind"
+        const val INSTANCE_ROLE = "instanceRole"
         const val MCP_ENABLED = "mcpEnabled"
-        const val MCP_ALLOWED = "mcpAllowed"
-        const val CREATED_AT = "createdAt"
+
+        /**
+         * When the row appeared — renamed from `createdAt` in LNL-191, because a row
+         * need no longer be the residue of a sign-in. The Firestore backfill rewrites
+         * the field name; see FirestorePermissionModelMigration.
+         */
+        const val ADDED_AT = "addedAt"
+
+        /**
+         * When somebody last signed in, or an explicit null because nobody ever has
+         * (LNL-194).
+         *
+         * **Absent is not null here.** A document written before this field existed
+         * got there by somebody signing in — that was the only way to make one — so
+         * [DocumentSnapshot.toUser] falls back to [ADDED_AT] when the field is
+         * missing, which is exactly what 34.sqm's `UPDATE users SET signed_in_at =
+         * added_at` does on the relational side. That is why there is no backfill for
+         * this field: the read does the migration's work, and `addByEmail` writes the
+         * null explicitly so the two cases stay distinguishable.
+         */
+        const val SIGNED_IN_AT = "signedInAt"
     }
 }
 
@@ -230,8 +368,16 @@ private fun DocumentSnapshot.toUser(): UserRecord? {
         displayNameOverride = getString("displayName"),
         email = getString("email"),
         isEmailVerified = getBoolean("emailVerified") ?: false,
-        isSysAdmin = getBoolean("isSysAdmin") ?: false,
+        // Absent on a document the backfill has not reached — reads as `member`, the
+        // lesser answer, which is the safe direction while a backfill is in flight.
+        kind = UserKind.byKey(getString("kind")),
+        // Any value but 'admin' — including a rung a newer build invented — reads as
+        // "not an administrator". Ownership is never here; it is a setting.
+        isInstanceAdmin = getString("instanceRole") == InstanceRole.ADMIN.key,
         isMcpEnabled = getBoolean("mcpEnabled") ?: false,
-        isMcpAllowed = getBoolean("mcpAllowed") ?: false,
+        // Absent means "written before LNL-194", and every account that predates it
+        // arrived by signing in, so its added stamp is the honest arrival date. An
+        // explicit null means added-and-not-yet-arrived. See SIGNED_IN_AT.
+        signedInAt = if (contains("signedInAt")) getLong("signedInAt") else getLong("addedAt"),
     )
 }

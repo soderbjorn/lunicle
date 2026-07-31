@@ -5,7 +5,9 @@
  * Signed out it is one "Sign in…" button. Where that leads depends on what the
  * deployment can do: with two methods configured it opens [SignInPickerDialog],
  * with only Google it goes straight to the popup. Signed in it is the user's name
- * and the profile mark, which open a menu holding sign-out.
+ * and the profile mark: pressing them opens the settings pane at its You tab
+ * (LNL-193 — this used to be a profile modal that this file built), and hovering
+ * them opens a menu holding sign-out.
  *
  * ── The one privilege this view has, and what is *not* covered by it ────────
  *
@@ -33,14 +35,8 @@ package se.soderbjorn.lunicle
 
 import kotlinx.browser.document
 import kotlinx.browser.window
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.lunicle.client.StorageRepository
-import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
 
 /**
@@ -55,17 +51,16 @@ class SignInView(
     private val viewModel: SessionBackingViewModel,
     private val dialogHost: HTMLElement,
     /**
-     * Handed to the profile modal's view model, which this view builds fresh on
-     * every opening — see [renderProfileDialog]. The same shared instance the rest
-     * of the app uses, so there is still exactly one HTTP client.
+     * The account corner was pressed: open the settings pane at You (LNL-193).
+     *
+     * A callback rather than a dialog this view builds. It used to build the
+     * profile modal itself, which meant it also had to hold a storage repository, a
+     * Connections view model, a scope for it, and the workspace's "restore default
+     * layout" — four collaborators a sign-in corner has no business with. Settings
+     * is a pane in the workspace now, so this view's whole share of it is reporting
+     * the press.
      */
-    private val storage: StorageRepository,
-    /**
-     * Passed through to the profile modal's "Restore default layout" (LNL-160).
-     * This view builds that dialog, so the bootstrap's workspace view model has to
-     * reach it from here; nothing in the sign-in flow itself uses it.
-     */
-    private val onRestoreDefaultLayout: () -> Unit = {},
+    private val onOpenProfile: () -> Unit = {},
 ) {
     private lateinit var root: HTMLElement
     private lateinit var signInButton: HTMLButtonElement
@@ -82,25 +77,8 @@ class SignInView(
     private var alert: AlertDialog? = null
     private var alertMessage: String? = null
 
-    /** The profile modal while it is up, and the scope collecting its view model. */
-    private var profileDialog: ProfileDialog? = null
-    private var profileScope: CoroutineScope? = null
-
     /** The sign-in method picker while it is up. */
     private var signInPicker: SignInPickerDialog? = null
-
-    /**
-     * The mandatory landing gate while it is up (LNL-115).
-     *
-     * A modal with a single Sign in button and no way out but signing in: on a
-     * deployment that requires sign-in, a signed-out visitor meets this instead of
-     * the app. It lives in this view rather than the shell because it is a sign-in
-     * surface like the picker and the corner — its button opens the very same
-     * [startSignIn] path, so the picker (or the Google popup) stacks over it and,
-     * the moment the session lands, the gate tears itself down. See
-     * [renderSignInGate].
-     */
-    private var signInGate: Modal? = null
 
     /**
      * The deployment's brand logo SVG (LNL-110), shown atop the sign-in picker.
@@ -120,11 +98,35 @@ class SignInView(
      */
     var googleHostedDomain: String? = null
 
-    /** The impersonation submenu's rows, rebuilt only when the user list changes. */
-    private lateinit var impersonateItem: HTMLElement
-    private lateinit var impersonateSubmenu: HTMLElement
-    private lateinit var stopImpersonatingButton: HTMLButtonElement
-    private var renderedUserIds: List<Long> = emptyList()
+    /**
+     * The account menu's one impersonation control: starting.
+     *
+     * *Stopping* is not here. It lives in the strip, which is up for the whole time
+     * there is something to stop — see [armedStrip]. A menu item cannot be the exit
+     * from a mode, because finding it requires already knowing the mode has one.
+     */
+    private lateinit var impersonateItem: HTMLButtonElement
+
+    /**
+     * The strip above the app, and the two things in it whose words change.
+     *
+     * Up for **both** impersonation states — armed and probing — which is what makes
+     * it the one place the way out lives. It used to be the armed state's alone, on
+     * the reasoning that a probing caller already has the pill and the tint to tell
+     * them; true, and beside the point, because neither of those is a *control*. The
+     * exit was a hover-menu item under the profile button, which is a thing you have
+     * to already know is there.
+     *
+     * So the strip stays, and the button in it says "Cancel" before you have become
+     * anybody and "Stop impersonating" after. One control, always visible, in the
+     * same place both times.
+     */
+    private lateinit var armedStrip: HTMLElement
+    private lateinit var armedStripText: HTMLElement
+    private lateinit var armedStripButton: HTMLButtonElement
+
+    /** The address dialog while it is up. */
+    private var addressDialog: ImpersonateAddressDialog? = null
 
     /**
      * Build the corner and attach it to [host].
@@ -154,41 +156,51 @@ class SignInView(
         accountButton = (document.createElement("button") as HTMLButtonElement).apply {
             className = "account-btn"
             type = "button"
-            onclick = { viewModel.onAccountTapped() }
+            onclick = { onOpenProfile() }
         }
         accountButton.children(nameElement, profileIcon())
         accountButton.setAttribute("aria-haspopup", "menu")
 
         signOutButton = button("Sign out", MENU_ITEM_CLASS) { viewModel.onSignOutTapped() } as HTMLButtonElement
 
-        // "Impersonate ▸" and the submenu that folds out of it. The submenu is a
-        // child of the item, not a sibling: it opens on hover, and CSS hover only
-        // survives the pointer travelling from the item to the submenu if the
-        // submenu is inside the thing being hovered.
-        impersonateSubmenu = element("div", "account-submenu $MENU_PANEL_CLASS")
-        impersonateSubmenu.setAttribute("role", "menu")
-        impersonateItem = element("div", "$MENU_ITEM_CLASS account-menu-parent")
-        impersonateItem.setAttribute("role", "menuitem")
-        impersonateItem.setAttribute("aria-haspopup", "menu")
-        impersonateItem.children(
-            element("span", "account-menu-label dt-hover-menu-label", "Impersonate"),
-            element("span", "account-menu-arrow", "\u25B8"),
-            impersonateSubmenu,
-        )
-
-        stopImpersonatingButton =
-            button("Stop impersonating", MENU_ITEM_CLASS) { viewModel.onStopImpersonatingTapped() } as HTMLButtonElement
+        // One item, no submenu. There is no list of addresses to fold out any more:
+        // the owner is signed out first and then types whichever address they want
+        // at a genuine sign-in, so the menu's whole share of this is starting it.
+        impersonateItem =
+            button("Impersonate…", MENU_ITEM_CLASS) { confirmArm() } as HTMLButtonElement
 
         menuElement = element("div", "account-menu $MENU_PANEL_CLASS")
         menuElement.setAttribute("role", "menu")
-        // Sign out first, then the impersonation control — which of the two
-        // appears is decided in render(), never both.
-        menuElement.children(signOutButton, impersonateItem, stopImpersonatingButton)
+        // Sign out, then "Impersonate…". While probing the menu holds neither — see
+        // render(), which stops offering a menu at all rather than opening an empty one.
+        menuElement.children(signOutButton, impersonateItem)
 
         // The name appears without any surrounding text changing, so a screen
         // reader would announce nothing at all when a sign-in lands. The corner
         // has no visible label to carry that, so the live region is the name.
         nameElement.setAttribute("aria-live", "polite")
+
+        // The armed strip, mounted on <body> rather than on this view's own root.
+        //
+        // A child of the account corner is where it belongs by ownership and the one
+        // place it cannot work: the top bar is its own stacking context, so a
+        // `position: fixed` strip inside it is painted *within* that context — and
+        // the signed-out landing surface this strip exists to annotate sits at
+        // z-index 9000, on top. It rendered, at the right size, in the right colour,
+        // underneath. Hoisting it to <body> puts it in the root stacking context
+        // where its own z-index means what it says.
+        armedStrip = element("div", "impersonation-armed-strip")
+        armedStripText = element("span", "impersonation-armed-text")
+        // One handler for both states, because they are one act: stop whatever this
+        // browser is doing and be the owner again. The server route is the same —
+        // it works off the grant, not off whoever the session belongs to — so an
+        // armed-but-unused grant and a live impersonation end the same way.
+        armedStripButton = button("Cancel", "btn impersonation-armed-cancel") {
+            viewModel.onStopImpersonatingTapped()
+        } as HTMLButtonElement
+        armedStrip.children(armedStripText, armedStripButton)
+        armedStrip.style.display = "none"
+        document.body?.appendChild(armedStrip)
 
         root.children(signInButton, accountButton, menuElement)
         host.appendChild(root)
@@ -206,28 +218,21 @@ class SignInView(
         // beat of empty space.
         root.style.visibility = if (state.isLoaded) "visible" else "hidden"
 
+        // A probing owner is genuinely signed in as somebody, so the corner is the
+        // ordinary signed-in corner carrying that person's real name — which is the
+        // point: it is what they would see. The impersonation is said separately, by
+        // the pill and the tint, which cannot be mistaken for the account's own
+        // label and cannot be dismissed.
         val signedIn = state.user != null
-        // Impersonating a signed-out visitor: the effective account is null, so
-        // there is no name and the app shows the public view — but the corner must
-        // stay, or "Stop impersonating" vanishes with it and the admin is stranded
-        // in the borrowed identity (LNL-103). So the corner appears whenever there
-        // is a menu to show: a real account, or this preview.
-        val impersonatingSignedOut = state.isImpersonating && !signedIn
-        val showAccount = signedIn || impersonatingSignedOut
+        val showAccount = signedIn
 
-        nameElement.setTextIfChanged(
-            when {
-                signedIn -> state.displayName ?: ""
-                impersonatingSignedOut -> "Signed-out visitor"
-                else -> ""
-            },
-        )
+        nameElement.setTextIfChanged(if (signedIn) state.displayName ?: "" else "")
         // The provider is the tooltip now that the corner shows the bare name.
         // Both providers can supply the same display name, so this is the only
         // thing that answers "which of my two accounts is this?".
         accountButton.title = when {
+            state.isImpersonating -> "You are signed in as this account through an impersonation"
             signedIn -> state.greeting ?: ""
-            impersonatingSignedOut -> "Previewing the signed-out view"
             else -> ""
         }
         accountButton.visible(showAccount, displayValue = "inline-flex")
@@ -242,23 +247,60 @@ class SignInView(
         //
         // The class only says *whether a menu exists at all* — signed out, there
         // is nothing to open. When it opens is CSS's business alone.
-        root.classList.toggle("account-signed-in", showAccount)
-        // Hidden while impersonating (LNL-101): signing out here would mean the
-        // admin's real session, not the borrowed identity, and the borrowed
-        // identity is what the menu is showing — the way back out is "Stop
-        // impersonating" below, not "Sign out". It returns when impersonation ends.
+        //
+        // And while probing there is nothing to open either: sign-out is withheld
+        // (see below) and stopping moved to the strip, so the menu would be an empty
+        // panel that appears on hover and offers nothing. Better to have no menu
+        // than a menu with nothing in it.
+        root.classList.toggle("account-signed-in", showAccount && !state.isImpersonating)
+
+        // The marker, and it is a CLASS for the reason the line above is one: the
+        // stylesheet owns what a tinted frame and a corner pill look like, and an
+        // inline style set from here would beat every rule it was meant to cooperate
+        // with. It is toggled off the server's answer on every session emission, so
+        // it survives a hard reload and there is nothing on screen that dismisses it.
+        root.classList.toggle("account-impersonating", state.isImpersonating)
+        document.body?.classList?.toggle("app-impersonating", state.isImpersonating)
+
+        // Hidden while impersonating: "Sign out" here would end the probe session
+        // and leave the browser holding a live grant with nothing to go back to.
+        // The way out is the strip's button, which restores the owner.
         signOutButton.visible(!state.isImpersonating, displayValue = "block")
         signOutButton.disabled = state.isBusy
 
-        // "Impersonate" and "Stop impersonating" are the same slot, never both.
-        // Both hang off canImpersonate — the REAL user being an admin — and not
-        // off user.isSysAdmin, which is false for the whole time an admin is
-        // impersonating and would take "Stop impersonating" away exactly when it
-        // is the only thing needed. See SessionBackingViewModel.State.
-        impersonateItem.visible(state.canImpersonate && !state.isImpersonating, displayValue = "flex")
-        stopImpersonatingButton.visible(state.canImpersonate && state.isImpersonating, displayValue = "block")
-        stopImpersonatingButton.disabled = state.isBusy
-        renderImpersonatableUsers(state)
+        // Starting one hangs off canImpersonate, which already carries BOTH terms —
+        // the caller owns the instance and the deployment has the feature switched
+        // on — so an unarmed instance offers nothing to anybody, the owner included.
+        impersonateItem.visible(state.canImpersonate && !state.isImpersonating, displayValue = "block")
+        impersonateItem.disabled = state.isBusy
+
+        // The strip, up for both impersonation states.
+        //
+        // Armed, it is the ONLY thing on screen saying anything is going on —
+        // everything else is rendering exactly what a stranger sees, which is itself
+        // part of what is being checked. Probing, the pill and the tint say it too,
+        // but neither of them is a control, and this is where the way out lives.
+        val strip = state.isImpersonationArmed || state.isImpersonating
+        armedStrip.visible(strip, displayValue = "flex")
+        armedStripText.setTextIfChanged(
+            if (state.isImpersonating) {
+                // Named, because "who am I right now" is the question a probing owner
+                // asks most, and the corner answers it in the account's own voice —
+                // which is exactly the voice that cannot be trusted to say it is
+                // borrowed.
+                "Impersonating ${state.displayName ?: "somebody else"} — writes are theirs."
+            } else {
+                "Impersonation armed — sign in as anyone."
+            },
+        )
+        armedStripButton.setTextIfChanged(if (state.isImpersonating) "Stop impersonating" else "Cancel")
+        armedStripButton.disabled = state.isBusy
+        // The shell is exactly viewport-height, so a fixed strip would sit on top of
+        // the tab bar. The class shortens and offsets it by the strip's own height;
+        // see the stylesheet, where the one number lives.
+        document.body?.classList?.toggle("app-impersonation-strip", strip)
+
+        renderAddressDialog(state)
 
         // A deployment with no credentials renders no sign-in at all, rather
         // than a button that cannot work. The server decides this, not the
@@ -268,72 +310,8 @@ class SignInView(
         signInButton.visible(!showAccount && state.isSignInAvailable, displayValue = "inline-flex")
         signInButton.disabled = state.isBusy
 
-        renderProfileDialog(state)
-        renderSignInGate(state)
         renderSignInPicker(state)
         renderAlert(state)
-    }
-
-    /**
-     * Raise or dismiss the landing gate to match the state (LNL-115).
-     *
-     * Keyed on presence, like the picker and the alert: the view model decides
-     * whether the gate belongs on screen ([SessionBackingViewModel.State.isSignInGateShown]),
-     * this only builds it when it should appear and tears it down when it should
-     * not — which is what makes a completed sign-in close it without a line here
-     * mentioning sign-in at all. Built once and left up; there is nothing inside it
-     * that goes stale, so unlike the picker it is not rebuilt per showing.
-     */
-    private fun renderSignInGate(state: SessionBackingViewModel.State) {
-        if (state.isSignInGateShown && signInGate == null) {
-            signInGate = buildSignInGate(state)
-        } else if (!state.isSignInGateShown && signInGate != null) {
-            signInGate?.dismiss()
-            signInGate = null
-        }
-    }
-
-    /**
-     * Build the landing gate: a brand mark, a line of explanation, and one big Sign
-     * in button — nothing else, and no way to dismiss it.
-     *
-     * `onDismiss = {}` so Escape does nothing (the backdrop already swallows
-     * clicks), and no footer button: the only way past it is to sign in, which is
-     * the whole point of a required-sign-in deployment. The button hands off to
-     * [startSignIn], the same path the top-bar button takes — so a two-method
-     * deployment gets the picker over the gate and a one-method one goes straight to
-     * it. When the deployment somehow requires sign-in but offers no method to
-     * perform it (a misconfiguration), a line says so rather than a dead button.
-     */
-    private fun buildSignInGate(state: SessionBackingViewModel.State): Modal {
-        val gate = Modal(
-            title = "Sign in to continue",
-            onDismiss = {},
-            panelClass = "modal-narrow modal-signin",
-        )
-        val methods = element("div", "signin-methods")
-        brandLogoSvg?.let {
-            methods.appendChild(brandLogo(it).also { el -> el.className += " signin-brand-logo" })
-        }
-        methods.appendChild(
-            element("p", "signin-hint", "This workspace requires you to sign in before you can use it."),
-        )
-        if (state.isSignInAvailable) {
-            // "Sign in…" with the ellipsis, matching the top-bar button (this hands
-            // off to the picker or an OAuth redirect, it does not sign you in on the
-            // spot) — the gate had the bare label alone (LNL-153).
-            methods.appendChild(button("Sign in…", "btn signin-provider") { startSignIn() })
-        } else {
-            // Required, but no provider configured to satisfy it. Nothing this
-            // surface can do about it, so it says the true thing rather than
-            // offering a button that cannot work.
-            methods.appendChild(
-                element("p", "signin-hint", "No sign-in method is configured on this server. Ask an administrator."),
-            )
-        }
-        gate.body.appendChild(methods)
-        gate.mount(dialogHost)
-        return gate
     }
 
     /**
@@ -342,10 +320,22 @@ class SignInView(
      * One method configured means no picker: a modal offering a single option is a
      * click charged for nothing. Two means the picker. Zero cannot reach here —
      * the button is not rendered at all in that case, see `render`.
+     *
+     * Public because the corner is no longer the only way in: the empty-tab surface
+     * a signed-out visitor lands on carries its own button (see main.kt), and it has
+     * to open the very same door rather than a second one that drifts from this. A
+     * no-op before the first session response, which is the same beat the corner
+     * button is not rendered for.
      */
-    private fun startSignIn() {
+    fun startSignIn() {
         val state = lastState ?: return
         when {
+            // Armed wins over everything. This browser holds a grant, so the button
+            // that would ordinarily open Google's popup or the code field opens the
+            // impersonation dialog instead — one address, one button, no mail and no
+            // code to redeem. It is the same button on purpose: signing in as
+            // somebody should go through the door a sign-in goes through.
+            state.isImpersonationArmed -> viewModel.onImpersonateAddressPromptOpened()
             state.hasSignInChoice -> viewModel.onSignInPickerOpened()
             state.isGoogleAvailable -> startGoogleSignIn()
             state.isEmailSignInAvailable -> viewModel.onSignInPickerOpened()
@@ -356,10 +346,10 @@ class SignInView(
     /**
      * Open or close the picker to match the state.
      *
-     * Built fresh per opening and torn down on dismissal, the shape
-     * [renderProfileDialog] uses — and for a simpler version of its reason: the
-     * dialog holds a half-typed address and a half-typed code, and a instance kept
-     * across openings would show the last visitor's attempt to the next one.
+     * Built fresh per opening and torn down on dismissal, the shape every modal
+     * this file raises uses — and for a simple reason: the dialog holds a half-typed
+     * address and a half-typed code, and an instance kept across openings would show
+     * the last visitor's attempt to the next one.
      *
      * Mounted on `dialogHost` so it stacks with the other modals and Modal's
      * topmost-wins Escape handling keeps working.
@@ -383,71 +373,54 @@ class SignInView(
     }
 
     /**
-     * Fill the impersonation submenu.
+     * Confirm before arming, because arming signs the owner out.
      *
-     * Rebuilt only when the ids change, like the project picker: this runs on
-     * every session emission, and replacing the rows under a pointer that is
-     * hovering one of them makes the submenu flicker and lose the hover.
-     *
-     * The admin's own row is rendered and disabled rather than omitted, so the
-     * list matches the user table they are looking at — and "become myself" is
-     * spelled "Stop impersonating", which is a different item.
+     * The one place in the product where pressing a menu item ends your session, so
+     * it says so before it does it. Not a nicety: without the warning, an owner who
+     * meant to look at a submenu finds themselves signed out of the instance they
+     * run, with no obvious way back beyond signing in again — and on a deployment
+     * whose sign-in is a Google popup that is a genuine interruption.
      */
-    private fun renderImpersonatableUsers(state: SessionBackingViewModel.State) {
-        val ids = state.impersonatableUsers.map { it.id }
-        if (ids == renderedUserIds) return
-        renderedUserIds = ids
-        impersonateSubmenu.clear()
-        // A fixed choice, always first and always offered: see the app as a
-        // signed-out visitor does — no account at all — rather than as any named
-        // user (LNL-103). It stands even when there are no other accounts to pick,
-        // so the submenu is never truly empty.
-        impersonateSubmenu.appendChild(
-            button("Signed-out visitor", MENU_ITEM_CLASS) {
-                viewModel.onImpersonateSignedOutTapped()
-            } as HTMLButtonElement,
-        )
-        state.impersonatableUsers.forEach { option ->
-            val row = button(option.name, MENU_ITEM_CLASS) {
-                viewModel.onImpersonateTapped(option.id)
-            } as HTMLButtonElement
-            if (option.isSelf) {
-                row.disabled = true
-                row.title = "This is you."
-            }
-            impersonateSubmenu.appendChild(row)
-        }
+    private fun confirmArm() {
+        var dialog: ConfirmDialog? = null
+        dialog = ConfirmDialog(
+            title = "Impersonate somebody",
+            message = "You will be signed out, and can then sign in as any address — for real. " +
+                "An address with no account here will get one, and anything you write will be theirs. " +
+                "Stop impersonating puts you back.",
+            // "Sign me out" rather than "OK", because being signed out is the part
+            // somebody would otherwise not expect from a menu item.
+            destructiveLabel = "Sign me out and arm it",
+            onConfirm = {
+                dialog?.dismiss()
+                viewModel.onArmImpersonationTapped()
+            },
+            onCancel = { dialog?.dismiss() },
+        ).also { it.mount(dialogHost) }
     }
 
     /**
-     * Open or close the profile modal to match the state.
+     * Raise or dismiss the `Any address…` prompt to match the state.
      *
-     * A fresh [ConnectionsBackingViewModel] per opening, deliberately: connections
-     * are changed by things outside this browser — an agent authorizing, a token
-     * expiring — so a view model held across openings would show a list that was
-     * true the first time the dialog was opened and stale every time after. Each
-     * open re-fetches, and the scope dies with the dialog so a response arriving
-     * after it closed has nothing to render into.
+     * Keyed on presence like the picker and the gate: the view model decides whether
+     * it belongs on screen, and this only builds and tears down — which is what makes
+     * a completed impersonation close it without a line here mentioning impersonation.
+     * Built fresh per opening for [renderSignInPicker]'s reason: it holds a half-typed
+     * address, and an instance kept across openings would show the last one.
      */
-    private fun renderProfileDialog(state: SessionBackingViewModel.State) {
-        if (state.isProfileDialogOpen && profileDialog == null) {
-            val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-            profileScope = dialogScope
-            profileDialog = ProfileDialog(
-                viewModel = ConnectionsBackingViewModel(storage, dialogScope),
-                sessionViewModel = viewModel,
-                scope = dialogScope,
-                onDismiss = { viewModel.onProfileDialogDismissed() },
-                onRestoreDefaultLayout = onRestoreDefaultLayout,
+    private fun renderAddressDialog(state: SessionBackingViewModel.State) {
+        if (state.isImpersonateAddressPromptOpen && addressDialog == null) {
+            addressDialog = ImpersonateAddressDialog(
+                viewModel = viewModel,
+                onDismiss = { viewModel.onImpersonateAddressPromptDismissed() },
             ).also { it.mount(dialogHost) }
-        } else if (!state.isProfileDialogOpen && profileDialog != null) {
-            profileDialog?.dismiss()
-            profileDialog = null
-            profileScope?.cancel()
-            profileScope = null
+        } else if (!state.isImpersonateAddressPromptOpen && addressDialog != null) {
+            addressDialog?.dismiss()
+            addressDialog = null
         }
-        profileDialog?.render(state)
+        addressDialog?.render(state)
     }
+
 
     /**
      * Put a sign-in failure up as a modal, or take it down.

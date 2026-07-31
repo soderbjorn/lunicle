@@ -31,16 +31,23 @@
 -- SUPERSEDED, and left standing because a migration is history rather than
 -- doctrine: the statement about this migration remains true — it still back-fills
 -- nothing, and it still lands every existing account on 0 — but the conclusion no
--- longer holds. UserRecord.isMcpPermitted now reads `mcp_allowed || is_admin`, so
--- an admin left on 0 by this migration is permitted anyway and never needed the
+-- longer holds. UserRecord.isMcpPermitted read `mcp_allowed || is_admin`, so an
+-- admin left on 0 by this migration was permitted anyway and never needed the
 -- `WHERE is_admin = 1` this paragraph talks anybody out of. See Users.sq.
+--
+-- That function is gone too, and is named here only so the trail does not end
+-- nowhere: 33.sqm dropped `mcp_allowed` (LNL-191) and LNL-192 replaced it with one
+-- switch per rung of the instance ladder, so the permitted half of the question is
+-- now asked of the instance settings — InstanceSettingsStore.permitsAgentsFor. The
+-- conclusion is unchanged: an administrator is permitted without a switch.
 --
 -- RENAMED SINCE, and the name above is deliberately left alone for the same
 -- "history rather than doctrine" reason: 11.sqm renames this column to
 -- `is_sys_admin`, to tell the instance-wide administrator apart from the
 -- per-project one that arrived with it. At version 6 the column really was
 -- `is_admin`, so that is what this file says; read every `is_admin` above as
--- today's `is_sys_admin`. Nothing else about the paragraph changes.
+-- `is_sys_admin`, which 33.sqm has since replaced with `instance_role`. Nothing
+-- else about the paragraph changes.
 --
 -- ── Why ALTER TABLE suffices ────────────────────────────────────────────────
 --

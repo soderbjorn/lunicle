@@ -84,7 +84,7 @@ abstract class ProjectProvisioningContract {
 
     @Test
     fun `create seeds the default vocabularies in order`(): Unit = runBlocking {
-        val project = provisioning.create("Seeded", "SED", isPublic = false)
+        val project = provisioning.create("Seeded", "SED")
 
         assertEquals(DEFAULT_LABELS, labelsOf(project.id).map { it.name }, "labels seeded in list order")
         assertEquals(DEFAULT_COMPONENTS, componentsOf(project.id).map { it.name }, "components seeded in list order")
@@ -99,7 +99,7 @@ abstract class ProjectProvisioningContract {
 
     @Test
     fun `create flags only the closing status as requiring a resolution`(): Unit = runBlocking {
-        val project = provisioning.create("Closing", "CLO", isPublic = false)
+        val project = provisioning.create("Closing", "CLO")
         val statuses = statusesOf(project.id)
 
         val closing = statuses.single { it.name == CLOSING_STATUS }
@@ -112,47 +112,47 @@ abstract class ProjectProvisioningContract {
 
     @Test
     fun `create refuses a duplicate name case-insensitively`(): Unit = runBlocking {
-        provisioning.create("Duplicate", "DUP", isPublic = false)
-        assertFailsWith<ProjectConflict> { provisioning.create("duplicate", "OTHER", isPublic = false) }
+        provisioning.create("Duplicate", "DUP")
+        assertFailsWith<ProjectConflict> { provisioning.create("duplicate", "OTHER") }
     }
 
     @Test
     fun `create refuses a duplicate prefix case-insensitively`(): Unit = runBlocking {
-        provisioning.create("First", "PRE", isPublic = false)
-        assertFailsWith<ProjectConflict> { provisioning.create("Second", "pre", isPublic = false) }
+        provisioning.create("First", "PRE")
+        assertFailsWith<ProjectConflict> { provisioning.create("Second", "pre") }
     }
 
     @Test
     fun `create refuses a blank name or prefix`(): Unit = runBlocking {
-        assertFailsWith<ProjectConflict> { provisioning.create("   ", "OK", isPublic = false) }
-        assertFailsWith<ProjectConflict> { provisioning.create("Named", "   ", isPublic = false) }
+        assertFailsWith<ProjectConflict> { provisioning.create("   ", "OK") }
+        assertFailsWith<ProjectConflict> { provisioning.create("Named", "   ") }
     }
 
     @Test
-    fun `update renames a project and rewrites its visibility`(): Unit = runBlocking {
-        val project = provisioning.create("Before", "BEF", isPublic = false)
-        // The identity write carries both visibility flags together (LNL-138).
-        val updated = provisioning.update(project.id, "After", "AFT", isPublic = true, visibleToAllSignedIn = true)
+    fun `update renames a project`(): Unit = runBlocking {
+        val project = provisioning.create("Before", "BEF")
+        // No visibility here any more (LNL-191): who may see a project is its
+        // audience rows, set through their own gesture rather than riding along on a
+        // rename. See RoleStoreContract's audience section.
+        val updated = provisioning.update(project.id, "After", "AFT")
 
         assertEquals("After", updated.name)
         assertEquals("AFT", updated.namePrefix)
-        assertTrue(updated.isPublic)
-        assertTrue(updated.visibleToAllSignedIn, "the signed-in-visibility flag was not persisted by update")
         assertEquals("After", projectById(project.id)?.name, "the rename is persisted")
     }
 
     @Test
     fun `update refuses a name that is another project's`(): Unit = runBlocking {
-        provisioning.create("Taken", "TAK", isPublic = false)
-        val other = provisioning.create("Free", "FRE", isPublic = false)
+        provisioning.create("Taken", "TAK")
+        val other = provisioning.create("Free", "FRE")
         assertFailsWith<ProjectConflict> {
-            provisioning.update(other.id, "taken", "FRE", isPublic = false, visibleToAllSignedIn = false)
+            provisioning.update(other.id, "taken", "FRE")
         }
     }
 
     @Test
     fun `delete removes the project`(): Unit = runBlocking {
-        val project = provisioning.create("Doomed", "DOM", isPublic = false)
+        val project = provisioning.create("Doomed", "DOM")
         assertTrue(statusesOf(project.id).isNotEmpty(), "the board was seeded")
 
         provisioning.delete(project.id)
@@ -182,7 +182,7 @@ abstract class ProjectProvisioningContract {
      */
     @Test
     fun `delete empties the project of everything it contained`(): Unit = runBlocking {
-        val project = provisioning.create("Full", "FUL", isPublic = false)
+        val project = provisioning.create("Full", "FUL")
         val seeded = seedContents(project.id)
 
         // The seed is only meaningful if it actually put something there.
@@ -227,8 +227,8 @@ abstract class ProjectProvisioningContract {
      */
     @Test
     fun `delete spares another project's contents`(): Unit = runBlocking {
-        val doomed = provisioning.create("Doomed", "DOO", isPublic = false)
-        val spared = provisioning.create("Spared", "SPA", isPublic = false)
+        val doomed = provisioning.create("Doomed", "DOO")
+        val spared = provisioning.create("Spared", "SPA")
         val doomedContents = seedContents(doomed.id)
         val sparedContents = seedContents(spared.id)
 
@@ -249,8 +249,8 @@ abstract class ProjectProvisioningContract {
 
     @Test
     fun `reorder puts the instance's projects in the order given`(): Unit = runBlocking {
-        val first = provisioning.create("One", "ONE", isPublic = false)
-        val second = provisioning.create("Two", "TWO", isPublic = false)
+        val first = provisioning.create("One", "ONE")
+        val second = provisioning.create("Two", "TWO")
 
         provisioning.reorder(listOf(second.id, first.id))
         assertEquals(listOf(second.id, first.id), allProjects().map { it.id }, "projects follow the requested order")
@@ -258,7 +258,7 @@ abstract class ProjectProvisioningContract {
 
     @Test
     fun `reorder refuses a set that is not exactly the projects`(): Unit = runBlocking {
-        val only = provisioning.create("Solo", "SOL", isPublic = false)
+        val only = provisioning.create("Solo", "SOL")
         assertFailsWith<ProjectConflict> { provisioning.reorder(listOf(only.id, only.id + 999)) }
     }
 }

@@ -60,15 +60,17 @@ class SessionStore(
     /**
      * Mint a session id for [userId] and store it.
      *
+     * @param probeId the owner-impersonation grant behind this session, or null for
+     *   every ordinary sign-in. See [se.soderbjorn.lunicle.store.SessionStore.create].
      * @return the new id, to be handed to the browser as a cookie and never
      *   logged.
      */
-    override suspend fun create(userId: Long): String = withContext(DatabaseDispatcher) {
+    override suspend fun create(userId: Long, probeId: String?): String = withContext(DatabaseDispatcher) {
         // 32 bytes: comfortably past guessing, and url-safe so it survives a
         // cookie round-trip without encoding surprises.
         val bytes = ByteArray(32).also(random::nextBytes)
         val id = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-        database.sessionsQueries.insert(id = id, user_id = userId, created_at = now())
+        database.sessionsQueries.insert(id = id, user_id = userId, created_at = now(), probe_id = probeId)
         id
     }
 
@@ -84,9 +86,24 @@ class SessionStore(
             database.sessionsQueries.findUser(id).executeAsOneOrNull()?.let {
                 userRecordOf(
                     it.id, it.provider, it.provider_id, it.provider_name,
-                    it.display_name, it.email, it.email_verified, it.is_sys_admin, it.mcp_enabled, it.mcp_allowed,
+                    it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                    it.signed_in_at,
                 )
             }
+        }
+    }
+
+    /**
+     * The grant [id] was minted against, or null for a session somebody proved.
+     *
+     * A second primary-key lookup rather than a column on [lookup]'s join, which is
+     * the hottest query in the server — see the interface. Asked once per request,
+     * and only when the impersonation gate is on.
+     */
+    override suspend fun probeIdFor(id: String?): String? {
+        if (id == null) return null
+        return withContext(DatabaseDispatcher) {
+            database.sessionsQueries.findProbeId(id).executeAsOneOrNull()?.probe_id
         }
     }
 
@@ -115,6 +132,20 @@ class SessionStore(
      */
     override suspend fun deleteExpired(): Long = withContext(DatabaseDispatcher) {
         database.sessionsQueries.deleteOlderThan(now() - SESSION_LIFETIME_MILLIS).value
+    }
+
+    /**
+     * Delete every session an owner-impersonation grant minted.
+     *
+     * Beside [deleteExpired] at startup, and unlike it **ungated**: the grants that
+     * authorised these sessions died with the previous process, so every row this
+     * removes is one nothing could have honoured anyway. See the interface for why
+     * the gate must not reach this.
+     *
+     * @return how many were removed.
+     */
+    override suspend fun deleteProbeSessions(): Long = withContext(DatabaseDispatcher) {
+        database.sessionsQueries.deleteProbeSessions().value
     }
 
     /** How many sessions are live. For the startup/debug log only. */

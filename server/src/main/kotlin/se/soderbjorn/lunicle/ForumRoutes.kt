@@ -130,7 +130,7 @@ private class ForumScope(val project: ProjectRecord, val user: UserRecord, val f
 /**
  * Resolve a project this caller may administer, or respond and return null.
  *
- * 404 before 403, matching `adminProject` and `adminSprintScope`: an id the
+ * 404 before 403, matching `adminProject` and `sprintScope`: an id the
  * caller cannot even see answers "no such project" rather than confirming one
  * exists by that id. The order matters more here than it looks, because
  * visibility narrowed in LNL-57 — there are now projects a signed-in caller

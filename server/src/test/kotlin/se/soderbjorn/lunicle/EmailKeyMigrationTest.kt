@@ -84,10 +84,13 @@ class EmailKeyMigrationTest {
     @Test
     fun `the key is enforced after migrating`() {
         withMigratedDatabase(listOf("alice@example.com")) { driver ->
+            // Post-migration columns: `is_sys_admin` and `created_at` are gone
+            // (LNL-191, 33.sqm). The pre-migration seeds below the fold still name
+            // them, because they run against the version-21 snapshot where they exist.
             val duplicate = runCatching {
                 driver.exec(
-                    "INSERT INTO users (provider, provider_id, provider_name, email, is_sys_admin, created_at) " +
-                        "VALUES ('GOOGLE', 'sub-x', 'X', 'alice@example.com', 0, 0);",
+                    "INSERT INTO users (provider, provider_id, provider_name, email, added_at) " +
+                        "VALUES ('GOOGLE', 'sub-x', 'X', 'alice@example.com', 0);",
                 )
             }
             assertTrue(duplicate.isFailure, "A second row took an address that was already spoken for.")
@@ -96,13 +99,13 @@ class EmailKeyMigrationTest {
             // address Google would not confirm is one, and there may be many. This
             // is what `WHERE email IS NOT NULL` on the index buys.
             driver.exec(
-                "INSERT INTO users (provider, provider_id, provider_name, email, is_sys_admin, created_at) " +
-                    "VALUES ('GOOGLE', 'sub-y', 'Y', NULL, 0, 0);",
+                "INSERT INTO users (provider, provider_id, provider_name, email, added_at) " +
+                    "VALUES ('GOOGLE', 'sub-y', 'Y', NULL, 0);",
             )
             val second = runCatching {
                 driver.exec(
-                    "INSERT INTO users (provider, provider_id, provider_name, email, is_sys_admin, created_at) " +
-                        "VALUES ('GOOGLE', 'sub-z', 'Z', NULL, 0, 0);",
+                    "INSERT INTO users (provider, provider_id, provider_name, email, added_at) " +
+                        "VALUES ('GOOGLE', 'sub-z', 'Z', NULL, 0);",
                 )
             }
             assertTrue(second.isSuccess, "Two accounts with no address collided on NULL.")

@@ -46,20 +46,25 @@ private val logger = LoggerFactory.getLogger("Users")
  *   Moves with [email] and never independently: [UserStore.setEmail] writes both,
  *   because a flag left describing the previous address is precisely the lie this
  *   is for. See Users.sq.
- * @property isSysAdmin whether this is the instance admin. Global rather than
- *   per-project, which is why it is a column here rather than a fourth row in
- *   `roles` — the first user to sign in is the admin of the whole instance,
- *   before any project exists to grant a role in.
+ * @property kind whether this account belongs to the deployment's own domain —
+ *   staff, or member for everybody else. Derived, never chosen: see
+ *   [UserKind.forEmail], which sign-in and the startup stamp both call, so the two
+ *   cannot reach different answers.
+ * @property isInstanceAdmin whether this account runs the instance
+ *   (`users.instance_role = 'admin'`). Global rather than per-project, which is
+ *   why it is a column here rather than a project rung — the first user to sign in
+ *   runs the whole instance, before any project exists to hold a rung in.
+ *
+ *   **Not the top of the ladder.** The instance *owner* is senior to this and is
+ *   not on this record at all: it is `instance_settings.owner_user_id`, and only
+ *   [AccessControl.instanceRole] can see it. See [storedInstanceRole], which is
+ *   what this record can honestly answer on its own.
  * @property isMcpEnabled whether this user has **turned on** agent access. Their
- *   own choice, made from the MCP tab of their profile dialog. Global for the same
- *   reason [isSysAdmin] is, and — unlike [isSysAdmin] — not an affordance: it is checked
- *   server-side, so switching it off cuts live agents off mid-conversation. Never
- *   crosses the wire on this type; the Connections section reads it from its own
- *   endpoint. See McpRoutes.
- * @property isMcpAllowed whether an admin **permits** this user to have agent
- *   access at all. Not the same question as [isMcpEnabled] and not the same
- *   person answering it — see [canUseMcp], which is the only thing any gate should
- *   ever read, and Users.sq for why the two cannot share one column.
+ *   own choice, made from the Connections half of the settings pane's You tab.
+ *   Global for the same reason [isInstanceAdmin] is, and — unlike it — not an
+ *   affordance: it is checked server-side, so switching it off cuts live agents off
+ *   mid-conversation. Never crosses the wire on this type; the Connections section
+ *   reads it from its own endpoint. See McpRoutes.
  */
 data class UserRecord(
     val id: Long,
@@ -69,47 +74,28 @@ data class UserRecord(
     val displayNameOverride: String?,
     val email: String?,
     val isEmailVerified: Boolean = false,
-    val isSysAdmin: Boolean,
+    val kind: UserKind = UserKind.MEMBER,
+    val isInstanceAdmin: Boolean = false,
     val isMcpEnabled: Boolean = false,
-    val isMcpAllowed: Boolean = false,
+    /**
+     * When somebody last signed into this account, or null because nobody ever has
+     * (LNL-194).
+     *
+     * Null is the account an administrator **added** and whose owner has not turned
+     * up: it holds rungs, it appears in the Access list badged NOT SIGNED IN, and it
+     * is the case that makes the `staff domain plus already added` admission policy
+     * differ from `staff domain only`. Read [hasSignedIn] rather than comparing to
+     * null — the timestamp itself is only interesting to the People tab.
+     *
+     * Defaulted, and last, so the fixtures and tests that build a record positionally
+     * did not all have to change. Note the default is the *pending* answer, which is
+     * the conservative direction: a caller that forgets to carry it through reports an
+     * account as not-yet-arrived rather than claiming an arrival that never happened.
+     */
+    val signedInAt: Long? = null,
 ) {
-    /**
-     * Does this account have permission to hold agent access at all — because an
-     * admin granted it, or because the account *is* an admin, who is permitted by
-     * virtue of being one?
-     *
-     * The one place admin-ness enters the MCP story. [isMcpAllowed] is a right one
-     * person grants another, exactly the shape [AccessControl] lets an admin past
-     * everywhere (`user.isSysAdmin || roles.hasRole(...)`), so an admin needing a
-     * second admin to grant it — and, with no back-fill, there being no such second
-     * admin — was the gap this closes. It short-circuits **only** the permission
-     * half: it is not, and must not be, folded into [isMcpEnabled] below.
-     */
-    val isMcpPermitted: Boolean get() = isMcpAllowed || isSysAdmin
-
-    /**
-     * May an agent act as this user right now?
-     *
-     * **The only thing an MCP gate should read.** There are five of them — `/mcp`
-     * per request, `/oauth/authorize`, the consent POST, the token exchange and
-     * refresh rotation — and five hand-written `isMcpPermitted && isMcpEnabled`
-     * pairs would be five chances for one to be written as a single term. The
-     * failure mode of that typo is not a broken build, it is a gate that silently
-     * lets an unpermitted user through on one of five paths.
-     *
-     * Both terms, and the order is meaningless: the account has to be permitted
-     * ([isMcpPermitted] — an admin granted it, or it is the admin), and the account
-     * has to have switched it on. Neither implies the other, and neither
-     * substitutes for the other.
-     *
-     * Admin-ness reaches this property through [isMcpPermitted] and no further. It
-     * clears the *permission* an admin would otherwise have to grant; it does not
-     * clear [isMcpEnabled], the account's own server-checked switch. That switch
-     * has to stay real for an admin too — it is what cuts their agents off
-     * mid-conversation when they turn it off — so an admin who has never enabled
-     * their own agent access still, correctly, cannot use MCP until they do.
-     */
-    val canUseMcp: Boolean get() = isMcpPermitted && isMcpEnabled
+    /** Has anybody ever signed into this account? See [signedInAt]. */
+    val hasSignedIn: Boolean get() = signedInAt != null
 
     /**
      * The name to render: the user's override if they set one, else what the
@@ -131,17 +117,22 @@ data class UserRecord(
      * this is the person's own address going back to them — the User tab shows and
      * edits it, and the notification toggles need to know it exists. Other
      * people's addresses still stop at the server; see this file's preamble and
-     * SignedInUser.email. [isSysAdmin] is an affordance only — it greys out a button
+     * SignedInUser.email. `isSysAdmin` on the wire is an affordance only — it greys out a button
      * the server would refuse anyway. See AccessControl's preamble.
      */
     fun toSignedInUser(): SignedInUser = SignedInUser(
         id = id,
         displayName = resolvedName,
         provider = provider,
-        isSysAdmin = isSysAdmin,
+        isSysAdmin = isInstanceAdmin,
         hasDisplayNameOverride = displayNameOverride != null,
         email = email,
         isEmailVerified = isEmailVerified,
+        // The tier, as a fact the caller may read about themselves (LNL-193). Not a
+        // grant and not an affordance either: nothing on the client is gated on it.
+        // The settings pane states it, and words the greyed agent-access switch with
+        // it. See SignedInUser.isStaff.
+        isStaff = kind == UserKind.STAFF,
     )
 }
 
@@ -179,9 +170,10 @@ sealed interface Author {
      * A name with nobody behind it — history imported from another tracker,
      * written by somebody who has never signed in here.
      *
-     * Admin-only, and only ever at creation. See `created_by_external` in
-     * Issues.sq for why the name is held rather than an account minted for it,
-     * and [AccessControl.canAttributeWrites] for who may say it.
+     * See `created_by_external` in Issues.sq for why the name is held rather than an
+     * account minted for it, and [AccessControl.canAttributeWrites] for who may
+     * *claim* one: naming somebody else as the author is an administrator's, and only
+     * ever at creation.
      */
     data class External(val name: String) : Author
 
@@ -196,10 +188,86 @@ sealed interface Author {
  * receiver because the routes carry a nullable user, and "nobody was signed in"
  * has always been recordable — see [Author.Nobody].
  *
- * Note there is no way to reach [Author.External] from a [UserRecord], and that
- * is the point: an imported author is not a user and never becomes one.
+ * ── It never produces [Author.External], and that is no longer a caveat ─────
+ *
+ * It briefly could. While impersonation was a costume there was a *caller* who was
+ * not a user — a previewed address with no `users` row — and `created_by` cannot
+ * point at a row that does not exist, so such a caller signed its writes as an
+ * external name.
+ *
+ * There is no such caller any more. An owner probing an address that holds no
+ * account signs in for real and the row is created, so every caller that can reach a
+ * write is an account and this is total again. Nothing but an import produces
+ * [Author.External], which is what its own documentation always wanted to say.
  */
-fun UserRecord?.asAuthor(): Author = this?.let { Author.Account(it.id) } ?: Author.Nobody
+fun UserRecord?.asAuthor(): Author =
+    if (this == null) Author.Nobody else Author.Account(id)
+
+/**
+ * Did this caller write something [author] describes?
+ *
+ * The one place "it is mine" is decided, so the two issue gates and the comment gate
+ * cannot answer it three ways. Expressed against [asAuthor] rather than by comparing
+ * to [Author.Account] directly, which is what makes it correct for a previewed
+ * address for free: whatever this caller's writes are attributed *to* is exactly what
+ * counts as theirs, so the two can never drift apart.
+ *
+ * [Author.Nobody] belongs to nobody, and this returns false for it — an authorless
+ * row is not everybody's to edit.
+ */
+fun UserRecord.wrote(author: Author): Boolean = author == asAuthor()
+
+/**
+ * Is this account **permitted** to hold agent access — the tier's half of the question?
+ *
+ * Per tier, and per tier only (LNL-192). `users.mcp_allowed` — an administrator's
+ * per-account grant — went with the rest of the old privilege columns in LNL-191, and
+ * what replaces it is one switch per rung of the instance ladder. There is no
+ * per-person override anywhere in this design, deliberately: a rule an administrator
+ * can read off one screen is a thing they can be sure of, and a column of exceptions
+ * beside it is not.
+ *
+ * An instance administrator and the owner are permitted without a switch, being senior
+ * to both tiers — see [InstanceSettings.permitsAgents].
+ */
+suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.permitsAgentsFor(user: UserRecord?): Boolean {
+    if (user == null) return false
+    val settings = current()
+    // The owner is a setting rather than a column, so it is folded in here rather than
+    // taken off the record — see storedInstanceRole, which cannot see it. This was the
+    // inline spelling of instanceRoleWith and is now the function (LNL-201); `settings`
+    // is the read it needs, already done.
+    return settings.permitsAgents(user.instanceRoleWith(settings.ownerUserId))
+}
+
+/**
+ * May an agent act as this user right now?
+ *
+ * **The only thing an MCP gate should read.** There are five of them — `/mcp` per
+ * request, `/oauth/authorize`, the consent POST, the token exchange and refresh
+ * rotation — and five hand-written "permitted && enabled" pairs would be five chances
+ * for one to be written as a single term. The failure mode of that typo is not a broken
+ * build, it is a gate that silently lets an unpermitted user through on one of five
+ * paths.
+ *
+ * Both terms, and the order is meaningless: the account's tier has to be permitted
+ * ([permitsAgentsFor]), and the account has to have switched agent access on for itself
+ * ([UserRecord.isMcpEnabled]). Neither implies the other, and neither substitutes for
+ * the other.
+ *
+ * Admin-ness reaches this through the permission and no further. It clears the
+ * *permission* a switch would otherwise have to grant; it does not clear the account's
+ * own server-checked switch. That switch has to stay real for an admin too — it is what
+ * cuts their agents off mid-conversation when they turn it off — so an admin who has
+ * never enabled their own agent access still, correctly, cannot use MCP until they do.
+ *
+ * A suspending function over a store rather than a property on the record, because the
+ * permission moved from a column on the row to a setting on the instance. That is one
+ * small read on a path that already makes several, and it is what makes widening the
+ * permission a switch rather than a pass over every account.
+ */
+suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.canUseMcp(user: UserRecord?): Boolean =
+    user != null && user.isMcpEnabled && permitsAgentsFor(user)
 
 /** What goes in `created_by`. Null for both other cases; see [Author]. */
 val Author.accountId: Long? get() = (this as? Author.Account)?.id
@@ -272,9 +340,10 @@ internal fun userRecordOf(
     displayName: String?,
     email: String?,
     emailVerified: Long,
-    isSysAdmin: Long,
+    kind: String,
+    instanceRole: String?,
     mcpEnabled: Long,
-    mcpAllowed: Long,
+    signedInAt: Long? = null,
 ): UserRecord? = parseProvider(provider)?.let {
     UserRecord(
         id = id,
@@ -284,9 +353,12 @@ internal fun userRecordOf(
         displayNameOverride = displayName,
         email = email,
         isEmailVerified = emailVerified != 0L,
-        isSysAdmin = isSysAdmin != 0L,
+        kind = UserKind.byKey(kind),
+        // Any value but 'admin' — including one written by a newer build — reads as
+        // "not an administrator", which is the safe direction for an unknown rung.
+        isInstanceAdmin = instanceRole == InstanceRole.ADMIN.key,
         isMcpEnabled = mcpEnabled != 0L,
-        isMcpAllowed = mcpAllowed != 0L,
+        signedInAt = signedInAt,
     )
 }
 
@@ -314,12 +386,16 @@ class UserStore(
      *   back as a valid provider — impossible unless the enum changed under us,
      *   and not something to paper over.
      */
-    override suspend fun upsert(identity: ProviderIdentity): UserRecord = withContext(DatabaseDispatcher) {
+    override suspend fun upsert(identity: ProviderIdentity, kind: UserKind): UserRecord = withContext(DatabaseDispatcher) {
         // Normalized once, here, so both branches below and the write they lead to
         // are all looking at the same spelling. A lookup that normalized
         // differently from its write would miss the row and create a second
         // account, which is the failure this whole ticket exists to prevent.
         val email = normalizeEmail(identity.email)
+        // Read once, before the branch, so the row's arrival stamp and the record
+        // handed back describe the same instant on both paths — and so a pinned clock
+        // in a test sees one value rather than two.
+        val signedInAt = now()
 
         database.transactionWithResult {
             // ── Find, by the account key ──────────────────────────────────
@@ -331,7 +407,7 @@ class UserStore(
             if (email != null) {
                 val existing = database.usersQueries.findByEmail(email).executeAsOneOrNull()
                 if (existing != null) {
-                    database.usersQueries.refreshOnSignIn(identity.providerName, existing.id)
+                    database.usersQueries.refreshOnSignIn(identity.providerName, kind.key, signedInAt, existing.id)
                     // Built from the row we already have plus the two values the
                     // update just wrote, rather than re-reading. A second SELECT
                     // would be a round-trip to learn what this statement was told
@@ -341,7 +417,7 @@ class UserStore(
                     return@transactionWithResult userRecordOf(
                         existing.id, existing.provider, existing.provider_id, identity.providerName,
                         existing.display_name, existing.email, 1L,
-                        existing.is_sys_admin, existing.mcp_enabled, existing.mcp_allowed,
+                        kind.key, existing.instance_role, existing.mcp_enabled, signedInAt,
                     ) ?: error("User ${existing.id} has provider ${existing.provider}, which cannot be parsed.")
                 }
             }
@@ -361,23 +437,99 @@ class UserStore(
                 providerId = identity.providerId,
                 providerName = identity.providerName,
                 email = email,
-                createdAt = now(),
+                kind = kind.key,
+                addedAt = signedInAt,
             ).executeAsOne()
 
             userRecordOf(
                 row.id, row.provider, row.provider_id, row.provider_name,
                 row.display_name, row.email, row.email_verified,
-                row.is_sys_admin, row.mcp_enabled, row.mcp_allowed,
+                row.kind, row.instance_role, row.mcp_enabled, signedInAt,
             ) ?: error("Just wrote user ${row.id} with provider ${row.provider}, which cannot be parsed back.")
         }
     }
+
+    /**
+     * The row [upsert] would find for this identity, or null when it would create
+     * one. The same two steps in the same order, as a read — see the interface.
+     */
+    override suspend fun findExisting(identity: ProviderIdentity): UserRecord? = withContext(DatabaseDispatcher) {
+        val email = normalizeEmail(identity.email)
+        // Mapped in each branch rather than after the elvis: the two queries have
+        // distinct generated row types, so a shared `row` would be typed as their
+        // nearest common supertype and lose every column.
+        val byEmail = email?.let { address ->
+            database.usersQueries.findByEmail(address).executeAsOneOrNull()?.let {
+                userRecordOf(
+                    it.id, it.provider, it.provider_id, it.provider_name,
+                    it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                    it.signed_in_at,
+                )
+            }
+        }
+        byEmail ?: database.usersQueries
+            .findByProviderPair(identity.provider.name, identity.providerId)
+            .executeAsOneOrNull()?.let {
+                userRecordOf(
+                    it.id, it.provider, it.provider_id, it.provider_name,
+                    it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                    it.signed_in_at,
+                )
+            }
+    }
+
+    /**
+     * Add an account for [email] without anybody signing in, or return the one that
+     * already holds the address (LNL-194).
+     *
+     * The persistence half of "Add a person…". Idempotent, because the honest answer
+     * to "add somebody who is already here" is the row they already have — the
+     * caller's next move either way is to write a rung against the id this returns.
+     *
+     * @param kind derived by the caller through [UserKind.forEmail], from the same
+     *   function sign-in uses, so a row added ahead of time and the same row after its
+     *   owner arrives agree about whether they are staff. Passed rather than derived
+     *   here for [upsert]'s reason: the deployment's domain is configuration, and a
+     *   store does not read configuration.
+     * @return the row, never null — the insert is `OR IGNORE` and the read that
+     *   follows it cannot miss, both being inside one transaction on a single-threaded
+     *   dispatcher.
+     * @throws IllegalStateException if the row cannot be read back, matching [upsert].
+     */
+    override suspend fun addByEmail(email: String, kind: UserKind): UserRecord =
+        withContext(DatabaseDispatcher) {
+            // Normalized by the same function every lookup uses, so the row this
+            // writes is the row a sign-in will find. A different spelling here would
+            // hand somebody a rung they never pick up.
+            val address = normalizeEmail(email)
+                ?: error("addByEmail was given an address that normalizes to nothing: \"$email\"")
+            database.transactionWithResult {
+                database.usersQueries.addPending(
+                    email = address,
+                    // The local part, matching what a code sign-in seeds a row with —
+                    // so the Access list can name the person before they arrive
+                    // without the row claiming a display name they never chose.
+                    providerName = address.substringBefore('@'),
+                    kind = kind.key,
+                    addedAt = now(),
+                )
+                database.usersQueries.findByEmail(address).executeAsOneOrNull()?.let {
+                    userRecordOf(
+                        it.id, it.provider, it.provider_id, it.provider_name,
+                        it.display_name, it.email, it.email_verified, it.kind, it.instance_role,
+                        it.mcp_enabled, it.signed_in_at,
+                    )
+                } ?: error("Added \"$address\" and could not read the row back.")
+            }
+        }
 
     /** The user with [id], or null. */
     override suspend fun findById(id: Long): UserRecord? = withContext(DatabaseDispatcher) {
         database.usersQueries.findById(id).executeAsOneOrNull()?.let {
             userRecordOf(
                 it.id, it.provider, it.provider_id, it.provider_name,
-                it.display_name, it.email, it.email_verified, it.is_sys_admin, it.mcp_enabled, it.mcp_allowed,
+                it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                it.signed_in_at,
             )
         }
     }
@@ -399,7 +551,8 @@ class UserStore(
         database.usersQueries.selectAll().executeAsList().mapNotNull {
             userRecordOf(
                 it.id, it.provider, it.provider_id, it.provider_name,
-                it.display_name, it.email, it.email_verified, it.is_sys_admin, it.mcp_enabled, it.mcp_allowed,
+                it.display_name, it.email, it.email_verified, it.kind, it.instance_role, it.mcp_enabled,
+                it.signed_in_at,
             )
         }
     }
@@ -474,22 +627,26 @@ class UserStore(
     }
 
     /**
-     * Permit this user to have agent access, or withdraw that. **An admin's
-     * decision**, and the counterpart to [setMcpEnabled].
+     * Set this user's derived staff/member kind.
      *
-     * Two methods rather than one that writes both columns, because they answer to
-     * two different people and neither may clobber the other: withdrawing
-     * permission must leave the user's own preference intact, so that granting it
-     * again restores exactly the state they had rather than silently switching
-     * them off. See Users.sq.
-     *
-     * Touches no tokens either, for [setMcpEnabled]'s reason and more forcefully:
-     * an admin withdrawing permission stops every one of that user's agents at
-     * their next request, and restoring it brings them all back with no
-     * reconnection. A purge here would make a mistaken click unrecoverable for
-     * somebody other than the person who made it.
+     * Not a switch anybody sets: the only two callers are sign-in and the startup
+     * stamp, and both get their answer from [UserKind.forEmail]. It exists as a
+     * store method rather than being folded into the upsert because the stamp has
+     * to be able to correct a row whose owner has not signed in since the
+     * deployment learned its own domain.
      */
-    override suspend fun setMcpAllowed(id: Long, isAllowed: Boolean): Unit = withContext(DatabaseDispatcher) {
-        database.usersQueries.setMcpAllowed(if (isAllowed) 1L else 0L, id)
+    override suspend fun setKind(id: Long, kind: UserKind): Unit = withContext(DatabaseDispatcher) {
+        database.usersQueries.setKind(kind.key, id)
+    }
+
+    /**
+     * Put this user on the instance ladder, or take them off it.
+     *
+     * Only [InstanceRole.ADMIN] and null are storable — see Users.sq's
+     * `instance_role`. Ownership is a setting and does not come through here, which
+     * is why this takes a nullable rung rather than the whole enum.
+     */
+    override suspend fun setInstanceAdmin(id: Long, isAdmin: Boolean): Unit = withContext(DatabaseDispatcher) {
+        database.usersQueries.setInstanceRole(InstanceRole.ADMIN.key.takeIf { isAdmin }, id)
     }
 }

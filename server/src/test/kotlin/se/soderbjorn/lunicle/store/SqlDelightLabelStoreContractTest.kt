@@ -22,7 +22,7 @@ class SqlDelightLabelStoreContractTest : LabelStoreContract() {
     override val store: LabelStore = se.soderbjorn.lunicle.LabelStore(db)
 
     override suspend fun newProject(): Long =
-        projects.insert("Project $seq", "LB${seq++}", isPublic = false).id
+        projects.insert("Project $seq", "LB${seq++}").id
 
     @AfterTest
     fun tearDown() = fixture.close()

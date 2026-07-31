@@ -1,15 +1,16 @@
 -- What happened to an issue, and when, and who did it.
 --
--- Append-only in all but one narrow, admin-only respect. Nothing here is ever
+-- Append-only in all but one narrow, owner-only respect. Nothing here is ever
 -- deleted except by the cascade when the issue itself goes, and *what happened*
 -- — `kind`, `value_text`, the child values — is never rewritten by anyone. That
 -- is the whole point of the table: a history whose events you can re-word is not
 -- a history.
 --
--- The one exception is `reattribute` below. A system administrator, and only
--- one, may correct *who and when* a row records — its author, its date and its
--- agent label — never its content. It exists for the reason update_issue and
--- update_comment carry admin-only backfill parameters: history imported from
+-- The one exception is `reattribute` below. The instance owner, and only them
+-- (LNL-191 — it was any system administrator), may correct *who and when* a row
+-- records — its author, its date and its agent label — never its content. It
+-- exists for the reason update_issue and update_comment carry owner-only
+-- backfill parameters: history imported from
 -- another tracker lands under a placeholder author, and the day that person gets
 -- a real account the CREATED and STATUS_CHANGED events they left behind have to
 -- be reattachable to it, or the audit trail names a stranger forever. See
@@ -137,6 +138,39 @@ CREATE TABLE issue_events (
     -- "was *this particular* change made by an agent". The event can.
     agent_name TEXT,
 
+    -- Which relation kind a RELATION_ADDED or RELATION_REMOVED event was about, as
+    -- the kind's NAME stood at the time — "Blocked by", never an id and never an
+    -- enum constant (LNL-215). NULL for every other kind, which is every event this
+    -- table held before relations existed.
+    --
+    -- ── A snapshot, for value_text's reasons exactly ────────────────────────
+    --
+    -- Relation kinds are user-editable vocabulary now (see IssueRelationKinds.sq), so
+    -- a reference here would face the same two wrong answers value_text describes at
+    -- length: RESTRICT would make any kind that ever appeared in a history
+    -- permanently undeletable, and CASCADE would silently rewrite the past. The
+    -- snapshot is also the truer claim — the link was made under the label it was
+    -- then called, and renaming that label is not a retroactive edit of anyone's
+    -- Tuesday.
+    --
+    -- ── Which side's label ──────────────────────────────────────────────────
+    --
+    -- The label for THAT ISSUE'S SIDE. One relation writes two events, one on each
+    -- issue: the from-side issue's event carries the kind's `name` ("Blocked by") and
+    -- the to-side issue's carries its `inverse_name` ("Blocks") — or `name` again
+    -- when the kind is symmetric. So each history reads as a sentence about the issue
+    -- it belongs to, which is the only reading that makes "linked this as Blocks
+    -- LNL-9" appear on the right issue.
+    --
+    -- ── Why not issue_event_values ──────────────────────────────────────────
+    --
+    -- Because that child table is documented as carrying THE WHOLE SET a kind refers
+    -- to — absolute values precisely so a gap in the history does not corrupt
+    -- everything after it. Using it as a positional two-element tuple (kind, target)
+    -- would contradict its own stated contract, and the first reader to assume the
+    -- documented meaning would read a relation kind as a label.
+    value_relation_kind TEXT,
+
     FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (value_user_id) REFERENCES users(id) ON DELETE SET NULL,
@@ -196,8 +230,8 @@ CREATE TABLE issue_event_values (
 -- last_insert_rowid() round-trip would be a second statement that a concurrent
 -- writer could get between.
 insert:
-INSERT INTO issue_events (issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO issue_events (issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name, value_relation_kind)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id;
 
 insertValue:
@@ -213,7 +247,7 @@ INSERT INTO issue_event_values (event_id, position, value) VALUES (?, ?, ?);
 -- millisecond pairs are not hypothetical: publishing a draft writes CREATED and
 -- the editor's field events together.
 forIssue:
-SELECT id, issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name
+SELECT id, issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name, value_relation_kind
 FROM issue_events WHERE issue_id = ? ORDER BY id;
 
 -- One event by id, for the admin reattribution path — it needs the row's issue
@@ -222,7 +256,7 @@ FROM issue_events WHERE issue_id = ? ORDER BY id;
 -- values are not fetched: reattribution never touches them, so this deliberately
 -- does not do forIssue's second query. See McpTools.updateHistoryEvent.
 findById:
-SELECT id, issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name
+SELECT id, issue_id, kind, value_text, value_user_id, created_at, created_by, created_by_external, agent_name, value_relation_kind
 FROM issue_events WHERE id = ?;
 
 -- Correct who and when an event records — never what it records. `kind`,

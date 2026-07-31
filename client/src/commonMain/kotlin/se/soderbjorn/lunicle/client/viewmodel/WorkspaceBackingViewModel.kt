@@ -233,9 +233,24 @@ class WorkspaceBackingViewModel(
         val pruned = ensureNotEmpty(
             previous.copy(
                 tabs = previous.tabs.mapNotNull { tab ->
-                    val kept = tab.panes.filter { it.projectId in allowed }
+                    // A pane naming no project at all — the settings pane opened at
+                    // You or at Instance (LNL-193) — names nothing that can be lost,
+                    // so no list of projects has anything to say about it. One that
+                    // names a project the account cannot reach goes, as it always did:
+                    // the settings pane is then re-pointed rather than kept pointing
+                    // at a project that has gone.
+                    val kept = tab.panes.mapNotNull { pane ->
+                        when {
+                            pane.projectId == null -> pane
+                            pane.projectId in allowed -> pane
+                            pane is PaneRef.Settings -> PaneRef.Settings(null)
+                            else -> null
+                        }
+                    }
                     when {
-                        kept.size == tab.panes.size -> tab
+                        // Equality rather than a count: a settings pane re-pointed
+                        // above keeps the tab's length and is still a change.
+                        kept == tab.panes -> tab
                         // Every pane in it named something that has gone, so the tab
                         // is not a working set any more — it is a label for work
                         // the reader cannot reach, and a tab strip still carrying
@@ -248,6 +263,12 @@ class WorkspaceBackingViewModel(
                             panes = kept,
                             activePaneId = tab.activePaneId?.takeIf { id -> kept.any { it.paneId == id } }
                                 ?: kept.firstOrNull()?.paneId,
+                            // A name for a window that has gone is not a name for
+                            // anything; same rule as `withoutPane`, applied to the
+                            // panes this prune took rather than to one close.
+                            paneLabels = tab.paneLabels.filterKeys { id ->
+                                kept.any { it.paneId == id }
+                            },
                         )
                     }
                 },
@@ -266,8 +287,8 @@ class WorkspaceBackingViewModel(
     /**
      * Throw the arrangement away and start again from the default.
      *
-     * Offered in the profile dialog, because a window model with splits, hidden
-     * panes and eight tabs has a state you can get lost in, and "put it back"
+     * Offered in the settings pane's You tab, because a window model with splits,
+     * hidden panes and eight tabs has a state you can get lost in, and "put it back"
      * should not require finding every one of them. Stored immediately rather
      * than debounced: this is a deliberate, confirmed act, and a reload a beat
      * later must not find the layout it was just used to discard.
@@ -305,7 +326,7 @@ class WorkspaceBackingViewModel(
         if (index < 0) return
         val remaining = ws.tabs.filterNot { it.id == tabId }
         if (remaining.isEmpty()) {
-            val fresh = WorkspaceTab(id = freshTabId(), name = "New tab")
+            val fresh = WorkspaceTab(id = freshTabId(), name = INITIAL_TAB_NAME)
             commit(Workspace(tabs = listOf(fresh), activeTabId = fresh.id))
             return
         }
@@ -322,7 +343,8 @@ class WorkspaceBackingViewModel(
         if (clean.isEmpty()) return
         val ws = _stateFlow.value.workspace
         if (ws.tabs.none { it.id == tabId }) return
-        commit(ws.mapTab(tabId) { it.copy(name = clean) })
+        // Marked as theirs, so nothing here renames it again — see WorkspaceTab.
+        commit(ws.mapTab(tabId) { it.copy(name = clean, isNameGiven = true) })
     }
 
     /**
@@ -374,6 +396,102 @@ class WorkspaceBackingViewModel(
         val tab = ws.tabs.firstOrNull { it.id == tabId } ?: return
         if (tab.pane(paneId) == null) return
         commit(ws.mapTab(tabId) { it.withoutPane(paneId) })
+    }
+
+    /**
+     * A window was renamed from the pane overflow menu's **Rename window**.
+     *
+     * The toolkit owns the gesture — it arms its own inline editor in the pane
+     * titlebar and hands the committed string here; all that is left is deciding
+     * what the string *means*. Two answers, and the empty one is the interesting
+     * half: a Lunicle pane title is derived (a project's name, an issue's ticket
+     * key) and should keep following what it names, so **emptying the field
+     * clears the override** rather than blanking the window. That is the case
+     * `AppShellSpec.allowEmptyPaneRename` exists for, and the bootstrap sets it.
+     *
+     * Scoped to one tab, matching [WorkspaceTab.paneLabels]: the same board open
+     * in two tabs is two windows, and naming one does not name the other.
+     *
+     * A no-op when the name is what the pane is already called, so a rename
+     * opened and dismissed with Enter does not write a workspace.
+     *
+     * @param tabId   the tab holding the window; ignored if it has gone.
+     * @param paneId  the window renamed.
+     * @param newLabel the committed text, already trimmed by the toolkit. Empty
+     *   clears the override.
+     * @see WorkspaceTab.paneLabels
+     */
+    fun onPaneRenamed(tabId: String, paneId: String, newLabel: String) {
+        val clean = newLabel.trim()
+        val ws = _stateFlow.value.workspace
+        val tab = ws.tabs.firstOrNull { it.id == tabId } ?: return
+        if (tab.pane(paneId) == null) return
+        if (tab.paneLabel(paneId) == clean.takeIf { it.isNotEmpty() }) return
+        commit(
+            ws.mapTab(tabId) {
+                it.copy(
+                    paneLabels = if (clean.isEmpty()) {
+                        it.paneLabels - paneId
+                    } else {
+                        it.paneLabels + (paneId to clean)
+                    },
+                )
+            },
+        )
+    }
+
+    /**
+     * A window was moved to another tab from the pane overflow menu's
+     * **Move to tab ▸**.
+     *
+     * The toolkit builds the destination list and reports the choice; moving is
+     * ours, exactly as closing is. The window arrives at the end of the target
+     * tab's pane list — where a newly opened one lands — and focused there, so
+     * that visiting the tab lands on it.
+     *
+     * The **active tab does not follow it**. "Move to tab" is how a working set
+     * is tidied — this does not belong here, put it over there — and jumping the
+     * reader to somewhere they did not ask to look would make tidying up cost a
+     * trip back. It also keeps Lunicle and Lunamux answering the same gesture
+     * the same way; Lunamux's server has always left the reader where they were.
+     *
+     * The window keeps whatever name it was given ([WorkspaceTab.paneLabels]
+     * travels with it): the rename was a statement about this window, and the
+     * window is what moved.
+     *
+     * Two refusals, both silent. A move to the tab it is already in is nothing.
+     * And a move onto a tab that **already holds this pane** — the same board
+     * open in both — collapses to a close of the source copy rather than a
+     * duplicate, because the one-pane-per-thing-per-tab rule (see [PaneRef]) is
+     * structural: two copies would collide on the id and the second would be
+     * unreachable.
+     *
+     * @param tabId       the tab the window is leaving. Named rather than
+     *   searched for, because a derived pane id can be in several tabs at once
+     *   and only the caller knows which copy the user opened the menu on.
+     * @param paneId      the window moved.
+     * @param targetTabId where it lands; ignored when no such tab exists.
+     * @see se.soderbjorn.lunicle.client.viewmodel.WorkspaceTab.paneLabels
+     */
+    fun onPaneMovedToTab(tabId: String, paneId: String, targetTabId: String) {
+        if (tabId == targetTabId) return
+        val ws = _stateFlow.value.workspace
+        val source = ws.tabs.firstOrNull { it.id == tabId } ?: return
+        val pane = source.pane(paneId) ?: return
+        if (ws.tabs.none { it.id == targetTabId }) return
+        val carriedLabel = source.paneLabel(paneId)
+        commit(
+            ws.mapTab(tabId) { it.withoutPane(paneId) }
+                .mapTab(targetTabId) { target ->
+                    target.withPane(pane).copy(
+                        paneLabels = if (carriedLabel == null) {
+                            target.paneLabels
+                        } else {
+                            target.paneLabels + (paneId to carriedLabel)
+                        },
+                    )
+                },
+        )
     }
 
     /**
@@ -468,7 +586,25 @@ class WorkspaceBackingViewModel(
             )
             return
         }
-        commit(ws.mapTab(target.id) { it.withPane(pane) })
+        // The empty workspace's own tab takes the board's name with it. That tab is the
+        // whole of a fresh instance's window: the reader makes their first project and
+        // the strip above it still says "Workspace", naming the container rather than
+        // what is now in it — and [defaultWorkspace] would have named it after the
+        // project had it built the workspace itself, which is the shape this reaches by
+        // the other road.
+        //
+        // Only that one, and only while nobody has typed over it. A tab somebody asked
+        // for keeps "New tab" until they say otherwise; a tab somebody has named keeps
+        // their name, including the reader who called one "Workspace" themselves —
+        // renaming it would discard the one thing they have said about their layout.
+        // See WorkspaceTab.isNameGiven, which is what tells the two apart.
+        val takesTheName = target.name == INITIAL_TAB_NAME && !target.isNameGiven
+        commit(
+            ws.mapTab(target.id) { tab ->
+                val withBoard = tab.withPane(pane)
+                if (takesTheName) withBoard.copy(name = projectName(projectId)) else withBoard
+            },
+        )
     }
 
     /**
@@ -481,15 +617,22 @@ class WorkspaceBackingViewModel(
      * structural rather than something this has to remember.
      *
      * Deliberately NOT [onBoardAdded]'s always-here rule: a settings pane is one
-     * surface per project, not something you would want two of in two tabs, so
-     * finding the open one beats making another.
+     * surface, not something you would want two of in two tabs, so finding the
+     * open one beats making another.
+     *
+     * An already-open pane is **re-pointed** rather than merely focused, which is
+     * what makes the one settings pane (LNL-193) answer a second request: pressing
+     * a different project's gear while settings is open has to move it to that
+     * project, and the ref carries which one. For every other pane kind the ref is
+     * a function of its id, so replacing it is a no-op and this reads as the plain
+     * "focus it" it always was.
      */
     fun onProjectPaneOpened(pane: PaneRef) {
         val ws = _stateFlow.value.workspace
         val already = ws.tabs.firstOrNull { it.pane(pane.paneId) != null }
         if (already != null) {
             commit(
-                ws.mapTab(already.id) { it.copy(activePaneId = pane.paneId) }
+                ws.mapTab(already.id) { it.withPane(pane) }
                     .copy(activeTabId = already.id),
             )
             return
@@ -641,13 +784,20 @@ class WorkspaceBackingViewModel(
                     ?: workspace.tabs.first().id,
             )
         }
-        val fresh = WorkspaceTab(id = freshTabId(), name = "New tab")
+        val fresh = WorkspaceTab(id = freshTabId(), name = INITIAL_TAB_NAME)
         return Workspace(tabs = listOf(fresh), activeTabId = fresh.id)
     }
 
     private fun freshTabId(): String = "$TAB_ID_PREFIX${nextTabId++}"
 
-    private fun projectName(projectId: Long): String =
+    /**
+     * What to call a tab opened for a pane, when the pane names a project.
+     *
+     * Nullable since LNL-193 — the settings pane may name none — and the fallback
+     * is the same default name an unknown id already got, because a tab holding only
+     * settings has no project to be named after.
+     */
+    private fun projectName(projectId: Long?): String =
         projects.firstOrNull { it.id == projectId }?.name ?: "New tab"
 
     /**
@@ -712,29 +862,64 @@ class WorkspaceBackingViewModel(
          * finds so a new tab cannot collide with a restored one — see [restore].
          */
         const val TAB_ID_PREFIX = "t"
+
+        /**
+         * What the ONE tab of an empty workspace is called.
+         *
+         * Narrowly this: the tab [ensureNotEmpty] puts under a reader who has nothing,
+         * and the one [onTabClosed] leaves behind when the last tab goes — the same
+         * state, reached the other way round. Every other tab keeps "New tab", which is
+         * the right name for a tab somebody has just asked for and is about to fill.
+         *
+         * The difference is that this one is not new, it is *all there is*. On a fresh
+         * instance it is the only thing in the strip, above an empty canvas, and naming
+         * it after the gesture that made it describes something the reader did not do.
+         * "Workspace" says what the thing is — and it is a name the tab keeps only until
+         * it holds something worth naming it after; see [onBoardOpened].
+         */
+        const val INITIAL_TAB_NAME = "Workspace"
     }
 }
 
 /**
- * This tab with [pane] in it and focused — or, if it is already there, just
- * focused.
+ * This tab with [pane] in it and focused — or, if a pane with that id is already
+ * there, that one replaced by [pane] and focused.
  *
  * The "one pane per thing per tab" rule from [PaneRef]'s header, in the one
  * place that could break it.
+ *
+ * The replacement matters for exactly one pane kind. Board, issue and analytics
+ * refs are functions of their ids, so putting a fresh one in place of an equal
+ * one changes nothing. The settings pane's id is a constant and its ref carries
+ * which project it is showing (LNL-193) — so "open settings at project 9" while
+ * settings sits at project 7 has to be the pane moving, and keeping the old ref
+ * would be the gesture silently doing nothing.
  */
 private fun WorkspaceTab.withPane(pane: PaneRef): WorkspaceTab =
     if (this.pane(pane.paneId) != null) {
-        copy(activePaneId = pane.paneId)
+        copy(
+            panes = panes.map { if (it.paneId == pane.paneId) pane else it },
+            activePaneId = pane.paneId,
+        )
     } else {
         copy(panes = panes + pane, activePaneId = pane.paneId)
     }
 
-/** This tab without that pane, and with focus moved off it if it had it. */
+/**
+ * This tab without that pane, its name forgotten, and with focus moved off it
+ * if it had it.
+ *
+ * The name goes with the window rather than outliving it: keeping the override
+ * would mean re-opening the same board later — a fresh window, by every rule in
+ * this file — and finding it already wearing a title somebody typed for a
+ * window they closed.
+ */
 private fun WorkspaceTab.withoutPane(paneId: String): WorkspaceTab {
     val kept = panes.filterNot { it.paneId == paneId }
     if (kept.size == panes.size) return this
     return copy(
         panes = kept,
         activePaneId = activePaneId?.takeUnless { it == paneId } ?: kept.lastOrNull()?.paneId,
+        paneLabels = paneLabels - paneId,
     )
 }

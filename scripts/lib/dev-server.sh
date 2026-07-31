@@ -35,8 +35,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/probe.sh"
 # needs what it defines. stop-all.sh sources this file too — only for
 # DEV_SERVER_MARKER — and sourcing env.sh from here would make every `stop-all.sh`
 # read your .env and warn about its permissions, for credentials it will never
-# use. So the two run-dev-* scripts source env.sh themselves, symmetrically with
-# the run-container-* pair, and start_dev_server checks below that they did.
+# use. So run-dev.sh sources env.sh itself, symmetrically with run-container.sh
+# and container-up.sh, and start_dev_server checks below that it did.
 
 LUNICLE_REPO_ROOT="${LUNICLE_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 LUNICLE_PORT="${LUNICLE_PORT:-8080}"
@@ -46,6 +46,31 @@ LUNICLE_PORT="${LUNICLE_PORT:-8080}"
 # match it. That precision is what lets us reap orphans without ever touching an
 # unrelated JVM — or another clone's server. stop-all.sh uses the same marker.
 DEV_SERVER_MARKER="lunicle.webDist=$LUNICLE_REPO_ROOT/web/build"
+
+# The port the RUNNING dev server actually bound, read off its own command line
+# — `:server:run` passes -Dlunicle.port=… beside the marker. Prints nothing when
+# no dev server of ours is up.
+#
+# This exists because LUNICLE_PORT is a property of the shell that STARTED the
+# server, not of the machine. `LUNICLE_PORT=8099 ./scripts/run-dev.sh` in one
+# terminal and a plain `./scripts/stop-all.sh` in another had stop-all report on
+# 8080 — free, because the server had never been there — and so read as having
+# stopped nothing at the exact moment it had killed the server. Asking the
+# process which port it holds cannot drift the way a second copy of the default
+# does.
+running_dev_server_port() {
+  local pids args
+  pids="$(pgrep -f "$DEV_SERVER_MARKER" 2>/dev/null | tr '\n' ' ')" || true
+  [[ -n "${pids// /}" ]] || return 0
+  # Unquoted on purpose: `ps -p` wants the pids as separate arguments.
+  # shellcheck disable=SC2086
+  args="$(ps -o command= -p $pids 2>/dev/null || true)"
+  # `tail`, not `head`: head closes the pipe on the first match, and every caller
+  # runs under `set -o pipefail`, so a second matching line would make this
+  # function fail precisely when it had found an answer.
+  printf '%s\n' "$args" |
+    sed -n 's/.*-Dlunicle\.port=\([0-9][0-9]*\).*/\1/p' | tail -n 1
+}
 
 # Refuse to start on top of something already serving the port — do NOT just
 # adopt it. `:server:run` forks the server from the Gradle *daemon*, so an
@@ -137,9 +162,30 @@ start_dev_server() {
     echo "==> Database: $LUNICLE_LOCAL_DATA/lunicle.db (LUNICLE_LOCAL_DATA)"
   fi
 
+  # LUNICLE_BRAND_DIR applies a brand directory — the same variable the deployed
+  # container sets and the same one run-demo.sh already read. Forwarded only when
+  # set, so unset stays resolveBrandDir()'s own "branding off" rather than being
+  # decided twice in two files; same rule as -Pport and -PdatabasePath.
+  #
+  # Without this, anything brand-shaped could only be tested by bypassing these
+  # scripts for a hand-written `./gradlew :server:run -PbrandDir=…`, which meant
+  # giving up the port check, the orphan reaping and the OAuth credentials with
+  # it. The staff domain lives in brand.json, so "brand-shaped" now includes a
+  # whole rung of the permission model.
+  local brand_prop=()
+  if [[ -n "${LUNICLE_BRAND_DIR:-}" ]]; then
+    if [[ ! -d "$LUNICLE_BRAND_DIR" ]]; then
+      echo "error: LUNICLE_BRAND_DIR is not a directory: $LUNICLE_BRAND_DIR" >&2
+      exit 1
+    fi
+    brand_prop=("-PbrandDir=$LUNICLE_BRAND_DIR")
+    echo "==> Brand: $LUNICLE_BRAND_DIR (LUNICLE_BRAND_DIR)"
+  fi
+
   "$LUNICLE_REPO_ROOT/gradlew" -p "$LUNICLE_REPO_ROOT" \
     "-PallowedFrameAncestors=$frame_ancestors" "-Pport=$LUNICLE_PORT" \
     ${db_prop[@]+"${db_prop[@]}"} \
+    ${brand_prop[@]+"${brand_prop[@]}"} \
     ${oauth_props[@]+"${oauth_props[@]}"} :server:run &
   GRADLE_PID=$!
 }

@@ -46,7 +46,6 @@ class FirestoreSessionStoreContractTest : SessionStoreContract() {
             displayNameOverride = null,
             email = "user$id@example.com",
             isEmailVerified = true,
-            isSysAdmin = false,
         )
         return id
     }

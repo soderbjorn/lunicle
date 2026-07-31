@@ -26,8 +26,16 @@ class SqlDelightOAuthTokenStoreContractTest : OAuthTokenStoreContract() {
     private val clients = se.soderbjorn.lunicle.OAuthClientStore(db)
     private val users = UserStore(db)
 
+    // The MCP gate is a seam now (LNL-192): the permission is a per-tier instance
+    // setting rather than a column, so the store can no longer answer it from the row
+    // it already has. Wired here to the account's own switch, which is what the two
+    // seeders below set — matching the Firestore twin's `it in mcpUsers`.
     override val store: OAuthTokenStore =
-        se.soderbjorn.lunicle.OAuthTokenStore(db, now = { clockMillis })
+        se.soderbjorn.lunicle.OAuthTokenStore(
+            db,
+            now = { clockMillis },
+            canUseMcp = { id -> users.findById(id)?.isMcpEnabled == true },
+        )
 
     override fun advanceTime(millis: Long) {
         clockMillis += millis
@@ -41,7 +49,6 @@ class SqlDelightOAuthTokenStoreContractTest : OAuthTokenStoreContract() {
     override suspend fun mcpUserId(): Long {
         val n = seq++
         val id = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "mcp-$n", "User $n", null)).id
-        users.setMcpAllowed(id, true)
         users.setMcpEnabled(id, true)
         return id
     }

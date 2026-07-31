@@ -32,18 +32,52 @@ interface SessionStore {
     /**
      * Mint a session id for [userId] and store it.
      *
+     * @param probeId the owner-impersonation grant this session was minted
+     *   against, or null — which is every ordinary sign-in, and so the default.
+     *   Stored as a **label**: it records that nobody proved this identity, which
+     *   is what puts the marker on screen and what [deleteProbeSessions] sweeps.
+     *   The capability itself is in memory and never here — see
+     *   `se.soderbjorn.lunicle.ProbeGrants`.
      * @return the new id, to be handed to the browser as a cookie and never
      *   logged.
      */
-    suspend fun create(userId: Long): String
+    suspend fun create(userId: Long, probeId: String? = null): String
 
     /**
      * The user behind [id], or null if it is null, unknown, or forged.
      *
      * Runs on every request that cares who the caller is, which makes it the
-     * hottest read in the server.
+     * hottest read in the server. Deliberately says nothing about [probeIdFor]'s
+     * answer: widening the hottest read to carry a column only an armed deployment
+     * can ever use would charge every request everywhere for a feature almost no
+     * instance has switched on.
      */
     suspend fun lookup(id: String?): UserRecord?
+
+    /**
+     * The grant [id] was minted against, or null for a session somebody proved.
+     *
+     * A **second** read rather than a field on [lookup], for the reason that method
+     * gives. `resolveCaller` asks it only when the impersonation gate is on, so a
+     * deployment with the flag off pays nothing for the column's existence.
+     *
+     * Null for an unknown or null id too: a session that does not exist was
+     * certainly not minted by a grant, and every caller wants the same answer for
+     * both.
+     */
+    suspend fun probeIdFor(id: String?): String?
+
+    /**
+     * Delete every session minted against a grant, and report how many went.
+     *
+     * Called at startup **unconditionally**, whatever the impersonation gate says.
+     * Grants never outlive a process, so every such session found at boot is
+     * orphaned by definition and there is nothing to preserve — and gating it would
+     * mean that switching the feature off mid-probe left somebody signed in as the
+     * person they were wearing, with the marker gone. See
+     * `se.soderbjorn.lunicle.resolveOwnerImpersonationEnabled`.
+     */
+    suspend fun deleteProbeSessions(): Long
 
     /** Forget [id]. Idempotent — signing out twice, or on a null id, is not an error. */
     suspend fun destroy(id: String?)

@@ -81,7 +81,23 @@ enum class VocabularyKind(val key: String, val noun: String, val plural: String)
      * one twice (its planned version and its fixed version), but that is a fact
      * about `issues`, not about the version, so nothing extra rides on the kind.
      */
-    VERSION("version", "version", "versions");
+    VERSION("version", "version", "versions"),
+
+    /**
+     * The ways two issues in this project can be said to be related — "Blocked by",
+     * "Duplicate of", "Related to" (LNL-215).
+     *
+     * The richest row of any kind here: two names plus a flag, where a status has one
+     * name plus a flag and a label has just the name. It is still this enum's
+     * machinery rather than a family of its own, because add / rename / reorder /
+     * delete is exactly what an administrator does to it and [VocabularyRow] already
+     * carries per-kind extras for statuses and resolutions.
+     *
+     * A project may legitimately have none — deleting the last one simply means
+     * nobody here links issues — so it is not [isLoadBearing]. Every project made or
+     * migrated since LNL-215 starts with three; see IssueRelationKinds.sq.
+     */
+    RELATION_KIND("relation-kind", "relation kind", "relation kinds");
 
     /**
      * Whether the database refuses to delete one of these while an issue holds it.
@@ -111,7 +127,14 @@ enum class VocabularyKind(val key: String, val noun: String, val plural: String)
             // both issue references are ON DELETE SET NULL, so deleting a version
             // releases the issues that named it rather than being refused. See
             // Versions.sq.
-            LABEL, COMPONENT, SPRINT, VERSION -> false
+            // RELATION_KIND joins the false side from a third direction again: its
+            // relations are ON DELETE CASCADE, so deleting a kind takes the links
+            // that used it rather than being refused. That is not the SET NULL a
+            // version takes — a relation row without its kind would be two issue ids
+            // and no statement about them, where an issue without a fixed version is
+            // an ordinary issue. The count is still shown before the fact; see
+            // IssueRelationKinds.sq's `delete`.
+            LABEL, COMPONENT, SPRINT, VERSION, RELATION_KIND -> false
         }
 
     /**
@@ -176,26 +199,68 @@ data class VocabularyEntry(
      */
     val isDone: Boolean = false,
     val usageCount: Int = 0,
+    /**
+     * When this sprint was completed, or null because it has not been (LNL-196).
+     *
+     * **Sprints only**, like [requiresResolution] is statuses only — a version or a
+     * label leaves it null forever. It rides here rather than on a sprint-shaped wire
+     * type of its own because the Sprints section renders the same rows every other
+     * vocabulary does, plus a date and one action; a parallel type would be
+     * [VocabularyEntry] with two fields added and every other screen having to know
+     * which of the two it was handed.
+     *
+     * Note that the server's `VocabularyRow` deliberately does *not* carry this — see
+     * `VocabularyRepository`'s `SprintRecord.toRow`. The completion instant is joined
+     * in where the settings response is assembled, which keeps the row shape "a named
+     * thing you can rename, reorder and delete" and out of the completion business.
+     */
+    val completedAt: Long? = null,
+    /**
+     * How many issues in this sprint are **not** in a closing column (LNL-196).
+     *
+     * Sprints only, for [completedAt]'s reason, and null-equivalent (0) everywhere
+     * else. It is what the completion confirmation counts: "3 issues in Sprint 4 are
+     * not finished. Where should they go?" — a question that has to be asked, and one
+     * the browser cannot answer for itself, because "unfinished" means "not in a
+     * status that requires a resolution" and the settings pane does not hold the
+     * board's issues.
+     */
+    val unfinishedCount: Int = 0,
+    /**
+     * The **to**-side label of a relation kind — "Blocks" beside a [name] of "Blocked
+     * by" — or null because the kind reads the same in both directions (LNL-215).
+     *
+     * **Relation kinds only**, like [completedAt] is sprints only, and null-forever
+     * for every other kind. Null IS the encoding of symmetry: the row's "same in both
+     * directions" checkbox clears and disables this field, and there is no separate
+     * flag that could disagree with it. See IssueRelationKinds.sq's inverse_name.
+     */
+    val inverseName: String? = null,
+    /**
+     * Whether an issue on the *from* side of one of these counts as blocked, and is
+     * dimmed and chipped on the board (LNL-215). Relation kinds only — the same shape
+     * as a status's [requiresResolution], and rendered as the same kind of checkbox.
+     */
+    val marksBlocked: Boolean = false,
 )
 
 /**
- * The one role key both halves of the wire have to know by name.
+ * The one rung key both halves of the wire have to know by name.
  *
- * The rest of the role vocabulary the client renders blindly — a key it does not
- * recognise is just a checkbox it draws from [RoleDescription.description] without
- * knowing what it means, which is the point of sending descriptions at all. This
- * one is the exception: `view_project` does not mean what "holds this role" means.
- * [se.soderbjorn.lunicle.AccessControl.canReadProject] says a public project is
- * visible to everyone, and holding *any* role implies it — so the admin dialog's
- * "see this project" row is driven off an effective flag, not the raw grant, and
- * both sides need the same string to agree on which row that is.
+ * The rest of the ladder the client renders blindly — a key it does not recognise is
+ * just a row it draws from [RungOption.description] without knowing what it means,
+ * which is the point of sending descriptions at all. This one is the exception
+ * because it is a *default*: [ProjectSummary.roleKey] falls back to it, so a summary
+ * from a server that said nothing about a rung claims the bottom of the ladder
+ * rather than the top.
  *
- * Hoisted here, and referenced by the server's [se.soderbjorn.lunicle.Role] enum
- * rather than restated, so the two literally cannot drift: the enum's key and this
- * constant are the same symbol.
+ * One constant, deliberately (LNL-194). This held a key per privilege while there
+ * were seven independent ones to name; the rungs are the server's
+ * [se.soderbjorn.lunicle.ProjectRole] now and travel as [RungOption], so restating
+ * them here would be a second list to keep in step with the first.
  */
 object RoleKeys {
-    const val VIEW_PROJECT: String = "view_project"
+    const val VIEWER: String = "viewer"
 }
 
 /**
@@ -218,54 +283,15 @@ object TokenModes {
     const val LITERAL: String = "literal"
 }
 
-/**
- * One role this instance has, and what holding it grants.
- *
- * Sent rather than compiled into the bundle, for the reason the provider flags
- * are: the roles are the server's [se.soderbjorn.lunicle.Role] enum, and a client
- * that hardcoded the list would offer a checkbox for a role a rolled-back server
- * does not have — or, worse, quietly stop offering one it does.
- *
- * @property description the enum's own sentence, shown under the checkbox. Written
- *   once, on the server, so the dialog cannot describe a grant differently from
- *   the thing granting it.
- */
-@Serializable
-data class RoleDescription(
-    val key: String,
-    val description: String,
-)
-
-/**
- * One account, and what it holds in this project.
- *
- * Every account on the instance, not only the ones with a grant: "assign
- * privileges to other users" needs a list of the users you could assign to, and a
- * table that only showed people who already have a role would have no row to tick
- * for the person you are trying to add.
- *
- * A name and an id, like [UserOption], and for the same reason — no email, no
- * provider. The id is unavoidable: it is what a grant has to name.
- *
- * @property isSysAdmin whether this account is the instance admin. Sent because an
- *   admin's checkboxes would be meaningless — [se.soderbjorn.lunicle.AccessControl]
- *   says yes to an admin before it ever looks at a role — so the dialog gives the
- *   row a sentence instead of boxes, and sorts it to the top.
- * @property isSelf whether this is the caller. The dialog shows it, like the
- *   impersonation menu does, so the table matches the user list an admin is
- *   looking at.
- * @property roleKeys the roles this user holds *here*. Keys rather than an enum,
- *   because the client renders them against [ProjectSettingsState.roles] and has
- *   no business knowing what any of them mean.
- */
-@Serializable
-data class ProjectMember(
-    val userId: Long,
-    val name: String,
-    val isSysAdmin: Boolean = false,
-    val isSelf: Boolean = false,
-    val roleKeys: List<String> = emptyList(),
-)
+// `RoleDescription` stood here — one row of the old tick-box table, a key and the
+// sentence shown under its checkbox. It is gone (LNL-194) along with the table: a
+// person holds one rung now, and the rung vocabulary travels as [RungOption], which
+// carries a label and a per-caller "may you hand this out" beside the sentence.
+//
+// `ProjectMember` stood here too — a row per account on the instance with the roles it
+// held, which is what the old privileges table rendered. It is gone (LNL-194),
+// replaced by [PersonRow]: the Access list shows the *exceptions*, not a directory of
+// everybody who has ever signed in beside a mostly-empty rung.
 
 /**
  * Everything the settings dialog needs, in one round-trip.
@@ -275,7 +301,7 @@ data class ProjectMember(
  * a dialog that is missing a section.
  *
  * @property canMutateProject whether the caller may write the admin half — the
- *   vocabularies, the sprints and the grants. True for a system administrator and
+ *   vocabularies, the sprints and the grants. True for an instance administrator and
  *   for a project administrator *of this project* (LNL-37); it used to mean the
  *   former alone. For everyone else the server sends this false **and omits those
  *   sections entirely**: the dialog is openable by everyone (the issue's "what is
@@ -283,12 +309,8 @@ data class ProjectMember(
  *   practice". What they still receive is the notification fields below, which are
  *   theirs to change. An affordance either way — every write route re-derives the
  *   answer from the session.
- * @property canGrantSeniorRoles whether the caller may tick the `project_admin`
- *   and `project_owner` boxes in the privileges table. Strictly narrower than
- *   [canMutateProject]: a project administrator hands out the issue-scoped roles
- *   but may promote neither a peer nor an owner, so the dialog disables exactly
- *   those two rows for them rather than hiding the table. An owner or a system
- *   administrator (LNL-107). See AccessControl.canGrant.
+ * @property sections which sections of this project the caller has, and [access] who
+ *   the project admits. See [ProjectAccessState], which replaced the privileges table.
  * @property notifyOnNewIssue whether the caller has asked to be e-mailed when a
  *   new issue is created in this project. Every signed-in reader gets this,
  *   administrator or not; it is the one thing anyone else can change here.
@@ -317,23 +339,107 @@ data class ProjectSettingsState(
      * is how you make the first one, exactly like [sprints].
      */
     val versions: List<VocabularyEntry> = emptyList(),
-    val roles: List<RoleDescription> = emptyList(),
-    val members: List<ProjectMember> = emptyList(),
+    /**
+     * The project's relation kinds, in the order the admin arranged (LNL-215).
+     * Rendered in the **Structure** section beside statuses, priorities, resolutions,
+     * labels and components — it is vocabulary about what an issue *is*, not about
+     * when work happens, so it belongs with those rather than with sprints and
+     * versions.
+     */
+    val relationKinds: List<VocabularyEntry> = emptyList(),
+    /**
+     * Whether this project estimates, and in what unit — one of [EstimateMode]'s keys
+     * (LNL-215). Sent to every caller who reaches this state for [showIssueAuthor]'s
+     * reason (the issue window reads it to decide what to offer), and editable only in
+     * the admin half. Defaults to `none`, which renders nothing anywhere.
+     */
+    val estimateMode: String = "none",
     val canMutateProject: Boolean = false,
-    val canGrantSeniorRoles: Boolean = false,
+    /**
+     * Whether the caller may shape the sprints and the versions — **Maintainer and
+     * above** (LNL-196).
+     *
+     * A second, lower gate beside [canMutateProject], and the two are different lines
+     * for the reason [canConfigureRepository] is a third: scheduling work that already
+     * exists is a maintainer's, and what the board *is* is an administrator's. The
+     * server has drawn that line since LNL-191 (see `VocabularyKind.minimumRole`); this
+     * is the flag that lets the two sections render it, rather than a Maintainer
+     * reaching Sprints and finding an empty pane.
+     *
+     * [sprints] and [versions] travel from Maintainer up for the same reason. They are
+     * not secret — the board sends every reader the names, because a card cannot draw a
+     * sprint scope without them — so the narrowing here is about who is offered a
+     * section, not about what is withheld.
+     */
+    val canMutateProjectPlanning: Boolean = false,
+    /**
+     * Why the Sprints and Versions lists are read-only, or null when they are not.
+     *
+     * Present exactly when [canMutateProjectPlanning] is false and the caller was sent
+     * the sections anyway, so the pane can grey its controls with the sentence beside
+     * them rather than hiding them — this file's standing rule. See
+     * [ProjectAccessState]'s preamble on why a vanished control reads as a bug.
+     */
+    val planningReadOnlyReason: String? = null,
+    /**
+     * The sections this caller has on this project, in rail order (LNL-194).
+     *
+     * Decided by the server from the rung, never by the rail — see [ProjectSection].
+     * Never empty: everybody who can see a project at all gets at least
+     * [ProjectSectionKeys.ACCESS], which for a Viewer is the "Your access" statement.
+     */
+    val sections: List<ProjectSection> = emptyList(),
+    /**
+     * Who this project admits, or null for a caller below Maintainer.
+     *
+     * Omitted rather than sent-and-flagged, on this file's founding principle: the
+     * person rows carry addresses, and somebody who merely reads a board has no
+     * business receiving the list of exceptions on it. See [ProjectAccessState].
+     */
+    val access: ProjectAccessState? = null,
+    /**
+     * What **you** can do here, in one sentence — "You are a Viewer here, so you can
+     * read this project and change nothing in it."
+     *
+     * Sent to everybody, at every rung, because it is a statement about the reader
+     * rather than about anybody else. It is the whole of a Viewer's Access section and
+     * the top line of an administrator's.
+     */
+    val yourAccessLine: String = "",
+    /**
+     * Whether this caller may delete the project, and [deleteBlockedReason] why not.
+     *
+     * The Owner's. The reason is sent for an Admin — the one rung that would
+     * reasonably expect the button and does not get it — so the row can say which rung
+     * it belongs to rather than simply not being there. Null for everybody else, who
+     * are not offered the row at all: an explanation of a power three rungs up is
+     * noise, not information.
+     */
+    val canDeleteProject: Boolean = false,
+    val deleteBlockedReason: String? = null,
+    /**
+     * Whether the caller may change the project's **identity** — its name and its
+     * prefix. The Owner's, like [canDeleteProject] and for a sharper reason than
+     * "it is senior": a re-prefix rewrites what every ticket reference in every commit
+     * message ever written about this project points at.
+     *
+     * Sent rather than inferred from [canConfigureRepository] (which is also the owner's,
+     * and also true) because the two answer different questions and would have to be
+     * un-conflated the day one of them moved.
+     */
+    val canMutateProjectIdentity: Boolean = false,
     val notifyOnNewIssue: Boolean = false,
     val canReceiveEmailNotifications: Boolean = false,
     /**
      * Whether this project offers a discussion forum and private messages
-     * (LNL-96) — the two switches a project administrator flips in the Features
-     * section here. Both default enabled, the state every project had before the
-     * switches existed. Sent to every caller who reaches this state, but only the
-     * admin half of the dialog renders the section that edits them; see
-     * [canMutateProject]. The same two flags ride to the tab shell on
-     * [ProjectSummary], which is what actually hides the tabs.
+     * (LNL-96) — once the two switches a project administrator flipped in the
+     * Features section here. Both features are retired (LNL-190): the section is
+     * gone from the dialog, the server sends both as false for every project, and
+     * these default false so a client talking to a server that omits them agrees.
+     * The same two flags ride to the tab shell on [ProjectSummary].
      */
-    val discussionsEnabled: Boolean = true,
-    val messagesEnabled: Boolean = true,
+    val discussionsEnabled: Boolean = false,
+    val messagesEnabled: Boolean = false,
     /**
      * Whether filing a new ticket must carry a label, and whether it must carry a
      * component (LNL-106) — the two switches a project administrator flips in the
@@ -347,9 +453,15 @@ data class ProjectSettingsState(
     val requireComponent: Boolean = false,
     /**
      * Whether closing an issue with a done resolution must carry a fixed version
-     * (LNL-134) — the third requirement toggle in the Structure tab. Default off.
-     * Rides to the board and resolution dialog on [ProjectSummary], which is what
-     * actually enforces it at close time. See [requireLabel].
+     * (LNL-134). Default off. Rides to the board and resolution dialog on
+     * [ProjectSummary], which is what actually enforces it at close time. See
+     * [requireLabel].
+     *
+     * Rendered in the **Versions** section since LNL-196, not beside its two siblings
+     * in Structure: a switch that cannot be satisfied without a version has no business
+     * living two sections away from the list of them. It is still written through
+     * [ProjectRequirements] with the other two, and is still an administrator's — which
+     * is what makes it the one control in a Maintainer's Versions section that is dead.
      */
     val requireFixedVersionOnResolve: Boolean = false,
     /**
@@ -361,6 +473,13 @@ data class ProjectSettingsState(
      * flag rides to the board on [ProjectSummary], which is what the card render reads.
      */
     val showIssueAuthor: Boolean = false,
+    /**
+     * Whether the board and its issue windows hide the issue number (LNL-194) — the
+     * second board-display switch beside [showIssueAuthor], and sent to every caller
+     * who reaches this state for its reason exactly: it is not a secret, the board
+     * reads it to draw a card, and only Admin and above renders it as editable.
+     */
+    val hideIssueNumbers: Boolean = false,
     /**
      * The linked GitHub repository as `owner/name`, or empty because none is.
      *
@@ -383,7 +502,7 @@ data class ProjectSettingsState(
      * Whether the caller may see and set the repository fields below.
      *
      * Strictly narrower than [canMutateProject], and a sibling of
-     * [canGrantSeniorRoles] in both shape and reason: an **owner or a system
+     * [canDeleteProject] in both shape and reason: an **owner or a system
      * administrator** (LNL-107), where the rest of the admin half opened up to
      * project administrators in LNL-37.
      *
@@ -432,6 +551,7 @@ data class ProjectSettingsState(
         VocabularyKind.RESOLUTION -> resolutions
         VocabularyKind.SPRINT -> sprints
         VocabularyKind.VERSION -> versions
+        VocabularyKind.RELATION_KIND -> relationKinds
     }
 }
 
@@ -439,6 +559,25 @@ data class ProjectSettingsState(
 @Serializable
 data class VocabularyAdd(
     val name: String,
+    /**
+     * The to-side label, for a relation kind — or null for one that reads the same in
+     * both directions (LNL-215). Ignored for every other kind, like the extras on
+     * [VocabularyEdit].
+     *
+     * Accepted at ADD time, unlike a status's closing flag, which is only ever set by
+     * the rename that follows. The settings dialog does add a bare name and then edit
+     * the row, and the MCP tool creates a kind in ONE call — a kind whose opposite
+     * could only be named by a second write would be briefly and visibly symmetric when
+     * it is not, which is a wrong board state rather than an unfinished one.
+     */
+    val inverseName: String? = null,
+    /**
+     * The blocking flag, for a relation kind (LNL-215). Defaults false, and the default
+     * is the decision: this switch is what greys cards on everybody's board, so arming
+     * it is a deliberate act — exactly as a newly added status never demands a
+     * resolution.
+     */
+    val marksBlocked: Boolean = false,
 )
 
 /**
@@ -475,18 +614,35 @@ data class ProjectRequirements(
 )
 
 /**
- * "Switch this project's board-display settings on or off" (LNL-157).
+ * "This is how this project's board reads" (LNL-157, LNL-194).
  *
  * A parallel to [ProjectRequirements], its own request type because a display
  * choice is not a requirement — the two are set through different routes so a
  * stale client toggling one cannot resurrect the other. Names the desired state
- * rather than "toggle", for [ProjectRequirements]' reason. Project administrator
- * only, enforced at the route.
+ * rather than "toggle", for [ProjectRequirements]' reason.
+ *
+ * Both switches together, like [ProjectRequirements] and for its reason: the Board
+ * display group renders the pair and sends the pair, so a stale client cannot
+ * resurrect the other by omitting it.
+ *
+ * **Admin and above**, enforced at the route — they go up with the vocabulary, not
+ * with the sprints. Everyone below sees them and cannot change them, which is
+ * deliberate: hiding a switch that explains why the board looks the way it does only
+ * prompts "where did the issue numbers go".
  */
 @Serializable
 data class ProjectDisplaySettings(
     /** Whether the board shows each card's author on a muted footer line. */
     val showIssueAuthor: Boolean = false,
+    /**
+     * Whether the board and its issue windows hide the issue number (LNL-194).
+     *
+     * A per-user preference until LNL-194 — "a choice for you alone" — and now the
+     * project's, because a shared board reads one way for everybody looking at it.
+     * The old per-user values were copied onto each project from its owner's; see the
+     * server's copyBoardDisplayFromOwners.
+     */
+    val hideIssueNumbers: Boolean = false,
 )
 
 /**
@@ -512,6 +668,44 @@ data class VocabularyEdit(
      * resolution's name and its done flag are one edit; see Resolutions.sq's `update`.
      */
     val isDone: Boolean = false,
+    /**
+     * The to-side label, for a relation kind (LNL-215). Ignored by the server for
+     * every other kind rather than refused, for [requiresResolution]'s reason.
+     *
+     * **Null means symmetric** — the row's "same in both directions" checkbox sends
+     * null, and there is nothing else to send. A blank string is normalised to null
+     * server-side rather than stored, so "I cleared the field" and "I ticked the box"
+     * cannot become two different stored states that render identically.
+     */
+    val inverseName: String? = null,
+    /**
+     * The blocking flag, for a relation kind (LNL-215). Ignored elsewhere, for
+     * [requiresResolution]'s reason. Sent on every rename because a kind's names and
+     * its flag are one edit; see IssueRelationKinds.sq's `update`.
+     */
+    val marksBlocked: Boolean = false,
+)
+
+/**
+ * "This project estimates like this" (LNL-215).
+ *
+ * Its own request beside [ProjectDisplaySettings] and [ProjectRequirements] rather
+ * than a field on either, for the reason those two are separate from each other: a
+ * display choice is about how a board *reads*, a requirement is about what a ticket
+ * must *carry*, and this is about what the editor *offers*. Three different kinds of
+ * switch, three routes, so a stale client sending one cannot reset another in
+ * passing.
+ *
+ * **Admin and above**, enforced at the route, with the vocabulary rather than with
+ * the sprints — deciding whether a team estimates at all is a decision about what the
+ * board is.
+ *
+ * @property mode one of [EstimateMode]'s keys. An unrecognised value is folded to
+ *   `none` rather than refused, for [EstimateMode.fromKey]'s reason.
+ */
+@Serializable
+data class ProjectEstimateSettings(
+    val mode: String = "none",
 )
 
 /**
@@ -533,26 +727,7 @@ data class VocabularyOrder(
     val ids: List<Long> = emptyList(),
 )
 
-/**
- * "Give this user this role here", or take it away.
- *
- * [isGranted] is the state to move to rather than a toggle, for
- * [McpEnabledRequest]'s reason: a retry says the same thing, and two admins with
- * the dialog open cannot flip a grant back and forth by both clicking once.
- *
- * Note what this does not say: who is asking. That comes from the session cookie
- * server-side, on every request. A field for it would be the authorization system
- * asking the caller to authorize themselves — see [ImpersonateRequest], which is
- * the same shape for the same reason.
- *
- * @property userId whose privileges to change.
- * @property roleKey which role, as [RoleDescription.key]. A key this server does
- *   not have is a 400: the alternative is `INSERT OR IGNORE` quietly doing
- *   nothing while the dialog re-renders the box as ticked.
- */
-@Serializable
-data class RoleGrant(
-    val userId: Long,
-    val roleKey: String,
-    val isGranted: Boolean,
-)
+// `RoleGrant` — a user, a role key and a granted flag — stood here and is gone
+// (LNL-194). A person holds one rung per project, so the tick-box shape had to guess
+// what unticking one box among five meant; [RungGrant] names the rung to move to, and
+// null is "no access".

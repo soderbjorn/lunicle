@@ -306,9 +306,9 @@ class MessagesBackingViewModel(
                         isBusy = false,
                         // Deliberately not narrowed to "a conversation still in the
                         // list". A deep link can name one the list has not been
-                        // fetched for yet, and a system administrator reading
-                        // somebody else's thread is not in it at all — see
-                        // AccessControl.canReadConversation. What decides whether an
+                        // fetched for yet, and a reader who is not a participant is
+                        // not in it at all — see AccessControl.canReadConversation,
+                        // which since LNL-190 refuses everybody. What decides whether an
                         // open conversation is readable is the conversation's own
                         // fetch, which 404s if it is not.
                         openConversationId = current.openConversationId,

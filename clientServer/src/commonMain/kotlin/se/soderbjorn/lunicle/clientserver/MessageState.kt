@@ -153,11 +153,13 @@ data class MessageView(
  *   Note that a mention here produces no e-mail of its own. Every participant is
  *   already being mailed about the message; a second one because their name
  *   appeared in it would be two notifications for one event.
- * @property canReply whether to offer the composer. Membership, and it is fixed
- *   at creation — so unlike most affordances in this codebase, this one can never
- *   change for a given reader. False for a system administrator reading somebody
- *   else's thread, which is the only case where it and the ability to *see* this
- *   response come apart.
+ * @property canReply whether to offer the composer. **False for everybody** since
+ *   LNL-190 retired private messages: `AccessControl.canWriteInConversation` answers
+ *   no to every caller, the instance owner included. It was membership, fixed at
+ *   creation — so unlike most affordances in this codebase it could never change for
+ *   a given reader — and it was false for whoever ran the instance reading somebody
+ *   else's thread, which was the one case where it and the ability to *see* this
+ *   response came apart.
  */
 @Serializable
 data class ConversationDetail(

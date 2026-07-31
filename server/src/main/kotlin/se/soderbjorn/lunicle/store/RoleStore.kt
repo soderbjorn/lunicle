@@ -1,71 +1,99 @@
 /**
- * The persistence seam for the permission vocabulary, and who holds what where.
+ * The persistence seam for who stands where — a person's rung in a project, and
+ * the rungs a project hands to whole audiences.
  *
  * One of the LNL-111 domain store interfaces. The reference implementation is
- * today's SQLite [se.soderbjorn.lunicle.RoleStore] (named by its fully-qualified
- * name in that class's supertype clause, since the two share a simple name), which
- * reads and writes `roles` and `project_roles`. [AccessControl] is the only thing
- * that asks the interesting question — "does this user hold this role in this
- * project?"; nothing here decides anything.
+ * SQLite's [se.soderbjorn.lunicle.RoleStore] (named by its fully-qualified name in
+ * that class's supertype clause, since the two share a simple name), which reads
+ * and writes `project_roles` and `project_audience_roles`.
  *
- * The [se.soderbjorn.lunicle.Role] enum — the vocabulary itself — is a fact about
- * this build and lives beside the SQLite store, not here: a role invented at
- * runtime would grant nothing, because [AccessControl] branches on each one by
- * name. This seam only *associates* users with those roles, per project, and
- * answers a handful of questions about the grants.
+ * ── What this seam stores, and what it does not ─────────────────────────────
  *
- * The grants are (userId, projectId, role) tuples, modelled so that [hasRole],
- * [isMember], [memberIds], [rolesFor] and [grantsForProject] are each a
- * single-collection read whichever backend answers them.
+ * Two tiny tables and nothing else:
+ *
+ *  - **one row per person per project**, holding a [ProjectRole] *name*. Not a
+ *    row per privilege, not a column per privilege — what a rung permits is a
+ *    function in [se.soderbjorn.lunicle.AccessControl], so widening a rung is a
+ *    deploy rather than a migration.
+ *  - **at most three rows per project**, one per [Audience], holding a rung the
+ *    project hands to everybody who matches that audience. These replace
+ *    `projects.is_public` and `projects.visible_to_all_signed_in`.
+ *
+ * The [ProjectRole] and [Audience] vocabularies are facts about this build and
+ * live beside the SQLite store, not here: [se.soderbjorn.lunicle.AccessControl]
+ * compares rungs by rank, so a rung invented at runtime would mean nothing.
+ *
+ * Nothing here decides anything, and nothing here combines the two tables. The
+ * `max(audience, own row)` rule lives in exactly one place — see
+ * [se.soderbjorn.lunicle.AccessControl.effectiveRole].
+ *
+ * Both backends must make a person's rungs readable **in one go** ([rolesForUser])
+ * rather than a read per project, and must keep a project's audience rows where
+ * the project already is — on its own row or its own document.
  *
  * @see se.soderbjorn.lunicle.store.RoleStoreContract
  */
 package se.soderbjorn.lunicle.store
 
-import se.soderbjorn.lunicle.Role
+import se.soderbjorn.lunicle.Audience
+import se.soderbjorn.lunicle.ProjectRole
 
 interface RoleStore {
     /**
-     * Write the role vocabulary, if it is not there already. Idempotent, so it may
-     * run unconditionally at startup whatever state the datastore is in.
+     * The rung [userId] holds in [projectId] by their own row, or null for "no row".
      *
-     * @return how many roles the instance now has, for the startup log.
+     * **Not the answer to "what may they do here"** — an audience row may put them
+     * higher, and never lower. Only [se.soderbjorn.lunicle.AccessControl] combines
+     * the two.
+     *
+     * A row naming a rung this build has never heard of reads as null, which is the
+     * safe reading: an unknown rung grants nothing rather than failing the read.
      */
-    suspend fun seed(): Int
+    suspend fun roleFor(userId: Long, projectId: Long): ProjectRole?
 
     /**
-     * Does [userId] hold [role] in [projectId]? The only question [AccessControl]
-     * asks of this seam.
+     * Every rung [userId] holds anywhere, as project id → rung.
+     *
+     * One read, for the callers that would otherwise ask [roleFor] once per project
+     * — listing projects, and any future per-issue fan-out. Backends are expected to
+     * answer this from a single row set or a single document.
      */
-    suspend fun hasRole(userId: Long, projectId: Long, role: Role): Boolean
+    suspend fun rolesForUser(userId: Long): Map<Long, ProjectRole>
 
     /**
-     * Does [userId] hold anything at all in [projectId]?
+     * Every own-row grant in [projectId], as user id → rung.
      *
-     * Membership — "holds something here", not "holds a particular role" — which is
-     * what [AccessControl.canReadProject] asks once `is_public` has said no.
+     * For the settings pane's Access section, and never to decide a permission:
+     * that is an administrative question with a different audience, and the day this
+     * map is used to gate a write is the day permissions live in two places.
      */
-    suspend fun isMember(userId: Long, projectId: Long): Boolean
+    suspend fun rolesForProject(projectId: Long): Map<Long, ProjectRole>
 
-    /** Everyone who holds anything at all in [projectId] — [isMember] turned around, as a set. */
+    /**
+     * Everyone with an own row in [projectId] — [rolesForProject]'s keys, as a set.
+     *
+     * Its own method because [se.soderbjorn.lunicle.ProjectAudience] wants exactly
+     * this and nothing else, and a backend can answer it without materialising the
+     * rungs.
+     */
     suspend fun memberIds(projectId: Long): Set<Long>
 
     /**
-     * Every role [userId] holds in [projectId], for the client's affordances only.
-     * A grant naming a role this build has never heard of is dropped, not failed.
+     * Put [userId] on [role] in [projectId], replacing whatever row they had; null
+     * removes the row.
+     *
+     * Idempotent and single-valued — a person has one rung in a project, so there is
+     * no "grant" and "revoke" pair to get out of step, and setting the rung somebody
+     * already holds writes the same row again.
      */
-    suspend fun rolesFor(userId: Long, projectId: Long): Set<Role>
+    suspend fun setRole(userId: Long, projectId: Long, role: ProjectRole?)
+
+    /** The rungs [projectId] hands to whole audiences. At most one row per [Audience]. */
+    suspend fun audienceRoles(projectId: Long): Map<Audience, ProjectRole>
 
     /**
-     * Every grant in [projectId], as user id → the roles they hold — for the
-     * settings dialog's privileges table, and never to decide a permission. Unknown
-     * role keys are dropped, as in [rolesFor].
+     * Set the rung [projectId] hands to [audience], replacing whatever was there;
+     * null removes the row, which is how an audience is shut out again.
      */
-    suspend fun grantsForProject(projectId: Long): Map<Long, Set<Role>>
-
-    /** Grant [role] to [userId] in [projectId]. Idempotent. */
-    suspend fun grant(userId: Long, projectId: Long, role: Role)
-
-    /** Take [role] away. Idempotent — revoking what nobody holds is not an error. */
-    suspend fun revoke(userId: Long, projectId: Long, role: Role)
+    suspend fun setAudienceRole(projectId: Long, audience: Audience, role: ProjectRole?)
 }

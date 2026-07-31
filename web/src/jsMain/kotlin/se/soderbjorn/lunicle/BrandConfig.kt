@@ -59,6 +59,30 @@ import kotlin.js.Promise
  *   `initCodeClient` so the account chooser is pre-filtered to that one domain.
  *   The hint is only UX — the binding boundary is the matching server-side gate in
  *   `exchangeGoogleCode`. Null ⇒ open chooser, exactly as an unbranded install.
+ * @property landingNote optional prose the signed-out landing page carries under
+ *   its headline, from `landingNote` in the manifest. What a deployment says about
+ *   itself to somebody who has arrived and cannot get in — which instance this is,
+ *   who runs it, what Lunicle is — and the only place a brand speaks in sentences
+ *   rather than in colours. Links may be written either way — `[the docs](https://…)`
+ *   for a labelled one, or a bare `http(s)` URL, which shows itself — and a blank
+ *   line starts a paragraph. That is the whole of the markup it understands, and
+ *   deliberately: see `noteParagraph`, which builds nodes rather than rendering
+ *   HTML from a config file. Null on an unbranded instance, and on a branded
+ *   one with nothing to add: the landing then carries the headline and the way in,
+ *   and nothing else. See EmptyTabSurface.
+ * @property landingHeadline what the signed-out landing says in place of "No projects
+ *   to show", from `landingHeadline` in the manifest. The stock line is written for an
+ *   instance that happens to have nothing public on it, and it is the wrong sentence
+ *   for a deployment that is private on purpose: it reports an absence where the truth
+ *   is a door. Null keeps the stock line, which is right for an unbranded install.
+ * @property landingDetail likewise for "Sign in if you have an account here." — the
+ *   line under the headline, above the button.
+ *
+ *   Both are the landing's ALONE, and deliberately: the other empty states name a
+ *   control the reader is looking at ("Make the first one to get started."), and a
+ *   deployment overriding those would be writing instructions for a screen it cannot
+ *   see. See MainScreenBackingViewModel.EmptyTab, which still decides which reader
+ *   gets which card — a brand may reword the visitor's, not claim somebody else's.
  */
 data class Brand(
     val themes: List<Theme>,
@@ -68,6 +92,9 @@ data class Brand(
     val fonts: List<BrandFont>,
     val title: String?,
     val googleHostedDomain: String?,
+    val landingNote: String?,
+    val landingHeadline: String?,
+    val landingDetail: String?,
     val appearanceShape: AppearanceShape,
     val chromeFontSizePx: Int?,
     val monoFontSizePx: Int?,
@@ -206,6 +233,12 @@ suspend fun loadBrand(): Brand? {
         fonts = fonts,
         title = manifest.stringOrNull("title"),
         googleHostedDomain = manifest.stringOrNull("googleHostedDomain"),
+        landingNote = manifest.stringOrNull("landingNote")?.takeIf { it.isNotBlank() },
+        // Blank is not an override. A manifest that names the key and leaves it empty
+        // has said nothing, and honouring it would give the landing a headline of no
+        // characters — the same rule landingNote above already follows.
+        landingHeadline = manifest.stringOrNull("landingHeadline")?.takeIf { it.isNotBlank() },
+        landingDetail = manifest.stringOrNull("landingDetail")?.takeIf { it.isNotBlank() },
         // Parsed leniently, field by field: a manifest naming a density this
         // build doesn't know must not also cost the deployment its selection
         // style. Both enums ignore anything unrecognised, and the radius is

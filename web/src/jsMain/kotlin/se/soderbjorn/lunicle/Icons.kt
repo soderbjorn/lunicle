@@ -75,6 +75,24 @@ private const val PROFILE_SVG = """
 """
 
 /**
+ * Two figures — [PROFILE_SVG] with a second, smaller one behind its shoulder.
+ *
+ * Drawn from the same circle-and-shoulders parts at the same stroke weight, so the
+ * pair reads as the singular one pluralised rather than as a different family of
+ * icon sitting next to it in the same toolbar.
+ */
+private const val PEOPLE_SVG = """
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="9.5" cy="9" r="3.25"/>
+  <path d="M3 20 a6.5 6.5 0 0 1 13 0"/>
+  <path d="M16 6.4 a2.75 2.75 0 0 1 0 5.2"/>
+  <path d="M17.5 14.2 a6 6 0 0 1 3.5 5.3"/>
+</svg>
+"""
+
+/**
  * The Lunicle mark — the board itself, in miniature.
  *
  * Three columns of cards stacking to different heights, in a frame. It is the
@@ -132,6 +150,38 @@ const val CHECK_SVG = """
      fill="none" stroke="currentColor" stroke-width="2.2"
      stroke-linecap="round" stroke-linejoin="round">
   <polyline points="20 6 9 17 4 12"/>
+</svg>
+"""
+
+/**
+ * The forbidden mark — a circle struck through — for a menu row that is shown and
+ * cannot be chosen.
+ *
+ * ── Why a row says this rather than being left out ──────────────────────────
+ *
+ * A permission picker lists every rung, including the ones this caller may not
+ * hand out, because the reason rides in the row's own label and an omitted rung
+ * explains nothing. What was missing is that such a row still *looked* pressable:
+ * it took the accent fill on hover and swallowed the click, so choosing one read
+ * as a selection that instantly reverted. This is the mark that says so before the
+ * click instead of after it. See [CHECK_SVG]'s slot, which this shares — a row is
+ * either live and checked, or blocked and struck, never both.
+ *
+ * Sits on the same 24×24 grid at the same 2.2 weight as [CHECK_SVG], because the
+ * two alternate in one gutter and a lighter stroke beside it would read as a
+ * different icon set. The slash runs corner-to-corner of the circle's box rather
+ * than edge-to-edge of the grid, so it is a `⊘` and not a circle with a line
+ * through the whole cell.
+ *
+ * Markup rather than an element, for [CHECK_SVG]'s reason: the row's icon slot IS
+ * the span, so this goes in as `innerHTML`.
+ */
+const val FORBIDDEN_SVG = """
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="2.2"
+     stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="8.5"/>
+  <line x1="6" y1="6" x2="18" y2="18"/>
 </svg>
 """
 
@@ -293,9 +343,8 @@ private const val ELLIPSIS_SVG = """
  * [CLOSE_SVG] is the lightbox's dismiss button and reads as an action — "close
  * this" — so it is not reused here, where the cross is a *state*: this right is
  * not held. Same two crossing strokes, inset to sit on the same 24×24 grid as
- * [CHECK_SVG] so the tick and the cross are a matched pair down the column. An
- * element via [crossIcon], not a markup constant, because it goes in a real
- * mark span the way [CHECK_SVG] does through [checkIcon].
+ * [CHECK_SVG] so the two sit on one grid. An element via [crossIcon], not a markup
+ * constant, because it goes inside a real span rather than into an innerHTML.
  */
 private const val CROSS_SVG = """
 <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
@@ -307,20 +356,26 @@ private const val CROSS_SVG = """
 """
 
 /**
- * The green tick for a held permission — see [AdminSettingsDialog] and the
- * project dialog's member rows (LNL-68).
+ * The X, as an element.
  *
- * The same glyph the project picker marks its live row with ([CHECK_SVG]); the
- * green comes from the mark span's own colour, not from the drawing, so the tick
- * matches whatever accent the theme is on.
+ * `checkIcon()` stood beside this until LNL-195 and is gone with the tick-and-cross
+ * permission grid it drew — a person holds one *rung* per project now, which is a word and
+ * not a mark, so there is nothing left for a green tick to mean. [CHECK_SVG] itself stays:
+ * it is what a menu marks its live row with, which is a different job.
  */
-fun checkIcon(): HTMLElement = icon(CHECK_SVG, "icon-check")
-
-/** The red cross for a permission that is not held. Pairs with [checkIcon]. */
 fun crossIcon(): HTMLElement = icon(CROSS_SVG, "icon-cross")
 
 /** The cogwheel, for the project-settings button. */
 fun gearIcon(): HTMLElement = icon(GEAR_SVG, "icon-gear")
+
+/**
+ * Two figures, for the board's "Manage access" entry (LNL-193).
+ *
+ * Deliberately not the single-figure [profileIcon], which the account corner owns:
+ * that one means *you*, and this one means *everybody who can reach this project* —
+ * one glyph apart, and the difference is the whole of what the two controls do.
+ */
+fun peopleIcon(): HTMLElement = icon(PEOPLE_SVG, "icon-people")
 
 /** The eye, for the watch button on an issue and on a project. */
 fun eyeIcon(): HTMLElement = icon(EYE_SVG, "icon-eye")

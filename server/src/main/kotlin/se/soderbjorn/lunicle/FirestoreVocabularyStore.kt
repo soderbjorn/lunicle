@@ -23,7 +23,11 @@
  * sprint has that no other vocabulary does. This store never reads it (a
  * [VocabularyRow] does not carry completion), but [FirestoreSprintStore] does, and
  * both address the sprint through this collection's constants, which is why the
- * document constants below are `internal` rather than private.
+ * document constants below are `internal` rather than private. `inverseName` and
+ * `marksBlocked` ride on relation-kind rows the same way (LNL-215), and this store
+ * *does* read those, because the settings editor is where a kind's opposite label and
+ * its blocking flag are typed. See [FirestoreIssueRelationKindStore] for why relation
+ * kinds share this collection rather than owning one.
  *
  * ── Uniqueness and the refusals, reproduced ─────────────────────────────────
  *
@@ -49,12 +53,24 @@ package se.soderbjorn.lunicle
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
+import se.soderbjorn.lunicle.store.IssueRelationStore
 import se.soderbjorn.lunicle.store.IssueStore
 import se.soderbjorn.lunicle.store.VocabularyStore
 
 class FirestoreVocabularyStore(
     private val firestore: Firestore,
     private val issues: IssueStore,
+    /**
+     * The links between issues (LNL-215) — for a relation kind's usage count, and for
+     * the cascade its delete performs.
+     *
+     * The eighth kind is the only one whose usage is **not** a fact about `issues`:
+     * nothing on an issue document points at a relation kind, so the count in the
+     * delete confirmation has to come from the relations themselves. The SQLite
+     * `VocabularyRepository` takes exactly the same second store for exactly the same
+     * two reasons.
+     */
+    private val relations: IssueRelationStore,
 ) : VocabularyStore {
     private val counters = FirestoreCounters(firestore)
 
@@ -83,17 +99,40 @@ class FirestoreVocabularyStore(
      * is thrown as itself. The position is `max + 1` (never `count`, which would
      * collide with a row left after a middle delete — see `VocabularyRepository.add`),
      * and the id is allocated inside the transaction that writes the row.
+     *
+     * A relation kind takes its two extras here rather than only on the rename that
+     * follows, unlike a status's closing flag, for the reason
+     * `VocabularyRepository.add` gives: the MCP tool creates a kind in one call, and a
+     * kind whose opposite could only be named by a second write would be briefly and
+     * visibly symmetric when it is not. Both still default to the safe state —
+     * symmetric, and not blocking — so nothing is armed by accident.
      */
-    override suspend fun add(projectId: Long, kind: VocabularyKind, name: String): VocabularyRow {
+    override suspend fun add(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String?,
+        marksBlocked: Boolean,
+    ): VocabularyRow {
         val clean = name.trim()
+        // Blank normalises to null rather than being stored, so "I cleared the field"
+        // and "I ticked same-in-both-directions" cannot become two stored states that
+        // render identically. Null IS symmetry; see IssueRelationKinds.sq.
+        val cleanInverse = inverseName?.trim()?.takeIf { it.isNotBlank() }
         val existing = docsOfKind(projectId, kind)
-        validateName(kind, clean, existing, renamingId = null)
+        validateName(kind, clean, cleanInverse, existing, renamingId = null)
 
         val position = (existing.mapNotNull { it.getLong(POSITION) }.maxOrNull() ?: -1L) + 1L
         return firestore.runTransaction { txn ->
             val id = counters.next(txn, COUNTER).getValue(COUNTER)
-            txn.set(
-                doc(id),
+            // A relation kind is written through [relationKindFields], the single home
+            // of that document's shape, so a kind added here is byte-identical to one
+            // added through FirestoreIssueRelationKindStore.insert or seeded with the
+            // project. The other seven keep the uniform map below, which carries their
+            // three per-kind flags whether or not the kind can mean anything by them.
+            val fields = if (kind == VocabularyKind.RELATION_KIND) {
+                relationKindFields(id, projectId, clean, position, cleanInverse, marksBlocked)
+            } else {
                 mapOf(
                     ID to id,
                     PROJECT_ID to projectId,
@@ -106,17 +145,32 @@ class FirestoreVocabularyStore(
                     REQUIRES_RESOLUTION to false,
                     IS_DONE to false,
                     COMPLETED_AT to null,
-                ),
+                )
+            }
+            txn.set(doc(id), fields)
+            VocabularyRow(
+                id = id,
+                projectId = projectId,
+                name = clean,
+                position = position,
+                requiresResolution = false,
+                usageCount = 0,
+                inverseName = cleanInverse.takeIf { kind == VocabularyKind.RELATION_KIND },
+                marksBlocked = marksBlocked && kind == VocabularyKind.RELATION_KIND,
             )
-            VocabularyRow(id, projectId, clean, position, requiresResolution = false, usageCount = 0)
         }.await()
     }
 
     /**
-     * Rename a row, and set its per-kind flag: a status's closing flag, or a
-     * resolution's done flag ([isDone]). Each is written only for the kind it
-     * belongs to; the other kinds get a name-only update, mirroring
-     * VocabularyRepository.rename.
+     * Rename a row, and set its per-kind extras: a status's closing flag, a
+     * resolution's done flag ([isDone]), or a relation kind's opposite label and
+     * blocking flag. Each is written only for the kind it belongs to; the other kinds
+     * get a name-only update, mirroring VocabularyRepository.rename.
+     *
+     * A relation kind's three fields go in one `update`, for
+     * [FirestoreStatusStore.update]'s reason turned up a notch: they are one decision,
+     * and two writes could leave a kind renamed but still marking cards blocked, or
+     * carrying an opposite label for a direction it no longer has.
      */
     override suspend fun rename(
         projectId: Long,
@@ -125,12 +179,18 @@ class FirestoreVocabularyStore(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean,
+        inverseName: String?,
+        marksBlocked: Boolean,
     ) {
         val clean = name.trim()
-        validateName(kind, clean, docsOfKind(projectId, kind), renamingId = row.id)
+        // Blank is not a to-side label, it is the absence of one. See [add].
+        val cleanInverse = inverseName?.trim()?.takeIf { it.isNotBlank() }
+        validateName(kind, clean, cleanInverse, docsOfKind(projectId, kind), renamingId = row.id)
         val updates = when (kind) {
             VocabularyKind.STATUS -> mapOf(NAME to clean, REQUIRES_RESOLUTION to requiresResolution)
             VocabularyKind.RESOLUTION -> mapOf(NAME to clean, IS_DONE to isDone)
+            VocabularyKind.RELATION_KIND ->
+                mapOf(NAME to clean, INVERSE_NAME to cleanInverse, MARKS_BLOCKED to marksBlocked)
             else -> mapOf(NAME to clean)
         }
         doc(row.id).update(updates).await()
@@ -161,6 +221,13 @@ class FirestoreVocabularyStore(
         when (kind) {
             VocabularyKind.STATUS -> issues.deleteDraftsWithStatus(projectId, row.id)
             VocabularyKind.PRIORITY -> issues.deleteDraftsWithPriority(projectId, row.id)
+            // A relation kind takes its links with it (LNL-215), rather than being
+            // refused over them — `restrictsOnUse` is false for exactly that reason: a
+            // relation row without its kind would be two issue ids and no statement
+            // about them. On SQLite the composite foreign key cascades; here the sweep
+            // IS the cascade, and it runs before the row goes so an interruption leaves
+            // a kind whose links are gone rather than links naming a kind that is.
+            VocabularyKind.RELATION_KIND -> relations.deleteForKind(row.id)
             // Nothing else can be holding a draft; see VocabularyRepository.clearDrafts.
             else -> Unit
         }
@@ -201,25 +268,52 @@ class FirestoreVocabularyStore(
         VocabularyKind.RESOLUTION -> issues.usageByResolution(projectId)
         VocabularyKind.SPRINT -> issues.usageBySprint(projectId)
         VocabularyKind.VERSION -> issues.usageByVersion(projectId)
+        // Counted off the relations rather than off `issues`, alone among the eight:
+        // nothing on an issue document points at a relation kind (LNL-215). See the
+        // `relations` constructor parameter.
+        VocabularyKind.RELATION_KIND -> relations.usageByKind(projectId)
     }
 
     /**
      * Blank, or already another row's? A Unicode-aware `lowercase()` fold, the same
      * one the SQLite repository and the dialog use, so the three agree on what a
      * duplicate is beyond the ASCII a `COLLATE NOCASE` index would fold.
+     *
+     * ── A relation kind occupies BOTH of its labels (LNL-215) ─────────────
+     *
+     * Every other kind owns one word. A relation kind owns two — "Blocked by" and
+     * "Blocks" — and both appear in the same picker, so uniqueness has to be over the
+     * union of the two fields across every row rather than over the name alone.
+     * Without it, "Blocks" could be one kind's opposite and another kind's name, and
+     * the picker would offer the same word twice meaning two different things.
+     *
+     * This is a straight copy of `VocabularyRepository.validateName`, which is how it
+     * has to be: there is no unique index on either backend for this rule to backstop,
+     * so the two implementations *are* the rule and must refuse the same things. The
+     * contract suite is what proves they do.
      */
     private fun validateName(
         kind: VocabularyKind,
         name: String,
+        inverseName: String?,
         existing: List<DocumentSnapshot>,
         renamingId: Long?,
     ) {
         if (name.isBlank()) throw VocabularyConflict("A ${kind.noun} needs a name.")
-        val clash = existing.firstOrNull {
-            it.getLong(ID) != renamingId && it.getString(NAME)?.lowercase() == name.lowercase()
+        // A kind may not clash with ITSELF either: "Blocked by" / "Blocked by" is a
+        // kind that says one thing twice, which is what the symmetric case (a null
+        // inverse) is for and is not how to spell it.
+        if (inverseName != null && inverseName.lowercase() == name.lowercase()) {
+            throw VocabularyConflict(
+                "\"$name\" cannot also be its own opposite. Tick \"same in both directions\" instead.",
+            )
         }
+        val taken = existing.filter { it.getLong(ID) != renamingId }
+            .flatMap { listOfNotNull(it.getString(NAME), it.getString(INVERSE_NAME)) }
+        val wanted = listOfNotNull(name, inverseName)
+        val clash = taken.firstOrNull { existingName -> wanted.any { it.lowercase() == existingName.lowercase() } }
         if (clash != null) {
-            throw VocabularyConflict("There is already a ${kind.noun} called \"${clash.getString(NAME)}\".")
+            throw VocabularyConflict("There is already a ${kind.noun} called \"$clash\".")
         }
     }
 
@@ -245,6 +339,12 @@ class FirestoreVocabularyStore(
         requiresResolution = getBoolean(REQUIRES_RESOLUTION) ?: false,
         isDone = getBoolean(IS_DONE) ?: false,
         usageCount = uses[getLong(ID)] ?: 0L,
+        // Read unconditionally rather than behind a `kind ==` test, because a document
+        // of any other kind simply has no such fields and answers null/false — the
+        // same way `requiresResolution` above is read off a label. Absent `inverseName`
+        // is not a fallback for a relation kind, it is the meaning: symmetric.
+        inverseName = getString(INVERSE_NAME),
+        marksBlocked = getBoolean(MARKS_BLOCKED) ?: false,
     )
 
     /**
@@ -273,5 +373,30 @@ class FirestoreVocabularyStore(
          */
         const val IS_DONE = "isDone"
         const val COMPLETED_AT = "completedAt"
+
+        /**
+         * A relation kind's **to**-side label — "Blocks" beside a `name` of "Blocked
+         * by" (LNL-215) — meaningful only on `kind == RELATION_KIND` rows and absent
+         * from every other kind's document.
+         *
+         * **Absent (or explicitly null) is the whole encoding of symmetry**, not a
+         * missing value: a kind with no opposite label reads the same from both ends.
+         * There is deliberately no `isSymmetric` companion that could disagree with it,
+         * in the same idiom as a null `resolutionId` meaning "not in a closing column".
+         * Written by [relationKindFields], read here and by
+         * [DocumentSnapshot.toRelationKindRecord], so the settings editor and the board
+         * agree on it. See IssueRelationKinds.sq's inverse_name.
+         */
+        const val INVERSE_NAME = "inverseName"
+
+        /**
+         * A relation kind's "issues on the *from* side of one of these are blocked"
+         * flag (LNL-215) — the relation-kind analogue of [REQUIRES_RESOLUTION], read
+         * from data rather than from the row's name so a renamed kind keeps its
+         * meaning. False on every other kind, and false when absent, which is the
+         * safe direction to be wrong in: an un-dimmed card, never a board greyed by a
+         * flag nobody set.
+         */
+        const val MARKS_BLOCKED = "marksBlocked"
     }
 }

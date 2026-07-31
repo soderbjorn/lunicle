@@ -52,7 +52,7 @@ class SqlDelightIssueStoreContractTest : IssueStoreContract() {
     override val store: IssueStore = issues
 
     override suspend fun newProject(): Seeded {
-        val projectId = projectRepository.create("Project $seq", "IS${seq++}", isPublic = false).id
+        val projectId = projectRepository.create("Project $seq", "IS${seq++}").id
         val statusIds = statuses.forProject(projectId).map { it.id }
         val priorityId = priorities.defaultForProject(projectId)!!.id
 

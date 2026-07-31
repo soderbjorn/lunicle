@@ -8,6 +8,12 @@
  * `(provider, provider_id)` pair. Both are pinned here, plus the first-user-is-
  * admin rule and the round-trips of the mutable fields.
  *
+ * [UserStore.findExisting] is the same keying asked as a question (LNL-192), and it is
+ * pinned beside `upsert` rather than on its own, because the two disagreeing is the
+ * only way it can be wrong: admission consults it to learn whether a sign-in would
+ * create a row, and an answer that differed from what `upsert` then did would refuse
+ * exactly the returning people the keying exists to reunite.
+ *
  * No backend seeding hook is needed: [UserStore.upsert] is itself the way a user
  * comes to exist. Each test starts from an empty backend (a fresh fixture), so the
  * first upsert in each is the instance's first account.
@@ -33,8 +39,8 @@ abstract class UserStoreContract {
     fun `the first account created is the instance admin, later ones are not`() = runBlocking {
         val first = store.upsert(identity("gh-1", null))
         val second = store.upsert(identity("gh-2", null))
-        assertTrue(first.isSysAdmin, "the first user to sign in is the instance admin")
-        assertFalse(second.isSysAdmin)
+        assertTrue(first.isInstanceAdmin, "the first user to sign in is the instance admin")
+        assertFalse(second.isInstanceAdmin)
     }
 
     @Test
@@ -75,20 +81,107 @@ abstract class UserStoreContract {
         assertEquals(setOf(a.id, b.id), store.selectAll().map { it.id }.toSet())
     }
 
+    // ── findExisting: the same keying, asked rather than acted on (LNL-192) ──
+
+    @Test
+    fun `findExisting answers null for an identity that would create an account`() = runBlocking {
+        store.upsert(identity("gh-1", "alice@example.com"))
+        assertEquals(null, store.findExisting(identity("gh-2", "bob@example.com")))
+    }
+
+    /**
+     * Both keys, in `upsert`'s order — and the assertion is against what `upsert`
+     * itself then does, so the two cannot drift apart on either backend.
+     */
+    @Test
+    fun `findExisting reaches an account by verified e-mail and by the provider pair`() = runBlocking {
+        val keyed = store.upsert(identity("gh-1", "alice@example.com", AuthProvider.GITHUB))
+        val unkeyed = store.upsert(identity("gh-2", null))
+
+        val byEmail = identity("goog-9", "alice@example.com", AuthProvider.GOOGLE)
+        assertEquals(keyed.id, store.findExisting(byEmail)?.id, "a different provider proving the address")
+        assertEquals(store.upsert(byEmail).id, store.findExisting(byEmail)?.id, "findExisting disagreed with upsert")
+
+        val byPair = identity("gh-2", null)
+        assertEquals(unkeyed.id, store.findExisting(byPair)?.id, "an addressless account by its provider pair")
+        assertEquals(store.upsert(byPair).id, store.findExisting(byPair)?.id, "findExisting disagreed with upsert")
+    }
+
+    @Test
+    fun `findExisting folds case and whitespace like the keying does`() = runBlocking {
+        val user = store.upsert(identity("gh-1", "alice@example.com"))
+        assertEquals(user.id, store.findExisting(identity("gh-9", "  Alice@Example.COM  "))?.id)
+    }
+
+    // ── addByEmail: an account before anybody has signed in (LNL-194) ───────
+
+    /**
+     * The row an administrator's "Add a person…" writes: an address, no arrival, and a
+     * rung it can hold immediately.
+     *
+     * Pinned in the contract because the two backends express "never signed in"
+     * differently — a NULL column, and an explicitly-null document field that has to be
+     * told apart from an absent one — and getting it wrong on either makes every added
+     * person look like somebody who has already turned up. It is also what the
+     * plus-added admission policy keys on, so a backend that stamped an arrival here
+     * would quietly widen the door.
+     */
+    @Test
+    fun `addByEmail writes an account nobody has signed into`() = runBlocking {
+        val added = store.addByEmail("newcomer@example.com")
+        assertFalse(added.hasSignedIn, "an added account claims somebody has arrived")
+        assertEquals("newcomer@example.com", added.email)
+        assertFalse(added.isEmailVerified, "an address an administrator typed is not a proved one")
+        assertFalse(added.isInstanceAdmin, "being added by somebody made them run the instance")
+        assertEquals(added.id, store.findById(added.id)?.id, "the row cannot be read back")
+    }
+
+    /** Adding somebody who is already here is their row, not a second one. */
+    @Test
+    fun `addByEmail is idempotent on the address`() = runBlocking {
+        val first = store.addByEmail("twice@example.com")
+        assertEquals(first.id, store.addByEmail("twice@example.com").id)
+        assertEquals(1, store.selectAll().count { it.email == "twice@example.com" })
+        // And it finds an account that arrived the ordinary way, rather than colliding
+        // with it: the whole point is one row per address.
+        val signedIn = store.upsert(identity("gh-1", "already@example.com"))
+        assertEquals(signedIn.id, store.addByEmail("already@example.com").id)
+        assertTrue(store.addByEmail("already@example.com").hasSignedIn, "an added row overwrote a real arrival")
+    }
+
+    /**
+     * Signing in **adopts** the added row rather than making a second account beside it
+     * — which is what makes the rung they were granted already theirs when they arrive.
+     */
+    @Test
+    fun `signing in adopts an added row and stamps the arrival`() = runBlocking {
+        val added = store.addByEmail("claimed@example.com")
+        val arrived = store.upsert(identity("goog-7", "claimed@example.com", AuthProvider.GOOGLE))
+        assertEquals(added.id, arrived.id, "the first sign-in made a second account")
+        assertTrue(arrived.hasSignedIn, "the arrival was not stamped")
+        assertEquals(1, store.selectAll().count { it.email == "claimed@example.com" })
+    }
+
+    /** The address is normalised on the way in, or a sign-in would never find the row. */
+    @Test
+    fun `addByEmail folds case and whitespace like the keying does`() = runBlocking {
+        val added = store.addByEmail("  Newcomer@Example.COM  ")
+        assertEquals("newcomer@example.com", added.email)
+        assertEquals(added.id, store.findExisting(identity("gh-9", "newcomer@example.com"))?.id)
+    }
+
     @Test
     fun `the mutable fields round-trip`() = runBlocking {
         val user = store.upsert(identity("gh-1", null))
         store.setDisplayName(user.id, "Ada")
         store.setEmail(user.id, "ada@example.com", isVerified = true)
         store.setMcpEnabled(user.id, true)
-        store.setMcpAllowed(user.id, true)
 
         val reread = store.findById(user.id)!!
         assertEquals("Ada", reread.displayNameOverride)
         assertEquals("ada@example.com", reread.email)
         assertTrue(reread.isEmailVerified)
         assertTrue(reread.isMcpEnabled)
-        assertTrue(reread.isMcpAllowed)
 
         store.setDisplayName(user.id, "   ")
         assertEquals(null, store.findById(user.id)?.displayNameOverride, "a blank override clears it")

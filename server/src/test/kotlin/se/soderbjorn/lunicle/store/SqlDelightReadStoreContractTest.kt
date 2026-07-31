@@ -55,7 +55,7 @@ class SqlDelightReadStoreContractTest : ReadStoreContract() {
     }
 
     override suspend fun newProject(): Long =
-        projectRepository.create("Project $seq", "RD${seq++}", isPublic = false).id
+        projectRepository.create("Project $seq", "RD${seq++}").id
 
     override suspend fun newConversation(participantIds: Set<Long>): Long =
         conversations.insert(Author.Nobody, participantIds)

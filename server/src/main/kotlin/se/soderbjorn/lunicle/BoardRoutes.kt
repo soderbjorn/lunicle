@@ -57,6 +57,12 @@ import se.soderbjorn.lunicle.clientserver.NotificationSubscriptionRequest
 import se.soderbjorn.lunicle.clientserver.ProjectListState
 import se.soderbjorn.lunicle.clientserver.ProjectPermissionsView
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
+import se.soderbjorn.lunicle.clientserver.IssueRelationKindItem
+import se.soderbjorn.lunicle.clientserver.IssueRelationRequest
+import se.soderbjorn.lunicle.clientserver.IssueRelationView
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
 import se.soderbjorn.lunicle.clientserver.SprintItem
 import se.soderbjorn.lunicle.clientserver.StatusItem
@@ -97,7 +103,7 @@ class BoardDependencies(
     val projects: se.soderbjorn.lunicle.store.ProjectStore,
     val projectRepository: se.soderbjorn.lunicle.store.ProjectProvisioning,
     /**
-     * The grants table, for the settings dialog's privileges section.
+     * The grants table, for the settings pane's Access section.
      *
      * Here as well as inside [access] on purpose, and it is worth being explicit
      * about why that is not a duplicate: AccessControl holds it to answer
@@ -169,6 +175,26 @@ class BoardDependencies(
     /** Activating, completing and populating sprints — the verbs a vocabulary has no name for. */
     val sprintRepository: se.soderbjorn.lunicle.store.SprintStore,
     val issues: se.soderbjorn.lunicle.store.IssueStore,
+    /**
+     * The links between issues and the vocabulary that names them (LNL-215).
+     *
+     * Both here as well as inside [issueRepository], and not a duplicate for the reason
+     * [roles] gives: the repository holds them to *decide* a write — same project, no
+     * duplicate pair, both published — and never exposes them. These answer the read
+     * questions the board and the issue window ask, which are a different question with
+     * a different audience.
+     *
+     * Defaulted to forgetful in-memory stores, on [instanceSettings]' reasoning rather
+     * than the notifiers' nullability: these are read on every board paint and every
+     * issue open, so a null would put a guard at each of those call sites forever to
+     * serve a case only a test reaches. An empty store answers the *right* thing — no
+     * links, nothing blocked — which is exactly a project nobody has linked anything
+     * in. [Application.module] always passes the backend's own. See
+     * InMemoryIssueRelationStores.
+     */
+    val issueRelations: se.soderbjorn.lunicle.store.IssueRelationStore = InMemoryIssueRelationStore(),
+    val issueRelationKinds: se.soderbjorn.lunicle.store.IssueRelationKindStore =
+        InMemoryIssueRelationKindStore(issueRelations),
     val issueRepository: IssueRepository,
     val comments: se.soderbjorn.lunicle.store.CommentStore,
     val attachments: se.soderbjorn.lunicle.store.AttachmentStore,
@@ -183,23 +209,49 @@ class BoardDependencies(
     val attachmentTickets: AttachmentTicketStore,
     val sessions: se.soderbjorn.lunicle.store.SessionStore,
     val users: se.soderbjorn.lunicle.store.UserStore,
-    // Read on every request, to turn the session cookie into an EFFECTIVE user.
-    // See Impersonations.
-    val impersonations: Impersonations,
+    // Whether this deployment has owner impersonation at all, and the grants that
+    // are live if it does. Read on every request with a session — but only past the
+    // gate, so an ordinary instance never touches it. See OwnerImpersonation.
+    val impersonation: OwnerImpersonation = OwnerImpersonation(),
     /**
-     * The deployment-wide switches (LNL-115): whether sign-in is required, and
-     * whether anyone may create a project. Read by the project routes to answer
-     * "may this caller create one" and by the admin routes to show and set both.
+     * The deployment-wide settings (LNL-115, reshaped by LNL-192): admission,
+     * whether projects may be published, and what each tier may do. Read by the
+     * project routes to answer "may this caller create one", by the MCP gates, and
+     * by the admin routes to show and set them all.
      *
      * Defaulted to an in-memory store for tests, which the notifiers' nullability
      * would suggest but is done with a real (if forgetful) object instead: a null
      * would make every reader guard, where an empty in-memory store simply answers
-     * the pre-LNL-115 defaults — the app usable signed out, creation an admin's.
+     * the defaults — every permission off, and anyone who can sign in admitted.
      * [Application.module] always passes the SQLite-backed one, because a switch
      * that forgot itself on redeploy is a switch nobody could trust. See
      * InMemoryInstanceSettingsStore.
      */
     val instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore = InMemoryInstanceSettingsStore(),
+    /**
+     * What this deployment says about itself: its own domain, whether the Google
+     * chooser is pinned to it, and whether a mailed code is a way in (LNL-192).
+     *
+     * Deploy-time configuration read from `brand.json` at boot, never a stored
+     * setting — which is why it is a value here and not a store. Read by the admin
+     * routes alone today, to compute which admission policies this deployment can
+     * honour; the sign-in path takes the same object by another route (see
+     * `authRoutes`). Defaulted to the unbranded shape, which is what every test and
+     * every default deployment is: no domain, no pin, and code sign-in available
+     * if a transport is.
+     */
+    val identity: InstanceIdentity = InstanceIdentity(),
+    /**
+     * What this deployment is *called*, when a brand directory names it — the theme,
+     * logo and title an operator dropped in at deploy time (LNL-110).
+     *
+     * Null for the default look, which is not the same as "unbranded with a domain":
+     * the two are independent, and the Instance tab reports both. A string rather than
+     * the `BrandInfo` itself because the only thing any route needs is a name to show;
+     * the manifest's own fields reach the app through [identity] and the `/brand`
+     * endpoints. See LNL-195.
+     */
+    val brandName: String? = null,
     /** Who wants an e-mail about which project or issue. */
     val subscriptions: se.soderbjorn.lunicle.store.SubscriptionStore,
     /**
@@ -311,63 +363,87 @@ class BoardDependencies(
 /**
  * The caller, or null. Never throws — "signed out" is a legitimate answer here.
  *
- * Returns the **effective** user: the impersonated one when an admin is
- * impersonating, and otherwise simply the session's own user. Every route below
- * calls this and none of them mention impersonation, which is the design — it is
- * resolved once, here, so a route cannot forget. See [resolveCaller].
+ * Every route below calls this and none of them mention impersonation, which is the
+ * design — it is resolved once, in [resolveCaller], so a route cannot forget. Under
+ * a probe session the answer is simply the person being worn: the session is a
+ * genuine one for them, so there is no second identity for a route to reach past.
  */
 internal suspend fun ApplicationCall.caller(deps: BoardDependencies): UserRecord? =
-    resolveCaller(deps.sessions, deps.users, deps.impersonations).effective
+    resolveCaller(deps.sessions, deps.impersonation, deps.access).user
 
 /**
- * Resolve who a request is acting as, and who it really is.
+ * Turn a session cookie into an identity.
  *
- * The one place that turns a cookie into an identity, shared by these routes and
- * AuthRoutes so there is exactly one implementation of the rule.
+ * The one place that does it, shared by these routes and AuthRoutes so there is
+ * exactly one implementation of the rule.
  *
- * The `isSysAdmin` re-check is the important line. An admin who starts impersonating
- * and is then demoted — by another admin, or by a hand-edited database — must not
- * keep acting as somebody else, so the *stored* impersonation is only honoured
- * while the real user is still an admin at this moment. Anything else would mean
- * the admin bit could be taken away without taking away what it granted, which is
- * exactly the shape of a privilege-escalation bug.
+ * ── The probe cookie is not read here, and must never be (I1) ───────────────
  *
- * A stale impersonation is dropped rather than merely ignored: if the target's
- * account is gone, or the impersonator is no longer an admin, the entry is
- * removed so the next request does not have to work it out again.
+ * Only the three impersonation routes may look at it. The moment this function
+ * authenticates anything off it there are two ways to be signed in, and every
+ * permission check on the server has two doors. What *is* read here is the session
+ * row's own label, which is a fact about the session already resolved from the
+ * ordinary cookie.
+ *
+ * ── The entitlement re-check, and the orphan sweep ──────────────────────────
+ *
+ * Two separate things, and both are per-request rather than remembered.
+ *
+ * [Caller.canImpersonate] is asked fresh every time, so somebody who loses
+ * ownership stops being able to arm on their next request rather than whenever
+ * something happens to re-check. Anything else would mean the authority could be
+ * taken away without taking away what it granted, which is the shape of a
+ * privilege-escalation bug. Since the ownership is `instance_settings.owner_user_id`
+ * it cannot be read off the record, which is why [access] is a parameter.
+ *
+ * And a session labelled with a grant that is **no longer live** — expired inside
+ * this process, or revoked — is destroyed rather than quietly honoured. You are
+ * signed out, which is the correct direction: the alternative is being left as
+ * somebody else with the marker gone. Note this catches only what happens inside
+ * one process lifetime; a restart is handled by the unconditional boot sweep in
+ * `Application.module`, which runs whatever the gate says.
+ *
+ * ── What an unarmed deployment pays ─────────────────────────────────────────
+ *
+ * Nothing. With the gate off this is one session lookup, exactly as it was before
+ * the feature existed: [se.soderbjorn.lunicle.store.SessionStore.probeIdFor] is not
+ * called, the grants are not consulted, and `canImpersonate` is false without
+ * asking anybody.
+ *
+ * @param access the permission oracle, or null for an installation that wired none —
+ *   which is a handful of tests mounting one routes file to exercise one exchange, and
+ *   never [Application.module]. A null one answers "nobody may impersonate", so it
+ *   fails in the direction that withholds authority.
  */
 internal suspend fun ApplicationCall.resolveCaller(
     sessions: se.soderbjorn.lunicle.store.SessionStore,
-    users: se.soderbjorn.lunicle.store.UserStore,
-    impersonations: Impersonations,
+    impersonation: OwnerImpersonation,
+    access: AccessControl?,
 ): Caller {
-    val sessionId = request.cookies[SESSION_COOKIE] ?: return Caller(null, null)
-    val real = sessions.lookup(sessionId) ?: return Caller(null, null)
+    val sessionId = request.cookies[SESSION_COOKIE] ?: return Caller(null)
+    val user = sessions.lookup(sessionId) ?: return Caller(null)
 
-    val impersonation = impersonations.current(sessionId)
-        ?: return Caller(effective = real, real = real)
+    // The whole of what a deployment with the feature switched off does. Note
+    // canImpersonate is false here without asking the oracle: the gate is a term of
+    // that field, so an owner on an unarmed instance is offered nothing.
+    if (!impersonation.isEnabled) return Caller(user = user)
 
-    if (!real.isSysAdmin) {
-        // Demoted while impersonating. Drop it and be themselves.
-        impersonations.stop(sessionId)
-        return Caller(effective = real, real = real)
+    val probeId = sessions.probeIdFor(sessionId)
+    if (probeId != null && impersonation.grants.resolve(probeId) == null) {
+        // Orphaned: the grant that authorised this session is gone. Destroyed rather
+        // than merely disowned, so the next request does not have to work it out
+        // again — and so the browser is genuinely signed out rather than left
+        // holding a cookie that resolves to somebody it should not.
+        sessions.destroy(sessionId)
+        return Caller(null)
     }
-    return when (impersonation) {
-        // A signed-out visitor has no account: the effective user is null, exactly
-        // as it is for a caller with no cookie, so every AccessControl call sees the
-        // public view. The real user stays the admin, so the impersonation is still
-        // theirs to stop. See Impersonation.AsSignedOut (LNL-103).
-        is Impersonation.AsSignedOut ->
-            Caller(effective = null, real = real, isImpersonating = true)
-        is Impersonation.AsUser -> {
-            val target = users.findById(impersonation.userId) ?: run {
-                // The impersonated account was deleted out from under them.
-                impersonations.stop(sessionId)
-                return Caller(effective = real, real = real)
-            }
-            Caller(effective = target, real = real, isImpersonating = true)
-        }
-    }
+
+    return Caller(
+        user = user,
+        // A fact the row carries, never a comparison. See Caller.isProbe.
+        isProbe = probeId != null,
+        canImpersonate = access?.canImpersonate(user) == true,
+    )
 }
 
 /** A path segment as a Long, or null if it isn't one. */
@@ -440,9 +516,15 @@ internal suspend fun BoardDependencies.authorNames(authors: Collection<Author>):
  *   [UserStore.selectAll] documents for the impersonation menu.
  */
 internal suspend fun BoardDependencies.assignableUsers(projectId: Long): List<UserRecord> {
-    val grants = roles.grantsForProject(projectId)
+    val rungs = roles.rolesForProject(projectId)
+    val audiences = roles.audienceRoles(projectId)
+    // Three reads, not two, since LNL-201: the owner's id, so that this set and
+    // AccessControl.canBeAssigned agree about them. Read once here rather than per
+    // candidate — see effectiveRungAmong. The same snapshot carries the publish veto
+    // (LNL-203), so honouring that costs nothing extra here.
+    val switches = instanceSettings.current()
     return users.selectAll().filter { candidate ->
-        candidate.isSysAdmin || Role.BE_ASSIGNED_ISSUE in grants[candidate.id].orEmpty()
+        candidate.effectiveRungAmong(rungs, audiences, switches)?.atLeast(ProjectRole.CONTRIBUTOR) == true
     }
 }
 
@@ -466,10 +548,10 @@ internal suspend fun BoardDependencies.assignableUsers(projectId: Long): List<Us
  *   ever: these carry e-mail addresses and the wire does not.
  */
 internal suspend fun BoardDependencies.mentionableUsers(projectId: Long): List<UserRecord> =
-    mentionableUsersIn(projectId, users, roles)
+    mentionableUsersIn(projectId, users, roles, instanceSettings)
 
 /**
- * [BoardDependencies.mentionableUsers], as a free function over the two stores
+ * [BoardDependencies.mentionableUsers], as a free function over the three stores
  * it actually needs.
  *
  * It exists in this shape because the second caller has no [BoardDependencies]
@@ -478,15 +560,144 @@ internal suspend fun BoardDependencies.mentionableUsers(projectId: Long): List<U
  * *the same set* the autocomplete offered. Two definitions of "who may be
  * mentioned here" would be an autocomplete that suggests a name and a mailer
  * that then quietly declines to recognise it.
+ *
+ * @param instanceSettings read once, for the owner's id and the publish veto — the third
+ *   store, added by LNL-201. See [effectiveRungAmong] for why it cannot be left out.
  */
 internal suspend fun mentionableUsersIn(
     projectId: Long,
     users: se.soderbjorn.lunicle.store.UserStore,
     roles: se.soderbjorn.lunicle.store.RoleStore,
+    instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore,
 ): List<UserRecord> {
-    val grants = roles.grantsForProject(projectId)
+    val rungs = roles.rolesForProject(projectId)
+    val audiences = roles.audienceRoles(projectId)
+    val switches = instanceSettings.current()
     return users.selectAll().filter { candidate ->
-        candidate.isSysAdmin || grants[candidate.id].orEmpty().isNotEmpty()
+        candidate.effectiveRungAmong(rungs, audiences, switches) != null
+    }
+}
+
+/**
+ * [AccessControl.effectiveRole]'s rule, applied to a whole directory from two maps
+ * already in hand.
+ *
+ * ── Why a second spelling of the rule exists at all ─────────────────────────
+ *
+ * Every *decision* goes through [AccessControl], one caller at a time, from the
+ * session — that is this codebase's whole permission story and nothing here
+ * changes it. The two callers above are not decisions: they build a **set** for a
+ * dropdown, over every account on the instance, and asking `effectiveRole` per row
+ * would be two queries per account to compute what two queries already know.
+ *
+ * So this is the same `max(audience, own row)` in the same order, over maps rather
+ * than over reads, and it is written directly beneath its callers rather than
+ * hidden in a helpers file so that a change to the rule and a change to this are
+ * the same edit. It is deliberately *not* exported: nothing outside this file may
+ * reach it, and nothing may decide a write with it.
+ *
+ * ── Ownership is read here, and used not to be (LNL-201) ────────────────────
+ *
+ * This said the owner "does not need to be consulted: an administrator appears by the
+ * first clause, and the owner appears by whichever of the two routes seats them". The
+ * second half is false wherever neither route does. `storedInstanceRole` cannot say
+ * Owner — ownership is a setting, not a column — so on a volume 33.sqm migrated, where
+ * the seated owner's `instance_role` is NULL, the owner drops out of this set on any
+ * project with no audience row admitting them and no own row of their own. An
+ * administrator stays in it. That is the ladder inverting inside a picker: the
+ * autocomplete cannot name the person who can definitely read the thing, and the
+ * mailer built from the same set will not resolve `@them` either.
+ *
+ * ── The audience ceiling applies here too (LNL-202) ─────────────────────────
+ *
+ * Through [admitting], which is the shared spelling of "the rows this instance role
+ * matches, capped to what each row may hold". It has to be the same fold: a
+ * `guest → contributor` row left in a database would otherwise put **every account on
+ * the instance** into the assignable set for a board where
+ * [AccessControl.canBeAssigned] refuses them all — a dropdown of names that 403 on
+ * click, which is exactly the affordance-disagrees-with-the-rule failure the one-rung
+ * model exists to make impossible.
+ *
+ * ── And so does the publish veto (LNL-203) ──────────────────────────────────
+ *
+ * Through the same [admitting], again because it has to be the same fold: a board whose
+ * guest row has been silenced by the instance switch must not go on offering **every
+ * account on the instance** in its assignee picker, when the row that put them there
+ * grants nothing. [switches] carries the answer, so this stays one read per set.
+ *
+ * @param switches the instance settings, read **once** by the caller, not per row.
+ *   Consulting the store inside this function would be the query-per-account these two
+ *   sets exist to avoid; see [instanceRoleWith], which is this fold named. Two things are
+ *   taken from it: who owns the deployment (LNL-201, null where nobody is seated) and
+ *   whether public projects are allowed (LNL-203).
+ */
+private fun UserRecord.effectiveRungAmong(
+    rungs: Map<Long, ProjectRole>,
+    audiences: Map<Audience, ProjectRole>,
+    switches: se.soderbjorn.lunicle.store.InstanceSettings,
+): ProjectRole? {
+    val instanceRole = instanceRoleWith(switches.ownerUserId)
+    if (instanceRole.atLeast(InstanceRole.ADMIN)) return ProjectRole.OWNER
+    val fromAudience = audiences
+        .admitting(instanceRole, switches.allowPublicProjects)
+        .values
+        .maxByOrNull { it.rank }
+    val own = rungs[id]
+    return listOfNotNull(fromAudience, own).maxByOrNull { it.rank }
+}
+
+/**
+ * Give a brand-new project the two things it cannot be usable without: an owner, and
+ * whatever audience rows the instance says a new project starts with (LNL-195).
+ *
+ * ── Why this is here and not in ProjectRepository.create ────────────────────
+ *
+ * That method is one transaction over six vocabulary tables and knows nothing about
+ * accounts or instance settings; threading a caller and a settings store into it would
+ * make provisioning a board depend on who asked for it. This is the *policy* half, and
+ * it belongs beside the gate that decided the caller may create at all.
+ *
+ * ── The owner row is load-bearing, and used not to exist ────────────────────
+ *
+ * Nothing wrote it before this. That was survivable only because every account that
+ * could create a project was an instance administrator, who reaches
+ * [ProjectRole.OWNER] everywhere without a row — so the moment LNL-192's per-tier
+ * `staff_may_create_projects` let an ordinary member make a board, they would have made
+ * one they held nothing on. The create response has always *claimed* they were its
+ * owner; this is what makes the claim true.
+ *
+ * ── The guest row still answers to the veto ─────────────────────────────────
+ *
+ * A deployment with "allow projects to be public" off must not be able to publish
+ * boards through this setting, so the guest row is dropped rather than written when the
+ * veto is on — the same refusal [AccessControl.canSetAudience] makes for a hand-written
+ * write. The setting keeps its stored value, so lifting the veto starts honouring it
+ * again for projects created afterwards.
+ *
+ * The row is **dropped rather than written and silenced**, and that is deliberate now that
+ * a vetoed guest row grants nothing anyway (LNL-203): writing it would mean that lifting
+ * the veto later published every board created while it was off, which nobody asked for.
+ * A board created under the veto simply has no guest row, and publishing it is a decision
+ * its owner makes afterwards.
+ *
+ * ── And the ceiling is applied rather than trusted (LNL-202) ────────────────
+ *
+ * `newProjectAudiences` is a *stored* setting, so it can hold a guest row above
+ * [Audience.GUEST]'s ceiling however carefully its own route refuses one today — an
+ * older build wrote it, or somebody edited the document. Capping on the way out means a
+ * project cannot be *born* admitting guests as contributors, which is the one path to
+ * that row that does not go through a picker at all.
+ *
+ * @param creator the caller, or null. Null only for a route that let a signed-out
+ *   visitor create — which [AccessControl.canCreateProject] never does — so it is
+ *   handled by seating nobody rather than by an assertion nobody can reach.
+ */
+private suspend fun BoardDependencies.seatNewProject(project: ProjectRecord, creator: UserRecord?) {
+    if (creator != null) roles.setRole(creator.id, project.id, ProjectRole.OWNER)
+    val settings = instanceSettings.current()
+    settings.newProjectAudiences.forEach { (audience, rung) ->
+        if (audience == Audience.GUEST && !settings.allowPublicProjects) return@forEach
+        roles.setAudienceRole(project.id, audience, audience.cap(rung))
     }
 }
 
@@ -675,31 +886,37 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
      */
     get(ApiRoutes.PROJECTS) {
         val user = call.caller(deps)
-        val visible = deps.projects.selectAll().filter { deps.access.canReadProject(user, it) }
-        // The switch is read once and handed to the rule, which is where LNL-115
-        // widened who may create. The affordance and the POST gate below read it
-        // the same way, so the button and the route can never disagree.
-        val anyoneMayCreate = deps.instanceSettings.current().anyoneCanCreateProject
+        // The rung is kept rather than thrown away after the filter: it is what
+        // decided visibility, and it is what the settings rail needs to say
+        // "Maintainer" under a board's name. Re-deriving it per project on the client
+        // is impossible and re-deriving it here would be two passes over the same
+        // rows. `mapNotNull` rather than `filter`, so "can read" and "reached a rung"
+        // stay the one question they are.
+        val visible = deps.projects.selectAll().mapNotNull { project ->
+            deps.access.effectiveRole(user, project.id)?.let { project to it }
+        }
         call.respond(
             ProjectListState(
-                projects = visible.map { it.toSummary() },
-                canCreateProject = deps.access.canCreateProject(user, anyoneMayCreate),
+                projects = visible.map { (project, rung) -> project.toSummary(rung) },
+                // The affordance and the POST gate below ask the same function,
+                // which reads the per-tier setting itself (LNL-192) — so the button
+                // and the route cannot disagree about who may create a board.
+                canCreateProject = deps.access.canCreateProject(user),
             ),
         )
     }
 
     post(ApiRoutes.PROJECTS) {
         val user = call.caller(deps)
-        // Re-read the switch here rather than trusting the GET's affordance — the
-        // client cannot be believed about what it may do (see AccessControl's
-        // preamble), so the create gate re-derives from the instance setting and
-        // the session on every request.
-        val anyoneMayCreate = deps.instanceSettings.current().anyoneCanCreateProject
-        if (!deps.access.canCreateProject(user, anyoneMayCreate)) {
+        // Asked again here rather than trusting the GET's affordance — the client
+        // cannot be believed about what it may do (see AccessControl's preamble),
+        // so the create gate re-derives from the instance setting and the session
+        // on every request.
+        if (!deps.access.canCreateProject(user)) {
             call.respond(
                 HttpStatusCode.Forbidden,
                 if (user == null) "You must sign in to create a project."
-                else "Only a system administrator can create a project.",
+                else "Your account is not permitted to create a project here.",
             )
             return@post
         }
@@ -708,9 +925,13 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             return@post
         }
         try {
-            val created = deps.projectRepository.create(body.name, body.namePrefix, body.isPublic, body.visibleToAllSignedIn)
+            val created = deps.projectRepository.create(body.name, body.namePrefix)
+            deps.seatNewProject(created, user)
             logger.info("Project created: ${created.name} (${created.namePrefix}) by user ${user?.id}")
-            call.respond(created.toSummary())
+            // Re-asked rather than assumed to be OWNER: seatNewProject is what seats the
+            // creator, and asking the access rule is what keeps this response honest if
+            // that ever stops being true.
+            call.respond(created.toSummary(deps.access.effectiveRole(user, created.id) ?: ProjectRole.OWNER))
         } catch (conflict: ProjectConflict) {
             // 409 with the repository's own sentence: it knows *which* project
             // holds the name, and the dialog shows this verbatim.
@@ -724,12 +945,12 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Bad project id.")
             return@put
         }
-        // Ownership, not the old system-administrator gate: renaming, re-scoping
-        // and repository configuration are the owner's tier now (LNL-107). Asked
+        // Ownership, not the old instance-wide gate: renaming, re-scoping
+        // and repository configuration are the project owner's rung (LNL-107). Asked
         // with the id in hand, since the answer is per-project. A 403 here rather
         // than the create route's, because the project exists to be owned.
         if (!deps.access.canOwnProject(user, id)) {
-            call.respond(HttpStatusCode.Forbidden, "Only a project owner or system administrator can change a project.")
+            call.respond(HttpStatusCode.Forbidden, "Only a project owner can change a project.")
             return@put
         }
         val body = call.receiveOrNull<ProjectUpdate>() ?: run {
@@ -747,9 +968,10 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
         // "keep the stored token" rather than clearing it. See parseRepositoryConfig.
         val repositoryConfig = call.parseRepositoryConfig(body, deps.projects.repositoryConfig(id)) ?: return@put
         try {
-            val updated = deps.projectRepository.update(id, body.name, body.namePrefix, body.isPublic, body.visibleToAllSignedIn)
+            val updated = deps.projectRepository.update(id, body.name, body.namePrefix)
             deps.projects.setRepositoryConfig(id, repositoryConfig)
-            call.respond(updated.toSummary())
+            // OWNER, and known to be: the gate above is canOwnProject.
+            call.respond(updated.toSummary(ProjectRole.OWNER))
         } catch (conflict: ProjectConflict) {
             call.respond(HttpStatusCode.Conflict, conflict.userMessage)
         }
@@ -762,10 +984,10 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             return@delete
         }
         // An owner may destroy their own board (LNL-107); the instance-settings
-        // delete that only a system administrator reaches is a separate route, over
+        // delete that only the instance owner reaches is a separate route, over
         // in AdminRoutes. Both end in the same ProjectRepository.delete.
         if (!deps.access.canOwnProject(user, id)) {
-            call.respond(HttpStatusCode.Forbidden, "Only a project owner or system administrator can delete a project.")
+            call.respond(HttpStatusCode.Forbidden, "Only a project owner can delete a project.")
             return@delete
         }
         val project = deps.projects.findById(id) ?: run {
@@ -844,10 +1066,57 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
     val childCounts: Map<Long, Int> = issueRows.mapNotNull { it.parentId }.groupingBy { it }.eachCount()
     val numberById: Map<Long, Long> = issueRows.associate { it.id to it.number }
 
+    // ── The blocked projection (LNL-215) ────────────────────────────────────
+    //
+    // A card is blocked when it is on the FROM side of a relation whose kind marks
+    // blocked, and the issue on the TO side is still OPEN. Both halves are computed
+    // here, over the project-wide sets, for `childCounts`' reason exactly: a blocker
+    // sitting in a column the reader has hidden or scoped out is absent from the list
+    // this response carries, so a client-side derivation would report a blocked card
+    // as clear — silently, and in the direction that loses information.
+    //
+    // The cost is ONE new read. `issueRows` above is already every non-draft issue in
+    // the project, so each blocker's own state is in memory; the statuses are read
+    // below for the vocabulary anyway; and the kinds are read for the picker. Only the
+    // relation rows are new.
+    //
+    // Deliberately NOT denormalised onto the issue row. A `has_open_blockers` column
+    // would need maintaining not merely on relation writes but on every status change
+    // of every blocker — a fan-out write on the hottest path in the app, and a column
+    // that can drift. One extra read is the right side of that trade.
+    val relationKindRows = issueRelationKinds.forProject(project.id)
+    val statusRows = statuses.forProject(project.id)
+    // "Open" is read off the STATUS's requires_resolution, and NOT off a resolution's
+    // isDone. The names invite the mistake: `StatusItem` is one wire type shared by
+    // statuses, priorities and resolutions, and its `isDone` is only ever populated for
+    // resolutions — there is no such flag on a status at all. Any closure stops the
+    // blocking, including "Will not fix" and "Duplicate": a blocker nobody will ever do
+    // is not blocking anything.
+    val closingStatusIds = statusRows.filter { it.requiresResolution }.map { it.id }.toSet()
+    val blockingKindIds = relationKindRows.filter { it.marksBlocked }.map { it.id }.toSet()
+    val openById: Map<Long, Boolean> = issueRows.associate { it.id to (it.statusId !in closingStatusIds) }
+    // Issue id → the numbers of the open issues blocking it. Empty for every card on a
+    // project that has never made a blocking link, which is most of them — and the
+    // filter runs over the kinds rather than in SQL for the reason IssueRelations.sq's
+    // `forProject` gives.
+    val blockersByIssue: Map<Long, List<Long>> =
+        if (blockingKindIds.isEmpty()) emptyMap()
+        else issueRelations.forProject(project.id)
+            .filter { it.kindId in blockingKindIds && openById[it.toIssueId] == true }
+            .groupBy({ it.fromIssueId }, { numberById[it.toIssueId] })
+            .mapValues { (_, numbers) -> numbers.filterNotNull().sorted() }
+            .filterValues { it.isNotEmpty() }
+    // One lookup for every assignee named on this board, resolved in a single pass —
+    // `authorNames`' distinct() is what keeps a board where one person holds forty
+    // issues from being forty reads. Separate from `names` above, which covers authors:
+    // an assignee is very often somebody who has filed nothing here.
+    val assigneeNames = authorNames(issueRows.mapNotNull { it.assigneeId }.map(Author::Account))
+
     return BoardState(
-        project = project.toSummary(),
-        statuses = statuses.forProject(project.id)
-            .map { StatusItem(it.id, it.name, it.position.toInt(), it.requiresResolution) },
+        // The rung is in hand: `permissionsFor` above derived it, and the board is
+        // only built for a caller who reached one.
+        project = project.toSummary(permissions.rung),
+        statuses = statusRows.map { StatusItem(it.id, it.name, it.position.toInt(), it.requiresResolution) },
         priorities = priorities.forProject(project.id).map { StatusItem(it.id, it.name, it.position.toInt()) },
         resolutions = resolutions.forProject(project.id)
             .map { StatusItem(it.id, it.name, it.position.toInt(), isDone = it.isDone) },
@@ -893,15 +1162,52 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
                 parentId = issue.parentId,
                 childCount = childCounts[issue.id] ?: 0,
                 parentNumber = issue.parentId?.let { numberById[it] },
+                assigneeId = issue.assigneeId,
+                assigneeName = issue.assigneeId?.let { assigneeNames[it] },
+                // Only ever true beside an assignee — the repository forces it false
+                // otherwise — so the card never draws a robot badge with nothing to
+                // badge. See Issues.sq's assignee_is_agent.
+                assigneeIsAgent = issue.assigneeIsAgent,
+                isBlocked = blockersByIssue.containsKey(issue.id),
+                blockedByNumbers = blockersByIssue[issue.id].orEmpty(),
             )
         },
         permissions = permissions.toView(),
+        // Every project made or migrated since LNL-215 has three; a project whose kinds
+        // have all been deleted sends an empty list, and the client renders no relation
+        // picker at all. Presence is the flag, like `sprints`.
+        relationKinds = relationKindRows.map { it.toItem() },
     )
 }
+
+/** A relation kind, as the picker and the relation rows need it. See IssueRelationKinds.sq. */
+private fun IssueRelationKindRecord.toItem() = IssueRelationKindItem(
+    id = id,
+    name = name,
+    inverseName = inverseName,
+    marksBlocked = marksBlocked,
+    position = position.toInt(),
+)
 
 // ── Issues ───────────────────────────────────────────────────────────────────
 
 private fun Route.issueRoutes(deps: BoardDependencies) {
+    /**
+     * File an issue — which begins as a draft row, so this is a write before the editor
+     * has been shown anything.
+     *
+     * Gated by `canCreateIssue`, and **separately by there being somebody to attribute it
+     * to** (LNL-202). The second check is deliberately redundant with the first: the guest
+     * audience is capped at Viewer, so a caller with no session can no longer reach
+     * Contributor and cannot get here. It stays because the redundancy is the cheap half
+     * of the lesson — the rung is a permission question and authorship is not, and this
+     * route read a **nullable** user straight into `asAuthor()`, which answers
+     * [Author.Nobody]. That row matches no "you wrote it" clause (see
+     * `AccessControl.canEditIssue`), so whoever filed it could neither publish nor discard
+     * it, exactly as LNL-197 found for a previewed address — and unlike that case there is
+     * not even an address to sign it with. An anonymous issue is not a permission we chose
+     * to withhold; it is a row with nobody at the other end.
+     */
     post("${ApiRoutes.PROJECTS}/{id}/issues") {
         val user = call.caller(deps)
         val projectId = call.longParam("id") ?: run {
@@ -909,7 +1215,7 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             return@post
         }
         val project = call.readableProject(deps, user, projectId) ?: return@post
-        if (!deps.access.canCreateIssue(user, project.id)) {
+        if (user == null || !deps.access.canCreateIssue(user, project.id)) {
             call.respond(HttpStatusCode.Forbidden, "You cannot create issues in this project.")
             return@post
         }
@@ -1039,6 +1345,18 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
                 return@put
             }
 
+        // The estimate, checked against what this project actually offers. A stale
+        // editor holding a points field open while an admin switched the project to
+        // time must not be able to write points — but note what this deliberately does
+        // NOT do: it never rewrites an estimate already stored, which is the whole
+        // reason the unit is stamped on the issue rather than read from the project.
+        // See resolveEstimate.
+        val estimate = deps.resolveEstimate(issue.projectId, body.estimate)
+            .getOrElse { failure ->
+                call.respond(HttpStatusCode.BadRequest, failure.message ?: "Bad estimate.")
+                return@put
+            }
+
         deps.issueRepository.save(
             issue = issue,
             title = title,
@@ -1047,7 +1365,13 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             priorityId = body.priorityId,
             resolutionId = resolution,
             assigneeId = body.assigneeId,
+            // Stated, not null: the editor sends its whole field set, so this is the
+            // user's answer. The repository still forces it false when nobody is
+            // assigned, and still owns the "changing the assignee clears it" rule for
+            // the callers that DO leave it unstated. See IssueRepository.save.
+            assigneeIsAgent = body.assigneeIsAgent,
             sprintId = body.sprintId,
+            estimate = estimate,
             plannedVersionId = plannedVersion,
             fixedVersionId = fixedVersion,
             labelIds = body.labelIds,
@@ -1113,6 +1437,15 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
         // lets this tell a real move from a card dropped back where it started.
         // See IssueHistory.recordStatusChanged.
         deps.history?.recordStatusChanged(issue, body.statusId, user.asAuthor(), agentName = null)
+        // And the release, when the close wrote one (LNL-215). A separate event rather
+        // than a field on the status one, because the two are separate facts that
+        // happen to travel together on this one path: the editor can set a fixed
+        // version without moving the issue at all, and a history that only recorded it
+        // on a drag would be silent about half the writes. Guarded inside
+        // recordFixedVersionChanged, so a close that changed nothing records nothing.
+        if (resolution != null) {
+            deps.history?.recordFixedVersionChanged(issue, fixedVersion, user.asAuthor(), agentName = null)
+        }
         call.respond(HttpStatusCode.NoContent)
     }
 
@@ -1265,10 +1598,10 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
      *
      * Dragging is a `status_id` write: the same column the editor writes, so the
      * same rule. Taking an issue is a write to a column the editor's rule was
-     * never about — and the whole point of `be_assigned_issue` is that it names
-     * people who are expected to pick work up *without* being able to rewrite it.
-     * A shared check would collapse the two rights back into one and make the new
-     * grant do nothing on its own.
+     * never about — and the whole point of [ProjectRole.CONTRIBUTOR] is that it names
+     * people who are expected to pick work up *without* being able to rewrite
+     * anybody else's. A shared check would collapse the two back into one and leave
+     * the contributor rung unable to take an issue on its own.
      *
      * So there are two rules, and which applies depends on **who ends up holding
      * it**:
@@ -1290,8 +1623,8 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
      *
      * Note the second rule's second half is checked even for an admin, and that is
      * not redundant: `canBeAssigned` says yes to an admin, so an admin naming
-     * another admin passes, while an admin naming an ordinary account with no
-     * grant is refused. The refusal is the useful one — it is the typo case.
+     * another admin passes, while an admin naming an account that reaches no rung
+     * here is refused. The refusal is the useful one — it is the typo case.
      */
     post("/api/issues/{id}/assignee") {
         val user = call.caller(deps)
@@ -1338,7 +1671,13 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             }
         }
 
-        deps.issues.setAssignee(issue.id, requested)
+        // The flag travels in the same statement as the assignee, both directions: a
+        // request naming somebody else carries whatever it asked for, and a request
+        // naming nobody carries false, because a flag about no one is not a state. The
+        // "changing the assignee clears it" rule is satisfied structurally here — this
+        // body is the whole field set for this route, so an unstated flag IS false.
+        // See Issues.sq's setAssignee.
+        deps.issues.setAssignee(issue.id, requested, requested != null && body.assigneeIsAgent)
         // An assignment is an update to the issue, and it goes through the store
         // directly rather than issueRepository.save — so the notification is fired
         // here, exactly as the drag route does. See BoardDependencies.notifications.
@@ -1387,7 +1726,7 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
         }
-        deps.issueRepository.setParent(issue, body.parentId).getOrElse { failure ->
+        deps.issueRepository.setParent(issue, body.parentId, user.asAuthor()).getOrElse { failure ->
             call.respond(HttpStatusCode.BadRequest, failure.message ?: "That parent is not allowed.")
             return@post
         }
@@ -1421,6 +1760,120 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
         }
         call.respond(deps.buildIssueDetail(issue, user))
     }
+
+    /**
+     * Link this issue to another (LNL-215).
+     *
+     * `canEditIssue` on **this** issue — the one the link is being added *from*, whose
+     * window the user is in. The far side's edit right is not asked, and that is the
+     * parent route's rule rather than a shortcut: belonging in a relation is a fact
+     * somebody states about the issue they are looking at, and an issue does not own
+     * who points at it. Note the consequence, because it is the one worth being sure
+     * about: somebody who may edit LNL-4 can make LNL-9 show "Blocks LNL-4" without
+     * being able to edit LNL-9. That is the same power the parent route already grants,
+     * and it is bounded the same way — both issues are in a project the caller can
+     * already read and write in.
+     *
+     * The same-project, no-self, no-duplicate and both-published rules are
+     * IssueRepository's; a refusal comes back as the 400 it returns, saying which rule.
+     */
+    post("/api/issues/{id}/relations") {
+        val user = call.caller(deps)
+        val issue = call.readableIssue(deps, user) ?: return@post
+        if (!deps.access.canEditIssue(user, issue)) {
+            call.respond(HttpStatusCode.Forbidden, "You cannot link this issue to others.")
+            return@post
+        }
+        val body = call.receiveOrNull<IssueRelationRequest>() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        deps.issueRepository.addRelation(issue, body.toIssueId, body.kindId, user.asAuthor())
+            .getOrElse { failure ->
+                call.respond(HttpStatusCode.BadRequest, failure.message ?: "That link is not allowed.")
+                return@post
+            }
+        call.respond(deps.buildIssueDetail(issue, user))
+    }
+
+    /**
+     * Unlink two issues (LNL-215). The mirror of the route above, under the same gate
+     * and for the same reason.
+     *
+     * Addressed by the RELATION's id in the path rather than by the pair and the kind,
+     * because the caller is looking at a rendered row and has one — and because naming
+     * the pair would have to say which direction it meant, which is exactly the
+     * ambiguity storing one row per link removes. The repository checks the link
+     * actually touches this issue, so an id from another board removes nothing.
+     */
+    delete("/api/issues/{id}/relations/{relationId}") {
+        val user = call.caller(deps)
+        val issue = call.readableIssue(deps, user) ?: return@delete
+        if (!deps.access.canEditIssue(user, issue)) {
+            call.respond(HttpStatusCode.Forbidden, "You cannot change this issue's links.")
+            return@delete
+        }
+        val relationId = call.parameters["relationId"]?.toLongOrNull() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Bad link id.")
+            return@delete
+        }
+        deps.issueRepository.removeRelation(issue, relationId, user.asAuthor()).getOrElse { failure ->
+            call.respond(HttpStatusCode.BadRequest, failure.message ?: "That link could not be removed.")
+            return@delete
+        }
+        call.respond(deps.buildIssueDetail(issue, user))
+    }
+}
+
+/** A refused estimate, carrying the sentence the client should show (LNL-215). */
+internal class EstimateRefusal(override val message: String) : Exception(message)
+
+/**
+ * Validate an estimate against what this project offers — [resolveResolution]'s and
+ * [resolveFixedVersion]'s sibling (LNL-215).
+ *
+ * Two things, and the second is the interesting one:
+ *
+ *  - A negative amount is refused. Zero is allowed and means "estimated at nothing",
+ *    which is a real answer a team may want for a trivial ticket; a negative one is
+ *    not an answer at all.
+ *  - The unit must be one this project's [EstimateMode] currently offers. A stale
+ *    editor holding a points field open while an administrator switched the project to
+ *    time must not be able to write points, and a project on `none` accepts no estimate
+ *    at all — the feature is off there, and off means the write is refused rather than
+ *    silently dropped, because a save that quietly discarded a number the user typed
+ *    would be worse than one that says why.
+ *
+ * What this deliberately does **not** do is touch estimates already stored. Flipping a
+ * project from points to time reinterprets nothing: the unit is stamped on each issue,
+ * so an old row still reads as points and only the next write is constrained. That is
+ * the whole reason `issues.estimate_unit` exists — see Issues.sq.
+ *
+ * @return the estimate to store, or an [EstimateRefusal] naming what is wrong. Null in
+ *   and null out is always fine: clearing an estimate is legal on every project,
+ *   including one that has switched the feature off.
+ */
+internal suspend fun BoardDependencies.resolveEstimate(
+    projectId: Long,
+    estimate: Estimate?,
+): Result<Estimate?> {
+    if (estimate == null) return Result.success(null)
+    if (estimate.amount < 0) {
+        return Result.failure(EstimateRefusal("An estimate cannot be negative."))
+    }
+    val mode = projects.findById(projectId)?.estimateMode ?: EstimateMode.NONE
+    val offered = when (mode) {
+        EstimateMode.NONE -> null
+        EstimateMode.TIME -> EstimateUnit.MINUTES
+        EstimateMode.POINTS -> EstimateUnit.POINTS
+    }
+    if (offered == null) {
+        return Result.failure(EstimateRefusal("This project does not use estimates."))
+    }
+    if (estimate.unit != offered) {
+        return Result.failure(EstimateRefusal("This project estimates in ${mode.key}, not in that unit."))
+    }
+    return Result.success(estimate)
 }
 
 /**
@@ -1509,6 +1962,40 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
     val linkableIssues =
         if (canEdit) issues.forProject(issue.projectId).filter { it.id != issue.id }.map { it.toRef() }
         else emptyList()
+    // ── This issue's links, resolved to THIS issue's side (LNL-215) ─────────
+    //
+    // One stored row per link, read in both directions and turned into a sentence about
+    // the issue whose window this is: the same row becomes "Blocked by LNL-9" here and
+    // "Blocks LNL-4" over there. Which end the reader is on is decided by comparing
+    // against `fromIssueId`, once, here — so no client has to re-derive it and no two
+    // clients can disagree.
+    //
+    // Loaded when an issue is OPENED, never when a board is; the board takes the
+    // narrower `isBlocked` projection instead. Skipped entirely for a draft, whose
+    // links cannot exist yet — the repository refuses to make one — so this is a query
+    // guaranteed to come back empty on the screen that opens most often.
+    val relationRows = if (issue.isDraft) emptyList() else issueRelations.forIssue(issue.id)
+    val kindRows = issueRelationKinds.forProject(issue.projectId)
+    val kindsById = kindRows.associateBy { it.id }
+    val relations = relationRows.mapNotNull { relation ->
+        // A row whose kind cannot be resolved is dropped rather than rendered
+        // label-less, on IssueEventStore.forIssue's reasoning: it should be
+        // unreachable — the cascade takes a kind's relations with it — and a link with
+        // no word for what it is would be a row saying nothing.
+        val kind = kindsById[relation.kindId] ?: return@mapNotNull null
+        val otherId = relation.otherThan(issue.id)
+        val other = issues.findById(otherId) ?: return@mapNotNull null
+        IssueRelationView(
+            id = relation.id,
+            kindId = kind.id,
+            label = kind.labelFor(isFromSide = relation.fromIssueId == issue.id),
+            other = other.toRef(),
+            // The right to unlink is `canEditIssue` on THIS issue, not on the far one —
+            // the parent route's rule, for its reason: an issue does not own who points
+            // at it, and so does not own who stops.
+            canRemove = canEdit,
+        )
+    }
     return IssueDetail(
         id = issue.id,
         projectId = issue.projectId,
@@ -1554,6 +2041,9 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
                 authorName = event.author.displayName(names),
                 agentName = event.agentName,
                 createdAt = event.createdAt,
+                // The snapshot, always — a relation kind is vocabulary, and this is
+                // `value`'s rule rather than `valueUserId`'s. See IssueEvents.sq.
+                relationKind = event.relationKind,
             )
         },
         canEdit = canEdit,
@@ -1601,16 +2091,32 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
         parent = parent,
         children = children,
         linkableIssues = linkableIssues,
+        assigneeIsAgent = issue.assigneeIsAgent,
+        estimate = issue.estimate,
+        // The links themselves go to every reader — they are part of the issue anybody
+        // looking at it can see. The vocabulary to ADD one is narrowed to a caller who
+        // could, the `assignableUsers` rule: a list somebody cannot act on is a list
+        // shipped for nothing.
+        relations = relations,
+        relationKinds = if (canEdit) kindRows.map { it.toItem() } else emptyList(),
     )
 }
 
 // ── Comments ─────────────────────────────────────────────────────────────────
 
 private fun Route.commentRoutes(deps: BoardDependencies) {
+    /**
+     * Start a comment — a draft row, like an issue's.
+     *
+     * `canComment`, and separately somebody to attribute it to, for the reason the
+     * create-issue route above states at length (LNL-202): the rung is a permission
+     * question and authorship is not, and a comment signed [Author.Nobody] is one its
+     * writer can neither publish nor delete.
+     */
     post("/api/issues/{id}/comments") {
         val user = call.caller(deps)
         val issue = call.readableIssue(deps, user) ?: return@post
-        if (!deps.access.canComment(user, issue.projectId)) {
+        if (user == null || !deps.access.canComment(user, issue.projectId)) {
             call.respond(HttpStatusCode.Forbidden, "You cannot comment on this project's issues.")
             return@post
         }
@@ -1645,8 +2151,9 @@ private fun Route.commentRoutes(deps: BoardDependencies) {
  *
  * Two gates, not one: the issue must be readable (a 404 otherwise, so a comment
  * id cannot be used to probe a private project), and then the comment must be
- * this caller's or the caller an admin. `comment_on_issue` grants writing your
- * own comments, never editing someone else's words — see
+ * this caller's, or the caller must run the instance — an administrator, or the
+ * owner above them (LNL-201). A project rung never reaches here: reaching
+ * Maintainer grants editing anyone's *issue*, never their words. See
  * [AccessControl.canEditComment].
  */
 private suspend fun ApplicationCall.editableComment(
@@ -1726,8 +2233,8 @@ private suspend fun BoardDependencies.projectBehind(record: AttachmentRecord): P
  *
  * Note the message branch asks [AccessControl.canReadConversation] rather than
  * comparing ids here, so the file that owns permissions still owns this one —
- * including the system administrator clause, which a hand-written `user.id in
- * participants` would silently have dropped.
+ * including whatever that function says about who runs the instance, which a
+ * hand-written `user.id in participants` would silently have dropped.
  *
  * @return false for an owner this build does not recognise, which is the only safe
  *   reading of "the CHECK says exactly one owner and none of the five matched".
@@ -1946,8 +2453,8 @@ private fun Route.attachmentRoutes(deps: BoardDependencies) {
      * independent of that decision rather than quietly relying on it. Membership
      * alone would let one participant put bytes into another's unsent draft.
      *
-     * Note this is deliberately *not* the delete rule: a system administrator may
-     * remove a message and may not add a file to somebody's unsent one. Same line
+     * Note this is deliberately *not* the delete rule: whoever may remove a message
+     * may still not add a file to somebody's unsent one. Same line
      * `writableForumPost` draws, and for the same reason.
      */
     post("/api/messages/{id}/attachments") {
@@ -2344,25 +2851,38 @@ private suspend fun ApplicationCall.receiveUpload(knownFilename: String? = null)
 internal suspend inline fun <reified T : Any> ApplicationCall.receiveOrNull(): T? =
     runCatching { receive<T>() }.getOrNull()
 
-private fun ProjectRecord.toSummary(): ProjectSummary =
+/**
+ * Narrow a project to the wire, with what the caller holds in it.
+ *
+ * [rung] is required rather than defaulted, and that is on purpose: every caller has
+ * already computed it — it is what decided whether this project is in the response
+ * at all — and a default would let a route send a summary claiming Viewer for
+ * somebody who owns the board. See ProjectSummary.roleKey.
+ */
+private fun ProjectRecord.toSummary(rung: ProjectRole): ProjectSummary =
     ProjectSummary(
         id = id,
         name = name,
         namePrefix = namePrefix,
-        isPublic = isPublic,
-        visibleToAllSignedIn = visibleToAllSignedIn,
+        roleKey = rung.key,
+        roleLabel = rung.label,
         discussionsEnabled = discussionsEnabled,
         messagesEnabled = messagesEnabled,
         requireLabel = requireLabel,
         requireComponent = requireComponent,
         requireFixedVersionOnResolve = requireFixedVersionOnResolve,
         showIssueAuthor = showIssueAuthor,
+        hideIssueNumbers = hideIssueNumbers,
+        // The key rather than the enum, so a value from a newer server decodes instead
+        // of failing the whole board. See ProjectSummary.estimateMode.
+        estimateMode = estimateMode.key,
     )
 
 private fun ProjectPermissions.toView(): ProjectPermissionsView = ProjectPermissionsView(
     canCreateIssue = canCreateIssue,
     canComment = canComment,
     canChangeUnownedIssues = canChangeUnownedIssues,
+    canManageSprintsAndVersions = canManageSprintsAndVersions,
     canMutateProject = canMutateProject,
     canMutateProjectIdentity = canMutateProjectIdentity,
     canBeAssigned = canBeAssigned,

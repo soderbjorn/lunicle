@@ -105,7 +105,9 @@ SELECT user_id FROM conversation_participants WHERE conversation_id = ?;
 
 -- Is this caller in this conversation? The permission question, as one indexed
 -- existence check rather than as a list the caller then searches — see
--- RoleStore.isMember, which is the same shape for the same reason.
+-- RoleStore.roleFor, which is the same shape for the same reason. (This named
+-- `RoleStore.isMember` until LNL-199; the rung table answers a rung now, not a
+-- boolean, so the single-row read it was pointing at is that one.)
 isParticipant:
 SELECT EXISTS(
     SELECT 1 FROM conversation_participants WHERE conversation_id = ? AND user_id = ?

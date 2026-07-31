@@ -32,8 +32,8 @@ interface LunicleApi {
     suspend fun requestEmailSignIn(email: String)
     suspend fun signInWithEmailCode(email: String, code: String): SessionState
     suspend fun signOut(): SessionState
-    suspend fun impersonate(userId: Long): SessionState
-    suspend fun impersonateSignedOut(): SessionState
+    suspend fun armImpersonation(): SessionState
+    suspend fun impersonate(email: String): SessionState
     suspend fun stopImpersonating(): SessionState
 
     // ── Profile ──────────────────────────────────────────────────────────────
@@ -58,8 +58,12 @@ interface LunicleApi {
     // ── Instance administration ──────────────────────────────────────────────
 
     suspend fun adminSettings(): AdminSettingsState
-    suspend fun setUserMcpAllowed(userId: Long, isAllowed: Boolean): AdminSettingsState
     suspend fun setInstanceSetting(key: InstanceSettingKey, isEnabled: Boolean): AdminSettingsState
+    suspend fun setAdmissionPolicy(policy: AdmissionPolicy): AdminSettingsState
+    suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState
+
+    /** Hand the whole deployment to another account. The owner's alone (LNL-198). */
+    suspend fun handOverInstance(userId: Long): AdminSettingsState
     suspend fun reorderProjects(ids: List<Long>): AdminSettingsState
     suspend fun deleteProjectAsAdmin(id: Long): AdminSettingsState
 
@@ -79,7 +83,23 @@ interface LunicleApi {
 
     suspend fun projectSettings(projectId: Long): ProjectSettingsState
     suspend fun setProjectNewIssueNotification(projectId: Long, subscribed: Boolean): ProjectSettingsState
-    suspend fun addVocabulary(projectId: Long, kind: VocabularyKind, name: String): ProjectSettingsState
+    /**
+     * Add a vocabulary row.
+     *
+     * @param inverseName a relation kind's to-side label, or null for a symmetric one
+     *   (LNL-215). Ignored by the server for every other kind. Accepted at add time —
+     *   unlike a status's closing flag, which only the rename sets — so a kind is never
+     *   briefly and visibly symmetric on its way to not being.
+     * @param marksBlocked a relation kind's blocking flag. Defaults false: it decides
+     *   which cards go grey on everybody's board.
+     */
+    suspend fun addVocabulary(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String? = null,
+        marksBlocked: Boolean = false,
+    ): ProjectSettingsState
     suspend fun editVocabulary(
         projectId: Long,
         kind: VocabularyKind,
@@ -87,6 +107,10 @@ interface LunicleApi {
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean = false,
+        /** A relation kind's to-side label, or null for symmetric (LNL-215). Ignored elsewhere. */
+        inverseName: String? = null,
+        /** A relation kind's blocking flag (LNL-215). Ignored elsewhere. */
+        marksBlocked: Boolean = false,
     ): ProjectSettingsState
 
     suspend fun deleteVocabulary(projectId: Long, kind: VocabularyKind, itemId: Long): ProjectSettingsState
@@ -107,7 +131,17 @@ interface LunicleApi {
     suspend fun setProjectDisplaySettings(
         projectId: Long,
         showIssueAuthor: Boolean,
+        hideIssueNumbers: Boolean,
     ): ProjectSettingsState
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * @param mode one of [EstimateMode]'s keys. An unrecognised value folds to `none`
+     *   server-side rather than being refused — `none` renders nothing, which is the
+     *   safe direction for a value a build has never heard of.
+     */
+    suspend fun setProjectEstimateMode(projectId: Long, mode: String): ProjectSettingsState
 
     // ── Forums ───────────────────────────────────────────────────────────────
 
@@ -177,12 +211,35 @@ interface LunicleApi {
     suspend fun createMessageDraft(conversationId: Long): ConversationDraft
     suspend fun publishMessage(conversationId: Long, messageId: Long, body: String): ConversationDetail
     suspend fun deleteMessage(conversationId: Long, messageId: Long): ConversationDetail
-    suspend fun setProjectRole(
-        projectId: Long,
-        userId: Long,
-        roleKey: String,
-        isGranted: Boolean,
-    ): ProjectSettingsState
+    // ── Access (LNL-194) ─────────────────────────────────────────────────────
+
+    /** Put one person on one rung here, or pass null for "no access". */
+    suspend fun setProjectRole(projectId: Long, userId: Long, roleKey: String?): ProjectSettingsState
+
+    /** Say at what rung a whole audience arrives here, or pass null to withdraw the row. */
+    suspend fun setProjectAudience(projectId: Long, audienceKey: String, roleKey: String?): ProjectSettingsState
+
+    /**
+     * Add an address, holding a rung. Nothing is sent — see [PersonAdd].
+     *
+     * @throws ApiFailure 400 for an address that is not one, 403 for a rung this caller
+     *   may not hand out, 409 for a new address this deployment's admission policy will
+     *   not accept an account for.
+     */
+    suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState
+
+    /**
+     * The accounts the people picker may offer, matched against [query].
+     *
+     * An empty [query] is the head of the directory rather than an empty answer: opening
+     * the picker should show who is there. Read-only, and the one call here that does not
+     * return a [ProjectSettingsState] — it answers a question about the instance's
+     * accounts rather than changing this project.
+     *
+     * @throws ApiFailure 403 for a caller who may not grant here. These rows carry
+     *   addresses, so the gate is the granting rung and not the reading one.
+     */
+    suspend fun projectPeopleCandidates(projectId: Long, query: String): PersonCandidates
 
     // ── The board ────────────────────────────────────────────────────────────
 
@@ -200,8 +257,22 @@ interface LunicleApi {
     suspend fun setIssueSprint(id: Long, sprintId: Long?): IssueDetail
     suspend fun setIssueParent(id: Long, parentId: Long?): IssueDetail
     suspend fun reorderChildren(id: Long, childIds: List<Long>): IssueDetail
+
+    /**
+     * Link this issue to another under one of the project's relation kinds (LNL-215).
+     *
+     * @return the refreshed [IssueDetail], so the relations list re-renders from the
+     *   server's truth rather than from what the client guessed.
+     */
+    suspend fun addIssueRelation(id: Long, toIssueId: Long, kindId: Long): IssueDetail
+
+    /** Remove one link, by its own id (LNL-215). Returns the refreshed [IssueDetail]. */
+    suspend fun removeIssueRelation(id: Long, relationId: Long): IssueDetail
     suspend fun activateSprint(projectId: Long, sprintId: Long?): BoardState
     suspend fun completeSprint(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?): BoardState
+
+    /** Clear a sprint's completion stamp, and nothing else. See [ApiRoutes.sprintReopening]. */
+    suspend fun reopenSprint(projectId: Long, sprintId: Long): BoardState
     suspend fun setSprintIssues(projectId: Long, sprintId: Long, issueIds: List<Long>): BoardState
     suspend fun deleteIssue(id: Long)
     suspend fun setIssueOrder(id: Long, issueIds: List<Long>, priorityId: Long? = null)

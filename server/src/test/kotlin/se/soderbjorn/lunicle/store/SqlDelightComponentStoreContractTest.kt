@@ -21,7 +21,7 @@ class SqlDelightComponentStoreContractTest : ComponentStoreContract() {
     override val store: ComponentStore = se.soderbjorn.lunicle.ComponentStore(db)
 
     override suspend fun newProject(): Long =
-        projects.insert("Project $seq", "CM${seq++}", isPublic = false).id
+        projects.insert("Project $seq", "CM${seq++}").id
 
     @AfterTest
     fun tearDown() = fixture.close()

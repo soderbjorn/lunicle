@@ -53,6 +53,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class McpIssueEditTest {
     private val file: File = Files.createTempFile("lunicle-issue-edit", ".db").toFile().also { it.delete() }
@@ -79,8 +80,14 @@ class McpIssueEditTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -145,11 +152,12 @@ class McpIssueEditTest {
     /**
      * An ordinary owner may edit, but not re-attribute.
      *
-     * This user CAN edit the issue — it is theirs — so the refusal is the admin-only
-     * attribution gate turning down `author`, not canEditIssue. Nothing is written.
+     * This user CAN edit the issue — it is theirs — so the refusal is the attribution
+     * gate turning down `author`, which is the instance OWNER's alone, and not
+     * canEditIssue. Nothing is written.
      */
     @Test
-    fun `a non-admin owner cannot re-attribute their issue`(): Unit = runBlocking {
+    fun `an issue's author cannot re-attribute it without owning the instance`(): Unit = runBlocking {
         val fixture = seed()
         val issueId = issueBy(fixture, Author.Account(fixture.ordinaryId), title = "mine")
         val token = tokenFor(fixture.ordinaryId)
@@ -160,8 +168,8 @@ class McpIssueEditTest {
                 "update_issue",
                 """{"issue_id":$issueId,"title":"mine still","author":"Admin"}""",
             )
-            assertTrue(result.isError, "A non-admin set an author on an issue edit.")
-            assertTrue(result.text.contains("admin"), "The refusal must name the gate. Got: ${result.text}")
+            assertTrue(result.isError, "Somebody who does not own the instance set an author on an issue edit.")
+            assertTrue(result.text.contains("owner"), "The refusal must name the gate. Got: ${result.text}")
         }
 
         val issue = issues.findById(issueId)!!
@@ -326,7 +334,7 @@ class McpIssueEditTest {
             val result = client.callTool(
                 token,
                 "update_issue",
-                """{"issue_id":$issueId,"title":"v2","assignee":"Ordinary"}""",
+                """{"issue_id":$issueId,"title":"v2","assignee":"Outsider"}""",
             )
             assertTrue(result.isError, "An unassignable user was accepted as an assignee.")
             assertTrue(
@@ -458,7 +466,7 @@ class McpIssueEditTest {
             val result = client.callTool(
                 token,
                 "create_issue",
-                """{"project_id":${fixture.projectId},"title":"Never filed","assignee":"Ordinary"}""",
+                """{"project_id":${fixture.projectId},"title":"Never filed","assignee":"Outsider"}""",
             )
             assertTrue(result.isError, "An unassignable user was accepted at filing time.")
         }
@@ -472,7 +480,7 @@ class McpIssueEditTest {
     /**
      * The refusal does not say whether the name is an account.
      *
-     * `Ordinary` has an account and lacks the right; `Nobody At All` has neither.
+     * `Outsider` has an account and no rung here; `Outsider Nonexistent` has neither.
      * The two must be indistinguishable, or anyone with write rights on one project
      * can probe this instance's account list a name at a time — the oracle
      * `POST /api/issues/{id}/assignee` collapses for the same reason. This asserts
@@ -488,17 +496,17 @@ class McpIssueEditTest {
             val existing = client.callTool(
                 token,
                 "update_issue",
-                """{"issue_id":$issueId,"assignee":"Ordinary"}""",
+                """{"issue_id":$issueId,"assignee":"Outsider"}""",
             )
             val unknown = client.callTool(
                 token,
                 "update_issue",
-                """{"issue_id":$issueId,"assignee":"Ordinary Nonexistent"}""",
+                """{"issue_id":$issueId,"assignee":"Outsider Nonexistent"}""",
             )
             assertTrue(existing.isError && unknown.isError, "One of the two was not refused.")
             assertEquals(
-                existing.text.replace("Ordinary", "X"),
-                unknown.text.replace("Ordinary Nonexistent", "X"),
+                existing.text.replace("Outsider", "X"),
+                unknown.text.replace("Outsider Nonexistent", "X"),
                 "The refusals differ, so they disclose whether an account exists.",
             )
         }
@@ -510,28 +518,48 @@ class McpIssueEditTest {
         val adminId: Long,
         val ordinaryId: Long,
         val assignableId: Long,
+        /**
+         * Somebody with an account and **no rung here at all** — the unassignable
+         * half of the pair `canBeAssigned` exists to tell apart.
+         *
+         * They used to be `ordinary`, who held `create_issue` and `comment_on_issue`
+         * but not `be_assigned_issue`. That distinction is gone (LNL-191): the three
+         * are one rung now, so anybody who may file here may be handed work here, and
+         * "may write, may not be assigned" is no longer a state the model can express.
+         * What it still expresses — and what these tests are actually about — is that
+         * somebody outside the project cannot be handed its work.
+         */
+        val outsiderId: Long,
         val projectId: Long,
     )
 
     /** As McpAgentNameTest.seed: the instance admin, one ordinary filer, and a private project. */
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        // A third account that may hold issues here and nothing more. `ordinary` is
-        // deliberately NOT granted the right, so the pair covers both answers
-        // canBeAssigned can give without either being an admin.
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        // A third account that may hold issues here, and a fourth that holds nothing
+        // in this project at all — the pair covers both answers canBeAssigned can
+        // give without either being an administrator. See Fixture.outsiderId.
         val assignable = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-assignable", "Assignable", "assignable@example.com"),
         )
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        roles.grant(ordinary.id, project.id, Role.CREATE_ISSUE)
-        roles.grant(ordinary.id, project.id, Role.COMMENT_ON_ISSUE)
-        roles.grant(assignable.id, project.id, Role.BE_ASSIGNED_ISSUE)
-        return Fixture(admin.id, ordinary.id, assignable.id, project.id)
+        val outsider = users.upsert(
+            ProviderIdentity(AuthProvider.GITHUB, "gh-outsider", "Outsider", "outsider@example.com"),
+        )
+        val project = projectRepository.create("Lunamux", "LMX")
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        roles.setRole(assignable.id, project.id, ProjectRole.CONTRIBUTOR)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
+        return Fixture(admin.id, ordinary.id, assignable.id, outsider.id, project.id)
     }
 
     /** A published issue authored by [author], written straight to the store — the state an edit acts on. Its id. */
@@ -568,7 +596,6 @@ class McpIssueEditTest {
         // fail every test here identically and for the wrong reason. mcp_allowed
         // is off by default (6.sqm ships it that way), so the permission has to be
         // granted explicitly; mcp_enabled is the user's own switch.
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client = clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
         return tokens.issueTokens(userId, client.clientId, "mcp", "http://localhost/mcp").accessToken
@@ -612,8 +639,8 @@ class McpIssueEditTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies() = BoardDependencies(
@@ -626,7 +653,7 @@ class McpIssueEditTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -648,7 +675,6 @@ class McpIssueEditTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

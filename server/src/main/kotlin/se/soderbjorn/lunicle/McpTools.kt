@@ -25,29 +25,29 @@
  * ── The one exception, and its shape ────────────────────────────────────────
  *
  * Someone asked. `create_issue`, `add_comment` and `update_comment` take an optional
- * `author`, `author_external` and `created_at`, so that an admin importing another
- * tracker's history ends up with a board that says who wrote what and when — rather
- * than one where every issue was filed by the admin, today. §3 of the plan says
+ * `author`, `author_external` and `created_at`, so that the instance owner importing
+ * another tracker's history ends up with a board that says who wrote what and when —
+ * rather than one where every issue was filed by them, today. §3 of the plan says
  * admin operations are not exposed over MCP and that there is one flat `mcp` scope;
  * both still hold, and this is deliberately not a counterexample to either:
  *
- *  - **No new scope**, and the one new tool is not an admin tool — see below.
+ *  - **No new scope**, and the one new tool is not the owner's — see below.
  *    The token still says only who you are.
  *  - **The gate is [AccessControl.canAttributeWrites]**, asked of the *token's*
  *    user on every call, server-side. Never of anything in the arguments.
- *  - **Refused, never ignored.** A non-admin who sends any of them gets an
+ *  - **Refused, never ignored.** Anyone but the owner who sends any of them gets an
  *    error. Silently dropping them would be the worst outcome available: the agent
  *    would report that it had backfilled history under Ada's name having actually
  *    written it under its own, and the person reading that report has no way to
  *    know. A refusal is a fact; a quiet substitution is a lie.
- *  - **Creation only for everyone but an admin.** A non-admin can never rewrite an
+ *  - **Creation only for everyone but the owner.** Anybody else can never rewrite an
  *    existing row's author or timestamps — those are set once, at creation, and no
- *    tool here lets an ordinary editor near them. An admin can: `update_issue` and
+ *    tool here lets an ordinary editor near them. The owner can: `update_issue` and
  *    `update_comment` let one re-attribute and re-date an existing issue or comment
  *    in place, an external author included. They earn the exception the way
  *    `start_attachment_upload` does — this surface offers no deletion, so an import
  *    that put the wrong name or date on a row could otherwise never be repaired at
- *    all. The gate is unchanged ([AccessControl.canAttributeWrites]); what an admin
+ *    all. The gate is unchanged ([AccessControl.canAttributeWrites]); what the owner
  *    may fix is the existing row, not only the new one.
  *
  * `author_external` is the same exception widened by exactly one case: an imported
@@ -68,9 +68,10 @@
  * through the web app, gated by the same [AccessControl.canEditIssue] and
  * [AccessControl.canEditComment] the HTTP routes use.
  *
- * It is deliberately **not** admin-only. Attaching a file is an ordinary thing an
- * ordinary user does; attaching one *as somebody else* is the admin-only part, and
- * that is [resolveAttribution]'s job here exactly as it is on `create_issue`.
+ * It is deliberately **not** the instance owner's alone. Attaching a file is an
+ * ordinary thing an ordinary user does; attaching one *as somebody else* is the part
+ * only the owner may do, and that is [resolveAttribution]'s job here exactly as it is
+ * on `create_issue`.
  *
  * The bytes do not come through this tool, and that is the whole design rather
  * than an optimisation. See [AttachmentTicketStore] for why base64-through-context
@@ -110,8 +111,8 @@
  * mail path has a deliverability problem nobody chose. The three bounds above
  * still stand and are still what keeps this from being a relay — the check is
  * about who may make the instance send at all, not about where a message goes.
- * See [AccessControl.canSendAgentMail] for why that answer is admin and what a
- * non-admin who wants it should get instead.
+ * See [AccessControl.canSendAgentMail] for why that answer is the instance owner
+ * and what anybody else who wants it should get instead.
  *
  * It is gated in two places, and the second is the one that enforces: the tool
  * is left out of `tools/list` for a caller who cannot use it, so an agent is not
@@ -119,7 +120,13 @@
  * consults that list, so [sendEmail] asks again. An agent that names a tool it
  * was never offered is exactly the caller this surface assumes.
  *
- * ── The fourth exception: the forums, and why they are admin-only ───────────
+ * ── The fourth exception: the forums, retired but still standing ────────────
+ *
+ * Read this section in the past tense. LNL-190 retired discussions and private
+ * messages ahead of the permission rework, and the fifteen forum tools below are
+ * offered to nobody — see [toolsFor]. Every definition, handler and refusal is
+ * still here and still correct, so what follows describes what they do when they
+ * come back rather than what any caller sees today.
  *
  * LNL-30 settled that forums would get no MCP tools. LNL-78 asked for them, for
  * a reason that was not on the table then: a forum's history has to be
@@ -131,18 +138,21 @@
  * two new targets on `start_attachment_upload`, without which an imported
  * discussion arrives with every image broken.
  *
- * They are **system administrator only**, which is the ticket's own decision and
- * makes them the largest departure in this file from "an agent gets what the
- * person driving it has in the web app". An ordinary user posts in forums; their
- * agent does not. See [AccessControl.canUseForumTools] for the argument — briefly,
- * a forum is a room full of other people's words that records no history, and
- * posting in one mails everybody watching it.
+ * LNL-78 gave them to the system administrator alone, which made them the largest
+ * departure in this file from "an agent gets what the person driving it has in the
+ * web app". An ordinary user posts in forums; their agent does not. That audience
+ * was never restated in rungs, because there is nobody to restate it for: see
+ * [AccessControl.canUseForumTools], which answers false for every caller, the
+ * instance owner included. The argument for keeping it narrow when discussions come
+ * back is still the one it gives — a forum is a room full of other people's words
+ * that records no history, and posting in one mails everybody watching it.
  *
  * Two consequences worth stating out loud rather than discovering:
  *
  *  - **Gated twice, and the second one enforces.** The thirteen are filtered out
- *    of `tools/list` for a non-admin, exactly as `send_email` is — and every one
- *    of them asks again, because `tools/call` never consults that list.
+ *    of `tools/list` for everybody, exactly as `send_email` is for anyone but the
+ *    instance owner — and every one of them asks again, because `tools/call` never
+ *    consults that list.
  *  - **A backfilled write announces nothing.** `create_forum_post` and
  *    `create_forum_comment` fire the same notifications the web routes fire, so
  *    an agent starting a genuine thread reaches the forum's watchers — *unless*
@@ -151,6 +161,33 @@
  *    posts land is not a courtesy anybody wants, and a post dated 2019 is not
  *    news. See [announceForumPost].
  *
+ * ── The project's own structure, which an agent may now change (LNL-215) ────
+ *
+ * The five paragraphs above are about capability this surface *adds*. This one is
+ * about capability it stopped withholding, and it is worth separating because it is
+ * not an exception to anything: `list_vocabulary`, `add_vocabulary`,
+ * `rename_vocabulary`, `reorder_vocabulary`, `delete_vocabulary` and
+ * `set_estimate_mode` each map onto a route in [projectSettingsRoutes], ask the same
+ * [AccessControl] question that route asks, and go through the same
+ * [VocabularyRepository]. The first sentence of this file holds for all six.
+ *
+ * What changes is who the audience is. Everything else on this surface is work
+ * *inside* a project — filing, editing, moving, closing — where these six are
+ * decisions *about* one: which columns exist, which of them demand a resolution,
+ * what the ways two issues can be related are called, whether the team estimates at
+ * all. The gate is correspondingly higher and, crucially, is not one rung written
+ * down here: [AccessControl.canEditVocabulary] answers per kind, because sprints and
+ * versions are a maintainer's and the six that define what the board *is* are an
+ * administrator's. This file asks that function and never the rung behind it, so
+ * LNL-191's split — and the next one — reaches the agent without an edit here.
+ *
+ * The delete in `delete_vocabulary` is a real one, and the "no delete of anything"
+ * sentence above is now three exceptions old. It is also the mildest of them: the
+ * refusals that stop an administrator emptying a board of its last status, or
+ * deleting a column three issues are sitting in, are [VocabularyRepository]'s and
+ * are not restated here — which is exactly why the tool goes through it rather than
+ * reaching for a store.
+ *
  * ── Names, not ids, wherever a human would use a name ───────────────────────
  *
  * Statuses, priorities, resolutions, labels and components are all addressed by
@@ -158,6 +195,14 @@
  * asked to "close LUN-12 as fixed" should not first have to fetch a table to
  * learn that "Fixed" is 3. Issues and projects keep ids as well, because those
  * are what the ids are *for* — they are stable and a name is not.
+ *
+ * The vocabulary *editing* tools are the one deliberate departure, and the reason
+ * is the thing being edited: renaming a row by its old name is a request that stops
+ * making sense the moment it succeeds, and reordering one asks for the whole list
+ * anyway. So `rename_vocabulary`, `reorder_vocabulary` and `delete_vocabulary` take
+ * ids, and `list_vocabulary` exists to hand them out. Nothing about that widens what
+ * a caller can see: every id it returns is already on the board response that every
+ * reader of the project gets.
  *
  * @see McpServer
  * @see AccessControl
@@ -169,6 +214,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
@@ -180,6 +226,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
 import se.soderbjorn.lunicle.clientserver.formatByteSize
 
@@ -273,18 +322,70 @@ internal val MCP_INSTRUCTIONS = """
       • Labels and components are optional sets. update_issue replaces them
         wholesale rather than adding to them: send the full set you want, or omit
         the field entirely to leave it alone.
+      • Issues can be LINKED to one another — "Blocked by", "Duplicate of", or
+        whatever this project calls them; get_board lists its relation kinds and
+        omits the field for a project that has none. get_issue reports one issue's
+        links in both directions, already worded from that issue's side, and
+        link_issues and unlink_issues change them. A card counts as BLOCKED when a
+        link whose kind marks blocking points at an issue that is still open —
+        get_board says so per issue and names the blockers.
+      • Estimates are off unless a project turns them on. get_board reports
+        "estimateMode": "none", "time" or "points". Under "time" an estimate is a
+        number of whole MINUTES; under "points" it is whole points; under "none"
+        any estimate at all is refused. estimate_amount and estimate_unit move
+        together — send both or neither.
+      • An issue is assigned to a person, and separately may be marked as work for
+        that person's AGENT rather than for them in person (assignee_is_agent).
+        Handing the issue to somebody else clears that flag unless the same call
+        sets it again, and an issue nobody holds is never flagged.
+
+    Omitting an argument means LEAVE THAT ALONE. That is true of every write tool
+    here and it is deliberately not the same as sending the argument as null,
+    which on the fields that accept one means "clear it": omit `assignee` and the
+    current assignee stands, send it as null and the issue is unassigned. If you
+    have nothing to say about a field, do not mention it — do not fill it in with
+    null to be tidy.
 
     Permissions, and why a refusal is final: you are acting as a specific Lunicle
-    user, and you have exactly their rights — no more. A tool that returns an
-    error saying you cannot do something is not a transient failure and retrying
-    it will not help; the user you are acting as genuinely lacks that permission.
-    Tell the person what happened rather than working around it. Reading is
-    filtered the same way: a project you cannot see does not appear in
+    user, and you have exactly their rights — no more. Those rights in a project
+    are one rung on a ladder — viewer, contributor, maintainer, administrator,
+    owner — and each rung contains the ones below it, so a refusal means the
+    account you are acting as stands below the rung that action needs. A tool that
+    returns an error saying you cannot do something is not a transient failure and
+    retrying it will not help; the user you are acting as genuinely lacks that
+    permission. Tell the person what happened rather than working around it.
+    Reading is filtered the same way: a project you cannot see does not appear in
     list_projects, and there is no way to ask about it.
 
+    One place you have LESS than the person you are acting as: a project where they
+    stand at viewer — able to read it in their browser and nothing more — is not
+    yours at all. It is missing from list_projects and every tool answers "no such
+    project" for it, exactly as for a board they cannot see. So a person who is
+    surprised that some project of theirs is not here is usually right about having
+    access to it, and the answer is that they hold viewer there and an agent needs
+    contributor. Say that rather than reporting the project as gone: it is a rung
+    somebody can raise, not a mistake. This is the only respect in which you are
+    narrower than them; everything else on this list you can do exactly to the
+    extent they can.
+
     What is deliberately not here: you cannot create, rename or delete projects,
-    grant roles, or delete an attachment on its own. Those tools do not exist. If
-    a task needs one, say so — do not approximate it.
+    or grant anybody a rung on one. Those tools do not exist, and deleting a
+    stored attachment on its own exists only for the instance owner. If a task
+    needs one of them, say so — do not approximate it.
+
+    Changing what a project IS, as opposed to what is in it: list_vocabulary reads
+    a project's statuses, priorities, resolutions, labels, components, sprints,
+    versions and relation kinds with their ids, and add_vocabulary,
+    rename_vocabulary, reorder_vocabulary and delete_vocabulary change them.
+    set_estimate_mode decides whether the project estimates and in what unit.
+    These ask for a rung most accounts do not hold on most projects — a project
+    administrator for the six that define what the board is, a project maintainer
+    for sprints and versions — so being refused here is an ordinary outcome and is
+    final in the way described above. They are also the tools most worth confirming
+    before you use: adding a status changes every board view for everybody, and
+    renaming a priority rewrites what every card means. Deleting is refused while
+    issues still hold the row, and refused for the last status or priority a
+    project has, so those are two mistakes you cannot make — the rest you can.
 
     Deleting, which you CAN do: delete_issue and delete_comment are permanent and
     there is no trash. Both are gated on the same rights the web app applies, so a
@@ -302,15 +403,15 @@ internal val MCP_INSTRUCTIONS = """
     not put the file into any text: the tool tells you the url to use, and writing
     the markdown that points at it is a separate edit you make yourself.
 
-    Backfilling history, if and only if you are acting as a system administrator: create_issue,
-    add_comment, update_issue and update_comment take an optional `author`, an
-    optional `author_external` and an optional `created_at`, for importing issues
-    from somewhere else so that they keep the name and date they had — and, on the
-    two update tools, for fixing one after the fact. All three are admin-only and
-    are refused outright — not ignored — for anyone else, so do not send them
-    speculatively: a refusal costs a round-trip, and the alternative you might
-    imagine (it silently files under your own name) is exactly what the refusal
-    exists to prevent.
+    Backfilling history, if and only if you are acting as the instance owner:
+    create_issue, add_comment, update_issue and update_comment take an optional
+    `author`, an optional `author_external` and an optional `created_at`, for
+    importing issues from somewhere else so that they keep the name and date they
+    had — and, on the two update tools, for fixing one after the fact. All three
+    are the owner's alone and are refused outright — not ignored — for anyone
+    else, so do not send them speculatively: a refusal costs a round-trip, and the
+    alternative you might imagine (it silently files under your own name) is
+    exactly what the refusal exists to prevent.
 
     Which author parameter to use is a question about the person, not a fallback
     chain. `author` is for somebody who has a Lunicle account: name them by their
@@ -321,10 +422,10 @@ internal val MCP_INSTRUCTIONS = """
     account at all, which is the ordinary case when importing from another tracker:
     it records the name as written, creates nothing, and grants nobody anything.
     Passing both is refused. `created_at` is epoch milliseconds and cannot be in
-    the future. As a system administrator you can also correct all three after the fact —
-    update_issue on an issue, update_comment on a comment — so a name or date that
-    came in wrong is fixable in place rather than only at creation; for anyone else
-    they are set once, when the row is written.
+    the future. As the instance owner you can also correct all three after the fact
+    — update_issue on an issue, update_comment on a comment — so a name or date
+    that came in wrong is fixable in place rather than only at creation; for anyone
+    else they are set once, when the row is written.
 
     `created_at` also sets the issue's last-touched time, which is what the board
     sorts on — but only at creation. Every later edit re-stamps that column with
@@ -332,19 +433,23 @@ internal val MCP_INSTRUCTIONS = """
     be attached once the issue exists, so the description has to be rewritten
     afterwards to point at the uploaded file. Done naively that lands a years-old
     issue at the top of the board dated today. `update_issue` therefore takes an
-    admin-only `updated_at` — pass the date the imported history actually ended.
+    owner-only `updated_at` — pass the date the imported history actually ended.
     It cannot be in the future, and cannot precede the issue's own `created_at`.
 
-    An issue or comment filed under `author_external` is unowned: nobody can edit
-    it afterwards except a system administrator. That is a consequence of there being no account
-    to own it, not an oversight, and it applies to imported attachments too.
+    An issue or comment filed under `author_external` is unowned: nobody inherits
+    it by sharing the name it was filed under, so editing it afterwards takes a
+    rung rather than authorship — a maintainer in its project for an issue, an
+    instance administrator for a comment. That is a consequence of there being no
+    account to own it, not an oversight, and it applies to imported attachments
+    too.
 
     Saying you are an agent: create_issue and add_comment take an optional
     `agent_name`, and unlike the backfill parameters above this is one you should
     NORMALLY SEND. Put your own name in it — the assistant or product you are — so
     that the board shows clearly an agent filed the issue or wrote the comment
-    rather than a human typing it by hand. It is not admin-only and does not change
-    who the issue belongs to: it rides alongside the user's own account as a label.
+    rather than a human typing it by hand. Sending it needs no standing of any kind
+    and does not change who the issue belongs to: it rides alongside the user's own
+    account as a label.
     Leave it out only when the user has explicitly asked you to act purely as them
     with no agent attribution — that is the override, and it is the only reason to
     omit it.
@@ -359,15 +464,15 @@ internal val MCP_INSTRUCTIONS = """
  * The `send_email` paragraph, appended to [MCP_INSTRUCTIONS] only for a caller
  * who may actually send — see [McpTools.instructionsFor].
  *
- * Conditional rather than a sentence saying "system administrators only", which
- * is how the backfill parameters above handle the same problem. The difference is
- * that those parameters live on tools everybody is offered, so a non-admin's
- * agent has to be told they exist in order to be told not to reach for them.
- * `send_email` is not in a non-admin's `tools/list` at all, and a paragraph
+ * Conditional rather than a sentence saying "the instance owner only", which is
+ * how the backfill parameters above handle the same problem. The difference is
+ * that those parameters live on tools everybody is offered, so an ordinary
+ * caller's agent has to be told they exist in order to be told not to reach for
+ * them. `send_email` is not in their `tools/list` at all, and a paragraph
  * explaining a tool that is not in the list is worse than silence: the model's
  * options are to hallucinate the call or to tell the person about a capability
  * they do not have. This text is also paid for on every conversation — see
- * [MCP_INSTRUCTIONS] — and most of them are not an admin's.
+ * [MCP_INSTRUCTIONS] — and almost none of them are the owner's.
  */
 internal val MCP_AGENT_MAIL_INSTRUCTIONS = """
     E-mailing the user: send_email writes to the person you are acting as, and to
@@ -380,8 +485,9 @@ internal val MCP_AGENT_MAIL_INSTRUCTIONS = """
 """.trimIndent()
 
 /**
- * The forum paragraphs, appended to [MCP_INSTRUCTIONS] only for a caller who is
- * offered the forum tools — see [McpTools.instructionsFor].
+ * The forum paragraphs, appended to [MCP_INSTRUCTIONS] for a caller who is offered
+ * the forum tools — which since LNL-190 is nobody, so this reaches no conversation
+ * at all. See [McpTools.instructionsFor], which is where it goes back.
  *
  * Conditional for [MCP_AGENT_MAIL_INSTRUCTIONS]' reason, which applies with more
  * force here: this is the longest block of text in the file, and describing
@@ -389,6 +495,12 @@ internal val MCP_AGENT_MAIL_INSTRUCTIONS = """
  * every ordinary user's conversation in exchange for teaching their model to
  * hallucinate calls.
  */
+// The text below predates LNL-191 and still speaks in system administrators — its
+// first line tells the reader they reach forums by being one. It is appended for no
+// caller at all, so nothing reads it, and it is left whole rather than
+// half-corrected: whoever puts discussions back has to decide which rung they
+// belong to first, and then this needs rewording to that rung.
+@Suppress("unused")
 internal val MCP_FORUM_INSTRUCTIONS = """
     Discussion forums, which you can reach because you are acting as a system
     administrator: a project may have forums, a forum holds posts, and a post
@@ -435,9 +547,9 @@ private fun JsonObject.string(name: String): String? =
  * Whether the agent said anything about [name] at all.
  *
  * Presence, deliberately, rather than "did it parse" — and the distinction is the
- * whole of the permission check in [McpTools.resolveAttribution]. A non-admin
- * sending `"created_at": "last Tuesday"` must be refused for having asked, not
- * quietly given today's date because the value happened to be unreadable. Asking
+ * whole of the permission check in [McpTools.resolveAttribution]. A caller who may
+ * not backfill, sending `"created_at": "last Tuesday"`, must be refused for having
+ * asked, not quietly given today's date because the value was unreadable. Asking
  * `long()` instead would collapse "absent" and "garbage" into one null and hand
  * that caller the silent substitution this feature exists to prevent.
  *
@@ -571,7 +683,21 @@ class McpTools(private val deps: BoardDependencies) {
                 "tells you every status, priority, label and component this project " +
                 "has — it is the `issues` array, and only that, which narrows. Use it " +
                 "on a big board when you only care about one column: the whole board " +
-                "can be large enough to be awkward to read in one piece.",
+                "can be large enough to be awkward to read in one piece.\n\n" +
+                "Two project-level fields are worth knowing before you write anything: " +
+                "`estimateMode` (\"none\", \"time\" or \"points\") says whether this project " +
+                "estimates and in what unit — always present, and \"none\" for most projects, " +
+                "which is your signal that any estimate you send will be refused. " +
+                "`relationKinds` names the ways two of its issues can be linked and is ABSENT " +
+                "when there are none, exactly as `sprints` and `versions` are: nothing to see " +
+                "means nothing to reason about. Per " +
+                "issue you also get `assigneeIsAgent` when the work is flagged for the " +
+                "assignee's agent, `estimate` when one is set, and `isBlocked` with " +
+                "`blockedBy` naming the open issues holding it up. The blocked answer is " +
+                "computed over the WHOLE project even when you filtered to one column, so a " +
+                "blocker sitting somewhere you did not ask about still counts.\n\n" +
+                "It does not report the vocabulary's ids, positions or usage counts — " +
+                "list_vocabulary does, and that is the call to make before changing any of it.",
             inputSchema = schema(
                 "project_id" to integerProp("The project's id, from list_projects."),
                 "project_name" to stringProp("The project's name, if you do not have its id."),
@@ -585,9 +711,17 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "get_issue",
-            description = "Get one issue in full: its description, all its comments, and its " +
+            description = "Get one issue in full: its description, all its comments, its links to " +
+                "other issues, and its " +
                 "history — what changed, who changed it, and when. " +
                 "get_board returns titles only, so use this when the detail matters.\n\n" +
+                "`relations` is this issue's links, in BOTH directions and already worded from " +
+                "this issue's side: the one stored row that reads \"Blocked by FOO-9\" here " +
+                "reads \"Blocks FOO-4\" over there, and you are given the sentence for the issue " +
+                "you asked about rather than the raw row. Each entry carries `relationId` (what " +
+                "unlink_issues takes), `label` (this side's wording), `kind` (the kind's own " +
+                "from-side name, which is what link_issues takes) and the other issue's `id`, " +
+                "`key` and `title`. Absent entirely when the issue has no links.\n\n" +
                 "`history` is oldest first, one entry per change, and is the only way to ask " +
                 "when an issue was moved or by whom: get_board's `updatedAt` is a " +
                 "last-touched stamp for any edit and cannot tell a close from a later typo " +
@@ -600,8 +734,8 @@ class McpTools(private val deps: BoardDependencies) {
                 "it stood afterwards in `values`, not a delta. A status, label or component is " +
                 "named as it was AT THE TIME, so a column renamed since reads by its old name. " +
                 "Priority and resolution changes are not recorded, so a STATUS_CHANGED into a " +
-                "closing column does not say why it was closed. Newer builds may add kinds. A " +
-                "system administrator can correct an entry's author or date — but never what it " +
+                "closing column does not say why it was closed. Newer builds may add kinds. The " +
+                "instance owner can correct an entry's author or date — but never what it " +
                 "records — with update_history_event, addressing it by that `id`.",
             inputSchema = schema(
                 "issue_id" to integerProp("The issue's id, from get_board."),
@@ -626,6 +760,15 @@ class McpTools(private val deps: BoardDependencies) {
                     ASSIGNEE_PROP_DESCRIPTION + " Omit it and the issue starts unassigned, " +
                         "which is what an issue filed in the web app gets.",
                 ),
+                "assignee_is_agent" to boolProp(
+                    ASSIGNEE_IS_AGENT_PROP_DESCRIPTION + " Omit it and the issue starts unflagged, " +
+                        "which is what an issue filed in the web app gets.",
+                ),
+                "estimate_amount" to integerProp(
+                    ESTIMATE_AMOUNT_PROP_DESCRIPTION + " Omit it — and `estimate_unit` with it — and " +
+                        "the issue starts with no estimate.",
+                ),
+                "estimate_unit" to stringProp(ESTIMATE_UNIT_PROP_DESCRIPTION),
                 "sprint" to stringProp(
                     SPRINT_PROP_DESCRIPTION + " Omit it and the issue starts in the backlog.",
                 ),
@@ -642,11 +785,11 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this issue was written, in epoch " +
+                    "INSTANCE OWNER ONLY, for backfilling. When this issue was written, in epoch " +
                         "milliseconds. Cannot be in the future. Also becomes the issue's " +
                         "last-touched time, which is what the board sorts on — the two are one " +
-                        "value and cannot be set apart. Refused, not ignored, if you are not an " +
-                        "admin. Defaults to now.",
+                        "value and cannot be set apart. Refused, not ignored, if you are not the " +
+                        "instance owner. Defaults to now.",
                 ),
                 required = listOf("project_id", "title"),
             ),
@@ -669,6 +812,18 @@ class McpTools(private val deps: BoardDependencies) {
                     ASSIGNEE_PROP_DESCRIPTION + " Omit it to leave the current assignee alone — " +
                         "sending null is how you unassign, not how you say nothing.",
                 ),
+                "assignee_is_agent" to boolProp(
+                    ASSIGNEE_IS_AGENT_PROP_DESCRIPTION + " Omit it to leave the flag as it is — with " +
+                        "one consequence worth knowing: handing the issue to somebody ELSE in this " +
+                        "same call clears it, because the previous holder's agent is not on this any " +
+                        "more. Send it as true alongside the new `assignee` if the work is going to " +
+                        "their agent.",
+                ),
+                "estimate_amount" to integerProp(
+                    ESTIMATE_AMOUNT_PROP_DESCRIPTION + " Omit it — and `estimate_unit` with it — to " +
+                        "leave the current estimate alone. Send BOTH as null to clear it.",
+                ),
+                "estimate_unit" to stringProp(ESTIMATE_UNIT_PROP_DESCRIPTION),
                 "sprint" to stringProp(
                     SPRINT_PROP_DESCRIPTION + " Omit it to leave the issue where it is — sending " +
                         "null is how you move it to the backlog, not how you say nothing.",
@@ -688,17 +843,18 @@ class McpTools(private val deps: BoardDependencies) {
                 "agent_name" to stringProp(
                     "Set or change the agent label on this issue — your own name as the agent " +
                         "making the edit. Omitting it leaves whatever is already there. Not " +
-                        "admin-only, and it does not change who the issue belongs to. To REMOVE " +
-                        "the badge — so a purely-human or migrated issue wears none — a system " +
-                        "administrator sends an empty string; a non-admin who tries is refused.",
+                        "restricted to the instance owner, and it does not change who the issue " +
+                        "belongs to. To REMOVE the badge — so a purely-human or migrated issue " +
+                        "wears none — the instance owner sends an empty string; anyone else who " +
+                        "tries is refused.",
                 ),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for correcting backfilled history. When this issue should claim " +
+                    "INSTANCE OWNER ONLY, for correcting backfilled history. When this issue should claim " +
                         "to have been written, in epoch milliseconds. Cannot be in the future, and " +
-                        "cannot land after `updated_at`. Refused, not ignored, if you are not an " +
-                        "admin. Leaves the existing date if omitted.",
+                        "cannot land after `updated_at`. Refused, not ignored, if you are not the " +
+                        "instance owner. Leaves the existing date if omitted.",
                 ),
                 "updated_at" to integerProp(UPDATED_AT_PROP_DESCRIPTION),
                 required = listOf("issue_id"),
@@ -734,7 +890,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "By default this is about YOU — it adds or removes your own watch, which any " +
                 "signed-in user who can see the issue may do (you need an e-mail address on your " +
                 "account to actually receive anything). Name someone else in `user` to watch or " +
-                "unwatch ON THEIR BEHALF; that is SYSTEM ADMINISTRATOR ONLY, since it decides " +
+                "unwatch ON THEIR BEHALF; that is INSTANCE OWNER ONLY, since it decides " +
                 "another person's inbox. Idempotent either way — watching what you already watch, " +
                 "or unwatching what you do not, changes nothing and still reports where it left " +
                 "things. get_issue lists an issue's current watchers.",
@@ -744,11 +900,60 @@ class McpTools(private val deps: BoardDependencies) {
                 "user" to stringProp(
                     "Whose watch to change: a display name exactly as the board shows it, or the " +
                         "email address on their account. Omit it to change your own. Naming " +
-                        "somebody else is SYSTEM ADMINISTRATOR ONLY — refused, not ignored, if you " +
-                        "are not one — and an ambiguous name is refused rather than guessed at; use " +
-                        "the email address to settle it.",
+                        "somebody else is INSTANCE OWNER ONLY — refused, not ignored, if you are " +
+                        "not the owner — and an ambiguous name is refused rather than guessed at; " +
+                        "use the email address to settle it.",
                 ),
                 required = listOf("issue_id"),
+            ),
+        ),
+        McpTool(
+            name = "link_issues",
+            description = "Link one issue to another under one of the project's relation kinds — " +
+                "\"Blocked by\", \"Duplicate of\", whatever this project calls them. get_board's " +
+                "`relationKinds` is the list; a project with none there links nothing, and there is " +
+                "nothing to add.\n\n" +
+                "READ THE DIRECTION CAREFULLY. The link is stated FROM `issue_id` and the kind's " +
+                "own name is the sentence about it: `issue_id` 4, `to_issue_id` 9, `relation` " +
+                "\"Blocked by\" says \"issue 4 is blocked by issue 9\". Naming the opposite label " +
+                "instead — \"Blocks\", where that is the kind's inverse — is refused rather than " +
+                "quietly reversed, and the refusal tells you the call to make instead, which is the " +
+                "same one with the two issues swapped.\n\n" +
+                "One link is stored once and read from both ends, so there is no second call to " +
+                "make from the other issue and doing it anyway is refused as a duplicate. Both " +
+                "issues must be in the same project. The right this needs is edit on `issue_id` " +
+                "alone; the far issue's is deliberately not asked, exactly as it is not for an epic.",
+            inputSchema = schema(
+                "issue_id" to integerProp(
+                    "The issue the link is stated FROM — the one the `relation` label describes.",
+                ),
+                "to_issue_id" to integerProp(
+                    "The issue at the other end, by its `id` from get_board or get_issue (not the " +
+                        "FOO-123 key). It must be a published issue in the same project.",
+                ),
+                "relation" to stringProp(
+                    "A relation kind's name, exactly as get_board's `relationKinds` gives its " +
+                        "`name`. Case-insensitive. A kind that reads the same in both directions " +
+                        "has only that one name; a kind with an `inverseName` has two, and this " +
+                        "argument takes the first of them — see the note on direction above.",
+                ),
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
+                required = listOf("issue_id", "to_issue_id", "relation"),
+            ),
+        ),
+        McpTool(
+            name = "unlink_issues",
+            description = "Remove one link between two issues. Takes the `relationId` from " +
+                "get_issue's `relations` — not the pair and the kind, because a link is stored " +
+                "once and naming the pair would have to say which direction it meant.\n\n" +
+                "`issue_id` is either end: the link is readable and removable from both, and a " +
+                "`relation_id` belonging to some other pair of issues is refused rather than " +
+                "silently removing something else. Needs edit rights on `issue_id`.",
+            inputSchema = schema(
+                "issue_id" to integerProp("Either issue the link touches — usually the one you are looking at."),
+                "relation_id" to integerProp("The link to remove: `relationId`, from get_issue's `relations`."),
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
+                required = listOf("issue_id", "relation_id"),
             ),
         ),
         McpTool(
@@ -761,9 +966,9 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this comment was written, in epoch " +
+                    "INSTANCE OWNER ONLY, for backfilling. When this comment was written, in epoch " +
                         "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
-                        "not a system administrator. Defaults to now.",
+                        "not the instance owner. Defaults to now.",
                 ),
                 required = listOf("issue_id", "body"),
             ),
@@ -772,30 +977,30 @@ class McpTools(private val deps: BoardDependencies) {
             name = "update_comment",
             description = "Change an existing comment. Every field is optional; omit one to " +
                 "leave it as it is. You may edit a comment that is your own, or any comment if " +
-                "you are acting as a system administrator — the same rule the web app applies.",
+                "you are acting as an instance administrator — the same rule the web app applies.",
             inputSchema = schema(
                 "comment_id" to integerProp("The comment to change."),
                 "body" to stringProp("A new body, in markdown. Replaces the old one entirely."),
                 "agent_name" to stringProp(
                     "Set or change the agent label on this comment — your own name as the agent " +
                         "making the edit. Omitting it leaves whatever is already there. Not " +
-                        "admin-only, and it does not change who the comment belongs to — it only " +
-                        "labels the row. To REMOVE the badge, a system administrator sends an " +
-                        "empty string; a non-admin who tries is refused.",
+                        "restricted to the instance owner, and it does not change who the comment " +
+                        "belongs to — it only labels the row. To REMOVE the badge, the instance " +
+                        "owner sends an empty string; anyone else who tries is refused.",
                 ),
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this comment should claim to have been written, in epoch " +
+                    "INSTANCE OWNER ONLY. When this comment should claim to have been written, in epoch " +
                         "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
-                        "not a system administrator. Leaves the existing date if omitted.",
+                        "not the instance owner. Leaves the existing date if omitted.",
                 ),
                 required = listOf("comment_id"),
             ),
         ),
         McpTool(
             name = "update_history_event",
-            description = "SYSTEM ADMINISTRATOR ONLY. Correct who made one history entry, or when — and " +
+            description = "INSTANCE OWNER ONLY. Correct who made one history entry, or when — and " +
                 "nothing else about it. Each entry in an issue's `history` (from get_issue) carries " +
                 "an `id`; pass that here to re-attribute that one entry.\n\n" +
                 "This exists for one job. History imported from another tracker lands under a " +
@@ -804,7 +1009,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "stranger forever. WHAT happened — the `kind` of change and the value or values it " +
                 "carries — cannot be edited here or by any tool; only the entry's author, its date " +
                 "and its agent label can. A history whose events you could re-word would not be one. " +
-                "Refused, not ignored, if you are not a system administrator.",
+                "Refused, not ignored, if you are not the instance owner.",
             inputSchema = schema(
                 "event_id" to integerProp(
                     "The history entry to change — its `id`, from get_issue's `history` array.",
@@ -816,13 +1021,13 @@ class McpTools(private val deps: BoardDependencies) {
                         "already there. It does not change who the entry belongs to — it only " +
                         "labels the row. Send an empty string to REMOVE the badge, which is what a " +
                         "migrated entry wants: it was not an agent's, so it should wear no badge. " +
-                        "(Clearing is admin-only, but this whole tool already is.)",
+                        "(Clearing is the instance owner's, but this whole tool already is.)",
                 ),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this entry should claim to have happened, in epoch " +
+                    "INSTANCE OWNER ONLY. When this entry should claim to have happened, in epoch " +
                         "milliseconds. Cannot be in the future. The history is ordered by entry, not " +
                         "by date, so re-dating an entry does not move it. Refused, not ignored, if " +
-                        "you are not a system administrator. Leaves the existing date if omitted.",
+                        "you are not the instance owner. Leaves the existing date if omitted.",
                 ),
                 required = listOf("event_id"),
             ),
@@ -850,11 +1055,11 @@ class McpTools(private val deps: BoardDependencies) {
                 "issue_id" to integerProp("Attach to this issue's description. Give exactly one target."),
                 "comment_id" to integerProp("Attach to this comment. Give exactly one target."),
                 "forum_post_id" to integerProp(
-                    "Attach to this forum post's body. System administrator only, like the rest of " +
-                        "the forum tools. Give exactly one target.",
+                    "Attach to this forum post's body. RETIRED (LNL-190), like the rest of the " +
+                        "forum targets, and refused for everybody. Give exactly one target.",
                 ),
                 "forum_comment_id" to integerProp(
-                    "Attach to this forum comment. System administrator only. Give exactly one target.",
+                    "Attach to this forum comment. RETIRED (LNL-190) and refused. Give exactly one target.",
                 ),
                 "filename" to stringProp(
                     "The name to store it under, as it should appear to someone downloading it. " +
@@ -863,16 +1068,16 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this file was uploaded, in epoch " +
+                    "INSTANCE OWNER ONLY, for backfilling. When this file was uploaded, in epoch " +
                         "milliseconds. Cannot be in the future. Refused, not ignored, if you are " +
-                        "not a system administrator. Defaults to whenever the bytes land.",
+                        "not the instance owner. Defaults to whenever the bytes land.",
                 ),
                 required = listOf("filename"),
             ),
         ),
         McpTool(
             name = "delete_attachment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete one stored attachment — its row and the " +
+            description = "INSTANCE OWNER ONLY. Delete one stored attachment — its row and the " +
                 "bytes on disk both — by the id in its URL. Permanent, and there is no trash.\n\n" +
                 "This is a cleanup tool for a file nothing points at any more: the ordinary way an " +
                 "attachment dies is with the issue, comment or post it hangs on, which takes its " +
@@ -895,7 +1100,7 @@ class McpTools(private val deps: BoardDependencies) {
             description = "Create a sprint in a project. It lands at the end of the project's sprint " +
                 "list and is NOT activated — creating next quarter's sprint in advance must not " +
                 "point the board at it. Start it separately with set_active_sprint.\n\n" +
-                "A PROJECT-ADMINISTRATOR action: you can do this only in a project you administer, " +
+                "A PROJECT-MAINTAINER action: you can do this only in a project you maintain, " +
                 "exactly as in the web app. A sprint's name must be unique within its project.",
             inputSchema = schema(
                 "project_id" to integerProp("Which project to make it in."),
@@ -906,8 +1111,8 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "set_active_sprint",
-            description = "Point a project's board at a sprint, or at none. A PROJECT-ADMINISTRATOR " +
-                "action, in a project you administer.\n\n" +
+            description = "Point a project's board at a sprint, or at none. A PROJECT-MAINTAINER " +
+                "action, in a project you maintain.\n\n" +
                 "Pass `sprint` as a sprint name to activate it — this is starting the sprint. Pass " +
                 "`sprint` as null to leave the project with no active sprint, which is a real state " +
                 "between sprints and not the same as completing one. A completed sprint cannot be " +
@@ -923,8 +1128,8 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "complete_sprint",
-            description = "Finish a sprint and roll its unfinished work forward. A PROJECT-ADMINISTRATOR " +
-                "action, in a project you administer. Permanent: a completed sprint cannot be " +
+            description = "Finish a sprint and roll its unfinished work forward. A PROJECT-MAINTAINER " +
+                "action, in a project you maintain. Permanent: a completed sprint cannot be " +
                 "reopened, activated, or planned into.\n\n" +
                 "Its unfinished issues — everything not in a closing column — move to " +
                 "`move_unfinished_to`: another sprint's name to carry them into the next one, or " +
@@ -941,16 +1146,205 @@ class McpTools(private val deps: BoardDependencies) {
                 required = listOf("sprint"),
             ),
         ),
+        // ── The project's own structure ──────────────────────────────────────
+        //
+        // Five tools for eight vocabularies rather than four tools apiece; see the
+        // section banner above `vocabularyScope` for the whole argument and what it
+        // costs. Offered to everybody and refused per project, exactly as the sprint
+        // tools are and for the same reason: the rung is a fact about one project, so
+        // hiding them would hide them from a caller who administers a different one.
+
+        McpTool(
+            name = "list_vocabulary",
+            description = "Read what a project is made of, WITH IDS: its statuses, priorities, " +
+                "resolutions, labels, components, sprints, versions and relation kinds, each row " +
+                "with its `id`, its `name`, its `position` in the order and its `usageCount`.\n\n" +
+                "get_board names the same vocabulary and is the right call for ordinary work — you " +
+                "address a status by name everywhere else. This is the call to make before " +
+                "CHANGING any of it, because rename, reorder and delete all take ids: a name is not " +
+                "a stable handle for a row you are about to rename, and a reorder wants the whole " +
+                "list anyway.\n\n" +
+                "Per-kind extras come back only on the kinds that have them: `requiresResolution` on " +
+                "a status, `isDone` on a resolution, `inverseName` and `marksBlocked` on a relation " +
+                "kind, `completedAt` on a finished sprint. `usageCount` counts published issues " +
+                "holding the row — for a status or a priority a non-zero count means a delete will " +
+                "be refused, and for a label it means that many issues would simply lose it.\n\n" +
+                "Reading needs no more than being able to see the project. Changing any of it does; " +
+                "see add_vocabulary.",
+            inputSchema = schema(
+                "project_id" to integerProp("The project's id, from list_projects."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(
+                    VOCABULARY_KIND_PROP_DESCRIPTION + " Omit it to get all eight, which is one call " +
+                        "and usually what you want.",
+                ),
+            ),
+        ),
+        McpTool(
+            name = "add_vocabulary",
+            description = "Add one row to one of a project's vocabularies — a new status, priority, " +
+                "resolution, label, component, sprint, version or relation kind. It lands at the END " +
+                "of that kind's order, always: putting a new column at the front would silently " +
+                "change where every future issue lands, so \"add\" would quietly be \"change the " +
+                "default\". Move it afterwards with reorder_vocabulary, which says what it does.\n\n" +
+                "A PROJECT-ADMINISTRATOR action for the six kinds that define what the board is, and " +
+                "a PROJECT-MAINTAINER one for sprints and versions — the same split the web app " +
+                "applies. A refusal is about the rung the account you are acting as holds on THIS " +
+                "project, and retrying will not change it.\n\n" +
+                "The name must be unique within its kind in that project, compared case-insensitively " +
+                "— a clash is refused with the name it collided with. A new status never demands a " +
+                "resolution and a new relation kind never marks blocking unless you say so here: both " +
+                "flags decide how every card on everybody's board reads, so they are armed " +
+                "deliberately rather than by default. A sprint is created NOT active; start it with " +
+                "set_active_sprint.",
+            inputSchema = schema(
+                "project_id" to integerProp("Which project to add it to."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "name" to stringProp(
+                    "What the new row is called, at most $MAX_MCP_VOCABULARY_NAME_LENGTH characters. " +
+                        "For a relation kind this is the FROM-side label — the sentence about the " +
+                        "issue the link is stated from, so \"Blocked by\" rather than \"Blocks\".",
+                ),
+                "inverse_name" to stringProp(INVERSE_NAME_PROP_DESCRIPTION),
+                "marks_blocked" to boolProp(MARKS_BLOCKED_PROP_DESCRIPTION),
+                required = listOf("kind", "name"),
+            ),
+        ),
+        McpTool(
+            name = "rename_vocabulary",
+            description = "Rename one vocabulary row, or change one of its flags, addressing it by " +
+                "the `id` from list_vocabulary. Renaming rewrites nothing else: every issue points " +
+                "at the row by id, so a renamed status keeps its issues and a renamed relation kind " +
+                "keeps its links.\n\n" +
+                "EVERY FIELD IS OPTIONAL AND OMITTING ONE LEAVES IT ALONE — including the flags, " +
+                "which is worth saying because the underlying write sets them all at once. Omit " +
+                "`name` and the row keeps its name, so this is also how you flip a flag without " +
+                "touching what the row is called. A flag that does not belong to the kind you named " +
+                "is ignored rather than refused; a priority has nothing to put in " +
+                "`requires_resolution`.\n\n" +
+                "Same rungs as add_vocabulary, and the same refusal when you do not hold them.",
+            inputSchema = schema(
+                "project_id" to integerProp("The project the row belongs to."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "id" to integerProp(
+                    "The row to change — its `id` from list_vocabulary. An id belonging to another " +
+                        "project is refused, not applied there.",
+                ),
+                "name" to stringProp(
+                    "A new name, still unique within its kind here. Omit it to leave the name as it " +
+                        "is and change only a flag.",
+                ),
+                "requires_resolution" to boolProp(
+                    "STATUSES ONLY: whether landing in this column demands a resolution saying why " +
+                        "the issue is closed. Omit it to leave the flag as it is. Turning it ON does " +
+                        "not go back and demand one from the issues already there; turning it OFF " +
+                        "does not strip the resolutions they carry.",
+                ),
+                "is_done" to boolProp(
+                    "RESOLUTIONS ONLY: whether this resolution means the work was actually done, as " +
+                        "opposed to \"Won't fix\" or \"Duplicate\". Some projects require a fixed " +
+                        "version when closing under a done resolution. Omit it to leave it as it is.",
+                ),
+                "inverse_name" to stringProp(
+                    INVERSE_NAME_PROP_DESCRIPTION + " Omit it to leave the kind's opposite label as " +
+                        "it is; send it as null to make the kind read the SAME in both directions.",
+                ),
+                "marks_blocked" to boolProp(
+                    MARKS_BLOCKED_PROP_DESCRIPTION + " Omit it to leave the flag as it is.",
+                ),
+                required = listOf("kind", "id"),
+            ),
+        ),
+        McpTool(
+            name = "reorder_vocabulary",
+            description = "Put one of a project's vocabularies in a given order, first to last. For " +
+                "statuses that is the order of the board's COLUMNS, and the first of them is where a " +
+                "new issue lands; for priorities it is the scale, high to low.\n\n" +
+                "`ids` must name EXACTLY that kind's rows in that project — all of them, each once, " +
+                "and none from anywhere else. Anything short of that is refused rather than partly " +
+                "applied, because a half-applied reorder leaves two rows sharing a position and the " +
+                "board ordering them arbitrarily. So read the current order from list_vocabulary and " +
+                "send it back rearranged.\n\n" +
+                "Same rungs as add_vocabulary.",
+            inputSchema = schema(
+                "project_id" to integerProp("Whose vocabulary is being ordered."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "ids" to buildJsonObject {
+                    put("type", "array")
+                    putJsonObject("items") { put("type", "integer") }
+                    put(
+                        "description",
+                        "Every row id of that kind in that project, in the order you want them. " +
+                            "From list_vocabulary.",
+                    )
+                },
+                required = listOf("kind", "ids"),
+            ),
+        ),
+        McpTool(
+            name = "delete_vocabulary",
+            description = "Delete one vocabulary row, permanently. There is no trash, and this is " +
+                "the one write here whose consequences reach issues you are not looking at.\n\n" +
+                "What it will REFUSE, so you do not have to guess: a status, priority or resolution " +
+                "that published issues still hold — you are told how many, and moving them is the " +
+                "fix — and the last status or the last priority a project has, because a project " +
+                "with none of either cannot take an issue and cannot be repaired by filing one about " +
+                "it.\n\n" +
+                "What it will NOT refuse, and you should think about first: deleting a label or a " +
+                "component simply removes it from every issue that had it. Deleting a version or a " +
+                "sprint un-schedules the issues that named it. Deleting a RELATION KIND deletes " +
+                "every link that used it — list_vocabulary's `usageCount` says how many, and after " +
+                "the fact nothing records what was linked. CONFIRM WITH THE PERSON FIRST unless they " +
+                "have already named the exact row they want gone.\n\n" +
+                "Same rungs as add_vocabulary.",
+            inputSchema = schema(
+                "project_id" to integerProp("The project the row belongs to."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "kind" to stringProp(VOCABULARY_KIND_PROP_DESCRIPTION),
+                "id" to integerProp("The row to delete — its `id` from list_vocabulary."),
+                required = listOf("kind", "id"),
+            ),
+        ),
+        McpTool(
+            name = "set_estimate_mode",
+            description = "Decide whether a project estimates its issues, and in what unit. A " +
+                "PROJECT-ADMINISTRATOR action — it sits with the vocabulary rather than with the " +
+                "sprints, because whether a team estimates at all is a decision about what the board " +
+                "is.\n\n" +
+                "Three modes: \"none\" (the default — no estimate field anywhere, and any estimate " +
+                "sent to create_issue or update_issue is refused), \"time\" (whole MINUTES, rendered " +
+                "as days, hours and minutes with a day fixed at eight hours) and \"points\" (whole " +
+                "points, on whatever scale the team means by them).\n\n" +
+                "Switching mode REINTERPRETS NOTHING. Every estimate already stored carries its own " +
+                "unit, so a project moved from points to time keeps reading its old rows as points; " +
+                "the mode governs only what may be written next. Switching to \"none\" likewise " +
+                "hides the field rather than erasing what is there. get_board reports the mode in " +
+                "force as `estimateMode`.",
+            inputSchema = schema(
+                "project_id" to integerProp("Whose estimate setting is being changed."),
+                "project_name" to stringProp("The project's name, if you do not have its id."),
+                "mode" to stringProp(
+                    "\"none\", \"time\" or \"points\", exactly. Anything else is refused with the " +
+                        "three listed rather than folded to \"none\" — a typo here would otherwise " +
+                        "switch a live project's estimates off and report that as success.",
+                ),
+                required = listOf("mode"),
+            ),
+        ),
+
         McpTool(
             name = "delete_issue",
             description = "Delete an issue, permanently. Its comments, its attachments and its " +
                 "history go with it — this is not a status change and there is no trash to " +
                 "recover it from.\n\n" +
-                "You may delete an issue that is your own, or any issue if you hold " +
-                "change_unowned_issues in its project, or anything at all as a system administrator — the same " +
-                "rule the web app's Delete button applies, which is also the rule for editing " +
-                "one. Nothing here is deletable that you could not already have emptied of every " +
-                "word it said.\n\n" +
+                "You may delete an issue that is your own, or any issue in a project you " +
+                "administer — the same rule the web app's Delete button applies. It is STRICTER " +
+                "than the rule for editing one: a maintainer may rewrite anybody's issue here " +
+                "and still not make it stop existing. Nothing here is deletable that you could " +
+                "not already have emptied of every word it said.\n\n" +
                 "CONFIRM WITH THE PERSON FIRST unless they have already asked for this exact " +
                 "issue to go. \"Tidy up the board\" is not that. If what they want is to record " +
                 "that the work will not be done, move_issue to a closing status with a " +
@@ -966,9 +1360,9 @@ class McpTools(private val deps: BoardDependencies) {
             description = "Delete a comment, permanently, along with any files attached to it. " +
                 "There is no trash to recover it from.\n\n" +
                 "You may delete a comment that is your own, or any comment if you are acting as " +
-                "a system administrator — the same rule that governs editing one. Note this is NARROWER than " +
-                "delete_issue: holding change_unowned_issues lets you delete somebody's issue " +
-                "but never their words.\n\n" +
+                "an instance administrator — the same rule that governs editing one. Note this " +
+                "is NARROWER than delete_issue: a project administrator may delete anybody's " +
+                "issue there, and still not a word anybody wrote here.\n\n" +
                 "CONFIRM WITH THE PERSON FIRST unless they have already asked for this exact " +
                 "comment to go. If the point is to correct something rather than erase it, " +
                 "update_comment keeps the thread readable.",
@@ -978,14 +1372,14 @@ class McpTools(private val deps: BoardDependencies) {
             ),
         ),
 
-        // ── Forums, system administrator only ────────────────────────────────
+        // ── Forums, retired (LNL-190) ────────────────────────────────────────
         //
-        // Thirteen tools, filtered out of tools/list for everybody else — see
+        // Thirteen tools, filtered out of tools/list for everybody — see
         // toolsFor, canUseForumTools, and this file's fourth exception.
 
         McpTool(
             name = "list_forums",
-            description = "SYSTEM ADMINISTRATOR ONLY. List a project's discussion forums, in the order " +
+            description = "RETIRED (LNL-190). List a project's discussion forums, in the order " +
                 "its administrator put them. Start here for anything to do with the Discussion " +
                 "tab: a forum's id is what list_forum_posts takes.",
             inputSchema = schema(
@@ -995,7 +1389,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "create_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Make a new forum in a project. It lands at the end " +
+            description = "RETIRED (LNL-190). Make a new forum in a project. It lands at the end " +
                 "of the project's list — use reorder_forums to move it. A forum's name must be " +
                 "unique within its project.",
             inputSchema = schema(
@@ -1013,7 +1407,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "update_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Rename a forum or change its description. Omit a " +
+            description = "RETIRED (LNL-190). Rename a forum or change its description. Omit a " +
                 "field to leave it alone; send `description` as null to remove it. A forum cannot " +
                 "be moved to another project — that would carry its posts into a project whose " +
                 "members never agreed to read them.",
@@ -1026,7 +1420,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "delete_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete a forum AND EVERYTHING IN IT: every post, " +
+            description = "RETIRED (LNL-190). Delete a forum AND EVERYTHING IN IT: every post, " +
                 "every comment on every post, and every file attached to any of them. Permanent, " +
                 "and there is no trash.\n\n" +
                 "This is the most destructive tool on this server. Forums record no history, so " +
@@ -1042,7 +1436,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "reorder_forums",
-            description = "SYSTEM ADMINISTRATOR ONLY. Put a project's forums in a given order, 0 first. " +
+            description = "RETIRED (LNL-190). Put a project's forums in a given order, 0 first. " +
                 "`forum_ids` must name EXACTLY this project's forums — all of them, none twice, " +
                 "and none from anywhere else. Anything short of that is refused rather than " +
                 "partly applied, so read the current order from list_forums and send it back " +
@@ -1059,7 +1453,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "list_forum_posts",
-            description = "SYSTEM ADMINISTRATOR ONLY. A forum's posts, newest first, with each one's " +
+            description = "RETIRED (LNL-190). A forum's posts, newest first, with each one's " +
                 "author, date, comment count and who last replied. Bodies are NOT included — this " +
                 "is the index. Use get_forum_post for one post in full.\n\n" +
                 "Unpublished drafts never appear here; a draft is somebody's unsent text.",
@@ -1070,7 +1464,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "get_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. One post in full — its whole markdown body — with " +
+            description = "RETIRED (LNL-190). One post in full — its whole markdown body — with " +
                 "every comment on it, in order, also in full. This is the unit to export: a post " +
                 "and its thread come back in one call.\n\n" +
                 "Note there is no history and no `updatedAt`: a post carries when it was written " +
@@ -1083,7 +1477,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "watch_forum",
-            description = "SYSTEM ADMINISTRATOR ONLY. Watch a forum, or stop — the notification bell on " +
+            description = "RETIRED (LNL-190). Watch a forum, or stop — the notification bell on " +
                 "the forum. A watcher is e-mailed when a new post appears in it.\n\n" +
                 "By default this is about YOU: it adds or removes your own watch. Name someone in " +
                 "`user` to change theirs instead, on their behalf. Idempotent — watching what you " +
@@ -1101,7 +1495,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "watch_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Watch a single post's thread, or stop. A watcher is " +
+            description = "RETIRED (LNL-190). Watch a single post's thread, or stop. A watcher is " +
                 "e-mailed when a new comment is added to the post.\n\n" +
                 "By default about YOU; name someone in `user` to change theirs. Idempotent, exactly " +
                 "as watch_forum. get_forum_post reports whether you are watching the post.",
@@ -1117,7 +1511,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "create_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Start a new post in a forum. Written and published " +
+            description = "RETIRED (LNL-190). Start a new post in a forum. Written and published " +
                 "in one call — there is no draft left behind if it fails.\n\n" +
                 "THIS E-MAILS PEOPLE. Everybody watching the forum is notified, exactly as if a " +
                 "person had posted — unless the call carries `author`, `author_external` or " +
@@ -1137,15 +1531,15 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "update_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Rewrite an existing post: its title, its body, and " +
+            description = "RETIRED (LNL-190). Rewrite an existing post: its title, its body, and " +
                 "— because this is the import-repair path — who is recorded as having written it " +
                 "and when. Omit a field to leave it as it is.\n\n" +
                 "This is also how an uploaded image gets into a post: start_attachment_upload " +
                 "hands you a url, and putting it into the body is this call.\n\n" +
                 "Nothing is notified by an update, and nothing records that it happened. The web " +
                 "app has no edit button for a post at all, so an edit here is invisible to " +
-                "everyone — which is exactly why it is limited to a system administrator and " +
-                "should be used to correct imports rather than to change what somebody said.",
+                "everyone — which is exactly why it was kept to a narrow audience and is for " +
+                "correcting imports rather than for changing what somebody said.",
             inputSchema = schema(
                 "post_id" to integerProp("The post to change."),
                 "title" to stringProp("A new title."),
@@ -1157,7 +1551,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this post should claim to have been written, in epoch " +
+                    "INSTANCE OWNER ONLY. When this post should claim to have been written, in epoch " +
                         "milliseconds. Cannot be in the future. Leaves the existing date if omitted.",
                 ),
                 required = listOf("post_id"),
@@ -1165,7 +1559,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "delete_forum_post",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete a post, every comment on it, and every file " +
+            description = "RETIRED (LNL-190). Delete a post, every comment on it, and every file " +
                 "attached to any of them. Permanent, with no trash and no history that it " +
                 "happened.\n\n" +
                 "CONFIRM WITH THE PERSON FIRST unless they have already named this exact post. " +
@@ -1178,7 +1572,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "create_forum_comment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Comment on a forum post. Comments are flat — there " +
+            description = "RETIRED (LNL-190). Comment on a forum post. Comments are flat — there " +
                 "is no replying to a comment, only to the post.\n\n" +
                 "THIS E-MAILS PEOPLE: everybody watching the post, including its author, unless " +
                 "the call is a backfill carrying `author`, `author_external` or `created_at`. See " +
@@ -1195,7 +1589,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "update_forum_comment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Rewrite a comment on a forum post — its body, and " +
+            description = "RETIRED (LNL-190). Rewrite a comment on a forum post — its body, and " +
                 "its author and date. Omit a field to leave it alone. Notifies nobody and records " +
                 "nothing; see update_forum_post.",
             inputSchema = schema(
@@ -1208,7 +1602,7 @@ class McpTools(private val deps: BoardDependencies) {
                 "author" to stringProp(AUTHOR_PROP_DESCRIPTION),
                 "author_external" to stringProp(AUTHOR_EXTERNAL_PROP_DESCRIPTION),
                 "created_at" to integerProp(
-                    "SYSTEM ADMINISTRATOR ONLY. When this comment should claim to have been written, in " +
+                    "INSTANCE OWNER ONLY. When this comment should claim to have been written, in " +
                         "epoch milliseconds. Cannot be in the future. Leaves the existing date if " +
                         "omitted.",
                 ),
@@ -1217,7 +1611,7 @@ class McpTools(private val deps: BoardDependencies) {
         ),
         McpTool(
             name = "delete_forum_comment",
-            description = "SYSTEM ADMINISTRATOR ONLY. Delete one comment on a forum post, and any files " +
+            description = "RETIRED (LNL-190). Delete one comment on a forum post, and any files " +
                 "attached to it. Permanent, and nothing records that it happened. If the point is " +
                 "to correct something rather than erase it, update_forum_comment keeps the thread " +
                 "readable.",
@@ -1277,21 +1671,26 @@ class McpTools(private val deps: BoardDependencies) {
      * for the general form of the rule. Every filter here has a matching refusal
      * in the tool itself.
      */
-    fun toolsFor(user: UserRecord): List<McpTool> = tools.filter { tool ->
+    suspend fun toolsFor(user: UserRecord): List<McpTool> = tools.filter { tool ->
         when (tool.name) {
             "send_email" -> deps.access.canSendAgentMail(user)
-            // Whole-tool admin-only, exactly as send_email and the forum tools:
-            // editing history is an act nobody but an admin can perform, so a
-            // non-admin is not offered it rather than shown a tool that will only
-            // refuse them. See updateHistoryEvent, and the ordinary-vs-admin tool
-            // list assertion in McpSendEmailTest.
+            // Whole-tool owner-only, exactly as send_email: editing history is an
+            // act nobody but the instance owner can perform, so everybody else is
+            // not offered it rather than shown a tool that will only refuse them.
+            // See updateHistoryEvent, and the ordinary-vs-owner tool list
+            // assertion in McpSendEmailTest.
             "update_history_event" -> deps.access.canAttributeWrites(user)
-            // Deleting a stored attachment out of band is admin cleanup — the web
-            // gives no one a standalone attachment delete, so this is offered only
-            // to the account that could be trusted with a brand-new destructive
-            // power. See AccessControl.canDeleteAttachment and deleteAttachment.
+            // Deleting a stored attachment out of band is the owner's cleanup —
+            // the web gives no one a standalone attachment delete, so this is
+            // offered only to the one account answerable for the deployment. See
+            // AccessControl.canDeleteAttachment and deleteAttachment.
             "delete_attachment" -> deps.access.canDeleteAttachment(user)
-            in FORUM_TOOL_NAMES -> deps.access.canUseForumTools(user)
+            // Offered to nobody, the instance owner included: discussions are
+            // retired (LNL-190), so the fifteen forum tools are off every caller's
+            // list. The tools themselves still stand — their definitions above, their
+            // handlers below and their canUseForumTools refusals all untouched — so
+            // re-enabling discussions is this line going back to the access check.
+            in FORUM_TOOL_NAMES -> false
             else -> true
         }
     }
@@ -1304,10 +1703,12 @@ class McpTools(private val deps: BoardDependencies) {
      * caller offered a tool and not told what it is for gets a worse answer than
      * one told nothing about it.
      */
-    fun instructionsFor(user: UserRecord): String = buildString {
+    suspend fun instructionsFor(user: UserRecord): String = buildString {
         append(MCP_INSTRUCTIONS)
         if (deps.access.canSendAgentMail(user)) append("\n\n").append(MCP_AGENT_MAIL_INSTRUCTIONS)
-        if (deps.access.canUseForumTools(user)) append("\n\n").append(MCP_FORUM_INSTRUCTIONS)
+        // [MCP_FORUM_INSTRUCTIONS] is appended for nobody since LNL-190 retired
+        // discussions, exactly as [toolsFor] offers the forum tools to nobody — the
+        // two match tool for tool, which is why they were changed together.
     }
 
     /**
@@ -1337,6 +1738,14 @@ class McpTools(private val deps: BoardDependencies) {
         "update_issue" -> updateIssue(user, arguments)
         "move_issue" -> moveIssue(user, arguments)
         "watch_issue" -> watchIssue(user, arguments)
+        "link_issues" -> linkIssues(user, arguments)
+        "unlink_issues" -> unlinkIssues(user, arguments)
+        "list_vocabulary" -> listVocabulary(user, arguments)
+        "add_vocabulary" -> addVocabulary(user, arguments)
+        "rename_vocabulary" -> renameVocabulary(user, arguments)
+        "reorder_vocabulary" -> reorderVocabulary(user, arguments)
+        "delete_vocabulary" -> deleteVocabulary(user, arguments)
+        "set_estimate_mode" -> setEstimateMode(user, arguments)
         "add_comment" -> addComment(user, arguments)
         "update_comment" -> updateComment(user, arguments)
         "update_history_event" -> updateHistoryEvent(user, arguments)
@@ -1369,10 +1778,17 @@ class McpTools(private val deps: BoardDependencies) {
     // ── Reading ──────────────────────────────────────────────────────────────
 
     private suspend fun listProjects(user: UserRecord): McpToolResult {
-        // Filtered, exactly as GET /api/projects is. A project this user cannot
-        // read does not appear — it is not returned and hidden, because there is
-        // no UI here to do the hiding and there never should have been.
-        val visible = deps.projects.selectAll().filter { deps.access.canReadProject(user, it) }
+        // Filtered, in the same spirit GET /api/projects is filtered: a project out of
+        // reach does not appear — it is not returned and hidden, because there is no UI
+        // here to do the hiding and there never should have been.
+        //
+        // The filter is the agent floor and NOT canReadProject, so this list is narrower
+        // than the project rail in the person's own browser: boards they can only look at
+        // are simply not here. That is the point rather than an inconsistency — see
+        // AccessControl.canAgentReachProject — and it is why the server instructions say
+        // so out loud. An agent that finds fewer projects than its user expects has to be
+        // able to explain why without guessing.
+        val visible = deps.projects.selectAll().filter { deps.access.canAgentReachProject(user, it) }
         return ok(
             buildJsonArray {
                 visible.forEach { project ->
@@ -1381,8 +1797,13 @@ class McpTools(private val deps: BoardDependencies) {
                             put("id", project.id)
                             put("name", project.name)
                             put("keyPrefix", project.namePrefix)
-                            put("isPublic", project.isPublic)
-                            put("visibleToAllSignedIn", project.visibleToAllSignedIn)
+                            // What this agent's user holds here, as the rung key
+                            // (LNL-194). It replaces `isPublic`/`visibleToAllSignedIn`,
+                            // which were two booleans about the project that had read
+                            // false since LNL-191 — an agent is better told what it may
+                            // do than what the world may see. Never null: the filter
+                            // above is what proved a rung exists.
+                            put("yourRole", deps.access.effectiveRole(user, project.id)?.key ?: "")
                         },
                     )
                 }
@@ -1409,11 +1830,14 @@ class McpTools(private val deps: BoardDependencies) {
                 statuses.firstOrNull { it.name.equals(name, ignoreCase = true) }
                     ?: return refuseUnknown("status", name, statuses.map { it.name })
             }
+        // Every issue on the board, before the column filter — kept because the
+        // blocked projection below is a fact about the whole project and cannot be
+        // computed from a slice of it. See `blockersByIssue`.
+        val allIssues = deps.issues.forProject(project.id)
         // Narrowed here rather than at the JSON, so the per-issue lookups below —
         // authors, assignees, and one canEditIssue apiece — are paid for the column
         // asked about instead of the whole board.
-        val issues = deps.issues.forProject(project.id)
-            .filter { statusFilter == null || it.statusId == statusFilter.id }
+        val issues = allIssues.filter { statusFilter == null || it.statusId == statusFilter.id }
         val labelsByIssue = deps.issues.labelsForProject(project.id)
         val componentsByIssue = deps.issues.componentsForProject(project.id)
 
@@ -1440,6 +1864,44 @@ class McpTools(private val deps: BoardDependencies) {
         val assignees = issues.mapNotNull { it.assigneeId }.distinct()
             .mapNotNull { id -> deps.users.findById(id)?.let { id to it.resolvedName } }
             .toMap()
+
+        // ── The blocked projection, computed exactly as the web board computes it ──
+        //
+        // A card is blocked when it is on the FROM side of a link whose kind marks
+        // blocking and the issue on the TO side is still open. Both halves are read
+        // over the WHOLE project rather than over the filtered `issues`, and that is
+        // the one thing this must not get wrong: a blocker sitting in a column the
+        // caller filtered out is absent from the response, so deriving this from what
+        // is returned would report a blocked card as clear — silently, and in the
+        // direction that loses information. `boardState`'s comment says the same at
+        // more length; this is the second reader of that rule and not a second copy of
+        // it, since both go through the same two stores.
+        //
+        // "Open" is read off the STATUS's requiresResolution and never off a
+        // resolution's isDone: any closure stops the blocking, "Won't fix" included,
+        // because a blocker nobody will ever do is not blocking anything.
+        val relationKinds = deps.issueRelationKinds.forProject(project.id)
+        val blockingKindIds = relationKinds.filter { it.marksBlocked }.map { it.id }.toSet()
+        val closingStatusIds = statuses.filter { it.requiresResolution }.map { it.id }.toSet()
+        val openById = allIssues.associate { it.id to (it.statusId !in closingStatusIds) }
+        val numberById = allIssues.associate { it.id to it.number }
+        // Issue id → the KEYS of the open issues blocking it. Keys rather than the bare
+        // numbers the web board carries, because an agent addresses an issue as
+        // FOO-123 or by id and has no prefix in hand to build one from. Empty for every
+        // card on a project that has never made a blocking link, which is most of them,
+        // and the whole map is skipped when no kind marks blocking at all.
+        val blockersByIssue: Map<Long, List<String>> =
+            if (blockingKindIds.isEmpty()) {
+                emptyMap()
+            } else {
+                deps.issueRelations.forProject(project.id)
+                    .filter { it.kindId in blockingKindIds && openById[it.toIssueId] == true }
+                    .groupBy({ it.fromIssueId }, { numberById[it.toIssueId] })
+                    .mapValues { (_, numbers) ->
+                        numbers.filterNotNull().sorted().map { "${project.namePrefix}-$it" }
+                    }
+                    .filterValues { it.isNotEmpty() }
+            }
 
         return ok(
             buildJsonObject {
@@ -1494,6 +1956,41 @@ class McpTools(private val deps: BoardDependencies) {
                 if (versions.isNotEmpty()) {
                     putJsonArray("versions") { versions.forEach { add(it.name) } }
                 }
+                // Absent — not empty — when the project links nothing, joining
+                // `sprints` and `versions` in reading as "this board has never heard
+                // of the idea" rather than "it has an empty list of them" (LNL-215).
+                // An agent that sees nothing here has nothing to reason about and
+                // link_issues has nothing to accept.
+                if (relationKinds.isNotEmpty()) {
+                    putJsonArray("relationKinds") {
+                        relationKinds.forEach { kind ->
+                            add(
+                                buildJsonObject {
+                                    // The from-side label, and the one link_issues takes.
+                                    put("name", kind.name)
+                                    // Absent when the kind reads the same in both
+                                    // directions, which is the whole encoding of
+                                    // symmetry — there is no isSymmetric flag that
+                                    // could disagree with a stale second name. See
+                                    // IssueRelationKindRecord.inverseName.
+                                    kind.inverseName?.let { put("inverseName", it) }
+                                    // Always present as a bool, unlike the name above:
+                                    // it is the field that decides whether `isBlocked`
+                                    // can ever be true on this board, and absent-when-
+                                    // false would read as "unknown" rather than "no".
+                                    put("marksBlocked", kind.marksBlocked)
+                                },
+                            )
+                        }
+                    }
+                }
+                // Always present, alone among the optional features here, and
+                // deliberately: "none" is an answer an agent needs rather than a
+                // silence it can ignore. A missing key would leave "this project does
+                // not estimate" and "this server is older than estimates" reading
+                // identically, and the first of those is exactly what an agent asked to
+                // estimate something must be told before it tries and is refused.
+                put("estimateMode", project.estimateMode.key)
                 putJsonArray("issues") {
                     issues.forEach { issue ->
                         add(
@@ -1516,9 +2013,25 @@ class McpTools(private val deps: BoardDependencies) {
                                 // so "nobody is on this" reads as a missing key
                                 // rather than as a value an agent has to interpret.
                                 issue.assigneeId?.let { id -> assignees[id]?.let { put("assignee", it) } }
+                                // Present only when it is true, and it can only be
+                                // true beside an assignee — the repository forces it
+                                // false otherwise, so this never appears on a card with
+                                // nobody on it (LNL-215). Absent-when-false rather than
+                                // a bool on every card, because the flag is rare and an
+                                // agent reading a board should have to notice it rather
+                                // than skip past it forty times.
+                                if (issue.assigneeIsAgent) put("assigneeIsAgent", true)
                                 // Present only on issues an agent filed. Says a
                                 // human did not type this — see resolveAgentName.
                                 issue.agentName?.let { put("agentName", it) }
+                                // Absent when unestimated, like every optional field
+                                // here. The unit rides WITH the amount rather than being
+                                // read off the project's mode, because an estimate
+                                // written before the mode changed still means what it
+                                // said — see EstimateUnit.
+                                issue.estimate?.let { estimate ->
+                                    putJsonObject("estimate") { putEstimate(estimate) }
+                                }
                                 // Absent when the issue is in the backlog, which is
                                 // every issue in a project with no sprints.
                                 issue.sprintId?.let { id -> sprintNames[id]?.let { put("sprint", it) } }
@@ -1533,6 +2046,17 @@ class McpTools(private val deps: BoardDependencies) {
                                 // full; on the board this one id is enough to see the
                                 // shape.
                                 issue.parentId?.let { put("parentId", it) }
+                                // Both absent on a card nothing is holding up, which is
+                                // almost every card. Two fields rather than one because
+                                // they answer two questions an agent asks separately —
+                                // "may I start this" and "on what" — and because
+                                // `isBlocked` false everywhere would be the noisiest key
+                                // on the response. See the blocked projection above for
+                                // why this cannot be derived from the issues returned.
+                                blockersByIssue[issue.id]?.let { blockers ->
+                                    put("isBlocked", true)
+                                    putJsonArray("blockedBy") { blockers.forEach { add(it) } }
+                                }
                                 put("updatedAt", issue.updatedAt)
                                 // Sent for the same reason the web board sends it:
                                 // editing is per issue — authorship is one of the
@@ -1596,6 +2120,46 @@ class McpTools(private val deps: BoardDependencies) {
         // (LNL-55). Both are in this project, so its prefix names their keys.
         val parentRecord = issue.parentId?.let { deps.issues.findById(it) }
         val childRecords = deps.issues.childrenOf(issue.id)
+        // ── This issue's links, resolved to THIS issue's side (LNL-215) ──────────
+        //
+        // One stored row per link, read from both ends and turned into a sentence about
+        // the issue that was asked for: the same row reads "Blocked by FOO-9" here and
+        // "Blocks FOO-4" over there. Which end the reader is on is decided by comparing
+        // against `fromIssueId`, once, here — so the agent is handed the wording rather
+        // than the raw row and has no direction left to get wrong. That is the same
+        // resolution `buildIssueDetail` does for the web issue window, over the same two
+        // stores; what differs is only the shape it is written into.
+        //
+        // Assembled before the JSON, like everything else above, because
+        // buildJsonObject's lambda is not a coroutine body. Skipped entirely for a
+        // draft, whose links cannot exist — IssueRepository.addRelation refuses to make
+        // one — so this is a query guaranteed to come back empty on a half-written
+        // issue.
+        val relationRows = if (issue.isDraft) emptyList() else deps.issueRelations.forIssue(issue.id)
+        val relationKindsById = deps.issueRelationKinds.forProject(issue.projectId).associateBy { it.id }
+        val relations = relationRows.mapNotNull { relation ->
+            // A row whose kind or whose far issue cannot be resolved is dropped rather
+            // than reported wordless, on buildIssueDetail's reasoning: it should be
+            // unreachable — deleting a kind takes its links with it — and a link with no
+            // word for what it is would be a row saying nothing.
+            val kind = relationKindsById[relation.kindId] ?: return@mapNotNull null
+            val other = deps.issues.findById(relation.otherThan(issue.id)) ?: return@mapNotNull null
+            buildJsonObject {
+                // What unlink_issues takes. The relation's own id, never the far
+                // issue's: a pair can be linked under two different kinds at once, so
+                // "the link to FOO-9" is not a unique thing to remove.
+                put("relationId", relation.id)
+                put("label", kind.labelFor(isFromSide = relation.fromIssueId == issue.id))
+                // The kind's own from-side name beside this side's wording, because the
+                // two differ exactly when this issue is on the TO side of a kind that is
+                // not symmetric — and an agent holding only "Blocks" would then have no
+                // way to name the kind back to link_issues, which takes "Blocked by".
+                put("kind", kind.name)
+                put("id", other.id)
+                put("key", "${project.namePrefix}-${other.number}")
+                put("title", other.title)
+            }
+        }
 
         return ok(
             buildJsonObject {
@@ -1616,6 +2180,12 @@ class McpTools(private val deps: BoardDependencies) {
                 put("author", issue.author.displayName(authors))
                 // Absent when nobody holds it. See getBoard's `assignee`.
                 assigneeName?.let { put("assignee", it) }
+                // Present only when true, and only ever beside an assignee — see
+                // getBoard's copy, whose reasoning this is (LNL-215).
+                if (issue.assigneeIsAgent) put("assigneeIsAgent", true)
+                // Absent when unestimated. The unit is the issue's own, not the
+                // project's current mode; see EstimateUnit.
+                issue.estimate?.let { estimate -> putJsonObject("estimate") { putEstimate(estimate) } }
                 // Absent for a backlog issue and for every issue in a project with
                 // no sprint axis, exactly as get_board reports it — see getBoard's
                 // per-issue `sprint`.
@@ -1656,6 +2226,12 @@ class McpTools(private val deps: BoardDependencies) {
                             )
                         }
                     }
+                }
+                // Absent when this issue is linked to nothing, as `children` and
+                // `watchers` are — an empty key would be a line of noise on the great
+                // majority of issues, which are linked to nothing at all.
+                if (relations.isNotEmpty()) {
+                    putJsonArray("relations") { relations.forEach { add(it) } }
                 }
                 putJsonArray("comments") {
                     comments.forEach { comment ->
@@ -1729,7 +2305,7 @@ class McpTools(private val deps: BoardDependencies) {
             .getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
 
         // Orthogonal to attribution and not gated by it: an agent labelling its own
-        // writes is the ordinary case, not the admin-only act of writing as someone
+        // writes is the ordinary case, not the owner-only act of writing as someone
         // else. See [resolveAgentName].
         val agentName = resolveAgentName(arguments)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
@@ -1786,6 +2362,21 @@ class McpTools(private val deps: BoardDependencies) {
 
         val assigneeId = resolveAssignee(project.id, arguments, current = null)
             .getOrElse { return refuse(it.message ?: "That assignee cannot be used.") }
+        // Null for absent, which is this flag's spelling of "say nothing" rather than
+        // "false" — see resolveAssigneeIsAgent, and IssueRepository.save, which is
+        // where the whole lifecycle of the flag is decided. On a create the repository
+        // resolves an unstated flag to false, and a stated one on an unassigned issue
+        // to false as well, so nothing here has to know those rules.
+        val assigneeIsAgent = resolveAssigneeIsAgent(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent-assignee flag cannot be used.") }
+
+        // Through the route's own resolveEstimate, so a project's estimate mode governs
+        // an agent's write exactly as it governs the editor's: a project on "none"
+        // refuses an estimate rather than quietly dropping it, and a project on points
+        // refuses minutes. current = null, because an issue created saying nothing about
+        // an estimate has none.
+        val estimate = resolveEstimateArgument(project.id, arguments, current = null)
+            .getOrElse { return refuse(it.message ?: "That estimate cannot be used.") }
 
         // Parsed before createDraft with the rest, so garbage costs nothing — but
         // APPLIED after the issue exists, since attaching needs the new issue's id.
@@ -1811,11 +2402,13 @@ class McpTools(private val deps: BoardDependencies) {
                 priorityId = priority.id,
                 resolutionId = resolutionId,
                 assigneeId = assigneeId,
+                assigneeIsAgent = assigneeIsAgent,
                 sprintId = sprintId,
                 // Full access, the same the web editor has (LNL-134): the agent may
                 // set both versions by name, or leave them null.
                 plannedVersionId = plannedVersionId,
                 fixedVersionId = fixedVersionId,
+                estimate = estimate,
                 labelIds = labelIds,
                 componentIds = componentIds,
                 // The same value the draft was created with, never a second read of
@@ -1827,7 +2420,7 @@ class McpTools(private val deps: BoardDependencies) {
                 // even when they attribute the write to an imported external author.
                 actorId = user.id,
                 // The attributed author rather than the acting user, which differs
-                // only when an admin is backfilling — and there the whole point is
+                // only when the owner is backfilling — and there the whole point is
                 // that the imported issue was filed by somebody else. See
                 // IssueRepository.save's `actor`.
                 actor = attribution.author,
@@ -1858,10 +2451,10 @@ class McpTools(private val deps: BoardDependencies) {
         val issue = readableIssue(user, arguments) ?: return noSuchIssue()
         if (!deps.access.canEditIssue(user, issue)) return refuse("You cannot edit this issue.")
 
-        // author / author_external / created_at are the admin-only levers, defaulted
+        // author / author_external / created_at are the owner-only levers, defaulted
         // to the issue's current values so an ordinary edit leaves attribution exactly
         // as it was. The same gate and the same function as create and update_comment —
-        // this is where "a system administrator may change everything" lands for an issue.
+        // this is where "the instance owner may change everything" lands for an issue.
         val attribution = resolveAttribution(
             user,
             arguments,
@@ -1870,14 +2463,14 @@ class McpTools(private val deps: BoardDependencies) {
         ).getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
         val createdAt = attribution.at ?: issue.createdAt
 
-        // updated_at is the issue's second stamp, admin-only like the rest but kept its
+        // updated_at is the issue's second stamp, owner-only like the rest but kept its
         // own check because it is validated against the RESULTING created_at, not the
-        // old one: a system administrator may move both in a single call, and "edited before it
+        // old one: the owner may move both in a single call, and "edited before it
         // existed" has to be judged on where created_at ends up.
         val updatedAt = if (arguments.isPresent(UPDATED_AT_ARGUMENT)) {
             if (!deps.access.canAttributeWrites(user)) {
                 return refuse(
-                    "Only a system administrator can set $UPDATED_AT_ARGUMENT, and you are not acting as one. " +
+                    "Only the instance owner can set $UPDATED_AT_ARGUMENT, and you are not acting as the owner. " +
                         "Nothing was written. Remove $UPDATED_AT_ARGUMENT and the edit will be " +
                         "stamped now — but that is a different thing from what you asked for, so " +
                         "decide rather than assume.",
@@ -1908,9 +2501,9 @@ class McpTools(private val deps: BoardDependencies) {
             null
         }
 
-        // Absent leaves the badge untouched; a real name sets it, neither admin-gated
-        // — self-labelling is the norm. An empty value clears it, which is admin-only.
-        // See resolveAgentNameEdit.
+        // Absent leaves the badge untouched; a real name sets it, neither of them the
+        // owner's — self-labelling is the norm. An empty value clears it, which only
+        // the owner may do. See resolveAgentNameEdit.
         val agentName = resolveAgentNameEdit(user, arguments, issue.agentName)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
 
@@ -1929,7 +2522,7 @@ class McpTools(private val deps: BoardDependencies) {
         //
         // So the event gets what actually happened in THIS call: the caller, and
         // the badge this call carried. Exactly what move_issue has always recorded.
-        // The one deliberate exception is an admin naming an `author` — that is the
+        // The one deliberate exception is the owner naming an `author` — that is the
         // backfill the parameter exists for, where the imported edit really does
         // belong to somebody else. A lone `created_at` re-authors nothing and so
         // does not count.
@@ -2011,6 +2604,24 @@ class McpTools(private val deps: BoardDependencies) {
 
         val assigneeId = resolveAssignee(issue.projectId, arguments, current = issue.assigneeId)
             .getOrElse { return refuse(it.message ?: "That assignee cannot be used.") }
+        // The one field here NOT defaulted to the issue's current value, and the
+        // exception is the point. Every neighbour above passes the stored value back
+        // when the argument is absent, because `publish` overwrites its column
+        // unconditionally — but doing that with this flag would drag it across a
+        // handover, so that an agent fixing a typo on an issue reassigned to somebody
+        // else would silently re-mark the new person's work as their robot's. Null
+        // means "not editing this", and IssueRepository.save decides: it keeps the flag
+        // when the assignee is unchanged and clears it when they are not. See its
+        // `resolvedAgentFlag`.
+        val assigneeIsAgent = resolveAssigneeIsAgent(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent-assignee flag cannot be used.") }
+
+        // Current-as-default, and this line is load-bearing: `publish` writes both
+        // estimate columns on every save, so an edit that said nothing about an
+        // estimate and passed nothing here would clear it. Sending both arguments as
+        // null is how an agent actually clears one. See resolveEstimateArgument.
+        val estimate = resolveEstimateArgument(issue.projectId, arguments, current = issue.estimate)
+            .getOrElse { return refuse(it.message ?: "That estimate cannot be used.") }
 
         // The parent, applied BEFORE the content save, so a refused reparent (wrong
         // project, already a child, a cycle) leaves the issue untouched rather than
@@ -2033,11 +2644,13 @@ class McpTools(private val deps: BoardDependencies) {
             priorityId = priorityId,
             resolutionId = resolutionId,
             assigneeId = assigneeId,
+            assigneeIsAgent = assigneeIsAgent,
             sprintId = sprintId,
             // Full access, the same the web editor has (LNL-134): set either version
             // by name, null to clear, or omit to keep — resolveVersion above.
             plannedVersionId = plannedVersionId,
             fixedVersionId = fixedVersionId,
+            estimate = estimate,
             labelIds = labelIds,
             componentIds = componentIds,
             updatedAt = updatedAt,
@@ -2048,7 +2661,7 @@ class McpTools(private val deps: BoardDependencies) {
             agentName = eventAgentName,
         )
         // The columns publish() does not reach — author, creation date, agent label.
-        // Written after the content save, gated above: admin-only for the author and
+        // Written after the content save, gated above: owner-only for the author and
         // date, open for the label, and idempotent for an ordinary edit that moved
         // none of the three.
         deps.issues.editAttribution(issue.id, createdAt, attribution.author, agentName)
@@ -2097,7 +2710,7 @@ class McpTools(private val deps: BoardDependencies) {
     }
 
     /**
-     * Watch an issue, or stop — for yourself, or (as an admin) for somebody else.
+     * Watch an issue, or stop — for yourself, or (as the owner) for somebody else.
      *
      * ── Why the gate is "readable", not "editable" ────────────────────────────
      *
@@ -2107,11 +2720,11 @@ class McpTools(private val deps: BoardDependencies) {
      * may *see* an issue may ask to hear about it. So there is no `canEditIssue`
      * here — a watcher who cannot edit is the ordinary case, not an anomaly.
      *
-     * ── The two subjects, and why one of them is admin-only ───────────────────
+     * ── The two subjects, and why one of them is the owner's ──────────────────
      *
      * Absent `user` means the caller's own watch, which is the whole of the web
      * feature and needs no more right than reading. Naming somebody else is a
-     * different act — a decision about *their* inbox — and admin-only for
+     * different act — a decision about *their* inbox — and the owner's alone for
      * [resolveAttribution]'s reason: acting as or for another person is exactly
      * what [AccessControl.canAttributeWrites] guards. The parallel is `assignee`
      * naming somebody else on an edit, and the refusal is by name rather than
@@ -2129,15 +2742,15 @@ class McpTools(private val deps: BoardDependencies) {
 
         // Whose inbox. Absent → the caller's own. Naming somebody else resolves to
         // an account — refusing unknown and ambiguous, as resolveAuthor does — and
-        // is admin-only when it is not the caller.
+        // is the owner's alone when it is not the caller.
         val subject: UserRecord = if (arguments.isPresent(USER_ARGUMENT)) {
             val named = arguments.string(USER_ARGUMENT)
                 ?: return refuse("`$USER_ARGUMENT` was given as an empty name.")
             val id = resolveAuthor(named).getOrElse { return refuse(it.message ?: "No such person.") }
             if (id != user.id && !deps.access.canAttributeWrites(user)) {
                 return refuse(
-                    "Only a system administrator can change somebody else's watch, and you are not " +
-                        "acting as one. Omit `$USER_ARGUMENT` to change your own. Nothing was written.",
+                    "Only the instance owner can change somebody else's watch, and you are not " +
+                        "acting as the owner. Omit `$USER_ARGUMENT` to change your own. Nothing was written.",
                 )
             }
             // Resolved to a live record for its address and name below. It exists —
@@ -2163,13 +2776,176 @@ class McpTools(private val deps: BoardDependencies) {
         )
     }
 
+    // ── Relations: what one issue says about another (LNL-215) ───────────────
+
+    /**
+     * Link two issues under one of the project's relation kinds.
+     *
+     * ── The permission, which is about ONE of the two issues ──────────────────
+     *
+     * [AccessControl.canEditIssue] on `issue_id` — the issue the link is stated *from*
+     * — and nothing is asked about the far side. That is not this tool going soft: it
+     * is the rule `POST /api/issues/{id}/relations` already applies, for the reason
+     * that route and [IssueRepository.addRelation] both give at length. Belonging in a
+     * relation is a fact somebody states about the issue they are looking at, and an
+     * issue does not own who points at it. The consequence worth being sure about is
+     * that somebody who may edit FOO-4 can make FOO-9 show "Blocks FOO-4" without
+     * being able to edit FOO-9 — which is the same power the epic route already grants
+     * and is bounded the same way, since both issues are in a project the caller can
+     * already read and write in.
+     *
+     * ── Why naming the opposite label is refused rather than reversed ─────────
+     *
+     * A kind has two labels — "Blocked by" and "Blocks" — and only one of them is a
+     * sentence about the from side. An agent that sends the inverse plainly means the
+     * link the other way round, and swapping the two issues for it was the tempting
+     * alternative. It is rejected because it would silently move the permission
+     * check: after the swap the from issue is the *other* one, so the same fact would
+     * be allowed or refused depending on which of its two names the agent happened to
+     * use. A surface where "A blocks B" is refused and "B is blocked by A" succeeds,
+     * for the same caller and the same two issues, is worse than one extra
+     * round-trip — so this refuses, and the refusal spells out the call to make
+     * instead.
+     *
+     * Everything else — same project, no self-link, no duplicate pair in either
+     * direction, both published — is [IssueRepository.addRelation]'s, and comes back
+     * as a [Result] failure whose message names which rule.
+     */
+    private suspend fun linkIssues(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val issue = readableIssue(user, arguments) ?: return noSuchIssue()
+        if (!deps.access.canEditIssue(user, issue)) {
+            return refuse("You cannot link this issue to others.")
+        }
+        val toIssueId = arguments.long(TO_ISSUE_ARGUMENT)
+            ?: return refuse(
+                "`$TO_ISSUE_ARGUMENT` must be an issue id — the `id` from get_board or get_issue, " +
+                    "not the FOO-123 key.",
+            )
+        val named = arguments.string(RELATION_ARGUMENT)
+            ?: return refuse("`$RELATION_ARGUMENT` must name one of this project's relation kinds.")
+        val agentName = resolveAgentName(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
+
+        val kinds = deps.issueRelationKinds.forProject(issue.projectId)
+        val wanted = named.trim()
+        val kind = kinds.firstOrNull { it.name.equals(wanted, ignoreCase = true) }
+            ?: return refuseRelationKind(kinds, wanted, issue, toIssueId)
+
+        deps.issueRepository
+            .addRelation(issue, toIssueId, kind.id, user.asAuthor(), agentName)
+            .getOrElse { return refuse(it.message ?: "That link is not allowed.") }
+
+        // Read after the write rather than before it, so the sentence describes a link
+        // that exists — and read at all because an answer naming FOO-4 and FOO-9 is one
+        // the person can check, where "linked 412 to 507" is not.
+        val here = issueKey(issue)
+        val there = deps.issues.findById(toIssueId)?.let { issueKey(it) } ?: "issue $toIssueId"
+        return ok(
+            "$here is now \"${kind.labelFrom}\" $there. The link is stored once and read from both " +
+                "ends: from $there it reads \"${kind.labelTo}\" $here.",
+        )
+    }
+
+    /**
+     * Unlink two issues, by the relation's own id.
+     *
+     * [linkIssues]' gate, on either end: the link is readable and removable from both
+     * issues, and the repository proves the id actually touches the one named — so a
+     * `relation_id` from another board removes nothing rather than being removable by
+     * anybody who can edit any issue at all.
+     */
+    private suspend fun unlinkIssues(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val issue = readableIssue(user, arguments) ?: return noSuchIssue()
+        if (!deps.access.canEditIssue(user, issue)) {
+            return refuse("You cannot change this issue's links.")
+        }
+        val relationId = arguments.long(RELATION_ID_ARGUMENT)
+            ?: return refuse(
+                "`$RELATION_ID_ARGUMENT` must be a link id — the `relationId` from get_issue's " +
+                    "`relations`, not an issue id.",
+            )
+        val agentName = resolveAgentName(arguments)
+            .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
+
+        // Read BEFORE the delete, for deleteForum's reason in miniature: afterwards
+        // there is an id and nothing to say about it, and "removed link 88" is not
+        // something anybody can check. The repository reads it again to validate; that
+        // second read is the one that enforces, and this one only writes the sentence.
+        val record = deps.issueRelations.findById(relationId)
+        val farKey = record?.let { row ->
+            deps.issues.findById(row.otherThan(issue.id))?.let { issueKey(it) }
+        }
+
+        deps.issueRepository
+            .removeRelation(issue, relationId, user.asAuthor(), agentName)
+            .getOrElse { return refuse(it.message ?: "That link could not be removed.") }
+
+        val here = issueKey(issue)
+        return ok(
+            if (farKey != null) "$here and $farKey are no longer linked."
+            else "Removed link $relationId from $here.",
+        )
+    }
+
+    /**
+     * "There is no relation kind called…", with the one case that is not a typo
+     * separated out.
+     *
+     * An agent that named a kind's *inverse* label knows exactly what it wants and got
+     * the direction backwards, which is a different mistake from misspelling a name —
+     * so it gets a different sentence, carrying the call that would work. See
+     * [linkIssues] for why this is a refusal rather than a swap.
+     */
+    private fun refuseRelationKind(
+        kinds: List<IssueRelationKindRecord>,
+        named: String,
+        issue: IssueRecord,
+        toIssueId: Long,
+    ): McpToolResult {
+        val reversed = kinds.firstOrNull { it.inverseName?.equals(named, ignoreCase = true) == true }
+        if (reversed != null) {
+            return refuse(
+                "\"$named\" is the OTHER side of this project's \"${reversed.name}\" link, so this " +
+                    "call states it backwards. A link is stored once, from one issue to the other, " +
+                    "and \"${reversed.name}\" is the sentence about the issue it is stored from. To " +
+                    "say what you meant, swap the two: link_issues with issue_id $toIssueId, " +
+                    "to_issue_id ${issue.id}, relation \"${reversed.name}\". Nothing was written.",
+            )
+        }
+        if (kinds.isEmpty()) {
+            return refuse(
+                "This project has no relation kinds, so its issues cannot be linked at all. A " +
+                    "project administrator can add one with add_vocabulary. Nothing was written.",
+            )
+        }
+        return refuse(
+            "There is no relation kind called \"$named\" in this project. Available: " +
+                kinds.joinToString(", ") { kind ->
+                    if (kind.inverseName != null) "\"${kind.name}\" (the far side reads \"${kind.inverseName}\")"
+                    else "\"${kind.name}\" (the same in both directions)"
+                } + ". Name the first of each pair; see link_issues on direction.",
+        )
+    }
+
+    /**
+     * "FOO-123" for an issue, or its id when the project has gone.
+     *
+     * One read per call rather than a map, because the two callers name at most two
+     * issues apiece — this is not `getBoard`, where the same lookup per card would be
+     * the thing to avoid.
+     */
+    private suspend fun issueKey(issue: IssueRecord): String =
+        deps.projects.findById(issue.projectId)?.let { "${it.namePrefix}-${issue.number}" }
+            ?: "issue ${issue.id}"
+
     /**
      * Delete one stored attachment — its row and its bytes — by the id in its URL.
      *
-     * System-administrator only (see [toolsFor] and [AccessControl.canDeleteAttachment]):
-     * the web app gives nobody a standalone attachment delete, so this is a new
-     * destructive power rather than a mirror of an existing web right, and it is
-     * offered only to the account trusted with the rest of the instance-wide ones.
+     * The instance owner's alone (see [toolsFor] and
+     * [AccessControl.canDeleteAttachment]): the web app gives nobody a standalone
+     * attachment delete, so this is a new destructive power rather than a mirror of an
+     * existing web right, and it is offered only to the account answerable for the
+     * deployment, as the rest of the instance-wide ones are.
      *
      * [AttachmentRepository.delete] takes the row first and the file second, so the
      * failure this can leave is a collectable orphaned file, never a row pointing at
@@ -2178,8 +2954,8 @@ class McpTools(private val deps: BoardDependencies) {
     private suspend fun deleteAttachment(user: UserRecord, arguments: JsonObject): McpToolResult {
         if (!deps.access.canDeleteAttachment(user)) {
             return refuse(
-                "Deleting a stored attachment is a system-administrator action, and you are not " +
-                    "acting as one. Nothing was deleted.",
+                "Deleting a stored attachment is an instance-owner action, and you are not " +
+                    "acting as the owner. Nothing was deleted.",
             )
         }
         val raw = arguments.string("attachment")
@@ -2226,27 +3002,28 @@ class McpTools(private val deps: BoardDependencies) {
 
     // ── Sprints: the lifecycle a vocabulary has no verb for (LNL-35) ───────────
     //
-    // Gated on canAdministerProject, the same right the web routes ask — see
-    // SprintRoutes and the clarification on LNL-35: an agent gets its user's own
-    // sprint powers, no more and no less, so a project administrator's MCP can run
-    // sprints and an ordinary member's cannot. Per-project, so these are shown to
-    // everyone (like create_issue) and refused per project rather than hidden.
+    // Gated on the same right the web routes ask — see SprintRoutes and the
+    // clarification on LNL-35: an agent gets its user's own sprint powers, no more
+    // and no less. Since LNL-191 that right is a maintainer's rather than an
+    // administrator's. Per-project, so these are shown to everyone (like
+    // create_issue) and refused per project rather than hidden.
 
     /**
      * The project for a sprint-lifecycle write, or a refusal.
      *
-     * Readable first and administrable second, exactly as [adminSprintScope]: an id
-     * the caller cannot see answers "no such project" rather than confirming it
-     * exists by refusing on rights.
+     * Readable first and maintainable second, exactly as SprintRoutes' `sprintScope`
+     * (which was `adminSprintScope` until LNL-199 renamed it to match the rung it
+     * actually asks for): an id the caller cannot see answers "no such project"
+     * rather than confirming it exists by refusing on rights.
      */
     private suspend fun sprintAdminProject(user: UserRecord, arguments: JsonObject): Result<ProjectRecord> {
         val project = resolveProject(user, arguments)
             ?: return Result.failure(ResolutionRefusal("No such project."))
-        if (!deps.access.canAdministerProject(user, project.id)) {
+        if (!deps.access.canEditVocabulary(user, project.id, VocabularyKind.SPRINT)) {
             return Result.failure(
                 ResolutionRefusal(
-                    "You cannot configure sprints in ${project.name} — that is a project-administrator " +
-                        "action, and you do not administer this project. Nothing was changed.",
+                    "You cannot configure sprints in ${project.name} — that is a project-maintainer " +
+                        "action, and you do not maintain this project. Nothing was changed.",
                 ),
             )
         }
@@ -2342,6 +3119,529 @@ class McpTools(private val deps: BoardDependencies) {
         )
     }
 
+    // ── The project's own structure: vocabulary, and the estimate switch ──────
+    //
+    // ── One generic tool per verb, not one tool per kind ──────────────────────
+    //
+    // There are eight vocabularies and four verbs, so the surface here could have been
+    // thirty-two tools — `add_status`, `add_priority`, `rename_label`, `delete_sprint`
+    // — or five that take the kind as an argument. It is five, and the reasoning is
+    // worth writing down because the other answer is the one that reads better in
+    // isolation.
+    //
+    // **What was chosen.** `list_vocabulary`, `add_vocabulary`, `rename_vocabulary`,
+    // `reorder_vocabulary` and `delete_vocabulary`, each taking `kind` as one of the
+    // eight [VocabularyKind.key]s.
+    //
+    // **Why.** Because the thing underneath is already generic and has been since
+    // LNL-28: [VocabularyKind] is one enum, [AccessControl.canEditVocabulary] is one
+    // function that answers per kind, [VocabularyRepository] is one class whose every
+    // method takes the kind, and the web app has one dialog. Thirty-two tools would be
+    // thirty-two wrappers differing by a constant, over code that would immediately
+    // fold them back into one call — and every one of them would be paid for on every
+    // `tools/list` of every conversation, which is the cost this file already weighs in
+    // [MCP_INSTRUCTIONS]. It would also be thirty-two places to forget a kind: the
+    // ninth vocabulary would need four new tools, four new handlers and four new
+    // dispatch lines, where here it needs a line in an enum that already exists.
+    //
+    // **The alternative, and it is not a straw man.** A per-kind surface has schemas
+    // that cannot express nonsense. `add_status(name, requires_resolution)` never
+    // offers `inverse_name`; `rename_priority` has no flags at all. Here, every flag is
+    // on every call, and the tool descriptions have to say "STATUSES ONLY" and
+    // "RELATION KINDS ONLY" in prose rather than in structure — which is weaker,
+    // because prose is what a model skims. A tool named after the thing it changes is
+    // also easier for a model to reach for: `add_status` is one hop from "add a
+    // column", where `add_vocabulary` needs the extra step of knowing that a column is
+    // a status is a vocabulary.
+    //
+    // **The trade-off accepted.** Precision at the schema, in exchange for a surface
+    // that stays the size of the concept rather than the size of the enum, and for one
+    // implementation of each verb rather than eight. The precision is bought back
+    // where it can be: the per-kind extras are ignored for the kinds they do not belong
+    // to rather than refused (the repository's rule, not a new one), an unknown kind is
+    // refused with all eight listed, and every extra names its kind in the first three
+    // words of its description. What is genuinely lost is that a model can send
+    // `is_done` to a label and hear nothing back about it, which is the same silence
+    // the web dialog produces for the same reason.
+    //
+    // Note the one overlap this leaves standing: `create_sprint` predates all of this
+    // and does what `add_vocabulary(kind: "sprint")` now also does, through the same
+    // repository and the same gate. It stays, because it is where the thing that is
+    // *not* generic about a sprint gets said — that a new one is not activated, and
+    // that starting it is a separate call.
+
+    /**
+     * The `kind` argument as a [VocabularyKind], or a refusal listing all eight.
+     *
+     * Matched against the enum's own [VocabularyKind.key] rather than `valueOf`, for
+     * the reason `ProjectSettingsRoutes.vocabularyKind` gives: the keys are wire format
+     * and the constant names are not, so this is one of the two places they are allowed
+     * to be told apart. The agent reads keys off this file's descriptions and off the
+     * URLs nothing here exposes; either way it is the key that is public.
+     */
+    private fun resolveVocabularyKind(arguments: JsonObject): Result<VocabularyKind> {
+        val named = arguments.string(KIND_ARGUMENT)?.trim()
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$KIND_ARGUMENT` must name one of this project's vocabularies: " +
+                        VOCABULARY_KIND_KEYS + ".",
+                ),
+            )
+        val kind = VocabularyKind.entries.firstOrNull { it.key.equals(named, ignoreCase = true) }
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "There is no vocabulary called \"$named\". The eight are: $VOCABULARY_KIND_KEYS.",
+                ),
+            )
+        return Result.success(kind)
+    }
+
+    /**
+     * A project this caller may edit [kind] in, or the refusal that says why not.
+     *
+     * ── The gate is a question, never a rung written down here ────────────────
+     *
+     * [AccessControl.canEditVocabulary] decides, and it is asked with the kind because
+     * that is what the answer depends on: sprints and versions are a maintainer's and
+     * the six that define what the board *is* are an administrator's (LNL-191). This
+     * file must not know which is which — the day that split moves, it should move in
+     * AccessControl and reach every caller, this one included, without an edit. The
+     * only thing read from the rung here is its *name*, and only to write the refusal;
+     * [ProjectRole.prose] exists for that and for nothing else.
+     *
+     * Readable first and editable second, exactly as [sprintAdminProject] and the HTTP
+     * routes' `adminProject`: an id the caller cannot see answers "no such project"
+     * rather than confirming one exists by refusing on rights.
+     *
+     * The refusal itself is [sprintAdminProject]'s sentence with the kind swapped in.
+     * That shape is the one this surface already uses for a per-project rung — it says
+     * which action, which project, that the account lacks the rung, and that nothing
+     * was written — and the whole point of reusing it is that an agent which has
+     * learned to read one of these has learned to read all of them. See
+     * [MCP_INSTRUCTIONS] on why a refusal here is final.
+     */
+    private suspend fun vocabularyScope(
+        user: UserRecord,
+        arguments: JsonObject,
+        kind: VocabularyKind,
+    ): Result<ProjectRecord> {
+        val project = resolveProject(user, arguments)
+            ?: return Result.failure(ResolutionRefusal("No such project."))
+        if (!deps.access.canEditVocabulary(user, project.id, kind)) {
+            return Result.failure(
+                ResolutionRefusal(
+                    "You cannot change the ${kind.plural} in ${project.name} — that is a " +
+                        "${kind.minimumRole.prose} action, and the account you are acting as does " +
+                        "not hold that rung on this project. Nothing was changed.",
+                ),
+            )
+        }
+        return Result.success(project)
+    }
+
+    /**
+     * Run a vocabulary write, turning its two refusals into a [Result].
+     *
+     * [refusable]'s twin for the other repository, and the same argument for it: the
+     * sentences [VocabularyConflict] and [VocabularyRefusal] carry are written for a
+     * human — "3 issues are still in that status" — and the HTTP routes show them
+     * verbatim. Showing them verbatim here too is what makes the two front doors give
+     * one answer, and it is why every write below goes through the repository rather
+     * than a store. Anything else thrown is a bug and propagates to [McpServer]'s
+     * catch, which logs it.
+     *
+     * The 409/400 distinction the routes draw is dropped, and nothing is lost: an MCP
+     * refusal has one shape, `isError` with a sentence, and both of these are exactly
+     * that. See [refuse].
+     */
+    private suspend fun <T> vocabularyWrite(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (conflict: VocabularyConflict) {
+        Result.failure(ResolutionRefusal(conflict.userMessage))
+    } catch (refusal: VocabularyRefusal) {
+        Result.failure(ResolutionRefusal(refusal.userMessage))
+    }
+
+    /**
+     * A boolean argument that defaults to what the row already says.
+     *
+     * The absent-argument convention, applied to a flag: absent leaves [current], and
+     * so does an explicit JSON null, for [JsonObject.isPresent]'s reason — models fill
+     * in every property of a schema and write null for the ones they have nothing to
+     * say about, and a rename that flipped a status's closing flag because of that
+     * would be the silent substitution this whole surface refuses to make.
+     *
+     * A present value that is neither a boolean nor `"true"`/`"false"` is refused
+     * rather than treated as absent. That asymmetry is deliberate: null is a model
+     * being tidy, where `"maybe"` is a request nobody can honour, and answering the
+     * second with "done" would report a change that was not made.
+     */
+    private fun flag(arguments: JsonObject, name: String, current: Boolean): Result<Boolean> {
+        if (!arguments.containsKey(name) || !arguments.isPresent(name)) return Result.success(current)
+        val value = arguments.bool(name)
+            ?: return Result.failure(
+                ResolutionRefusal("`$name` must be true or false, which \"${arguments[name]}\" is not."),
+            )
+        return Result.success(value)
+    }
+
+    /**
+     * Read a project's vocabularies, with the ids the editing tools need.
+     *
+     * ── Why reading is gated on seeing the project and nothing more ───────────
+     *
+     * Every field this returns is already in the board response that
+     * [AccessControl.canReadProject] admits somebody to: `BoardState` carries each
+     * status, priority, resolution, label, component, sprint, version and relation kind
+     * with its **id** and its position, and the relation kinds with their inverse names
+     * and blocking flags. The one thing added is `usageCount`, which is a count of
+     * issues the same caller can already list card by card.
+     *
+     * So a stricter gate here would withhold nothing and would break something real: an
+     * agent that can see a column but cannot ask what its id is could not report on the
+     * board it is looking at. The write tools below are where the rung is asked, which
+     * is the same place the web app asks it — the Structure section is an
+     * administrator's, and the board it configures is everybody's.
+     */
+    private suspend fun listVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val project = resolveProject(user, arguments) ?: return noSuchProject()
+        // Absent `kind` means all eight, which is one round-trip and almost always what
+        // a caller about to change something wants. A named one narrows — unlike
+        // get_board's `status` filter, which narrows the issues and never the
+        // vocabulary, because there the vocabulary IS the orientation being asked for.
+        val kinds = if (arguments.containsKey(KIND_ARGUMENT)) {
+            listOf(resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") })
+        } else {
+            VocabularyKind.entries.toList()
+        }
+        // Every read before the builder, as everywhere in this file: buildJsonObject's
+        // lambda is not a coroutine body.
+        val rows = kinds.associateWith { deps.vocabularies.rows(project.id, it) }
+        // Joined back in for the one field [VocabularyRow] deliberately drops. A
+        // sprint's completion is not a property of "a named row an admin can rename",
+        // so it does not ride on the row — and it is the field that decides whether work
+        // can be scheduled into that sprint, so an agent reading the list needs it. The
+        // settings pane does exactly this join for the same reason; see
+        // `ProjectSettingsRoutes.sprintEntries`.
+        val completedAt = if (VocabularyKind.SPRINT in kinds) {
+            deps.sprints.forProject(project.id).associate { it.id to it.completedAt }
+        } else {
+            emptyMap()
+        }
+
+        return ok(
+            buildJsonObject {
+                putJsonObject("project") {
+                    put("id", project.id)
+                    put("name", project.name)
+                    put("keyPrefix", project.namePrefix)
+                }
+                putJsonObject("vocabularies") {
+                    kinds.forEach { kind ->
+                        putJsonArray(kind.key) {
+                            rows.getValue(kind).forEach { row ->
+                                add(
+                                    buildJsonObject {
+                                        put("id", row.id)
+                                        put("name", row.name)
+                                        put("position", row.position)
+                                        put("usageCount", row.usageCount)
+                                        // Per-kind extras, present only on the kinds
+                                        // that carry them — a priority with a
+                                        // `requiresResolution: false` on it would be a
+                                        // field inviting a write that does nothing.
+                                        when (kind) {
+                                            VocabularyKind.STATUS ->
+                                                put("requiresResolution", row.requiresResolution)
+                                            VocabularyKind.RESOLUTION -> put("isDone", row.isDone)
+                                            VocabularyKind.RELATION_KIND -> {
+                                                // Absent when the kind reads the same
+                                                // both ways: null IS symmetry, and a
+                                                // second field claiming so could
+                                                // disagree with it.
+                                                row.inverseName?.let { put("inverseName", it) }
+                                                put("marksBlocked", row.marksBlocked)
+                                            }
+                                            // Present only on a sprint that has been
+                                            // completed, and its presence is the whole
+                                            // signal: work cannot be scheduled into one
+                                            // that has it.
+                                            VocabularyKind.SPRINT ->
+                                                completedAt[row.id]?.let { put("completedAt", it) }
+                                            VocabularyKind.LABEL,
+                                            VocabularyKind.COMPONENT,
+                                            VocabularyKind.PRIORITY,
+                                            VocabularyKind.VERSION,
+                                            -> {}
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    /** Add a row to one of a project's vocabularies, at the end of the order. */
+    private suspend fun addVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        // The kind first and the gate second, which is the reverse of every other tool
+        // here and has to be: the rung depends on the kind, so there is nothing to check
+        // until it is known. The HTTP route's handlers were rearranged for exactly this
+        // when LNL-191 split the vocabulary in two.
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        val name = arguments.string(NAME_ARGUMENT) ?: return refuse("A ${kind.noun} needs a name.")
+        if (name.trim().length > MAX_MCP_VOCABULARY_NAME_LENGTH) {
+            return refuse("That name is too long — $MAX_MCP_VOCABULARY_NAME_LENGTH characters at most.")
+        }
+        // Both relation-kind extras, accepted on the add rather than left to the rename
+        // that would follow: a kind whose opposite label could only be set by a second
+        // write would be briefly, and visibly, symmetric when it is not. Ignored by the
+        // repository for the other seven kinds. Defaults are the safe states — symmetric,
+        // and not blocking — so an agent adding a label never has to think about either.
+        val inverseName = arguments.string(INVERSE_NAME_ARGUMENT)
+        val marksBlocked = flag(arguments, MARKS_BLOCKED_ARGUMENT, current = false)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+
+        val row = vocabularyWrite {
+            deps.vocabularies.add(project.id, kind, name, inverseName, marksBlocked)
+        }.getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be added.") }
+
+        return ok(
+            buildString {
+                append("Added the ${kind.noun} \"${row.name}\" (id ${row.id}) to ${project.name}, ")
+                append("at the end of its ${kind.plural}. Use reorder_vocabulary to move it.")
+                if (kind == VocabularyKind.SPRINT) {
+                    append(" It is not active — start it with set_active_sprint.")
+                }
+                if (kind == VocabularyKind.STATUS) {
+                    append(
+                        " It does not require a resolution; rename_vocabulary with " +
+                            "requires_resolution is how a column becomes a closing one.",
+                    )
+                }
+            },
+        )
+    }
+
+    /**
+     * Rename a row, or change one of its flags.
+     *
+     * Every field defaults to what the row already says, and that is the whole of this
+     * function's care. [VocabularyStore.rename] writes the name and all three flags in
+     * one statement — it has to, since the web dialog sends back the row it is
+     * rendering — so a value forgotten here is not "unchanged", it is *false*, and an
+     * agent fixing a spelling mistake would silently turn off the flag that makes a
+     * column demand a resolution. The MCP convention and the underlying write disagree
+     * about what an omission means; this is where they are reconciled, and it is the
+     * same reconciliation [updateIssue] performs for the assignee and the versions.
+     */
+    private suspend fun renameVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        val row = namedVocabularyRow(project, kind, arguments)
+            .getOrElse { return refuse(it.message ?: "No such row.") }
+
+        // Absent leaves the name, so this tool doubles as "flip one flag" — which is
+        // what the web dialog's checkboxes are, and there is no reason an agent should
+        // have to re-send a name it is not changing.
+        val name = arguments.string(NAME_ARGUMENT) ?: row.name
+        if (name.trim().length > MAX_MCP_VOCABULARY_NAME_LENGTH) {
+            return refuse("That name is too long — $MAX_MCP_VOCABULARY_NAME_LENGTH characters at most.")
+        }
+        val requiresResolution = flag(arguments, REQUIRES_RESOLUTION_ARGUMENT, row.requiresResolution)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        val isDone = flag(arguments, IS_DONE_ARGUMENT, row.isDone)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        val marksBlocked = flag(arguments, MARKS_BLOCKED_ARGUMENT, row.marksBlocked)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        // The three-way reading `sprint`, `planned_version` and `parent_id` all take:
+        // absent keeps the current opposite label, an explicit null makes the kind
+        // symmetric, and a name sets it. A blank string collapses into the null case,
+        // since the repository normalises blank to null anyway — "I cleared the field"
+        // and "I ticked same-in-both-directions" must not become two stored states that
+        // render identically.
+        val inverseName = if (arguments.containsKey(INVERSE_NAME_ARGUMENT)) {
+            arguments.string(INVERSE_NAME_ARGUMENT)
+        } else {
+            row.inverseName
+        }
+
+        vocabularyWrite {
+            deps.vocabularies.rename(
+                project.id, kind, row, name, requiresResolution, isDone, inverseName, marksBlocked,
+            )
+        }.getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be changed.") }
+
+        return ok(
+            if (name == row.name) "Updated the ${kind.noun} \"${row.name}\" (id ${row.id}) in ${project.name}."
+            else "Renamed the ${kind.noun} \"${row.name}\" to \"$name\" (id ${row.id}) in ${project.name}.",
+        )
+    }
+
+    /** Put one vocabulary in the order given — the whole list, or nothing. */
+    private suspend fun reorderVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        // longs() refuses the whole argument when any element is unreadable rather than
+        // dropping that one, which is exactly what this call needs: the repository
+        // demands the complete set, so a silently dropped element would become a refusal
+        // about a list the caller did not send. See JsonObject.longs.
+        val ids = arguments.longs(IDS_ARGUMENT)
+            ?: return refuse(
+                "`$IDS_ARGUMENT` must be an array of row ids, as numbers — every ${kind.noun} in " +
+                    "this project, in the order you want them. list_vocabulary gives them.",
+            )
+        vocabularyWrite { deps.vocabularies.reorder(project.id, kind, ids) }
+            .getOrElse { return refuse(it.message ?: "That order was refused.") }
+        return ok("Put ${project.name}'s ${kind.plural} in the order given (${ids.size} rows).")
+    }
+
+    /**
+     * Delete a row, or explain why not.
+     *
+     * The refusals — in use, and the last status or priority — are
+     * [VocabularyRepository.delete]'s and are not restated here, which is the point of
+     * going through it. What this adds is the *consequence* sentence for the deletes
+     * that are allowed: the count is read before the row goes, because afterwards there
+     * is nothing left to count, and an agent that has just removed a relation kind
+     * should be told how many links went with it rather than discovering it later.
+     */
+    private suspend fun deleteVocabulary(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val kind = resolveVocabularyKind(arguments).getOrElse { return refuse(it.message ?: "No such vocabulary.") }
+        val project = vocabularyScope(user, arguments, kind)
+            .getOrElse { return refuse(it.message ?: "No such project.") }
+        val row = namedVocabularyRow(project, kind, arguments)
+            .getOrElse { return refuse(it.message ?: "No such row.") }
+        val uses = row.usageCount
+
+        vocabularyWrite { deps.vocabularies.delete(project.id, kind, row) }
+            .getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be deleted.") }
+
+        return ok(
+            buildString {
+                append("Deleted the ${kind.noun} \"${row.name}\" from ${project.name}.")
+                if (uses > 0) {
+                    append(" ")
+                    append(
+                        when (kind) {
+                            // The kinds whose rows cascade or release rather than
+                            // restricting — the delete succeeded, so this is a
+                            // consequence to report, never a warning to have given.
+                            VocabularyKind.RELATION_KIND ->
+                                "$uses ${plural(uses, "link")} that used it went with it, and " +
+                                    "nothing records what was linked."
+                            VocabularyKind.LABEL, VocabularyKind.COMPONENT ->
+                                "$uses ${plural(uses, "issue")} no longer ${if (uses == 1L) "carries" else "carry"} it."
+                            VocabularyKind.SPRINT ->
+                                "$uses ${plural(uses, "issue")} " +
+                                    "${if (uses == 1L) "is" else "are"} back in the backlog."
+                            VocabularyKind.VERSION ->
+                                "$uses ${plural(uses, "issue")} no longer " +
+                                    "${if (uses == 1L) "names" else "name"} it."
+                            // Unreachable: these three restrict on use, so a non-zero
+                            // count would have been refused above. Spelled out rather
+                            // than left to an else, so a schema change that relaxes one
+                            // of them is a compile error here.
+                            VocabularyKind.STATUS, VocabularyKind.PRIORITY, VocabularyKind.RESOLUTION -> ""
+                        },
+                    )
+                }
+                append(" This cannot be undone.")
+            },
+        )
+    }
+
+    /** The `id` argument as a row of [kind] *in this project*, or a refusal. */
+    private suspend fun namedVocabularyRow(
+        project: ProjectRecord,
+        kind: VocabularyKind,
+        arguments: JsonObject,
+    ): Result<VocabularyRow> {
+        val id = arguments.long(VOCABULARY_ID_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$VOCABULARY_ID_ARGUMENT` must be a row id, as a number — the `id` from " +
+                        "list_vocabulary.",
+                ),
+            )
+        // Project-scoped, exactly as the HTTP route's `vocabularyRow` is, and for the
+        // reason [VocabularyRepository.find] gives: an administrator is an administrator
+        // in their own project only, and a client that sent the id it had lying around
+        // must not rename another project's "Closed".
+        val row = deps.vocabularies.find(project.id, kind, id)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "There is no ${kind.noun} with id $id in ${project.name}. Ids are per project; " +
+                        "list_vocabulary gives this one's.",
+                ),
+            )
+        return Result.success(row)
+    }
+
+    /**
+     * Turn a project's estimates on, off, or over to the other unit.
+     *
+     * [AccessControl.canAdministerProject] — the same gate the `/estimates` route asks,
+     * and the one the vocabulary's six board-defining kinds sit behind. Deciding whether
+     * a team estimates at all is a decision about what the board is, not work inside it.
+     *
+     * ── The one place this is deliberately stricter than the HTTP route ───────
+     *
+     * That route folds an unrecognised mode to [EstimateMode.NONE] rather than refusing,
+     * and it is right to: it is protecting a *browser* from a version skew nobody can
+     * see, where degrading to the state that renders nothing beats a screen that will
+     * not open. Here the same fold would mean a typo in one argument silently switching
+     * a live project's estimates off — a write nobody asked for, reported as success,
+     * which is the silent substitution this whole surface exists to refuse. So an
+     * unknown mode is refused with the three that exist.
+     */
+    private suspend fun setEstimateMode(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val project = resolveProject(user, arguments) ?: return noSuchProject()
+        if (!deps.access.canAdministerProject(user, project.id)) {
+            return refuse(
+                "You cannot change whether ${project.name} estimates — that is a " +
+                    "${ProjectRole.ADMIN.prose} action, and the account you are acting as does not " +
+                    "hold that rung on this project. Nothing was changed.",
+            )
+        }
+        val named = arguments.string(MODE_ARGUMENT)
+            ?: return refuse("`$MODE_ARGUMENT` must be one of: $ESTIMATE_MODE_KEYS.")
+        val mode = EstimateMode.entries.firstOrNull { it.key.equals(named.trim(), ignoreCase = true) }
+            ?: return refuse(
+                "There is no estimate mode called \"$named\". The three are: $ESTIMATE_MODE_KEYS. " +
+                    "Nothing was changed.",
+            )
+        val previous = project.estimateMode
+        deps.projects.setEstimateMode(project.id, mode)
+        return ok(
+            buildString {
+                append("${project.name} now estimates in \"${mode.key}\"")
+                if (previous != mode) append(", where it was \"${previous.key}\"") else append(" (unchanged)")
+                append(". ")
+                append(
+                    when (mode) {
+                        EstimateMode.NONE ->
+                            "No estimate can be written here now, and any estimate sent to " +
+                                "create_issue or update_issue is refused. The estimates already " +
+                                "stored are untouched — this hides the field, it does not erase them."
+                        EstimateMode.TIME -> "New estimates are whole minutes (estimate_unit \"minutes\")."
+                        EstimateMode.POINTS -> "New estimates are whole points (estimate_unit \"points\")."
+                    },
+                )
+                append(
+                    " Nothing already estimated is reinterpreted: every issue carries the unit its " +
+                        "estimate was written in.",
+                )
+            },
+        )
+    }
+
     /** Post a comment. One call, both steps — see [createIssue]. */
     private suspend fun addComment(user: UserRecord, arguments: JsonObject): McpToolResult {
         val issue = readableIssue(user, arguments) ?: return noSuchIssue()
@@ -2375,17 +3675,17 @@ class McpTools(private val deps: BoardDependencies) {
      * The comment counterpart to [updateIssue], and the same two-part permission
      * the web app's `PUT /api/comments/{id}` uses: [AccessControl.canEditComment]
      * decides whether you may touch this comment at all — your own, or anyone's if
-     * you are an admin — and only then does the admin-only backfill gate decide
-     * whether you may also re-attribute or re-date it.
+     * you are an instance administrator — and only then does the owner-only backfill
+     * gate decide whether you may also re-attribute or re-date it.
      *
      * ── Why this rewrites author and timestamp at all ────────────────────────
      *
      * The rest of this file holds that backfill is creation-only (see the preamble).
-     * `update_comment` is the deliberate exception: a system administrator may change everything
-     * about a comment, an external author included, so an import that got a name or
-     * a date wrong can be corrected in place rather than deleted and refiled — and
-     * deletion is the one thing this surface does not offer. It is admin-only for
-     * exactly the reason create-time attribution is, gated by the same
+     * `update_comment` is the deliberate exception: the instance owner may change
+     * everything about a comment, an external author included, so an import that got
+     * a name or a date wrong can be corrected in place rather than deleted and
+     * refiled — and deletion is the one thing this surface does not offer. It is the
+     * owner's for exactly the reason create-time attribution is, gated by the same
      * [AccessControl.canAttributeWrites] through [resolveAttribution].
      */
     private suspend fun updateComment(user: UserRecord, arguments: JsonObject): McpToolResult {
@@ -2394,7 +3694,7 @@ class McpTools(private val deps: BoardDependencies) {
             return refuse("That is not your comment.")
         }
 
-        // author / author_external / created_at are the admin-only backfill levers,
+        // author / author_external / created_at are the owner-only backfill levers,
         // exactly as on add_comment — but defaulted to what the comment already has,
         // because an edit that does not mention them must not silently re-author or
         // re-date the row. resolveAttribution carries the whole gate; passing the
@@ -2406,9 +3706,9 @@ class McpTools(private val deps: BoardDependencies) {
             removalOutcome = "the comment keeps its current author and date",
         ).getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
 
-        // Absent leaves the badge untouched and a real name sets it, neither
-        // admin-gated — self-labelling is the norm, see resolveAttribution's
-        // preamble. An empty value clears it, which is admin-only. See
+        // Absent leaves the badge untouched and a real name sets it, neither of them
+        // the owner's — self-labelling is the norm, see resolveAttribution's
+        // preamble. An empty value clears it, which only the owner may do. See
         // resolveAgentNameEdit.
         val agentName = resolveAgentNameEdit(user, arguments, comment.agentName)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
@@ -2436,13 +3736,13 @@ class McpTools(private val deps: BoardDependencies) {
      * has only the second half, widened into the whole: there is no such thing as
      * editing your own history entry, because nobody writes history by hand. The
      * only reason to reach a row here is to fix attribution on imported history,
-     * which is an administrative act start to finish.
+     * which is the deployment owner's job start to finish.
      *
-     * So the admin gate IS the gate, and it is asked first — before the row is even
-     * resolved — so that a non-admin who somehow reached this tool (it is absent
+     * So the owner gate IS the gate, and it is asked first — before the row is even
+     * resolved — so that anybody else who somehow reached this tool (it is absent
      * from their tool list) cannot use an `event_id` to probe which entries, and so
      * which private boards, exist. The readable-project chain below is then
-     * belt-and-braces, since an admin can read every board anyway.
+     * belt-and-braces, since the owner can read every board anyway.
      *
      * WHAT the entry records is never touched: `kind`, its `value` and its `values`
      * are not parameters, here or in the store. Only who, when, and the agent label
@@ -2452,13 +3752,13 @@ class McpTools(private val deps: BoardDependencies) {
     private suspend fun updateHistoryEvent(user: UserRecord, arguments: JsonObject): McpToolResult {
         if (!deps.access.canAttributeWrites(user)) {
             return refuse(
-                "Only a system administrator can edit an issue's history, and you are not acting " +
-                    "as one. A history is append-only for everyone else — its entries record what " +
-                    "happened and are not yours to rewrite. Nothing was written.",
+                "Only the instance owner can edit an issue's history, and you are not acting " +
+                    "as the owner. A history is append-only for everyone else — its entries record " +
+                    "what happened and are not yours to rewrite. Nothing was written.",
             )
         }
         // Null only in test deployments that wire up no history; a production
-        // server always has one. An admin who reached here on such a deployment is
+        // server always has one. An owner who reached here on such a deployment is
         // told plainly rather than met with "no such event", which would be a lie
         // about the id they sent.
         val history = deps.history ?: return refuse("This deployment keeps no issue history to edit.")
@@ -2475,7 +3775,7 @@ class McpTools(private val deps: BoardDependencies) {
         // author / author_external / created_at through the same gate and the same
         // function as every other backfill, defaulted to what the entry already
         // records so a call that names only one of them leaves the rest exactly as
-        // they were. The admin gate above has already passed, so resolveAttribution's
+        // they were. The owner gate above has already passed, so resolveAttribution's
         // own check is a no-op here — but it is the check, and going around it would
         // be the one copy that could drift.
         val attribution = resolveAttribution(
@@ -2486,7 +3786,7 @@ class McpTools(private val deps: BoardDependencies) {
         ).getOrElse { return refuse(it.message ?: "That attribution cannot be used.") }
 
         // Absent leaves the badge as it is; a real name sets it; an empty value
-        // clears it. Clearing is admin-only — but this whole tool already is, so
+        // clears it. Clearing is the owner's alone — but this whole tool already is, so
         // here it is simply available: a migrated entry that was never an agent's
         // can shed the badge in the same call that reattaches it. See
         // resolveAgentNameEdit.
@@ -2514,12 +3814,14 @@ class McpTools(private val deps: BoardDependencies) {
      * driving it would get through the web app, which is the rule for this whole
      * surface — deleting is not the place to start inventing a second one.
      *
-     * Note what is deliberately NOT here: no admin-only gate, and no "are you
-     * sure" argument. The first because deletion is not an administrative act —
-     * `canDeleteIssue` is `canEditIssue`, on the reasoning AccessControl gives:
-     * anyone who can open the editor can already empty the issue of everything it
-     * said, so guarding the row and not its contents is ceremony. The second
-     * because a confirmation flag a caller sets itself confirms nothing; the
+     * Note what is deliberately NOT here: no instance-wide gate, and no "are you
+     * sure" argument. The first because deletion is a rung on the project rather
+     * than a fact about the deployment — `canDeleteIssue` asks for
+     * [ProjectRole.ADMIN], or authorship, which is one rung ABOVE the
+     * [ProjectRole.MAINTAINER] `canEditIssue` takes. LNL-191 split the two on the
+     * reasoning AccessControl gives: a maintainer can already empty an issue of
+     * every word it said, and what they cannot do is make it stop existing. The
+     * second because a confirmation flag a caller sets itself confirms nothing; the
      * asking belongs in the tool description, where the agent reads it, and that
      * is where it is.
      *
@@ -2556,10 +3858,12 @@ class McpTools(private val deps: BoardDependencies) {
      *
      * [AccessControl.canEditComment] rather than a rule of its own, which is what
      * the HTTP route's `editableComment` uses for exactly this — and it is
-     * NARROWER than [deleteIssue]'s gate on purpose. `change_unowned_issues` is a
-     * grant over issues; it has never meant "and you may also delete what other
-     * people wrote", and reading it that way here would quietly widen a role that
-     * every project has handed out already.
+     * NARROWER than [deleteIssue]'s gate on purpose. A project rung is a grant over
+     * the board's issues; it has never meant "and you may also delete what other
+     * people wrote", and reading it that way here would quietly widen every
+     * [ProjectRole.ADMIN] a project has handed out already. Somebody else's words go
+     * on the comment author's say, or an instance administrator's, and on nobody's by
+     * way of a board.
      */
     private suspend fun deleteComment(user: UserRecord, arguments: JsonObject): McpToolResult {
         val comment = readableComment(user, arguments) ?: return noSuchComment()
@@ -2583,9 +3887,9 @@ class McpTools(private val deps: BoardDependencies) {
      * Read the order the way [resolveAttribution] asks to be read: may you write
      * here at all, and only then whose name goes on it. The two are separate
      * questions and the second is strictly narrower — anyone who can edit an
-     * issue may attach to it, and only an admin may attach *as somebody else*.
-     * That is the same split `create_issue` already has, and it is why this tool
-     * is not admin-only despite carrying admin-only parameters.
+     * issue may attach to it, and only the instance owner may attach *as somebody
+     * else*. That is the same split `create_issue` already has, and it is why this
+     * tool is offered to everybody despite carrying the owner's parameters.
      *
      * The permission is the one the equivalent HTTP route uses, not a new one:
      * [AccessControl.canEditIssue] for an issue, [AccessControl.canEditComment]
@@ -2645,11 +3949,12 @@ class McpTools(private val deps: BoardDependencies) {
 
             // The two forum targets are gated by canUseForumTools rather than by
             // canEditForumContent, and that is not this tool going soft. The
-            // forum surface is admin-only as a whole — see canUseForumTools — so
-            // the caller who reaches these two branches is the caller who could
-            // rewrite the post's body outright with update_forum_post. A
-            // narrower check here would refuse nobody and would imply the forum
-            // tools have a permission model they do not.
+            // forum surface is refused as a whole — canUseForumTools answers
+            // false for everybody since LNL-190 — so nobody reaches these two
+            // branches at all, and whoever does when discussions come back is
+            // whoever could rewrite the post's body outright with
+            // update_forum_post. A narrower check here would refuse nobody and
+            // would imply the forum tools have a permission model they do not.
             "forum_post_id" -> {
                 val scope = forumPostScope(user, arguments, "forum_post_id")
                     .getOrElse { return refuse(it.message ?: "No such post.") }
@@ -2723,10 +4028,10 @@ class McpTools(private val deps: BoardDependencies) {
         // here, and the refusal has to be the same one whether it is or not.
         if (!deps.access.canSendAgentMail(user)) {
             return refuse(
-                "Sending e-mail over MCP is restricted to system administrators on this Lunicle " +
-                    "server, and this account is not one. This is not a missing setting the user " +
-                    "can turn on themselves — tell them what you would have written instead, and " +
-                    "do not try again.",
+                "Sending e-mail over MCP is restricted to the owner of this Lunicle server, and " +
+                    "this account is not the owner. This is not a missing setting the user can " +
+                    "turn on themselves — tell them what you would have written instead, and do " +
+                    "not try again.",
             )
         }
         val sender = deps.agentMail ?: return refuse(
@@ -2784,8 +4089,8 @@ class McpTools(private val deps: BoardDependencies) {
      * it was never shown is exactly the caller this surface assumes, and this is
      * the half that enforces.
      *
-     * It runs before anything is resolved, so a refusal costs no query and tells a
-     * non-admin nothing about which projects have forums.
+     * It runs before anything is resolved, so a refusal costs no query and tells the
+     * caller nothing about which projects have forums.
      */
     private fun forumGate(user: UserRecord): McpToolResult? =
         if (deps.access.canUseForumTools(user)) null else refuse(FORUM_REFUSAL)
@@ -3138,11 +4443,11 @@ class McpTools(private val deps: BoardDependencies) {
      * Watch a forum's new posts, or stop — for yourself, or (named) somebody else.
      *
      * The forum counterpart of [watchIssue], reachable only through the forum gate
-     * [forumScope] enforces, so every caller here is already a system administrator.
-     * The subject rule is still [watchSubject]'s — the caller's own inbox by
-     * default, another's admin-only — because "these tools are admin" and "changing
-     * another person's subscription is an attribution" are two rules, and the second
-     * should read the same here as it does on an issue.
+     * [forumScope] enforces — which since LNL-190 lets nobody through at all. The
+     * subject rule is still [watchSubject]'s — the caller's own inbox by default,
+     * another's the instance owner's — because "who may reach the forum tools" and
+     * "changing another person's subscription is an attribution" are two rules, and
+     * the second should read the same here as it does on an issue.
      */
     private suspend fun watchForum(user: UserRecord, arguments: JsonObject): McpToolResult {
         val scope = forumScope(user, arguments).getOrElse { return refuse(it.message ?: "No such forum.") }
@@ -3175,10 +4480,10 @@ class McpTools(private val deps: BoardDependencies) {
      * Whose inbox a watch call is about — the caller, or a named other person.
      *
      * The subject half of [watchIssue], lifted out so the forum watch tools resolve
-     * it identically: absent `user` is the caller; a named user is admin-only via
-     * [AccessControl.canAttributeWrites] and refused by name if unknown; and a
-     * subscribe onto an address-less account is refused, since it would notify
-     * nobody. Unwatching needs no address.
+     * it identically: absent `user` is the caller; a named user is the instance
+     * owner's alone via [AccessControl.canAttributeWrites], refused by name if
+     * unknown; and a subscribe onto an address-less account is refused, since it
+     * would notify nobody. Unwatching needs no address.
      */
     private suspend fun watchSubject(
         user: UserRecord,
@@ -3193,7 +4498,7 @@ class McpTools(private val deps: BoardDependencies) {
             if (id != user.id && !deps.access.canAttributeWrites(user)) {
                 return Result.failure(
                     ResolutionRefusal(
-                        "Only a system administrator can change somebody else's watch. Omit " +
+                        "Only the instance owner can change somebody else's watch. Omit " +
                             "`$USER_ARGUMENT` to change your own. Nothing was written.",
                     ),
                 )
@@ -3254,8 +4559,8 @@ class McpTools(private val deps: BoardDependencies) {
      * Resolve a forum, having first established that this caller may reach forums
      * at all.
      *
-     * The gate comes before the lookup so that a non-admin's refusal is about the
-     * surface rather than about the id, and cannot be used to learn whether a
+     * The gate comes before the lookup so that a refused caller's answer is about
+     * the surface rather than about the id, and cannot be used to learn whether a
      * forum exists.
      */
     private suspend fun forumScope(
@@ -3385,10 +4690,10 @@ class McpTools(private val deps: BoardDependencies) {
      *     caller made up.
      *  3. **Only then**, what did they mean.
      *
-     * A non-admin who asked is refused with the parameter named, rather than served
-     * as if they had not asked. See this file's preamble for why that is the whole
-     * feature: the alternative is an agent truthfully reporting a backfill that
-     * silently went in under the wrong name.
+     * Anybody but the owner who asked is refused with the parameter named, rather
+     * than served as if they had not asked. See this file's preamble for why that
+     * is the whole feature: the alternative is an agent truthfully reporting a
+     * backfill that silently went in under the wrong name.
      *
      * ── Why `author` and `author_external` are two parameters ─────────────────
      *
@@ -3415,8 +4720,8 @@ class McpTools(private val deps: BoardDependencies) {
      * differ on an edit are the answers when nothing was asked: [default] carries
      * the row's *current* author and timestamp, so an untouched edit re-writes what
      * was already there instead of re-authoring to the token user and re-stamping
-     * to now. [removalOutcome] is the tail of the not-admin refusal, since "remove
-     * these and it files under you, now" is only true at creation.
+     * to now. [removalOutcome] is the tail of the not-the-owner refusal, since
+     * "remove these and it files under you, now" is only true at creation.
      */
     private suspend fun resolveAttribution(
         user: UserRecord,
@@ -3443,9 +4748,9 @@ class McpTools(private val deps: BoardDependencies) {
             ).joinToString(" and ")
             return Result.failure(
                 ResolutionRefusal(
-                    "Only a system administrator can set $asked, and you are not acting as one. Nothing was " +
-                        "written. Remove $asked and $removalOutcome — but that is a different thing " +
-                        "from what you asked for, so decide rather than assume.",
+                    "Only the instance owner can set $asked, and you are not acting as the owner. " +
+                        "Nothing was written. Remove $asked and $removalOutcome — but that is a " +
+                        "different thing from what you asked for, so decide rather than assume.",
                 ),
             )
         }
@@ -3495,7 +4800,7 @@ class McpTools(private val deps: BoardDependencies) {
      * a permission and asks no question of [AccessControl]. An agent naming itself
      * on the row it writes is the ordinary, encouraged case — the whole point is
      * that a reader can see a human did not type this — where writing *as somebody
-     * else* is the admin-only act that [resolveAttribution] guards. So there is no
+     * else* is the owner-only act that [resolveAttribution] guards. So there is no
      * "did they ask, may they" here; there is only a value, trimmed, with an upper
      * bound so a runaway string cannot become a row nobody can read past.
      *
@@ -3518,14 +4823,14 @@ class McpTools(private val deps: BoardDependencies) {
     }
 
     /**
-     * The agent label for an EDIT: set it, leave it, or — for an admin — clear it.
+     * The agent label for an EDIT: set it, leave it, or — as the owner — clear it.
      *
      * A create can only ever ADD a badge, so [resolveAgentName] is all it needs:
      * absent, null and blank alike mean "no badge", and there is nothing yet to
      * remove. An edit is the one place a badge can already exist and need to *go* —
      * a migration forces the case, because a row imported from another tracker was
      * not made by an agent and must not wear one. So the edit tools carry one state
-     * more than a create does, and it is admin-only for [resolveAttribution]'s
+     * more than a create does, and it is the owner's alone for [resolveAttribution]'s
      * reason: the badge is the mark that says "an agent did this", and removing it
      * rewrites the record of who did, which is [AccessControl.canAttributeWrites]'s
      * gate and no lighter an act than re-authoring the row.
@@ -3535,14 +4840,15 @@ class McpTools(private val deps: BoardDependencies) {
      *  - **Absent, or explicit null → leave [current] alone.** Null counts as absent
      *    for [isPresent]'s reason: models null-fill fields they have nothing to say
      *    about, and that must not silently strip a badge.
-     *  - **Present and blank (`""` or whitespace) → CLEAR the badge.** Admin-only: a
-     *    non-admin who asks is refused with the parameter named, never quietly left
-     *    as-is — the silent substitution this whole surface refuses to make.
+     *  - **Present and blank (`""` or whitespace) → CLEAR the badge.** The instance
+     *    owner's alone: anybody else who asks is refused with the parameter named,
+     *    never quietly left as-is — the silent substitution this whole surface
+     *    refuses to make.
      *  - **Present and a real name → set it,** length-checked by [resolveAgentName].
-     *    Not admin-only; labelling a row you are already allowed to edit is the
+     *    Open to everybody; labelling a row you are already allowed to edit is the
      *    ordinary case.
      */
-    private fun resolveAgentNameEdit(
+    private suspend fun resolveAgentNameEdit(
         user: UserRecord,
         arguments: JsonObject,
         current: String?,
@@ -3551,14 +4857,14 @@ class McpTools(private val deps: BoardDependencies) {
         // Absent, or an explicit null: say nothing, change nothing.
         if (element == null || element is JsonNull) return Result.success(current)
         // Present and non-null. A blank value is a request to REMOVE the badge —
-        // string() reports blank as null — and only a system administrator may.
+        // string() reports blank as null — and only the instance owner may.
         if (arguments.string(AGENT_NAME_ARGUMENT) == null) {
             if (!deps.access.canAttributeWrites(user)) {
                 return Result.failure(
                     ResolutionRefusal(
-                        "Only a system administrator can clear an agent label, and you are not " +
-                            "acting as one. An empty `$AGENT_NAME_ARGUMENT` asks to remove the " +
-                            "badge; omit the parameter entirely to leave it exactly as it is. " +
+                        "Only the instance owner can clear an agent label, and you are not " +
+                            "acting as the owner. An empty `$AGENT_NAME_ARGUMENT` asks to remove " +
+                            "the badge; omit the parameter entirely to leave it exactly as it is. " +
                             "Nothing was written.",
                     ),
                 )
@@ -3576,12 +4882,13 @@ class McpTools(private val deps: BoardDependencies) {
      *
      * Because an agent has no way to learn an id. Nothing on this surface exposes
      * the user table — `get_board` and `get_issue` report an author's
-     * [UserRecord.resolvedName] and nothing more — and the alternative was an
-     * admin-only `list_users` tool. Rejected: §3's instinct is that a capability
-     * with no tool cannot be abused, and "every account on this instance, on
-     * request" is exactly the kind of tool that gets called for no reason once it
-     * exists. Matching the name already on the board costs nothing and adds no
-     * enumeration primitive — the agent can only confirm names it was told.
+     * [UserRecord.resolvedName] and nothing more — and the alternative was a
+     * `list_users` tool for the instance owner. Rejected: §3's instinct is that a
+     * capability with no tool cannot be abused, and "every account on this
+     * instance, on request" is exactly the kind of tool that gets called for no
+     * reason once it exists. Matching the name already on the board costs nothing
+     * and adds no enumeration primitive — the agent can only confirm names it was
+     * told.
      *
      * It also matches the file's existing rule: statuses, priorities, resolutions,
      * labels and components are all addressed by name for the same reason. An
@@ -3597,9 +4904,9 @@ class McpTools(private val deps: BoardDependencies) {
      * somebody else's email address is not a case worth ranking above that.
      *
      * The ambiguous refusal deliberately does NOT list the candidates' addresses.
-     * It could — the caller is an admin — but an error message is a bad place to
-     * decide to start disclosing emails, and the sentence is just as actionable
-     * without: the human driving this import knows which Anna they mean.
+     * It could — the caller is the instance owner — but an error message is a bad
+     * place to decide to start disclosing emails, and the sentence is just as
+     * actionable without: the human driving this import knows which Anna they mean.
      */
     private suspend fun resolveAuthor(named: String): Result<Long> {
         val wanted = named.trim()
@@ -3675,11 +4982,11 @@ class McpTools(private val deps: BoardDependencies) {
      * may they be assigned here? See [AccessControl.canBeAssigned] for why those
      * are two questions about two different people. Membership of [assignableUsers]
      * is that check, applied to the caller naming themselves too — being able to
-     * edit an issue is not the same as being assignable on the project, and an
-     * admin qualifies either way.
+     * edit an issue is not the same as being assignable on the project, and a
+     * project administrator qualifies either way.
      *
      * So MCP assignment is strictly the editor's path: it needs write rights, where
-     * the web app's button needs only `be_assigned_issue`. Deliberate. The button
+     * the web app's button needs only the contributor rung. Deliberate. The button
      * exists so somebody who cannot edit can still pick up work by hand; an agent
      * filing or editing an issue on your behalf is already doing more than that.
      */
@@ -3866,6 +5173,146 @@ class McpTools(private val deps: BoardDependencies) {
     }
 
     /**
+     * Whether the work is going to the assignee's *agent* rather than to them — or
+     * null, which is this flag's spelling of "say nothing" (LNL-215).
+     *
+     * ── Null is "leave it alone", and it is the ONLY field here where that is so ──
+     *
+     * Every other optional field on `update_issue` defaults to the issue's current
+     * value, because [IssueStore.publish] overwrites its column unconditionally and a
+     * forgotten value would silently clear it. This one deliberately does not, and
+     * [IssueRepository.save]'s `assigneeIsAgent` exists to make that possible: passing
+     * the stored flag back would drag it across a handover, so that an agent fixing a
+     * typo on an issue that has just been reassigned would re-mark the new holder's
+     * work as their robot's. Null means "not editing this", and the repository decides
+     * — keep the flag when the assignee is unchanged, clear it when they are not, and
+     * never set it on an issue nobody holds.
+     *
+     * That is also why this is not simply [JsonObject.bool]: `bool` answers null for
+     * absent and for garbage alike, which would make `"assignee_is_agent": "yes"` a
+     * silent no-op reported as success. Absent and explicit-null say nothing (models
+     * null-fill a schema, per [isPresent]); anything else that is not a boolean is
+     * refused.
+     */
+    private fun resolveAssigneeIsAgent(arguments: JsonObject): Result<Boolean?> {
+        if (!arguments.containsKey(ASSIGNEE_IS_AGENT_ARGUMENT) ||
+            !arguments.isPresent(ASSIGNEE_IS_AGENT_ARGUMENT)
+        ) {
+            return Result.success(null)
+        }
+        val value = arguments.bool(ASSIGNEE_IS_AGENT_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$ASSIGNEE_IS_AGENT_ARGUMENT` must be true or false, which " +
+                        "\"${arguments[ASSIGNEE_IS_AGENT_ARGUMENT]}\" is not. It says whether the " +
+                        "work goes to the assignee's agent rather than to them in person; omit it " +
+                        "to leave the flag exactly as it is.",
+                ),
+            )
+        return Result.success(value)
+    }
+
+    /**
+     * How much work an issue is, as two arguments that are one value (LNL-215).
+     *
+     * ── Why the pair is enforced rather than defaulted ────────────────────────
+     *
+     * An amount with no unit is not an estimate this application can render, and a unit
+     * with no amount is not an estimate at all — see [Estimate], which is one type for
+     * exactly that reason rather than two nullable fields. The tempting shortcut is to
+     * default the unit from the project's [EstimateMode], which would work today and
+     * would be wrong tomorrow: the whole point of stamping the unit on the issue is
+     * that the project's mode governs what may be *written*, never what a stored row
+     * *means*, and a tool that silently borrowed the mode would be the one place those
+     * two got conflated. So both or neither, and one alone is refused by name.
+     *
+     * ── The four readings of the pair ─────────────────────────────────────────
+     *
+     *  - **Neither key present → [current].** Absent means leave alone, as everywhere.
+     *  - **Both present, both values → that estimate,** validated below.
+     *  - **Both present, both JSON null → cleared.** The way to remove an estimate,
+     *    matching how `assignee` and the versions read an explicit null.
+     *  - **Anything else → refused.** One key without the other, or one value beside
+     *    one null, is a half-stated intention and guessing at it is how a save reports
+     *    success for a change it did not make.
+     *
+     * The unit and the project's mode are checked by
+     * [se.soderbjorn.lunicle.resolveEstimate] — the route's own function, so the rule
+     * lives in one place and an agent is bound by it exactly as the editor is. Its
+     * sentence is passed through with one extra line naming the tool that would change
+     * the mode, which is the next step an agent has and a browser does not.
+     */
+    private suspend fun resolveEstimateArgument(
+        projectId: Long,
+        arguments: JsonObject,
+        current: Estimate?,
+    ): Result<Estimate?> {
+        val hasAmount = arguments.containsKey(ESTIMATE_AMOUNT_ARGUMENT)
+        val hasUnit = arguments.containsKey(ESTIMATE_UNIT_ARGUMENT)
+        if (!hasAmount && !hasUnit) return Result.success(current)
+        if (hasAmount != hasUnit) {
+            val sent = if (hasAmount) ESTIMATE_AMOUNT_ARGUMENT else ESTIMATE_UNIT_ARGUMENT
+            val missing = if (hasAmount) ESTIMATE_UNIT_ARGUMENT else ESTIMATE_AMOUNT_ARGUMENT
+            return Result.failure(
+                ResolutionRefusal(
+                    "`$sent` was sent without `$missing`, and the two are one value: an amount with " +
+                        "no unit is a number nothing can render, and a unit with no amount is not " +
+                        "an estimate. Send both, or neither. get_board's `estimateMode` says which " +
+                        "unit this project takes. Nothing was written.",
+                ),
+            )
+        }
+        val statedAmount = arguments.isPresent(ESTIMATE_AMOUNT_ARGUMENT)
+        val statedUnit = arguments.isPresent(ESTIMATE_UNIT_ARGUMENT)
+        if (!statedAmount && !statedUnit) return Result.success(null)
+        if (statedAmount != statedUnit) {
+            return Result.failure(
+                ResolutionRefusal(
+                    "`$ESTIMATE_AMOUNT_ARGUMENT` and `$ESTIMATE_UNIT_ARGUMENT` move together: send " +
+                        "both as values to set an estimate, or both as null to clear it. One of " +
+                        "each is neither. Nothing was written.",
+                ),
+            )
+        }
+
+        val amount = arguments.long(ESTIMATE_AMOUNT_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "`$ESTIMATE_AMOUNT_ARGUMENT` must be a whole number, which " +
+                        "\"${arguments[ESTIMATE_AMOUNT_ARGUMENT]}\" is not. Minutes or points — " +
+                        "never a fraction, and never \"2h\": send 120 with " +
+                        "`$ESTIMATE_UNIT_ARGUMENT` \"minutes\".",
+                ),
+            )
+        val unitName = arguments.string(ESTIMATE_UNIT_ARGUMENT)
+            ?: return Result.failure(
+                ResolutionRefusal("`$ESTIMATE_UNIT_ARGUMENT` must be one of: $ESTIMATE_UNIT_KEYS."),
+            )
+        val unit = EstimateUnit.entries.firstOrNull { it.mcpKey.equals(unitName.trim(), ignoreCase = true) }
+            ?: return Result.failure(
+                ResolutionRefusal(
+                    "There is no estimate unit called \"$unitName\". The two are: $ESTIMATE_UNIT_KEYS. " +
+                        "Nothing was written.",
+                ),
+            )
+
+        val resolved = deps.resolveEstimate(projectId, Estimate(amount, unit))
+            .getOrElse { failure ->
+                return Result.failure(
+                    ResolutionRefusal(
+                        // The route's own sentence, and then the one thing it has no
+                        // reason to say to a browser: which tool moves the setting it
+                        // just refused against, and who may use it.
+                        (failure.message ?: "That estimate cannot be used.") +
+                            " get_board reports the mode in force as `estimateMode`; a project " +
+                            "administrator can change it with set_estimate_mode. Nothing was written.",
+                    ),
+                )
+            }
+        return Result.success(resolved)
+    }
+
+    /**
      * Read and sanity-check a backfilled timestamp.
      *
      * Epoch **milliseconds**, like every other time in this schema.
@@ -3875,8 +5322,8 @@ class McpTools(private val deps: BoardDependencies) {
      * A negative value is nonsense outright. A far-future one is worse than
      * nonsense: a comment stamped in the year 3000 sits at the bottom of its
      * thread forever (Comments.sq orders by `created_at`), and both columns render
-     * as a date nobody can explain from the UI. A bad value is admin-only to reach
-     * — at creation, or through `update_comment` and `update_issue` — and every
+     * as a date nobody can explain from the UI. A bad value is the owner's alone to
+     * reach — at creation, or through `update_comment` and `update_issue` — and every
      * path comes through here, so one set of bounds keeps it out at every door.
      * Refusing costs a round-trip; storing it costs somebody an afternoon with a
      * SQLite shell.
@@ -3930,27 +5377,45 @@ class McpTools(private val deps: BoardDependencies) {
     // ── Shared resolution ────────────────────────────────────────────────────
 
     /**
-     * Resolve a project the caller may read, by id or by name.
+     * Resolve a project this agent may reach, by id or by name.
      *
-     * Both answer identically when the project is unreadable — see [noSuchProject].
+     * Both answer identically when the project is out of reach — see [noSuchProject].
+     *
+     * ── Why this asks the agent question and not the read one (LNL-217) ─────
+     *
+     * [AccessControl.canAgentReachProject] rather than `canReadProject`, which is the
+     * whole of the agent floor on this path: a project where the caller is only a Viewer
+     * is not "visible but read-only" to an agent, it is **absent**. See that function for
+     * why the line falls at Contributor, and [AGENT_PROJECT_FLOOR] for why it is a
+     * constant.
+     *
+     * That it lands in [noSuchProject] with private projects rather than in a refusal of
+     * its own is deliberate, and it is the same conflation the HTTP routes make: an agent
+     * that could tell "you are only a Viewer here" from "no such project" could enumerate
+     * every board on the deployment by name, which is exactly what a caller below the
+     * floor must not be able to do. The person reading the agent's report is told about
+     * the floor by the server instructions instead, where it belongs — see
+     * [MCP_INSTRUCTIONS], which says it once rather than at every refusal.
      */
     private suspend fun resolveProject(user: UserRecord, arguments: JsonObject): ProjectRecord? {
         val project = arguments.long("project_id")?.let { deps.projects.findById(it) }
             ?: arguments.string("project_name")?.let { deps.projects.findByName(it) }
             ?: return null
-        return project.takeIf { deps.access.canReadProject(user, it) }
+        return project.takeIf { deps.access.canAgentReachProject(user, it) }
     }
 
     /**
-     * Resolve an issue whose project the caller may read.
+     * Resolve an issue whose project this agent may reach.
      *
      * Every issue tool starts here, exactly as every issue route starts at
-     * `readableIssue`: an issue is only as readable as its project.
+     * `readableIssue`: an issue is only as reachable as its project. The floor applies
+     * here for [resolveProject]'s reason and by the same call — an issue id must not be
+     * the way around a project that is out of reach.
      */
     private suspend fun readableIssue(user: UserRecord, arguments: JsonObject): IssueRecord? {
         val issue = arguments.long("issue_id")?.let { deps.issues.findById(it) } ?: return null
         val project = deps.projects.findById(issue.projectId) ?: return null
-        return issue.takeIf { deps.access.canReadProject(user, project) }
+        return issue.takeIf { deps.access.canAgentReachProject(user, project) }
     }
 
     /**
@@ -3967,7 +5432,7 @@ class McpTools(private val deps: BoardDependencies) {
         val comment = arguments.long("comment_id")?.let { deps.comments.findById(it) } ?: return null
         val issue = deps.issues.findById(comment.issueId) ?: return null
         val project = deps.projects.findById(issue.projectId) ?: return null
-        return comment.takeIf { deps.access.canReadProject(user, project) }
+        return comment.takeIf { deps.access.canAgentReachProject(user, project) }
     }
 
     /**
@@ -4082,6 +5547,91 @@ private const val PLANNED_VERSION_ARGUMENT = "planned_version"
 private const val FIXED_VERSION_ARGUMENT = "fixed_version"
 private const val PARENT_ARGUMENT = "parent_id"
 
+// LNL-215: the agent-assignee flag, the two halves of an estimate, the two ends and
+// the kind of a link, and the five arguments the vocabulary tools share.
+private const val ASSIGNEE_IS_AGENT_ARGUMENT = "assignee_is_agent"
+private const val ESTIMATE_AMOUNT_ARGUMENT = "estimate_amount"
+private const val ESTIMATE_UNIT_ARGUMENT = "estimate_unit"
+private const val TO_ISSUE_ARGUMENT = "to_issue_id"
+private const val RELATION_ARGUMENT = "relation"
+private const val RELATION_ID_ARGUMENT = "relation_id"
+private const val KIND_ARGUMENT = "kind"
+private const val NAME_ARGUMENT = "name"
+private const val VOCABULARY_ID_ARGUMENT = "id"
+private const val IDS_ARGUMENT = "ids"
+private const val INVERSE_NAME_ARGUMENT = "inverse_name"
+private const val MARKS_BLOCKED_ARGUMENT = "marks_blocked"
+private const val REQUIRES_RESOLUTION_ARGUMENT = "requires_resolution"
+private const val IS_DONE_ARGUMENT = "is_done"
+private const val MODE_ARGUMENT = "mode"
+
+/**
+ * How long a vocabulary row's name may be, over MCP.
+ *
+ * The same bound `ProjectSettingsRoutes` applies, and it has to be: an agent's status
+ * is rendered in the same column header a human's is. Duplicated as a constant rather
+ * than widening the route's private one, which is [MAX_MCP_TITLE_LENGTH]'s trade and
+ * the same smaller wrong.
+ */
+private const val MAX_MCP_VOCABULARY_NAME_LENGTH = 60
+
+/**
+ * The eight vocabulary keys, in one string, for the refusals that list them.
+ *
+ * Built off the enum rather than written out, so a ninth kind appears in every
+ * refusal the moment it exists — which is exactly the property the generic tool
+ * surface was chosen for. See the section banner above `vocabularyScope`.
+ */
+private val VOCABULARY_KIND_KEYS = VocabularyKind.entries.joinToString(", ") { "\"${it.key}\"" }
+
+/** The three estimate modes, and the two units, for the same reason. */
+private val ESTIMATE_MODE_KEYS = EstimateMode.entries.joinToString(", ") { "\"${it.key}\"" }
+private val ESTIMATE_UNIT_KEYS = EstimateUnit.entries.joinToString(", ") { "\"${it.mcpKey}\"" }
+
+/**
+ * What an [EstimateUnit] is called on this surface.
+ *
+ * Lowercase, matching how [EstimateMode] spells its own [EstimateMode.key] and how
+ * every other vocabulary word reaches an agent. Deliberately NOT the enum's
+ * serialized name, which is `MINUTES` and is wire format for the database column —
+ * the two happen to differ only in case today, and this exists so that a rename on
+ * either side is not silently a rename on the other. Accepted case-insensitively on
+ * the way in; see `resolveEstimateArgument`.
+ */
+private val EstimateUnit.mcpKey: String get() = name.lowercase()
+
+/**
+ * An estimate as the two fields an agent reads back.
+ *
+ * The unit rides with the amount rather than being left to the project's mode,
+ * because a stored estimate keeps meaning what it meant when it was written even
+ * after an administrator switches the project to the other unit. See [EstimateUnit],
+ * where that is the whole design.
+ */
+private fun JsonObjectBuilder.putEstimate(estimate: Estimate) {
+    put("amount", estimate.amount)
+    put("unit", estimate.unit.mcpKey)
+}
+
+/**
+ * A rung as it is named in a refusal — "a project-administrator action".
+ *
+ * Phrasing, not policy. It exists so that `vocabularyScope` can name the rung
+ * [AccessControl.canEditVocabulary] actually asked for without this file deciding
+ * what that rung is: the decision stays one function call, and this only turns its
+ * answer into English. Exhaustive over [ProjectRole] rather than falling back to
+ * [ProjectRole.label], so a new rung is a compile error here and not a sentence
+ * reading "a project-Whatever action".
+ */
+private val ProjectRole.prose: String
+    get() = when (this) {
+        ProjectRole.VIEWER -> "project-viewer"
+        ProjectRole.CONTRIBUTOR -> "project-contributor"
+        ProjectRole.MAINTAINER -> "project-maintainer"
+        ProjectRole.ADMIN -> "project-administrator"
+        ProjectRole.OWNER -> "project-owner"
+    }
+
 /** What an agent asked to happen to an issue's parent (LNL-55). See [McpTools.parentIntent]. */
 private sealed interface ParentIntent {
     /** The argument was absent — leave the parent as it is. */
@@ -4121,10 +5671,10 @@ private const val MAX_AGENT_MAIL_BODY_LENGTH = 20_000
  *
  * The one write parameter here that an agent is meant to send on the ordinary
  * path rather than avoid — so the description leads with *do*, and names the
- * override rather than leaving the model to infer there is one. Unlike `author`,
- * it is not admin-only and changes nothing about ownership, which the last line
- * says out loud so a model does not lump it in with the backfill parameters above
- * and shy away from it.
+ * override rather than leaving the model to infer there is one. Unlike `author`, it
+ * is not the instance owner's and changes nothing about ownership, which the last
+ * line says out loud so a model does not lump it in with the backfill parameters
+ * above and shy away from it.
  */
 /**
  * The half of the `assignee` description both tools share. Each appends what its
@@ -4165,34 +5715,101 @@ private const val PARENT_PROP_DESCRIPTION =
         "own — you will be refused with the reason. get_issue reports an issue's `parent` and its " +
         "`children`."
 
+/**
+ * The half of `assignee_is_agent` both issue tools share (LNL-215).
+ *
+ * It leads with what the flag is *for*, because the name alone reads as though it
+ * might mean "the assignee is a bot account" — which is precisely what it does not
+ * mean, and getting that backwards would put a robot badge on a person.
+ */
+private const val ASSIGNEE_IS_AGENT_PROP_DESCRIPTION =
+    "Whether the work is going to the assignee's AGENT rather than to them in person — the flag " +
+        "behind the small robot badge beside their name. It is a statement about who does the " +
+        "work, not about what kind of account the assignee has: the issue still belongs to the " +
+        "person, and they are still who gets asked about it. It can only ever be true beside an " +
+        "assignee, so setting it on an unassigned issue is quietly nothing; and handing the issue " +
+        "to somebody else clears it, because the previous holder's agent is not on this any more."
+
+/**
+ * As above, for the two halves of an estimate. One description apiece, shared by both
+ * issue tools, with the "what does absent mean" tail appended per tool — the same
+ * arrangement [ASSIGNEE_PROP_DESCRIPTION] uses and for the same reason.
+ */
+private const val ESTIMATE_AMOUNT_PROP_DESCRIPTION =
+    "How much work this is, as a WHOLE NUMBER — minutes when the project's estimateMode is " +
+        "\"time\", points when it is \"points\". Never a fraction and never a formatted string: " +
+        "two hours is 120 with estimate_unit \"minutes\", not \"2h\" and not 2. Zero is allowed " +
+        "and means estimated at nothing, which is a real answer for a trivial ticket; a negative " +
+        "number is refused. Must be sent together with estimate_unit — one without the other is " +
+        "refused, not half-applied."
+
+private const val ESTIMATE_UNIT_PROP_DESCRIPTION =
+    "\"minutes\" or \"points\", saying what estimate_amount counts. It must match what the " +
+        "project currently offers — get_board's `estimateMode`: \"time\" takes minutes, " +
+        "\"points\" takes points, and \"none\" takes no estimate at all and refuses both " +
+        "arguments. Sent together with estimate_amount, always. The unit is stored on the issue, " +
+        "so an estimate keeps meaning what it meant even if an administrator later switches the " +
+        "project to the other unit."
+
+/** One description of the `kind` argument, shared by all five vocabulary tools. */
+private const val VOCABULARY_KIND_PROP_DESCRIPTION =
+    "Which of the project's eight vocabularies: \"status\" (the board's columns), \"priority\", " +
+        "\"resolution\", \"label\", \"component\", \"sprint\", \"version\" or \"relation-kind\" " +
+        "(the ways two issues can be linked). Case-insensitive; anything else is refused with the " +
+        "eight listed."
+
+/**
+ * One description of `inverse_name`, shared by add and rename.
+ *
+ * It says what null means in the same breath as what a value means, because null here
+ * is not "unset" but a positive statement — the kind reads the same in both directions
+ * — and an agent that read it as "unset" would leave a "Blocked by" with no "Blocks".
+ */
+private const val INVERSE_NAME_PROP_DESCRIPTION =
+    "RELATION KINDS ONLY: the TO-side label, the sentence about the issue at the other end. " +
+        "\"Blocks\" beside a name of \"Blocked by\", \"Duplicated by\" beside \"Duplicate of\". " +
+        "Leave it out — or send null — when the kind reads the SAME in both directions, which is " +
+        "what \"Related to\" is: that is not an unset field, it is how symmetry is spelled. A " +
+        "kind may not be its own opposite, and neither of its two labels may collide with either " +
+        "label of another kind in the project, since they all appear in one picker."
+
+/** One description of `marks_blocked`, shared by add and rename. */
+private const val MARKS_BLOCKED_PROP_DESCRIPTION =
+    "RELATION KINDS ONLY: whether an issue on the FROM side of one of these counts as blocked. " +
+        "Defaults to false, and arming it is a deliberate act — it decides which cards read as " +
+        "blocked on everybody's board. Note what it does not say: whether any given issue is " +
+        "blocked right now, which also needs the issue at the other end to still be open. " +
+        "get_board answers that per issue with `isBlocked`."
+
 private const val AGENT_NAME_PROP_DESCRIPTION =
     "Your own name as the agent doing this on the user's behalf — for example the assistant " +
         "or product you are. NORMALLY SET IT: it is how the board shows, clearly, that an agent " +
         "filed this rather than a human typing by hand, and that is the expected default for a " +
         "write made through this MCP server. Omit it only when you have been explicitly asked to " +
-        "act purely as the user with no agent attribution. This is NOT admin-only and does not " +
-        "change who the issue or comment belongs to — it rides alongside the user's own account " +
-        "as a label, nothing more."
+        "act purely as the user with no agent attribution. This is NOT restricted to the instance " +
+        "owner and does not change who the issue or comment belongs to — it rides alongside the " +
+        "user's own account as a label, nothing more."
 
 /** Shared by every tool that takes it: one description of `author`, not several that drift. */
 private const val AUTHOR_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling imported history. Who this should belong to: their " +
+    "INSTANCE OWNER ONLY, for backfilling imported history. Who this should belong to: their " +
         "display name exactly as get_board and get_issue report it, or the email address on " +
         "their account when two people share a name. They must already have a Lunicle " +
         "account — naming somebody does not create one — and an ambiguous name is refused " +
         "rather than guessed at. If they have no account, use author_external instead; do not " +
-        "pass both. Refused, not ignored, if you are not a system administrator. Defaults to you."
+        "pass both. Refused, not ignored, if you are not the instance owner. Defaults to you."
 
 /** As [AUTHOR_PROP_DESCRIPTION]: one description of `author_external`, shared. */
 private const val AUTHOR_EXTERNAL_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling imported history written by somebody with no Lunicle " +
+    "INSTANCE OWNER ONLY, for backfilling imported history written by somebody with no Lunicle " +
         "account — a GitHub handle, say, from a tracker being migrated. Recorded as the name " +
         "itself and rendered as the author; it creates no account and grants nobody anything, " +
-        "so the row is unowned and only a system administrator can edit it afterwards. Use `author` instead " +
-        "when the person does have an account, and never pass both — they are two answers to " +
-        "one question and the pair is refused. Not checked against existing accounts: if you " +
-        "pass a name somebody here happens to share, you get an author who is not them. " +
-        "Refused, not ignored, if you are not a system administrator."
+        "so the row is unowned: afterwards it is editable by a rung rather than by its author — " +
+        "a project maintainer for an issue, an instance administrator for a comment. Use " +
+        "`author` instead when the person does have an account, and never pass both — they are " +
+        "two answers to one question and the pair is refused. Not checked against existing " +
+        "accounts: if you pass a name somebody here happens to share, you get an author who is " +
+        "not them. Refused, not ignored, if you are not the instance owner."
 
 /**
  * As [AUTHOR_PROP_DESCRIPTION]: one description of `updated_at`, shared.
@@ -4203,13 +5820,13 @@ private const val AUTHOR_EXTERNAL_PROP_DESCRIPTION =
  * there at all is easy to miss.
  */
 private const val UPDATED_AT_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling. When this issue was last touched, in epoch milliseconds. " +
+    "INSTANCE OWNER ONLY, for backfilling. When this issue was last touched, in epoch milliseconds. " +
         "Cannot be in the future, and cannot be before the issue's own created_at — an issue " +
         "edited before it existed is not a history anyone can read. Every edit stamps this " +
         "column, so an import that uploads an attachment and then rewrites the description to " +
         "point at it would otherwise drag a years-old issue to the top of the board, dated " +
         "today: pass the date the history actually ended. Refused, not ignored, if you are not " +
-        "a system administrator. Defaults to now."
+        "the instance owner. Defaults to now."
 
 /**
  * How far past this server's clock a backfilled timestamp may still land.
@@ -4226,7 +5843,7 @@ private const val MAX_MCP_BACKFILL_SKEW_MILLIS = 24L * 60 * 60 * 1000
  * A set rather than a prefix test on the tool name, deliberately: `list_forums`
  * and `create_forum_post` share no prefix, `delete_comment` and
  * `delete_forum_comment` differ by a word in the middle, and a filter that got
- * either wrong would silently offer an admin-only tool to everybody. It is
+ * either wrong would silently offer a retired tool to everybody. It is
  * checked against [McpTools.tools] by the test suite, so a tool added to one and
  * forgotten in the other fails there rather than in production.
  */
@@ -4249,20 +5866,20 @@ private val FORUM_TOOL_NAMES = setOf(
 )
 
 /**
- * The one refusal every forum tool gives a caller who is not a system
- * administrator.
+ * The one refusal every forum tool gives, to every caller — the instance owner
+ * included.
  *
- * It says the capability does not exist for this account rather than that
- * something went wrong, and it says not to retry — an agent that reads "you
- * cannot" as "not yet" will spend a conversation rediscovering the same answer.
- * It also says what to do instead, because the person driving very often *can*
- * do this in the Discussion tab themselves.
+ * It says the capability does not exist at all rather than that something went
+ * wrong, and it says not to retry: an agent that reads "you cannot" as "not yet"
+ * will spend a conversation rediscovering the same answer. It no longer offers the
+ * Discussion tab as the thing to do instead, because LNL-190 took that away too —
+ * there is nowhere to send the person, and saying so is the honest answer.
  */
 private const val FORUM_REFUSAL =
-    "The discussion forums are not reachable over MCP by this account. They are restricted to " +
-        "system administrators on this Lunicle server, and this is not a setting the user can " +
-        "turn on themselves. Tell them what you would have done — they can do it in the " +
-        "Discussion tab in Lunicle's web app — and do not try again."
+    "The discussion forums are gone. LNL-190 retired them, so these tools are offered to " +
+        "nobody at all — this is not a permission the account lacks and not a setting anybody " +
+        "can turn on, and there is no Discussion tab left to do it in either. Tell the person " +
+        "what you would have done, and do not try again."
 
 /**
  * "No such forum", for both "there isn't one" and "you may not see its project".
@@ -4297,7 +5914,7 @@ private val ATTACHMENT_TARGET_ARGUMENTS =
  * everybody.
  */
 private const val FORUM_CREATED_AT_PROP_DESCRIPTION =
-    "SYSTEM ADMINISTRATOR ONLY, for backfilling imported discussions. When this was written, in epoch " +
+    "INSTANCE OWNER ONLY, for backfilling imported discussions. When this was written, in epoch " +
         "milliseconds. Cannot be in the future. NOTE THE SIDE EFFECT: sending this — or `author`, " +
         "or `author_external` — marks the write as imported history, so nobody is e-mailed about " +
         "it. Omit all three and the post or comment is announced to watchers exactly as a " +

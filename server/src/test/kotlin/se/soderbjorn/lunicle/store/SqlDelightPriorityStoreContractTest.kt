@@ -22,7 +22,7 @@ class SqlDelightPriorityStoreContractTest : PriorityStoreContract() {
     override val store: PriorityStore = se.soderbjorn.lunicle.PriorityStore(db)
 
     override suspend fun newProject(): Long =
-        projects.insert("Project $seq", "PR${seq++}", isPublic = false).id
+        projects.insert("Project $seq", "PR${seq++}").id
 
     @AfterTest
     fun tearDown() = fixture.close()

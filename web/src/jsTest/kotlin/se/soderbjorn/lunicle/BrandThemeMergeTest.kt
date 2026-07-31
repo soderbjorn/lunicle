@@ -115,7 +115,7 @@ class BrandThemeMergeTest {
     @Test
     fun no_brand_default_falls_back_to_lunicle_default() {
         // With no brand naming a default, an unchosen slot lands on Lunicle's own
-        // default (GitHub Light/Dark, LNL-149) rather than the toolkit's Lunamux.
+        // default (the Classic pair) rather than the toolkit's plain Lunamux.
         val stored = ThemeSnapshotV2(darkThemeName = DEFAULT_DARK_THEME, lightThemeName = DEFAULT_LIGHT_THEME)
             .selectionJson()
         val snap = ThemeSnapshotV2.fromStrings(
@@ -127,14 +127,16 @@ class BrandThemeMergeTest {
     }
 
     @Test
-    fun lunicle_default_is_github() {
-        // No stored selection at all still resolves to the Lunicle default.
+    fun lunicle_default_is_the_classic_lunamux_pair() {
+        // No stored selection at all still resolves to the Lunicle default. Spelt out
+        // rather than read off the constants, so that changing what Lunicle defaults to
+        // is a decision this test makes you confirm rather than one it follows.
         val snap = ThemeSnapshotV2.fromStrings(
             selectionJson = applyBrandDefaultSelectionJson(null, null, null),
             customThemesJson = null,
         )
-        assertEquals("GitHub Dark", snap.darkThemeName)
-        assertEquals("GitHub Light", snap.lightThemeName)
+        assertEquals("Lunamux Classic Dark", snap.darkThemeName)
+        assertEquals("Lunamux Classic Light", snap.lightThemeName)
     }
 
     @Test

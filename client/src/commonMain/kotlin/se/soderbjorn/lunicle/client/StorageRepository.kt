@@ -29,6 +29,7 @@ import se.soderbjorn.lunicle.clientserver.ApiFailure
 import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.CommentDraft
 import se.soderbjorn.lunicle.clientserver.DiscussionUnreadState
+import se.soderbjorn.lunicle.clientserver.Estimate
 import se.soderbjorn.lunicle.clientserver.NotificationCountState
 import se.soderbjorn.lunicle.clientserver.NotificationListState
 import se.soderbjorn.lunicle.clientserver.IssueDetail
@@ -44,6 +45,7 @@ import se.soderbjorn.lunicle.clientserver.ForumListState
 import se.soderbjorn.lunicle.clientserver.ForumPostDetail
 import se.soderbjorn.lunicle.clientserver.ForumPostListState
 import se.soderbjorn.lunicle.clientserver.HttpLunicleApi
+import se.soderbjorn.lunicle.clientserver.PersonCandidates
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
 import se.soderbjorn.lunicle.clientserver.ProjectUpdate
@@ -69,8 +71,8 @@ class StorageRepository(
     suspend fun session(): SessionState = api.session()
     suspend fun signInWithGoogle(code: String): SessionState = api.signInWithGoogle(code)
     suspend fun signOut(): SessionState = api.signOut()
-    suspend fun impersonate(userId: Long): SessionState = api.impersonate(userId)
-    suspend fun impersonateSignedOut(): SessionState = api.impersonateSignedOut()
+    suspend fun armImpersonation(): SessionState = api.armImpersonation()
+    suspend fun impersonate(email: String): SessionState = api.impersonate(email)
     suspend fun stopImpersonating(): SessionState = api.stopImpersonating()
     suspend fun setDisplayName(displayName: String?): SessionState = api.setDisplayName(displayName)
     suspend fun requestEmailSignIn(email: String) = api.requestEmailSignIn(email)
@@ -215,13 +217,12 @@ class StorageRepository(
 
     // ── Projects ─────────────────────────────────────────────────────────────
 
-    suspend fun createProject(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
-    ): ProjectSummary =
-        api.createProject(ProjectUpdate(name, namePrefix, isPublic, visibleToAllSignedIn))
+    /**
+     * Make a project. A name and a prefix, and nothing about who may see it: a new
+     * board admits nobody until its owner says otherwise in Access (LNL-194).
+     */
+    suspend fun createProject(name: String, namePrefix: String): ProjectSummary =
+        api.createProject(ProjectUpdate(name, namePrefix))
 
     /**
      * Save the project dialog's form.
@@ -236,8 +237,6 @@ class StorageRepository(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
         repositoryUrl: String = "",
         githubTokenEnv: String = "",
         githubTokenMode: String = TokenModes.ENV,
@@ -248,8 +247,6 @@ class StorageRepository(
             ProjectUpdate(
                 name,
                 namePrefix,
-                isPublic,
-                visibleToAllSignedIn,
                 repositoryUrl,
                 githubTokenEnv,
                 githubTokenMode,
@@ -275,22 +272,38 @@ class StorageRepository(
 
     // ── Instance administration ──────────────────────────────────────────────
 
-    /**
-     * The account directory, and the one thing an admin may change about a row in
-     * it. Pass-throughs, like the project settings below.
-     */
+    /** The account directory. A pass-through, like the project settings below. */
     suspend fun adminSettings(): AdminSettingsState = api.adminSettings()
 
-    suspend fun setUserMcpAllowed(userId: Long, isAllowed: Boolean): AdminSettingsState =
-        api.setUserMcpAllowed(userId, isAllowed)
+    /** Set who may hold an account on this deployment (LNL-192). */
+    suspend fun setAdmissionPolicy(
+        policy: se.soderbjorn.lunicle.clientserver.AdmissionPolicy,
+    ): AdminSettingsState = api.setAdmissionPolicy(policy)
 
-    /** Set one instance-wide switch — require sign-in, or open project creation (LNL-115). */
+    /** Set one instance-wide switch — public projects, or a tier's permissions (LNL-192). */
     suspend fun setInstanceSetting(
         key: se.soderbjorn.lunicle.clientserver.InstanceSettingKey,
         isEnabled: Boolean,
     ): AdminSettingsState = api.setInstanceSetting(key, isEnabled)
 
-    /** Reorder the instance's projects, and delete one — both from the Projects tab (LNL-93). */
+    /** Say what one audience arrives as in a newly created project (LNL-195). */
+    suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState =
+        api.setNewProjectAudience(audienceKey, roleKey)
+
+    /**
+     * Hand the whole deployment to another account (LNL-198).
+     *
+     * A pass-through like its neighbours, and the one write here whose answer describes an
+     * instance the caller no longer owns.
+     */
+    suspend fun handOverInstance(userId: Long): AdminSettingsState = api.handOverInstance(userId)
+
+    /**
+     * Reorder the instance's projects, and delete one (LNL-93).
+     *
+     * Both from the Instance tab as of LNL-195 — display order is an instance-wide fact,
+     * where the Projects rail is per-caller.
+     */
     suspend fun reorderProjects(ids: List<Long>): AdminSettingsState = api.reorderProjects(ids)
 
     suspend fun deleteProjectAsAdmin(id: Long): AdminSettingsState = api.deleteProjectAsAdmin(id)
@@ -327,7 +340,8 @@ class StorageRepository(
     suspend fun setProjectDisplaySettings(
         projectId: Long,
         showIssueAuthor: Boolean,
-    ): ProjectSettingsState = api.setProjectDisplaySettings(projectId, showIssueAuthor)
+        hideIssueNumbers: Boolean,
+    ): ProjectSettingsState = api.setProjectDisplaySettings(projectId, showIssueAuthor, hideIssueNumbers)
 
     /**
      * The Discussion tab's forums.
@@ -490,8 +504,21 @@ class StorageRepository(
     suspend fun deleteMessage(conversationId: Long, messageId: Long): ConversationDetail =
         api.deleteMessage(conversationId, messageId)
 
-    suspend fun addVocabulary(projectId: Long, kind: VocabularyKind, name: String): ProjectSettingsState =
-        api.addVocabulary(projectId, kind, name)
+    /**
+     * Add a vocabulary row.
+     *
+     * [inverseName] and [marksBlocked] are a relation kind's two extra facts (LNL-215)
+     * and are ignored server-side for every other kind. They default here as they do on
+     * the API, so the twenty existing callers — one per kind that has neither — say
+     * nothing about them and read exactly as they did.
+     */
+    suspend fun addVocabulary(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String? = null,
+        marksBlocked: Boolean = false,
+    ): ProjectSettingsState = api.addVocabulary(projectId, kind, name, inverseName, marksBlocked)
 
     suspend fun editVocabulary(
         projectId: Long,
@@ -500,7 +527,12 @@ class StorageRepository(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean = false,
-    ): ProjectSettingsState = api.editVocabulary(projectId, kind, itemId, name, requiresResolution, isDone)
+        /** A relation kind's to-side label, or null because it reads the same both ways. */
+        inverseName: String? = null,
+        /** A relation kind's blocking flag. See [addVocabulary]. */
+        marksBlocked: Boolean = false,
+    ): ProjectSettingsState =
+        api.editVocabulary(projectId, kind, itemId, name, requiresResolution, isDone, inverseName, marksBlocked)
 
     suspend fun deleteVocabulary(projectId: Long, kind: VocabularyKind, itemId: Long): ProjectSettingsState =
         api.deleteVocabulary(projectId, kind, itemId)
@@ -508,15 +540,35 @@ class StorageRepository(
     suspend fun reorderVocabulary(projectId: Long, kind: VocabularyKind, ids: List<Long>): ProjectSettingsState =
         api.reorderVocabulary(projectId, kind, ids)
 
-    suspend fun setProjectRole(
-        projectId: Long,
-        userId: Long,
-        roleKey: String,
-        isGranted: Boolean,
-    ): ProjectSettingsState = api.setProjectRole(projectId, userId, roleKey, isGranted)
+    /** Put one person on one rung here, or null for "no access" (LNL-194). */
+    suspend fun setProjectRole(projectId: Long, userId: Long, roleKey: String?): ProjectSettingsState =
+        api.setProjectRole(projectId, userId, roleKey)
+
+    /** Say at what rung a whole audience arrives here, or null to withdraw the row. */
+    suspend fun setProjectAudience(projectId: Long, audienceKey: String, roleKey: String?): ProjectSettingsState =
+        api.setProjectAudience(projectId, audienceKey, roleKey)
+
+    /** Add an address holding a rung. Nothing is sent. */
+    suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState =
+        api.addProjectPerson(projectId, email, roleKey)
+
+    /** The accounts the people picker may offer, matched against [query] (LNL-204). */
+    suspend fun projectPeopleCandidates(projectId: Long, query: String): PersonCandidates =
+        api.projectPeopleCandidates(projectId, query)
 
     suspend fun setProjectNewIssueNotification(projectId: Long, subscribed: Boolean): ProjectSettingsState =
         api.setProjectNewIssueNotification(projectId, subscribed)
+
+    /**
+     * Say whether this project estimates, and in what unit (LNL-215).
+     *
+     * A **string** rather than the [se.soderbjorn.lunicle.clientserver.EstimateMode]
+     * enum, all the way down: the wire carries the key and the server folds anything it
+     * does not recognise to `none`, so passing the key through unmolested is what keeps
+     * a client one deploy ahead from being refused rather than degraded.
+     */
+    suspend fun setProjectEstimateMode(projectId: Long, mode: String): ProjectSettingsState =
+        api.setProjectEstimateMode(projectId, mode)
 
     // ── Issues ───────────────────────────────────────────────────────────────
 
@@ -542,6 +594,18 @@ class StorageRepository(
         fixedVersionId: Long?,
         labelIds: List<Long>,
         componentIds: List<Long>,
+        /**
+         * Whether the work goes to the assignee's agent rather than to them in person,
+         * and how much work it is (LNL-215).
+         *
+         * Both default, so the one caller that has not been taught about them compiles
+         * and sends the pre-LNL-215 shape — but note the defaults are not "leave alone":
+         * [IssueUpdate] is the editor's whole field set, so `false` really does mean "a
+         * person does this" and a null [estimate] really does clear it. There is exactly
+         * one caller (the issue editor's save), and it always passes both.
+         */
+        assigneeIsAgent: Boolean = false,
+        estimate: Estimate? = null,
     ): IssueDetail = api.saveIssue(
         id,
         IssueUpdate(
@@ -556,6 +620,8 @@ class StorageRepository(
             fixedVersionId = fixedVersionId,
             labelIds = labelIds,
             componentIds = componentIds,
+            assigneeIsAgent = assigneeIsAgent,
+            estimate = estimate,
         ),
     )
 
@@ -568,9 +634,24 @@ class StorageRepository(
     /** Rank one epic's children, first to last. See [LunicleApi.reorderChildren] (LNL-55). */
     suspend fun reorderChildren(id: Long, childIds: List<Long>): IssueDetail = api.reorderChildren(id, childIds)
 
+    /**
+     * Link two issues, and unlink them (LNL-215).
+     *
+     * Both are posted to the issue whose window is open — the *from* side — and both
+     * answer with that issue's refreshed detail rather than with the row they touched,
+     * which is the convention every write above keeps: one stored row renders as two
+     * different sentences, so the client has no business patching its own copy of it.
+     * See [LunicleApi.addIssueRelation].
+     */
+    suspend fun addIssueRelation(id: Long, toIssueId: Long, kindId: Long): IssueDetail =
+        api.addIssueRelation(id, toIssueId, kindId)
+
+    suspend fun removeIssueRelation(id: Long, relationId: Long): IssueDetail =
+        api.removeIssueRelation(id, relationId)
+
     // ── Sprints ──────────────────────────────────────────────────────────────
     //
-    // All three return the refreshed board rather than the sprint they touched,
+    // All four return the refreshed board rather than the sprint they touched,
     // the same convention the settings writes keep: activating one sprint changes
     // which issues the board shows, and completing one moves work between sprints.
     // A client that patched its own state would be right about the sprint and
@@ -581,6 +662,10 @@ class StorageRepository(
 
     suspend fun completeSprint(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?): BoardState =
         api.completeSprint(projectId, sprintId, moveUnfinishedTo)
+
+    /** Clear a sprint's completion stamp, from the Sprints section's row action (LNL-196). */
+    suspend fun reopenSprint(projectId: Long, sprintId: Long): BoardState =
+        api.reopenSprint(projectId, sprintId)
 
     suspend fun setSprintIssues(projectId: Long, sprintId: Long, issueIds: List<Long>): BoardState =
         api.setSprintIssues(projectId, sprintId, issueIds)

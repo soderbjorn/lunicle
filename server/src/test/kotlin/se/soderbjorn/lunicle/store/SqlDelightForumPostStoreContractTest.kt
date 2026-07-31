@@ -33,7 +33,7 @@ class SqlDelightForumPostStoreContractTest : ForumPostStoreContract() {
 
     override suspend fun newForum(): Long {
         val n = seq++
-        val project = projectRepository.create("Project ${n}", "FP${n}", isPublic = false).id
+        val project = projectRepository.create("Project ${n}", "FP${n}").id
         return forums.insert(project, "Forum ${n}", null).id
     }
 

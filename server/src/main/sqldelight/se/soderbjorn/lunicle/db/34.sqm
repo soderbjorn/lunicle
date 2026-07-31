@@ -1,0 +1,51 @@
+-- Version 34 → 35: how the board reads belongs to the project, and an account can
+-- exist before anybody has signed into it (LNL-194).
+--
+-- Two unrelated additions in one file because they are one ticket's, and a
+-- migration file is cheap where a migration *number* is not: every extra version
+-- is another row in MigrationTest's matrix and another .db snapshot to carry.
+--
+-- ── 1. projects.hide_issue_numbers, and why it is NULLABLE ───────────────────
+--
+-- "Hide issue numbers on the board and in issue windows" was a per-user
+-- preference, stored inside the `ui_settings` PROJECT_PREFS blob under each
+-- account. It describes how a *shared* board reads, so it moves to the project and
+-- becomes an administrator's switch beside `show_issue_author`.
+--
+-- The column is nullable, and NULL is load-bearing: it means "nobody has decided
+-- this project's answer yet", which is what every row is the instant this
+-- statement runs. The startup pass copies each project's OWNER's stored preference
+-- into it and writes a non-NULL value — see copyBoardDisplayFromOwners. That is
+-- what makes the copy idempotent by construction rather than by remembering: a row
+-- that has been decided is never re-decided, so an interrupted pass is finished by
+-- the next boot and an administrator's later change is never overwritten by a
+-- stale preference.
+--
+-- The copy cannot happen here. The preference lives inside a JSON blob this
+-- migration would have to parse, and "which account owns this project" is a
+-- `project_roles` read plus an `instance_settings` fallback. Both are Kotlin's, for
+-- the reason InstanceLadder gives about `users.kind`: a migration that guessed
+-- would be a migration that decided.
+ALTER TABLE projects ADD COLUMN hide_issue_numbers INTEGER;
+
+-- ── 2. users.signed_in_at ───────────────────────────────────────────────────
+--
+-- Adding a person to a project (LNL-194) writes a `users` row for an address
+-- nobody has signed in with yet, so that the row can hold a rung immediately and
+-- whoever owns the address picks it up on first arrival. That makes "has this
+-- account ever been used?" a question the table has to be able to answer, and it
+-- could not: `added_at` says when the row appeared, which is now the moment an
+-- administrator typed the address rather than the moment somebody arrived.
+--
+-- NULL means never. Two things read it: the Access list, which badges such a row
+-- NOT SIGNED IN, and admission — `STAFF_DOMAIN_PLUS_ADDED` admits an address that
+-- has a row and no sign-in, which is precisely the case that makes that policy
+-- differ from `STAFF_DOMAIN_ONLY`. See AdmissionPolicy.admitsNewAccount.
+--
+-- Every row that exists when this runs got here by signing in — there was no other
+-- way to make one — so they are all stamped with the date the table already knows
+-- about them. Backdating to `added_at` rather than to now: it is the more honest of
+-- the two available answers, and the alternative would report the deploy as
+-- everybody's arrival.
+ALTER TABLE users ADD COLUMN signed_in_at INTEGER;
+UPDATE users SET signed_in_at = added_at;

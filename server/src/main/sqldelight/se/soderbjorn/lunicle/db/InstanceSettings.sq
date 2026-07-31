@@ -39,3 +39,9 @@ upsert:
 INSERT INTO instance_settings (key, value)
 VALUES (?, ?)
 ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+
+-- Remove a setting entirely, which is how a non-boolean one is unset: "no row"
+-- already means "unset" for every switch, so the value-less state needs no third
+-- spelling. Idempotent — deleting what nobody set is not an error.
+delete:
+DELETE FROM instance_settings WHERE key = ?;

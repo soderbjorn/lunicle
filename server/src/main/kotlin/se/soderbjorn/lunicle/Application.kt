@@ -166,7 +166,6 @@ fun Application.module() {
     }
 
     val webDistPath = System.getProperty("lunicle.webDist")
-    val oauthConfig = resolveOAuthConfig()
 
     // Deploy-time branding (LNL-110). Read-only config, applied at load and never
     // written to the datastore — see BrandRoutes. Off ⇒ brandInfo is null, no
@@ -175,6 +174,26 @@ fun Application.module() {
     // malformed brand file degrades the look rather than stopping the boot.
     val brandInfo = resolveBrandDir()?.let { loadBrandInfo(it) }
     log.info("Branding: ${brandInfo?.describe() ?: "brand dir: (unset)"}")
+
+    // Sign-in, after branding, because the manifest has a say in it now (LNL-192):
+    // `allowEmailCodeSignIn` is a third term on isEmailAvailable beside a configured
+    // transport and LUNICLE_EMAIL_SIGN_IN, and it can only ever narrow. The
+    // deployment's own identity is then everything the manifest says about itself
+    // plus the two facts only this process knows — whether a mailed code actually
+    // works here, and whether Google credentials reached it. See InstanceIdentity.
+    val oauthConfig = resolveOAuthConfig(brandInfo?.allowEmailCodeSignIn ?: true)
+    val instanceIdentity = brandInfo.toInstanceIdentity(
+        isCodeSignInAvailable = oauthConfig.isEmailAvailable,
+        // Both doors, honestly, because the admission rules ask about both at once
+        // (LNL-195): a deployment with neither can honour no policy at all, and one
+        // whose only door is a pinned Google chooser can admit no outsider under any.
+        isGoogleAvailable = oauthConfig.google != null,
+    )
+    log.info(
+        "Instance identity: domain=${instanceIdentity.domain ?: "(unset — no staff tier)"}; " +
+            "google-pin=${instanceIdentity.googleHostedDomainPin ?: "(none)"}; " +
+            "ways-in=${instanceIdentity.waysIn.joinToString(" · ").ifEmpty { "(none)" }}",
+    )
 
     // Which backend this process runs on, chosen once here — see DatabaseBackend.
     // Nothing GCP is touched unless FIRESTORE is selected: on the SQLite/Railway
@@ -241,12 +260,13 @@ fun Application.module() {
     val reads = stores.reads
     val notificationStore = stores.notificationStore
     val uiSettings = stores.uiSettings
-    // The deployment-wide switches (LNL-115): require sign-in, and open project
-    // creation. Persistent on both backends — unlike the in-memory default the tests
-    // fall back to — because a switch that reset itself on every redeploy is one
-    // nobody could trust to keep a private instance private. Shared by the auth
-    // routes (which read require-sign-in into the session) and the board routes
-    // (which read both). See StoreGraph for the per-backend construction.
+    // The deployment-wide switches (LNL-115): open project creation, public
+    // projects, hidden display names. Persistent on both backends — unlike the
+    // in-memory default the tests fall back to — because a switch that reset itself
+    // on every redeploy is one nobody could trust to keep a private instance
+    // private. Shared by the auth routes (which read the display-name one into the
+    // session) and the board routes (which read the rest). See StoreGraph for the
+    // per-backend construction.
     val instanceSettings = stores.instanceSettings
     val oauthClients = stores.oauthClients
     val oauthLoginStates = stores.oauthLoginStates
@@ -264,10 +284,25 @@ fun Application.module() {
     val statisticsRepository = stores.statistics
     val emailCodes = stores.emailCodes
 
-    // One instance, shared by the auth routes that start and stop impersonation
-    // and the board routes that enforce it. In memory, so a restart is an
-    // implicit "stop" for everyone — see Impersonations.
-    val impersonations = Impersonations()
+    // Owner impersonation: whether this deployment has it at all, and the live
+    // grants if it does. One instance, shared by the auth routes that arm and spend
+    // a grant and every route that has to know a session was minted by one. The
+    // grants are in memory, so a restart is an implicit "stop" for everybody — see
+    // ProbeGrants, and OwnerImpersonation for why the gate travels with them.
+    val ownerImpersonation = OwnerImpersonation(
+        isEnabled = resolveOwnerImpersonationEnabled(),
+        grants = ProbeGrants(),
+    )
+    if (ownerImpersonation.isEnabled) {
+        // Said out loud, at INFO, because on a host where this switch is dashboard
+        // state committed nowhere — Railway — this line is the only record inside
+        // the app that the instance is armed. An instance where any address can be
+        // worn should announce it in its own boot log.
+        log.info(
+            "Owner impersonation is ENABLED (LUNICLE_ENABLE_OWNER_IMPERSONATION): the instance owner " +
+                "may sign in as any address, creating accounts as they go. Unset the variable to disable it.",
+        )
+    }
     // The plumbing every notification shares: who has an address, what the actor
     // is called, and send-or-log. One instance, handed to both notifiers — it is
     // stateless, so that is for this file's readability rather than a requirement.
@@ -281,8 +316,10 @@ fun Application.module() {
         projects = projects,
         users = users,
         // For @mentions: the notifier resolves a typed name against the same
-        // per-project membership the editor's autocomplete offered.
+        // per-project membership the editor's autocomplete offered — which since
+        // LNL-201 includes whoever owns the deployment, so the settings ride along.
         roles = roles,
+        instanceSettings = instanceSettings,
         dispatch = notificationDispatcher,
         baseUrl = emailBaseUrl,
     )
@@ -298,7 +335,7 @@ fun Application.module() {
     // rather than built inline at BoardDependencies because two things hold it,
     // and two of these would be two objects answering one question. See
     // ProjectAudience.
-    val projectAudience = ProjectAudience(users, roles)
+    val projectAudience = ProjectAudience(users, roles, instanceSettings)
     // The Discussion tab's two notifications. A third service rather than a wider
     // one, for the reason EmailNotifier's preamble gives — and the only one of the
     // three that takes a `ProjectAudience`, because a forum watcher's visibility
@@ -320,12 +357,19 @@ fun Application.module() {
     // rebound interface-typed stores. One instance of the history, handed to both the
     // repository and BoardDependencies — a save records through the repository, a drag
     // or an assignment records from its route. See IssueHistory.
-    val issueHistory = IssueHistory(stores.issueEvents, statuses, labels, components, users)
+    // Sprints, versions, issues and projects join the five it already had (LNL-215):
+    // the three new field events snapshot a sprint's or a version's NAME, and the
+    // hierarchy and relation events snapshot the other issue's KEY. All four are
+    // resolved at write time and frozen, for the reason a status's name already is.
+    val issueHistory = IssueHistory(
+        stores.issueEvents, statuses, labels, components, users,
+        sprints = sprintRepository, versions = versions, issues = issues, projects = projects,
+    )
     val issueRepository = IssueRepository(
         issues, comments, statuses, priorities, attachmentRepository, attachments, notifications, subscriptions,
-        issueHistory,
+        issueHistory, stores.issueRelations, stores.issueRelationKinds,
     )
-    val access = AccessControl(roles)
+    val access = AccessControl(roles, instanceSettings)
     // The discussion and Messages repositories — backend-agnostic rules over the
     // graph's forum/post/comment and conversation/message stores (rebound above), the
     // same on either backend.
@@ -366,6 +410,8 @@ fun Application.module() {
         sprints = sprintRepository,
         sprintRepository = sprintRepository,
         issues = issues,
+        issueRelations = stores.issueRelations,
+        issueRelationKinds = stores.issueRelationKinds,
         issueRepository = issueRepository,
         comments = comments,
         attachments = attachments,
@@ -377,8 +423,15 @@ fun Application.module() {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = impersonations,
+        impersonation = ownerImpersonation,
         instanceSettings = instanceSettings,
+        // Deploy-time configuration, for the admission options the settings dialog
+        // renders. See InstanceIdentity.
+        identity = instanceIdentity,
+        // What the deployment is called when a brand dir names it. The title if the
+        // manifest gives one, else the directory's own name, which is what an operator
+        // recognises. Null for the default look. See LNL-195's Instance tab.
+        brandName = brandInfo?.let { it.title ?: it.dir.name },
         subscriptions = subscriptions,
         reads = reads,
         notificationStore = notificationStore,
@@ -401,8 +454,16 @@ fun Application.module() {
         tokens = oauthTokens,
         sessions = sessions,
         users = users,
-        impersonations = impersonations,
+        impersonation = ownerImpersonation,
         config = oauthConfig,
+        // The per-tier agent permission the five MCP gates read. The same object the
+        // board routes hold, so an administrator's switch reaches the token path
+        // within one request. See canUseMcp.
+        instanceSettings = instanceSettings,
+        // Read only by the Connections section's cookie path, and only to ask whether
+        // an impersonation is still the caller's to hold (LNL-197). The same object the
+        // board routes hold, for that same one-request reason.
+        access = access,
     )
 
     // Startup housekeeping, all of it in one launch{} rather than blocking the
@@ -422,13 +483,51 @@ fun Application.module() {
         // openDatabase is fatal on a bad schema: a server behind its build must not serve.
         stores.migrate()
 
-        // Unconditional and idempotent (INSERT OR IGNORE), which is what lets a
-        // fresh volume, a purged one, and one that has been serving for a month
-        // all take the same code path. See RoleStore.seed.
-        log.info("Roles available: ${roles.seed()}")
+        // All unconditional and all idempotent, which is what lets a fresh volume,
+        // a purged one, and one that has been serving for a month all take the same
+        // code path — and what makes an interrupted run a non-event. See
+        // stampUserKinds, seatInstanceOwner and settleAdmissionPolicy.
+        val stamped = stampUserKinds(users, instanceIdentity.domain)
+        if (stamped > 0) log.info("Instance: re-derived the staff/member kind of $stamped account(s)")
+        seatInstanceOwner(users, instanceSettings)?.let {
+            log.info("Instance: seated user $it as the instance owner — nobody held it")
+        }
+        // Needs the identity rather than the accounts, so unlike the seat above it has
+        // everything it needs at boot and nowhere else to be called from.
+        settleAdmissionPolicy(instanceSettings, instanceIdentity)?.let {
+            log.info(
+                "Instance: admission settled to '${it.key}' — nothing was stored, and " +
+                    "this deployment cannot admit anybody who can sign in",
+            )
+        }
+        // After the owner is seated, and that ordering is load-bearing: a project with
+        // no owner rung falls back to the instance owner's old preference, and on a
+        // freshly migrated volume the seat above is what puts somebody there. Same
+        // idempotence property as the two lines above, reached differently — see
+        // copyBoardDisplayFromOwners.
+        val settled = copyBoardDisplayFromOwners(projects, roles, users, uiSettings, instanceSettings)
+        if (settled > 0) {
+            log.info("Instance: settled the board display of $settled project(s) from their owners")
+        }
 
         val removed = sessions.deleteExpired()
         if (removed > 0) log.info("Removed $removed expired session(s)")
+
+        // Every session an owner-impersonation grant minted, whatever the gate says.
+        //
+        // UNCONDITIONAL, and that is the whole of the off-switch guarantee. The
+        // grants that authorised these sessions lived in the previous process's
+        // memory and died with it, so every row this finds is orphaned by
+        // definition and there is nothing to preserve. Gating it on
+        // `ownerImpersonation.isEnabled` would leave exactly the hole worth caring
+        // about: turn the feature off while somebody is probing, and their session
+        // survives the restart as an ORDINARY session for the person they were
+        // wearing, with the marker gone and nothing left to notice it. See
+        // ImpersonationConfig.
+        val probes = sessions.deleteProbeSessions()
+        if (probes > 0) {
+            log.info("Removed $probes impersonation session(s) — their grants did not survive the restart")
+        }
         log.info("Sessions live: ${sessions.size()}")
 
         // The mailbox-proof codes, swept beside the sessions. Unlike that sweep
@@ -538,7 +637,7 @@ fun Application.module() {
             oauthConfig,
             sessions,
             users,
-            impersonations,
+            ownerImpersonation,
             mentions = MentionRenamer(
                 users, issues, comments, forumPostStore, forumCommentStore, messageStore,
             ),
@@ -546,18 +645,27 @@ fun Application.module() {
             // e-mail sign-in both hang off these two.
             emailCodes = emailCodes,
             notifications = notificationDispatcher,
-            // So every session response carries the require-sign-in switch, read
-            // by the shell's landing gate (LNL-115). See SessionState.isSignInRequired.
+            // So every session response carries the instance-wide switches a client
+            // has to know about before it draws anything — currently the
+            // display-name one. See SessionState.isDisplayNameHidden.
             instanceSettings = instanceSettings,
-            // Optional per-deployment Workspace-domain gate, from brand.json
-            // (LNL-125). Null when unbranded ⇒ Google sign-in behaves as before.
-            googleHostedDomain = brandInfo?.googleHostedDomain,
+            // What this deployment says about itself (LNL-192): the domain that
+            // decides staff from member, and — separately — whether the Google
+            // chooser is pinned to it. Unbranded ⇒ neither, and sign-in behaves
+            // exactly as it did.
+            identity = instanceIdentity,
+            // Who may impersonate — the instance owner alone (LNL-197). The same
+            // object every other gate reads, so a transfer of ownership takes effect
+            // on the transferee's and the transferor's next request alike, and so a
+            // grant armed a minute ago stops working the moment its owner stops
+            // being one.
+            access = access,
         )
 
         // Not part of authRoutes despite sharing its three dependencies: what a
         // user's shell looks like is not a fact about signing in. See
         // UiSettingsRoutes.
-        uiSettingsRoutes(sessions, users, impersonations, uiSettings)
+        uiSettingsRoutes(sessions, ownerImpersonation, uiSettings, access)
 
         // Lunicle as an authorization server, and the MCP endpoint it protects.
         // Both are deliberately unauthenticated at the route level — see
