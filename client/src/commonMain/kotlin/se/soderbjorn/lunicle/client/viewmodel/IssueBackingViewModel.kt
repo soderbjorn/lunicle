@@ -324,7 +324,10 @@ class IssueBackingViewModel(
         val agentName: String? = null,
         val createdAt: Long = 0,
         val comments: List<CommentView> = emptyList(),
-        /** What has happened to this issue, oldest first. See [historyLine]. */
+        /**
+         * What has happened to this issue, oldest first — as stored and as the API
+         * sends it. The read face draws [historyBlocksNewestFirst] instead; see there.
+         */
         val history: List<IssueEventView> = emptyList(),
         val canEdit: Boolean = false,
         val canDelete: Boolean = false,
@@ -906,6 +909,48 @@ class IssueBackingViewModel(
 
         /** One comment's agent badge text, or null when a human wrote it. See [agentBadge]. */
         fun commentAgentBadge(comment: CommentView): String? = comment.agentName?.let { "Agent · $it" }
+
+        /**
+         * The history as the read face shows it: **most recent first** (LNL-186).
+         *
+         * [history] arrives oldest first, which is how it is stored and how the
+         * API hands it out — a log is written in the order it happened, and a
+         * reader of the JSON wants it that way. On screen it is the wrong way
+         * round: the history sits under the description and the whole comment
+         * thread, so the newest event — the one that tells you what just happened
+         * to this issue — was the one furthest down the page, past every event
+         * that no longer matters.
+         *
+         * A derivation on State rather than a reversal in the view, for
+         * `HiddenColumnsTest`'s reason: the order is a decision, decisions are
+         * worth pinning, and one testable property is cheaper to pin than a DOM.
+         *
+         * **Blocks are what move, not events.** The unit a reader scans is the
+         * block — one save, one byline, however many sentences (LNL-215) — so the
+         * page reads newest *save* first while the sentences inside a save stay in
+         * the order that save wrote them. Reversing the events instead would
+         * scramble a four-field save into four sentences read backwards under one
+         * byline, which is not what "newest first" asks for. It also has to happen
+         * after the grouping: a run is only a run among *consecutive* stored
+         * events, so [historyBlocks] must see the wire order.
+         *
+         * Reversed **and then** sorted, which is not belt and braces:
+         *
+         * - The reversal is what does the work. The list is stored ordered by id,
+         *   so reversing it puts the last-written block first, and that stays true
+         *   for blocks that share an instant — two authors, or a person and their
+         *   agent, saving in the same millisecond are two blocks with one date.
+         * - The sort exists for back-filled and reattributed history, where
+         *   `createdAt` was set by hand and need not agree with the write order
+         *   (see `McpTools.updateHistoryEvent`). Every block shows its date, so a
+         *   list whose order contradicts the dates beside it reads as a bug.
+         *   `sortedByDescending` is stable, so it only moves blocks whose dates
+         *   genuinely disagree and leaves the reversal's tie-break intact. Every
+         *   event in a block shares one instant, so [HistoryBlock.attribution]
+         *   speaks for the whole block here as it does in the byline.
+         */
+        val historyBlocksNewestFirst: List<HistoryBlock> get() =
+            historyBlocks.asReversed().sortedByDescending { it.attribution.createdAt }
 
         /**
          * What one history event says happened, as a sentence.
