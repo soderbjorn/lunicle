@@ -438,7 +438,6 @@ class McpCommentEditTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
         instanceSettings = instanceSettings,
     )
@@ -475,7 +474,6 @@ class McpCommentEditTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

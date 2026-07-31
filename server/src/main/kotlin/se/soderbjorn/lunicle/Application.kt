@@ -284,10 +284,25 @@ fun Application.module() {
     val statisticsRepository = stores.statistics
     val emailCodes = stores.emailCodes
 
-    // One instance, shared by the auth routes that start and stop impersonation
-    // and the board routes that enforce it. In memory, so a restart is an
-    // implicit "stop" for everyone — see Impersonations.
-    val impersonations = Impersonations()
+    // Owner impersonation: whether this deployment has it at all, and the live
+    // grants if it does. One instance, shared by the auth routes that arm and spend
+    // a grant and every route that has to know a session was minted by one. The
+    // grants are in memory, so a restart is an implicit "stop" for everybody — see
+    // ProbeGrants, and OwnerImpersonation for why the gate travels with them.
+    val ownerImpersonation = OwnerImpersonation(
+        isEnabled = resolveOwnerImpersonationEnabled(),
+        grants = ProbeGrants(),
+    )
+    if (ownerImpersonation.isEnabled) {
+        // Said out loud, at INFO, because on a host where this switch is dashboard
+        // state committed nowhere — Railway — this line is the only record inside
+        // the app that the instance is armed. An instance where any address can be
+        // worn should announce it in its own boot log.
+        log.info(
+            "Owner impersonation is ENABLED (LUNICLE_ENABLE_OWNER_IMPERSONATION): the instance owner " +
+                "may sign in as any address, creating accounts as they go. Unset the variable to disable it.",
+        )
+    }
     // The plumbing every notification shares: who has an address, what the actor
     // is called, and send-or-log. One instance, handed to both notifiers — it is
     // stateless, so that is for this file's readability rather than a requirement.
@@ -399,7 +414,7 @@ fun Application.module() {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = impersonations,
+        impersonation = ownerImpersonation,
         instanceSettings = instanceSettings,
         // Deploy-time configuration, for the admission options the settings dialog
         // renders. See InstanceIdentity.
@@ -430,7 +445,7 @@ fun Application.module() {
         tokens = oauthTokens,
         sessions = sessions,
         users = users,
-        impersonations = impersonations,
+        impersonation = ownerImpersonation,
         config = oauthConfig,
         // The per-tier agent permission the five MCP gates read. The same object the
         // board routes hold, so an administrator's switch reaches the token path
@@ -488,6 +503,22 @@ fun Application.module() {
 
         val removed = sessions.deleteExpired()
         if (removed > 0) log.info("Removed $removed expired session(s)")
+
+        // Every session an owner-impersonation grant minted, whatever the gate says.
+        //
+        // UNCONDITIONAL, and that is the whole of the off-switch guarantee. The
+        // grants that authorised these sessions lived in the previous process's
+        // memory and died with it, so every row this finds is orphaned by
+        // definition and there is nothing to preserve. Gating it on
+        // `ownerImpersonation.isEnabled` would leave exactly the hole worth caring
+        // about: turn the feature off while somebody is probing, and their session
+        // survives the restart as an ORDINARY session for the person they were
+        // wearing, with the marker gone and nothing left to notice it. See
+        // ImpersonationConfig.
+        val probes = sessions.deleteProbeSessions()
+        if (probes > 0) {
+            log.info("Removed $probes impersonation session(s) — their grants did not survive the restart")
+        }
         log.info("Sessions live: ${sessions.size()}")
 
         // The mailbox-proof codes, swept beside the sessions. Unlike that sweep
@@ -597,7 +628,7 @@ fun Application.module() {
             oauthConfig,
             sessions,
             users,
-            impersonations,
+            ownerImpersonation,
             mentions = MentionRenamer(
                 users, issues, comments, forumPostStore, forumCommentStore, messageStore,
             ),
@@ -616,17 +647,16 @@ fun Application.module() {
             identity = instanceIdentity,
             // Who may impersonate — the instance owner alone (LNL-197). The same
             // object every other gate reads, so a transfer of ownership takes effect
-            // on the transferee's and the transferor's next request alike.
+            // on the transferee's and the transferor's next request alike, and so a
+            // grant armed a minute ago stops working the moment its owner stops
+            // being one.
             access = access,
-            // Read by the address preview alone, for one number: how many boards an
-            // address already holds a row on.
-            roles = roles,
         )
 
         // Not part of authRoutes despite sharing its three dependencies: what a
         // user's shell looks like is not a fact about signing in. See
         // UiSettingsRoutes.
-        uiSettingsRoutes(sessions, users, impersonations, uiSettings, access)
+        uiSettingsRoutes(sessions, ownerImpersonation, uiSettings, access)
 
         // Lunicle as an authorization server, and the MCP endpoint it protects.
         // Both are deliberately unauthenticated at the route level — see

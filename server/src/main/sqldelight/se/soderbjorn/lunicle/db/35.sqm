@@ -1,0 +1,25 @@
+-- Version 35 → 36: a session can say it was minted without proof.
+--
+-- Owner impersonation stopped being a costume. The owner is signed out, hands back
+-- a short-lived grant, and is then signed in FOR REAL as any address they name —
+-- the genuine sign-in pipeline, admission gate included, minus only the Google
+-- exchange or the mailed code. Everything about the resulting session is ordinary
+-- except how it came to exist, and this column is the only place that fact is
+-- recorded.
+--
+-- ── A label, and why that is safe to write down ─────────────────────────────
+--
+-- The grant this names lives in the server's memory and nowhere else, so the value
+-- stored here resolves to nothing outside one running process — a leaked copy of
+-- this table is a list of ids that unlock no doors. The capability is deliberately
+-- not stored beside the label, which is what keeps `sessions` no more sensitive
+-- than it was before this column existed. See ProbeGrants.
+--
+-- ── NULL is every row, and stays that way on almost every deployment ────────
+--
+-- The feature is off unless LUNICLE_ENABLE_OWNER_IMPERSONATION says otherwise, so
+-- on a normal instance nothing ever writes a non-NULL value here. Every row that
+-- exists when this runs was minted against a real proof of identity — there was no
+-- other way to make one — so NULL is not a backfill guess, it is the truth about
+-- all of them.
+ALTER TABLE sessions ADD COLUMN probe_id TEXT;

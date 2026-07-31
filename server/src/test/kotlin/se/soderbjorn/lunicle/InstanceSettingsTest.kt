@@ -627,7 +627,7 @@ class InstanceSettingsTest {
      * through one is read by the other, which is the whole thing under test.
      */
     private fun withAuthAndBoard(block: suspend (HttpClient) -> Unit) = testApplication {
-        val impersonations = Impersonations()
+        val impersonation = OwnerImpersonation()
         application {
             install(ServerContentNegotiation) { json() }
             routing {
@@ -635,16 +635,16 @@ class InstanceSettingsTest {
                     config = OAuthConfig(google = null, isEmailAvailable = false),
                     sessions = sessions,
                     users = users,
-                    impersonations = impersonations,
+                    impersonation = impersonation,
                     instanceSettings = instanceSettings,
                 )
-                boardRoutes(dependencies(impersonations))
+                boardRoutes(dependencies(impersonation))
             }
         }
         block(createClient { install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) { json() } })
     }
 
-    private fun dependencies(impersonations: Impersonations) = BoardDependencies(
+    private fun dependencies(impersonation: OwnerImpersonation) = BoardDependencies(
         access = access,
         projects = projects,
         projectRepository = projectRepository,
@@ -677,7 +677,7 @@ class InstanceSettingsTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = impersonations,
+        impersonation = impersonation,
         instanceSettings = instanceSettings,
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),

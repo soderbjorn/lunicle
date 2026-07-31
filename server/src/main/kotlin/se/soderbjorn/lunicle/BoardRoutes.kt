@@ -183,9 +183,10 @@ class BoardDependencies(
     val attachmentTickets: AttachmentTicketStore,
     val sessions: se.soderbjorn.lunicle.store.SessionStore,
     val users: se.soderbjorn.lunicle.store.UserStore,
-    // Read on every request, to turn the session cookie into an EFFECTIVE user.
-    // See Impersonations.
-    val impersonations: Impersonations,
+    // Whether this deployment has owner impersonation at all, and the grants that
+    // are live if it does. Read on every request with a session — but only past the
+    // gate, so an ordinary instance never touches it. See OwnerImpersonation.
+    val impersonation: OwnerImpersonation = OwnerImpersonation(),
     /**
      * The deployment-wide settings (LNL-115, reshaped by LNL-192): admission,
      * whether projects may be published, and what each tier may do. Read by the
@@ -336,92 +337,87 @@ class BoardDependencies(
 /**
  * The caller, or null. Never throws — "signed out" is a legitimate answer here.
  *
- * Returns the **effective** user: the impersonated one when an admin is
- * impersonating, and otherwise simply the session's own user. Every route below
- * calls this and none of them mention impersonation, which is the design — it is
- * resolved once, here, so a route cannot forget. See [resolveCaller].
+ * Every route below calls this and none of them mention impersonation, which is the
+ * design — it is resolved once, in [resolveCaller], so a route cannot forget. Under
+ * a probe session the answer is simply the person being worn: the session is a
+ * genuine one for them, so there is no second identity for a route to reach past.
  */
 internal suspend fun ApplicationCall.caller(deps: BoardDependencies): UserRecord? =
-    resolveCaller(deps.sessions, deps.users, deps.impersonations, deps.access).effective
+    resolveCaller(deps.sessions, deps.impersonation, deps.access).user
 
 /**
- * Resolve who a request is acting as, and who it really is.
+ * Turn a session cookie into an identity.
  *
- * The one place that turns a cookie into an identity, shared by these routes and
- * AuthRoutes so there is exactly one implementation of the rule.
+ * The one place that does it, shared by these routes and AuthRoutes so there is
+ * exactly one implementation of the rule.
  *
- * The entitlement re-check is the important line. Somebody who starts impersonating
- * and then loses the entitlement — ownership transferred, or a hand-edited database —
- * must not keep acting as somebody else, so the *stored* impersonation is only
- * honoured while the real user is still entitled **at this moment**. Anything else
- * would mean the authority could be taken away without taking away what it granted,
- * which is exactly the shape of a privilege-escalation bug.
+ * ── The probe cookie is not read here, and must never be (I1) ───────────────
  *
- * Since LNL-197 the entitlement is **ownership of the instance**, not the
- * administrator flag. That is why [access] is a parameter: ownership is
- * `instance_settings.owner_user_id`, so unlike `isInstanceAdmin` it cannot be read off
- * the record and there is exactly one thing on this server permitted to answer a
- * permission question. The read it costs is paid once per request with a session, on a
- * one-row table both backends already read on most permission checks.
+ * Only the three impersonation routes may look at it. The moment this function
+ * authenticates anything off it there are two ways to be signed in, and every
+ * permission check on the server has two doors. What *is* read here is the session
+ * row's own label, which is a fact about the session already resolved from the
+ * ordinary cookie.
  *
- * A stale impersonation is dropped rather than merely ignored: if the target's
- * account is gone, or the impersonator no longer owns the instance, the entry is
- * removed so the next request does not have to work it out again.
+ * ── The entitlement re-check, and the orphan sweep ──────────────────────────
+ *
+ * Two separate things, and both are per-request rather than remembered.
+ *
+ * [Caller.canImpersonate] is asked fresh every time, so somebody who loses
+ * ownership stops being able to arm on their next request rather than whenever
+ * something happens to re-check. Anything else would mean the authority could be
+ * taken away without taking away what it granted, which is the shape of a
+ * privilege-escalation bug. Since the ownership is `instance_settings.owner_user_id`
+ * it cannot be read off the record, which is why [access] is a parameter.
+ *
+ * And a session labelled with a grant that is **no longer live** — expired inside
+ * this process, or revoked — is destroyed rather than quietly honoured. You are
+ * signed out, which is the correct direction: the alternative is being left as
+ * somebody else with the marker gone. Note this catches only what happens inside
+ * one process lifetime; a restart is handled by the unconditional boot sweep in
+ * `Application.module`, which runs whatever the gate says.
+ *
+ * ── What an unarmed deployment pays ─────────────────────────────────────────
+ *
+ * Nothing. With the gate off this is one session lookup, exactly as it was before
+ * the feature existed: [se.soderbjorn.lunicle.store.SessionStore.probeIdFor] is not
+ * called, the grants are not consulted, and `canImpersonate` is false without
+ * asking anybody.
  *
  * @param access the permission oracle, or null for an installation that wired none —
  *   which is a handful of tests mounting one routes file to exercise one exchange, and
  *   never [Application.module]. A null one answers "nobody may impersonate", so it
- *   fails in the direction that withholds authority: an impersonation is dropped
- *   rather than honoured unchecked.
+ *   fails in the direction that withholds authority.
  */
 internal suspend fun ApplicationCall.resolveCaller(
     sessions: se.soderbjorn.lunicle.store.SessionStore,
-    users: se.soderbjorn.lunicle.store.UserStore,
-    impersonations: Impersonations,
+    impersonation: OwnerImpersonation,
     access: AccessControl?,
 ): Caller {
-    val sessionId = request.cookies[SESSION_COOKIE] ?: return Caller(null, null)
-    val real = sessions.lookup(sessionId) ?: return Caller(null, null)
+    val sessionId = request.cookies[SESSION_COOKIE] ?: return Caller(null)
+    val user = sessions.lookup(sessionId) ?: return Caller(null)
 
-    // Asked whether or not anything is being impersonated, because it is also the
-    // account menu's affordance: the owner has to be told they may start, and — while
-    // impersonating — that they may stop. See Caller.canImpersonate.
-    val canImpersonate = access?.canImpersonate(real) == true
+    // The whole of what a deployment with the feature switched off does. Note
+    // canImpersonate is false here without asking the oracle: the gate is a term of
+    // that field, so an owner on an unarmed instance is offered nothing.
+    if (!impersonation.isEnabled) return Caller(user = user)
 
-    val impersonation = impersonations.current(sessionId)
-        ?: return Caller(effective = real, real = real, canImpersonate = canImpersonate)
-
-    if (!canImpersonate) {
-        // No longer entitled while impersonating. Drop it and be themselves.
-        impersonations.stop(sessionId)
-        return Caller(effective = real, real = real, canImpersonate = false)
+    val probeId = sessions.probeIdFor(sessionId)
+    if (probeId != null && impersonation.grants.resolve(probeId) == null) {
+        // Orphaned: the grant that authorised this session is gone. Destroyed rather
+        // than merely disowned, so the next request does not have to work it out
+        // again — and so the browser is genuinely signed out rather than left
+        // holding a cookie that resolves to somebody it should not.
+        sessions.destroy(sessionId)
+        return Caller(null)
     }
-    return when (impersonation) {
-        // A signed-out visitor has no account: the effective user is null, exactly
-        // as it is for a caller with no cookie, so every AccessControl call sees the
-        // public view. The real user stays the owner, so the impersonation is still
-        // theirs to stop. See Impersonation.AsSignedOut (LNL-103).
-        is Impersonation.AsSignedOut ->
-            Caller(effective = null, real = real, isImpersonating = true, canImpersonate = true)
-        // An address with no account at all: the effective user is built here, from
-        // what the session holds, and nothing about it is read from or written to
-        // `users` — there is no row to read. See previewRecordFor (LNL-197).
-        is Impersonation.AsAddress ->
-            Caller(
-                effective = previewRecordFor(impersonation.email, impersonation.kind),
-                real = real,
-                isImpersonating = true,
-                canImpersonate = true,
-            )
-        is Impersonation.AsUser -> {
-            val target = users.findById(impersonation.userId) ?: run {
-                // The impersonated account was deleted out from under them.
-                impersonations.stop(sessionId)
-                return Caller(effective = real, real = real, canImpersonate = true)
-            }
-            Caller(effective = target, real = real, isImpersonating = true, canImpersonate = true)
-        }
-    }
+
+    return Caller(
+        user = user,
+        // A fact the row carries, never a comparison. See Caller.isProbe.
+        isProbe = probeId != null,
+        canImpersonate = access?.canImpersonate(user) == true,
+    )
 }
 
 /** A path segment as a Long, or null if it isn't one. */

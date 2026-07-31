@@ -3155,68 +3155,89 @@ body > .dt-pane-menu {
    a disabled row, which here is the admin's own name in the impersonation list. */
 .account-menu-item.dt-hover-menu-item:disabled { opacity: .5; cursor: default; }
 
-/* ── The impersonation submenu ──────────────────────────────────────────────
+/* ── Impersonation: the armed strip, the pill and the tint ─────────────────
 
-   "Impersonate ▸" with the user list folding out of it. The submenu is a CHILD
-   of this item rather than a sibling, which is what makes the hover survive the
-   pointer travelling into it — a sibling would drop :hover the moment the
-   pointer left the parent's box. */
-.account-menu-parent {
-  position: relative;
-}
+   The submenu that used to live here has gone with the address list it folded
+   out of. There is nothing to fold out any more: the owner is signed out first
+   and then types an address at a genuine sign-in, so the menu's whole share of
+   this is one ordinary row.
 
-/* The row's trailing "▸". A glyph rather than the toolkit's submenu caret,
-   which is sized for an SVG (`line-height: 0` would collapse a character), so
-   it borrows only the placement: pushed to the row's end and quiet until the
-   row is the one under the pointer. */
-.account-menu-arrow {
-  flex: 0 0 auto;
-  margin-left: auto;
-  padding-left: 8px;
-  font-size: 10px;
-  opacity: .6;
-}
-.account-menu-item:hover > .account-menu-arrow { opacity: 1; }
+   What replaces it is a marker, and a marker has one job — to be impossible to
+   miss and impossible to dismiss. Everything below is toggled off a class the
+   server's answer sets on every session response, so it survives a reload and
+   there is no control anywhere that turns it off. */
 
-/* Leftward, not rightward. The account corner is already at the right edge of
-   the viewport, so a submenu opening to the right would open off-screen —
-   `right: 100%` hangs it off the menu's left edge instead.
+/* The strip above the app while a grant is armed and nobody is signed in.
 
-   `right: 100%` — the boxes TOUCH. No gap, and therefore no bridge.
-
-   This took three goes and the history is worth keeping, because the obvious fix
-   is the one that does not work. A gap of any size is dead space: crossing it
-   leaves .account-menu-parent, :hover goes false, and the submenu closes under
-   the pointer on its way to being used. The first attempt left 4px while claiming
-   the boxes touched. The second bridged the gap with an ::after — which was
-   invisible for a reason that has nothing to do with hover: `overflow-y: auto`
-   below establishes a clipping box, and a pseudo-element positioned OUTSIDE its
-   own element's padding box is clipped by it. The bridge was never on screen.
-
-   Touching sidesteps both. Nested menus that share an edge are what every desktop
-   menu bar does, and the 1px borders read as a seam rather than a mistake. */
-/* The same panel again — one menu object, however deep it is nested. Both
-   classes for the reason `.account-menu.dt-hover-menu` names both. */
-.account-submenu.dt-hover-menu {
-  position: absolute;
-  top: -7px; /* aligns the first row with the parent, allowing for padding */
-  right: 100%;
+   The one state with no other tell: the caller is genuinely signed out, so the
+   corner is a "Sign in…" button and the board is the public view — which is
+   exactly what is being looked at, and exactly why something has to say so. */
+.impersonation-armed-strip {
   display: none;
-  min-width: 170px;
-  max-height: 320px;
-  /* A long user list must not run off the bottom of the viewport. It scrolls
-     inside itself, like every other overflow in this app. */
-  overflow-y: auto;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Above the signed-out landing surface (z-index 9000), which is exactly what
+     this strip is there to annotate — and above the tinted frame below. Mounted on
+     <body> so this number is measured against the root stacking context rather than
+     against the top bar's. */
+  z-index: 9100;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--amber, #b8760f);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
 }
 
-.account-menu-parent:hover .account-submenu.dt-hover-menu,
-.account-menu-parent:has(:focus-visible) .account-submenu.dt-hover-menu { display: flex; }
+.impersonation-armed-text { text-wrap: pretty; }
 
-.account-submenu-empty {
-  color: var(--green-dim);
+.impersonation-armed-cancel.btn {
+  padding: 2px 10px;
   font-size: 11px;
-  margin: 0;
-  padding: 8px 10px;
+  background: rgba(255, 255, 255, .18);
+  border-color: rgba(255, 255, 255, .55);
+  color: #fff;
+}
+
+.impersonation-armed-cancel.btn:hover { background: rgba(255, 255, 255, .3); }
+
+/* The corner pill, beside the name of whoever is being worn.
+
+   ::after on the account button rather than an element of its own, so nothing in
+   the DOM can be removed to make it go away — and so it cannot be missed by a
+   render path that forgot to draw it. */
+.account-impersonating .account-btn::after {
+  content: "impersonating";
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 100px;
+  background: var(--amber, #b8760f);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* The tint: a border drawn inside the viewport's edge, on top of everything.
+
+   `pointer-events: none` is load-bearing — this covers the entire window, and
+   without it the whole app would be unclickable. An inset box-shadow rather than
+   a real border so no layout moves when it appears: a border on <body> would
+   reflow the board by a few pixels every time an impersonation started. */
+body.app-impersonating::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 899;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 3px var(--amber, #b8760f);
 }
 
 /* ── The profile modal's Connections section ────────────────────────────────

@@ -8,6 +8,13 @@
  * [SessionStore.deleteExpired] sweeps sessions past their lifetime, returns how
  * many went, and leaves a fresh one alone.
  *
+ * Since owner impersonation stopped being a costume, one more: a session may carry
+ * a **probe label** saying it was minted without anybody proving the identity. The
+ * contract pins that the label round-trips through [SessionStore.probeIdFor],
+ * defaults to absent, goes when the session does, and that
+ * [SessionStore.deleteProbeSessions] takes every labelled session and no others —
+ * the sweep that makes turning the feature off end every impersonation in flight.
+ *
  * **What it deliberately does not pin: the expiry window on `lookup`.** The SQLite
  * reference does not itself refuse an aged-but-unswept session (a documented
  * limitation); the Firestore implementation does. That is a difference in one
@@ -24,6 +31,7 @@ package se.soderbjorn.lunicle.store
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
@@ -116,5 +124,63 @@ abstract class SessionStoreContract {
         val token = store.create(user)
         assertEquals(0L, store.deleteExpired(), "a session inside its lifetime is not swept")
         assertTrue(store.lookup(token)?.id == user, "and still resolves")
+    }
+
+    // ── The probe label: a session minted without proof of identity ──────────
+
+    @Test
+    fun `an ordinary session carries no probe label`() = runBlocking {
+        val token = store.create(newUser())
+        assertNull(store.probeIdFor(token), "a session nobody impersonated into is unlabelled")
+    }
+
+    @Test
+    fun `a probe label round-trips`() = runBlocking {
+        val user = newUser()
+        val token = store.create(user, probeId = "grant-abc")
+        assertEquals("grant-abc", store.probeIdFor(token))
+        // ...and the session is otherwise entirely ordinary, which is the point of
+        // the design: everything downstream of the cookie is the same code path.
+        assertEquals(user, store.lookup(token)?.id, "a probe session resolves like any other")
+    }
+
+    @Test
+    fun `an unknown or null token has no probe label`() = runBlocking {
+        assertNull(store.probeIdFor(null))
+        assertNull(store.probeIdFor("not-a-real-session-id"))
+    }
+
+    @Test
+    fun `a destroyed probe session leaves no label behind`() = runBlocking {
+        val token = store.create(newUser(), probeId = "grant-abc")
+        store.destroy(token)
+        assertNull(store.probeIdFor(token), "destroy takes the label with the session")
+    }
+
+    /**
+     * The sweep behind the off-switch: turning owner impersonation off restarts the
+     * process, and this is what the new one runs. It has to take every labelled
+     * session and leave every ordinary one, because the alternative is a person left
+     * signed in as somebody they were only wearing.
+     */
+    @Test
+    fun `deleteProbeSessions sweeps every labelled session and no others`() = runBlocking {
+        val owner = newUser()
+        val target = newUser()
+        val ordinary = store.create(owner)
+        val firstProbe = store.create(target, probeId = "grant-abc")
+        val secondProbe = store.create(target, probeId = "grant-def")
+
+        assertEquals(2L, store.deleteProbeSessions(), "both probe sessions went")
+        assertNull(store.lookup(firstProbe))
+        assertNull(store.lookup(secondProbe))
+        assertEquals(owner, store.lookup(ordinary)?.id, "the ordinary session is untouched")
+    }
+
+    @Test
+    fun `deleteProbeSessions is a no-op when nobody has been impersonating`(): Unit = runBlocking {
+        val token = store.create(newUser())
+        assertEquals(0L, store.deleteProbeSessions(), "nothing to sweep on an ordinary instance")
+        assertNotNull(store.lookup(token), "and the sweep is harmless where it finds nothing")
     }
 }

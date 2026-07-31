@@ -448,29 +448,35 @@ class AdminSettingsTest {
     }
 
     /**
-     * An admin who is impersonating loses this, like every other admin affordance.
+     * An owner who is impersonating loses this, like every other admin affordance.
      *
-     * Impersonation exists to see what somebody else sees, and the account
-     * directory is precisely what they do not see. The gate reads the **effective**
-     * user, so this is the test that says the effective user is what it reads —
-     * a handler reaching for the session's real user would pass every other test
-     * in this file.
+     * Impersonation exists to see what somebody else sees, and the account directory
+     * is precisely what they do not see. The gate reads the session's user — which
+     * under a probe session genuinely *is* the ordinary account, since the owner was
+     * signed out before being signed in as them.
+     *
+     * Worth keeping even though the design makes it hard to fail: it is the test
+     * that would catch a handler which went looking for the grant's owner to widen
+     * what the session may do. The probe label is right there on the row, and the
+     * whole promise is that nothing reads it as authority.
      */
     @Test
-    fun `an admin who is impersonating cannot read the directory`(): Unit = runBlocking {
+    fun `an owner who is impersonating cannot read the directory`(): Unit = runBlocking {
         val fixture = seed()
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", null),
         )
-        val cookie = sessions.create(fixture.adminId)
-        val impersonations = Impersonations()
-        impersonations.start(cookie, ordinary.id)
+        val impersonation = OwnerImpersonation(isEnabled = true)
+        // What arming and then signing in as `ordinary` leaves behind: a grant the
+        // admin holds, and a session for the ordinary account labelled with it.
+        val probeId = impersonation.grants.arm(fixture.adminId)
+        val cookie = sessions.create(ordinary.id, probeId = probeId)
 
-        withRoutes(impersonations) { client ->
+        withRoutes(impersonation) { client ->
             assertEquals(
                 HttpStatusCode.Forbidden,
                 client.get("/api/admin/settings") { cookie(SESSION_COOKIE, cookie) }.status,
-                "An admin wearing somebody else's face read the account directory.",
+                "An owner wearing somebody else's face read the account directory.",
             )
         }
     }
@@ -1326,13 +1332,13 @@ class AdminSettingsTest {
      *   exist without it and the whole eligibility rule is about staff (LNL-198).
      */
     private fun withRoutes(
-        impersonations: Impersonations = Impersonations(),
+        impersonation: OwnerImpersonation = OwnerImpersonation(),
         identity: InstanceIdentity = InstanceIdentity(),
         block: suspend (io.ktor.client.HttpClient) -> Unit,
     ) = testApplication {
         application {
             install(ServerContentNegotiation) { json() }
-            routing { boardRoutes(dependencies(impersonations, identity)) }
+            routing { boardRoutes(dependencies(impersonation, identity)) }
         }
         val client = createClient {
             install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) { json() }
@@ -1341,7 +1347,7 @@ class AdminSettingsTest {
     }
 
     private fun dependencies(
-        impersonations: Impersonations,
+        impersonation: OwnerImpersonation,
         identity: InstanceIdentity = InstanceIdentity(),
     ) = BoardDependencies(
         identity = identity,
@@ -1376,7 +1382,7 @@ class AdminSettingsTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = impersonations,
+        impersonation = impersonation,
         // The SAME store `access` and the fixture's `seatInstanceOwner` use. Omitted before
         // LNL-195, which meant BoardDependencies defaulted to a *second*, empty one — so
         // every switch a route wrote landed somewhere the test could not read, and the

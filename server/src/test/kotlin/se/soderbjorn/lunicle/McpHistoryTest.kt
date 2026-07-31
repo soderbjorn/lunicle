@@ -733,7 +733,6 @@ class McpHistoryTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
         instanceSettings = instanceSettings,
     )
@@ -770,7 +769,6 @@ class McpHistoryTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = subscriptions,
         reads = ReadStore(database),
         history = history,

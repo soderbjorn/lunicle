@@ -24,8 +24,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunicle.client.StorageRepository
 import se.soderbjorn.lunicle.client.userMessage
-import se.soderbjorn.lunicle.clientserver.AddressPreview
-import se.soderbjorn.lunicle.clientserver.ImpersonationTarget
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SignedInUser
 
@@ -60,28 +58,26 @@ class SessionBackingViewModel(
      * @property errorMessage a human-readable failure, or null.
      * @property googleClientId the public client id the view needs to open
      *   Google's popup; null when Google isn't configured here.
-     * @property isImpersonating whether [user] is somebody other than whoever
-     *   signed in. Straight from the server — the client cannot work this out,
-     *   and must not try.
-     * @property canImpersonate whether the REAL user owns the instance (LNL-197).
-     *   Deliberately not `user.isSysAdmin`: while impersonating, the effective user
-     *   is an ordinary one and `user.isSysAdmin` is false, but "Stop impersonating"
-     *   still has to be reachable. That is the whole distinction, and collapsing the
-     *   two would trap the owner as whoever they became.
-     * @property impersonatableAddresses the addresses on offer, each with what it
-     *   resolves to. Empty unless [canImpersonate]; the server does not send it
-     *   otherwise.
-     * @property isImpersonateAddressPromptOpen whether the `Any address…` prompt is
-     *   up — the one way to reach the three states that are not accounts.
+     * @property isImpersonating whether this session was minted by an impersonation
+     *   rather than by somebody proving who they are. Straight from the server — the
+     *   client cannot work this out, and must not try: the account on screen IS the
+     *   account in force, so there is nothing here to compare.
+     * @property isImpersonationArmed whether this signed-out browser holds a live
+     *   grant and may sign itself in as anybody. The state between arming and
+     *   choosing an address, in which [user] is null and [isImpersonating] false —
+     *   everything renders as a stranger sees it, which is part of what is being
+     *   checked. It is what makes the ordinary sign-in button open the impersonation
+     *   dialog instead of Google's popup.
+     * @property canImpersonate whether this caller may arm one: they own the
+     *   instance and the deployment has the feature switched on. Deliberately not
+     *   `user.isSysAdmin`: while probing, the account being worn is an ordinary one
+     *   and its `isSysAdmin` is false, but "Stop impersonating" still has to be
+     *   reachable. Collapsing the two would trap the owner as whoever they became.
+     * @property isImpersonateAddressPromptOpen whether the address dialog is up.
      * @property impersonateAddress what has been typed into it, or null when it has
      *   never been opened. Held here rather than in the view for the reason
      *   [emailSignInAddress] is: a dialog rebuilt per showing cannot be the thing that
      *   remembers what is in it.
-     * @property addressPreview what the server says the typed address resolves to, or
-     *   null when nothing has been asked yet. **What makes typing an address safe**:
-     *   it is shown before the owner commits, and it is the very answer the start
-     *   route will act on, because one server-side function produces both.
-     * @property isPreviewingAddress true while that question is in flight.
      * @property pendingEmail an address the user has asked to attach and not yet
      *   confirmed, or null. Straight from the server, like [isImpersonating] and
      *   for a stronger version of the same reason: the pending change is a row in
@@ -113,12 +109,10 @@ class SessionBackingViewModel(
         val isGoogleAvailable: Boolean = false,
         val googleClientId: String? = null,
         val isImpersonating: Boolean = false,
+        val isImpersonationArmed: Boolean = false,
         val canImpersonate: Boolean = false,
-        val impersonatableAddresses: List<ImpersonationTarget> = emptyList(),
         val isImpersonateAddressPromptOpen: Boolean = false,
         val impersonateAddress: String? = null,
-        val addressPreview: AddressPreview? = null,
-        val isPreviewingAddress: Boolean = false,
         val pendingEmail: String? = null,
         val isEmailSignInAvailable: Boolean = false,
         val isSignInPickerOpen: Boolean = false,
@@ -578,22 +572,50 @@ class SessionBackingViewModel(
     }
 
     /**
-     * Act as an address.
+     * Arm an impersonation. **Signs this browser out.**
      *
-     * The server decides whether this is allowed and what it means; this only
-     * asks. Nothing is assumed about the outcome — the state that comes back is
-     * the state, including the case where the server refused and we are still
-     * ourselves.
+     * The server destroys the owner's session and hands the browser a grant, so what
+     * comes back is a signed-out state with [State.isImpersonationArmed] set. That
+     * is not a failure to handle — it is the state the whole flow runs from, and the
+     * app rendering as a stranger sees it is part of what the owner came to look at.
+     */
+    fun onArmImpersonationTapped() {
+        val state = _stateFlow.value
+        if (state.isBusy || !state.canImpersonate) return
+        println("Session: arming an impersonation")
+        _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
+        scope.launch {
+            val result = runCatching { storage.armImpersonation() }
+            _stateFlow.value = result.fold(
+                onSuccess = { it.applyTo(_stateFlow.value).copy(isBusy = false) },
+                onFailure = { t ->
+                    println("Session: arming failed: ${t.message}")
+                    _stateFlow.value.copy(
+                        isBusy = false,
+                        errorMessage = t.userMessage("Could not arm an impersonation."),
+                    )
+                },
+            )
+        }
+    }
+
+    /**
+     * Sign in as an address, on the armed grant's authority.
      *
-     * An address rather than a user id since LNL-197, and it is the same call whether
-     * the address has an account or not: the server resolves it, and an address with
-     * no row becomes the first-time-arrival preview. The client is not told which
-     * happened and does not need to be — what it gets back is who it is now.
+     * Gated on [State.isImpersonationArmed] rather than on `canImpersonate`, and the
+     * difference matters: the caller is **signed out** by the time this is reachable,
+     * so they own nothing and `canImpersonate` is false. What authorises it is the
+     * probe cookie, which this code cannot see and does not need to — the server
+     * refuses without one.
+     *
+     * A refusal is left on screen with the dialog still up, because the two things
+     * that produce one are a mistyped address and a deployment that will not admit
+     * it — and the second is a thing the owner came here to find out.
      */
     fun onImpersonateTapped(email: String) {
         val state = _stateFlow.value
-        if (state.isBusy || !state.canImpersonate) return
-        println("Session: asking to impersonate <$email>")
+        if (state.isBusy || !(state.isImpersonationArmed || state.isImpersonating)) return
+        println("Session: asking to sign in as <$email>")
         _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
         scope.launch {
             val result = runCatching { storage.impersonate(email) }
@@ -603,21 +625,20 @@ class SessionBackingViewModel(
                     println("Session: impersonate failed: ${t.message}")
                     _stateFlow.value.copy(
                         isBusy = false,
-                        errorMessage = t.userMessage("Could not act as that address."),
+                        errorMessage = t.userMessage("Could not sign in as that address."),
                     )
                 },
             )
         }
     }
 
-    /** Open the `Any address…` prompt, empty. */
+    /** Open the address dialog, empty. */
     fun onImpersonateAddressPromptOpened() {
         val state = _stateFlow.value
-        if (!state.canImpersonate) return
+        if (!(state.isImpersonationArmed || state.isImpersonating)) return
         _stateFlow.value = state.copy(
             isImpersonateAddressPromptOpen = true,
             impersonateAddress = "",
-            addressPreview = null,
             errorMessage = null,
         )
     }
@@ -627,85 +648,27 @@ class SessionBackingViewModel(
         _stateFlow.value = _stateFlow.value.copy(
             isImpersonateAddressPromptOpen = false,
             impersonateAddress = null,
-            addressPreview = null,
-            isPreviewingAddress = false,
         )
     }
 
-    /**
-     * The typed address changed.
-     *
-     * Drops any [State.addressPreview] with it, which is the load-bearing half: a
-     * resolution left on screen beside a different address is the one way this dialog
-     * could lie about what pressing the button would do.
-     */
+    /** The typed address changed. */
     fun onImpersonateAddressChanged(email: String) {
         val state = _stateFlow.value
         if (!state.isImpersonateAddressPromptOpen) return
-        _stateFlow.value = state.copy(impersonateAddress = email, addressPreview = null)
+        _stateFlow.value = state.copy(impersonateAddress = email)
     }
 
     /**
-     * Ask what the typed address resolves to, without becoming it.
+     * Stop impersonating and go back to being the owner.
      *
-     * Writes nothing, server-side, so this is free to ask and free to abandon — see
-     * `ApiRoutes.IMPERSONATE_PREVIEW`. A failure lands in [State.errorMessage] and
-     * leaves the prompt up, because the usual cause is a mistyped address and the
-     * thing to do about it is retype it.
+     * Gated on [State.isImpersonating], not on `canImpersonate`: the account being
+     * worn is an ordinary one that owns nothing, so an entitlement check here would
+     * refuse the very person entitled to call it. The grant is what authorises it,
+     * server-side.
      */
-    fun onImpersonateAddressPreviewRequested() {
-        val state = _stateFlow.value
-        val email = state.impersonateAddress?.trim()
-        if (state.isPreviewingAddress || !state.canImpersonate || email.isNullOrBlank()) return
-        println("Session: asking what <$email> resolves to")
-        _stateFlow.value = state.copy(isPreviewingAddress = true, errorMessage = null, addressPreview = null)
-        scope.launch {
-            val result = runCatching { storage.previewAddress(email) }
-            _stateFlow.value = result.fold(
-                onSuccess = { _stateFlow.value.copy(isPreviewingAddress = false, addressPreview = it) },
-                onFailure = { t ->
-                    println("Session: address preview failed: ${t.message}")
-                    _stateFlow.value.copy(
-                        isPreviewingAddress = false,
-                        errorMessage = t.userMessage("Could not work out what that address resolves to."),
-                    )
-                },
-            )
-        }
-    }
-
-    /**
-     * Act as a signed-out visitor — preview the app with no account at all (LNL-103).
-     *
-     * The signed-out counterpart of [onImpersonateTapped], and asked of the server
-     * the same way: it decides what this means and hands back the state, which here
-     * is one whose effective user is null while `isImpersonating` stays true, so the
-     * way back out is still on the menu.
-     */
-    fun onImpersonateSignedOutTapped() {
-        val state = _stateFlow.value
-        if (state.isBusy || !state.canImpersonate) return
-        println("Session: asking to impersonate a signed-out visitor")
-        _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
-        scope.launch {
-            val result = runCatching { storage.impersonateSignedOut() }
-            _stateFlow.value = result.fold(
-                onSuccess = { it.applyTo(_stateFlow.value).copy(isBusy = false) },
-                onFailure = { t ->
-                    println("Session: impersonate signed-out failed: ${t.message}")
-                    _stateFlow.value.copy(
-                        isBusy = false,
-                        errorMessage = t.userMessage("Could not preview the signed-out view."),
-                    )
-                },
-            )
-        }
-    }
-
-    /** Stop impersonating and go back to being yourself. */
     fun onStopImpersonatingTapped() {
         val state = _stateFlow.value
-        if (state.isBusy || !state.canImpersonate) return
+        if (state.isBusy || !(state.isImpersonating || state.isImpersonationArmed)) return
         println("Session: stopping impersonation")
         _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
         scope.launch {
@@ -785,23 +748,21 @@ class SessionBackingViewModel(
         isGoogleAvailable = isGoogleAvailable,
         googleClientId = googleClientId,
         isImpersonating = isImpersonating,
+        isImpersonationArmed = isImpersonationArmed,
         canImpersonate = canImpersonate,
-        impersonatableAddresses = impersonatableAddresses,
         pendingEmail = pendingEmail,
         isEmailSignInAvailable = isEmailSignInAvailable,
         isDisplayNameHidden = isDisplayNameHidden,
         isSignInPickerOpen = if (user != null) false else previous.isSignInPickerOpen,
         emailSignInAddress = if (user != null) null else previous.emailSignInAddress,
-        // Every session response converges here, so this is the one place the
-        // `Any address…` prompt can be closed once and for all: a completed
-        // impersonation, a stop, a sign-out. Its typed address and its resolution go
-        // with it, so reopening the prompt never shows the last visit's answer beside
-        // a freshly typed address. A *refused* impersonation never reaches here — the
-        // failure branch keeps the prompt up with the error beside it, which is where
-        // somebody who mistyped an address wants to be.
+        // Every session response converges here, so this is the one place the address
+        // dialog can be closed once and for all: a completed impersonation, a stop, a
+        // sign-out. Its typed address goes with it, so reopening never shows the last
+        // visit's. A *refused* impersonation never reaches here — the failure branch
+        // keeps the dialog up with the refusal beside it, which is where somebody who
+        // mistyped an address, or who just learned this deployment will not admit
+        // one, wants to be.
         isImpersonateAddressPromptOpen = false,
         impersonateAddress = null,
-        addressPreview = null,
-        isPreviewingAddress = false,
     )
 }

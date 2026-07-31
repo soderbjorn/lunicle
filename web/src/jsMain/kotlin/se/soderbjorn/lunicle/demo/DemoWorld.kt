@@ -733,10 +733,12 @@ internal class DemoWorld {
             isGoogleAvailable = false,
             googleClientId = null,
             isImpersonating = false,
-            // Fixed-account rule (LNL-146): impersonation stays off so the menu is
-            // hidden, even though the demo user is an administrator.
+            isImpersonationArmed = false,
+            // Fixed-account rule (LNL-146): impersonation stays off so the menu item
+            // is hidden, even though the demo user is an administrator. It would be
+            // off anyway — the facility is a deploy-time server switch, and this
+            // world has no server.
             canImpersonate = false,
-            impersonatableAddresses = emptyList(),
             pendingEmail = null,
             isEmailSignInAvailable = false,
             isDisplayNameHidden = hideDisplayName,

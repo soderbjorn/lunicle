@@ -44,19 +44,17 @@ private const val MAX_SETTING_LENGTH = 256 * 1024
 /**
  * Mount the shell-settings routes.
  *
- * @param sessions, users, impersonations the usual trio `resolveCaller` needs —
- *   passed rather than reached for, so this file has no opinion about how a
- *   cookie becomes a user.
- * @param access the permission oracle `resolveCaller` asks whether an impersonation
- *   is still the caller's to hold (LNL-197). Nullable for the reason it is nullable
- *   there: null answers "nobody may impersonate", which drops a stale impersonation
- *   rather than honouring it, and is what the one test mounting this file alone gets.
+ * @param sessions, impersonation what `resolveCaller` needs — passed rather than
+ *   reached for, so this file has no opinion about how a cookie becomes a user.
+ * @param access the permission oracle `resolveCaller` asks whether this caller may
+ *   arm an impersonation. Nullable for the reason it is nullable there: null answers
+ *   "nobody may", which is the direction that withholds authority, and is what the
+ *   one test mounting this file alone gets.
  * @param uiSettings where the blobs live.
  */
 fun Route.uiSettingsRoutes(
     sessions: se.soderbjorn.lunicle.store.SessionStore,
-    users: se.soderbjorn.lunicle.store.UserStore,
-    impersonations: Impersonations,
+    impersonation: OwnerImpersonation,
     uiSettings: se.soderbjorn.lunicle.store.UiSettingsStore,
     access: AccessControl? = null,
 ) {
@@ -75,7 +73,7 @@ fun Route.uiSettingsRoutes(
      * front of it changed, without asking a second endpoint.
      */
     get(ApiRoutes.USER_UI_SETTINGS) {
-        val user = call.resolveCaller(sessions, users, impersonations, access).effective
+        val user = call.resolveCaller(sessions, impersonation, access).user
         if (user == null) {
             call.respond(UiSettingsState())
             return@get
@@ -86,16 +84,10 @@ fun Route.uiSettingsRoutes(
     /**
      * Remember one of them.
      *
-     * Four refusals, and each is a different fact:
+     * Three refusals, and each is a different fact:
      *  - **403** — nobody is signed in. There is no row to write, and answering
      *    200 would be telling a browser its preference was kept when the next
      *    load will disagree.
-     *  - **403, a previewed address** — the caller is an address with no account
-     *    (LNL-197). Same reasoning and a different cause: `user_ui_settings.user_id`
-     *    references `users`, and a previewed address has no row there, so the only
-     *    honest answers are this one and a foreign-key crash. Refusing loudly is also
-     *    the property the preview is *for* — it leaves no trace, and a settings row
-     *    keyed on a sentinel id would be one.
      *  - **400, unknown key** — the allowlist. See [UiSettingKeys]: this is a
      *    settings table, not storage the client may name its own keys in.
      *  - **400, too long** — [MAX_SETTING_LENGTH].
@@ -105,15 +97,8 @@ fun Route.uiSettingsRoutes(
      * dark/light control.
      */
     post(ApiRoutes.USER_UI_SETTINGS) {
-        val user = call.resolveCaller(sessions, users, impersonations, access).effective ?: run {
+        val user = call.resolveCaller(sessions, impersonation, access).user ?: run {
             call.respond(HttpStatusCode.Forbidden, "You must be signed in for settings to be remembered.")
-            return@post
-        }
-        if (user.isPreviewOnly) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                "A previewed address has no account, so there is nothing to remember settings against.",
-            )
             return@post
         }
         val request = runCatching { call.receive<SetUiSettingRequest>() }.getOrNull() ?: run {

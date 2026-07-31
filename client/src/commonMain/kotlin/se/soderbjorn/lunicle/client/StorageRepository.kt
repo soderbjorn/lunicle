@@ -27,7 +27,6 @@ package se.soderbjorn.lunicle.client
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.ApiFailure
 import se.soderbjorn.lunicle.clientserver.BoardState
-import se.soderbjorn.lunicle.clientserver.AddressPreview
 import se.soderbjorn.lunicle.clientserver.CommentDraft
 import se.soderbjorn.lunicle.clientserver.DiscussionUnreadState
 import se.soderbjorn.lunicle.clientserver.NotificationCountState
@@ -71,9 +70,8 @@ class StorageRepository(
     suspend fun session(): SessionState = api.session()
     suspend fun signInWithGoogle(code: String): SessionState = api.signInWithGoogle(code)
     suspend fun signOut(): SessionState = api.signOut()
+    suspend fun armImpersonation(): SessionState = api.armImpersonation()
     suspend fun impersonate(email: String): SessionState = api.impersonate(email)
-    suspend fun previewAddress(email: String): AddressPreview = api.previewAddress(email)
-    suspend fun impersonateSignedOut(): SessionState = api.impersonateSignedOut()
     suspend fun stopImpersonating(): SessionState = api.stopImpersonating()
     suspend fun setDisplayName(displayName: String?): SessionState = api.setDisplayName(displayName)
     suspend fun requestEmailSignIn(email: String) = api.requestEmailSignIn(email)

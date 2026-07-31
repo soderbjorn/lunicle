@@ -49,45 +49,56 @@ object ApiRoutes {
     const val SIGN_OUT: String = "/api/auth/signout"
 
     /**
-     * `POST` — start acting as an address. **The instance owner only** (LNL-197).
-     * Returns the new [SessionState], whose `user` is whatever that address now
-     * resolves to.
+     * `POST` — arm an impersonation. **The instance owner only**, and only where
+     * the deployment has the feature switched on.
      *
-     * The body names *who to become*, and that is the only thing a client may say
-     * about identity here — the server takes who is *asking* from the session
-     * cookie and refuses this unless that session's real user owns the instance. A
-     * route that accepted "I am user 7" rather than "let me become this address"
-     * would be the whole authorization system, undone. See the server's
-     * Impersonations.
+     * Signs the caller **out** and hands the browser a short-lived grant in the
+     * `lunicle_probe` cookie. Returns a signed-out [SessionState] with
+     * `isImpersonationArmed` set — the app then renders exactly what a stranger
+     * sees, because the caller is one, which is itself part of what this facility
+     * exists to check.
      *
-     * An **address** rather than a user id since LNL-197, because the permission
-     * model keys on one: staff-ness is derived from the address, somebody can hold
-     * rungs before an account exists, and the audience rows are about what an
-     * address *is*. An address with no account at all is a legal target — it
-     * previews the first-time arrival — and wearing it creates nothing.
+     * The signing-out is the design rather than a side effect. What follows is a
+     * **genuine sign-in** as somebody else, not a costume worn over the owner's
+     * session, so the owner's session has to be gone for there to be nothing left
+     * over. See [IMPERSONATE].
+     */
+    const val IMPERSONATE_ARM: String = "/api/impersonate/arm"
+
+    /**
+     * `POST` — sign in as an address, from an [ImpersonateRequest]. Returns the new
+     * [SessionState] for whoever that address now is.
+     *
+     * ── It is a real sign-in, and that is the point ─────────────────────────
+     *
+     * The address runs through the same pipeline Google and the mailed code end in:
+     * the admission gate, the `users` row, the staff/member stamp, the owner seat.
+     * The only thing substituted is the *proof* — an owner-authorised grant instead
+     * of a code exchange — so an address this deployment would refuse is refused
+     * here with the real refusal, and an address with no account **gets one**.
+     * Nothing is a preview; the row is what makes the check honest.
+     *
+     * ── What authorises it ──────────────────────────────────────────────────
+     *
+     * The `lunicle_probe` cookie [IMPERSONATE_ARM] set, carrying a live grant whose
+     * owner still owns the instance — re-asked on every use, never remembered. The
+     * body names *who to become* and nothing else; a route that accepted "I am user
+     * 7" rather than "let me become this address" would be the whole authorization
+     * system, undone.
+     *
+     * POSTing here again while already probing switches target: the current session
+     * is destroyed before the next is minted, so one grant never has two sessions.
      */
     const val IMPERSONATE: String = "/api/impersonate"
 
     /**
-     * `POST` — what would signing in with this address produce? Takes an
-     * [ImpersonateRequest] and answers an [AddressPreview]. Owner only, like the
-     * route it previews.
+     * `POST` — stop, and be the owner again.
      *
-     * **It reads, and writes nothing at all.** No `users` row appears, no
-     * `added_at` is set, and the address turns up in no project's People list.
-     * That is why it is a route of its own rather than a flag on [IMPERSONATE]:
-     * the owner sees what an address resolves to *before* committing to wearing
-     * it, and asking has no effect either way.
-     */
-    const val IMPERSONATE_PREVIEW: String = "/api/impersonate/preview"
-
-    /**
-     * `POST` — stop impersonating and go back to being yourself.
-     *
-     * Authorised against the session's **real** user, not the effective one:
-     * while impersonating, the effective user is an ordinary user, so an
-     * effective-user check would make this route refuse the very person entitled
-     * to call it — locking the admin in as whoever they became.
+     * Destroys the impersonated session, mints one for the owner who armed the
+     * grant, revokes the grant and clears the probe cookie. Authorised against the
+     * **grant**, not against whoever the session currently belongs to: the caller is
+     * deliberately an ordinary user right now, so a check on them would lock the
+     * owner in as the person they became.
      */
     const val STOP_IMPERSONATING: String = "/api/impersonate/stop"
 

@@ -639,7 +639,6 @@ class McpIssueEditTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
         instanceSettings = instanceSettings,
     )
@@ -676,7 +675,6 @@ class McpIssueEditTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

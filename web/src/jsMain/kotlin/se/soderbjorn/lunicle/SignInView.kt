@@ -38,8 +38,6 @@ import kotlinx.browser.window
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
-import se.soderbjorn.lunicle.clientserver.AddressStanding
-import se.soderbjorn.lunicle.clientserver.ImpersonationTarget
 
 /**
  * Renders the account corner.
@@ -100,13 +98,20 @@ class SignInView(
      */
     var googleHostedDomain: String? = null
 
-    /** The impersonation submenu's rows, rebuilt only when the address list changes. */
-    private lateinit var impersonateItem: HTMLElement
-    private lateinit var impersonateSubmenu: HTMLElement
+    /** The account menu's two impersonation controls, never both at once. */
+    private lateinit var impersonateItem: HTMLButtonElement
     private lateinit var stopImpersonatingButton: HTMLButtonElement
-    private var renderedTargets: List<ImpersonationTarget> = emptyList()
 
-    /** The `Any address…` prompt while it is up (LNL-197). */
+    /**
+     * The strip above the app while an impersonation is armed, and its Cancel.
+     *
+     * Only ever visible to a caller who is **signed out** — the one state in which
+     * nothing else on screen says anything is going on, because everything else is
+     * deliberately rendering exactly what a stranger sees.
+     */
+    private lateinit var armedStrip: HTMLElement
+
+    /** The address dialog while it is up. */
     private var addressDialog: ImpersonateAddressDialog? = null
 
     /**
@@ -144,20 +149,11 @@ class SignInView(
 
         signOutButton = button("Sign out", MENU_ITEM_CLASS) { viewModel.onSignOutTapped() } as HTMLButtonElement
 
-        // "Impersonate ▸" and the submenu that folds out of it. The submenu is a
-        // child of the item, not a sibling: it opens on hover, and CSS hover only
-        // survives the pointer travelling from the item to the submenu if the
-        // submenu is inside the thing being hovered.
-        impersonateSubmenu = element("div", "account-submenu $MENU_PANEL_CLASS")
-        impersonateSubmenu.setAttribute("role", "menu")
-        impersonateItem = element("div", "$MENU_ITEM_CLASS account-menu-parent")
-        impersonateItem.setAttribute("role", "menuitem")
-        impersonateItem.setAttribute("aria-haspopup", "menu")
-        impersonateItem.children(
-            element("span", "account-menu-label dt-hover-menu-label", "Impersonate"),
-            element("span", "account-menu-arrow", "\u25B8"),
-            impersonateSubmenu,
-        )
+        // One item, no submenu. There is no list of addresses to fold out any more:
+        // the owner is signed out first and then types whichever address they want
+        // at a genuine sign-in, so the menu's whole share of this is starting it.
+        impersonateItem =
+            button("Impersonate…", MENU_ITEM_CLASS) { confirmArm() } as HTMLButtonElement
 
         stopImpersonatingButton =
             button("Stop impersonating", MENU_ITEM_CLASS) { viewModel.onStopImpersonatingTapped() } as HTMLButtonElement
@@ -172,6 +168,25 @@ class SignInView(
         // reader would announce nothing at all when a sign-in lands. The corner
         // has no visible label to carry that, so the live region is the name.
         nameElement.setAttribute("aria-live", "polite")
+
+        // The armed strip, mounted on <body> rather than on this view's own root.
+        //
+        // A child of the account corner is where it belongs by ownership and the one
+        // place it cannot work: the top bar is its own stacking context, so a
+        // `position: fixed` strip inside it is painted *within* that context — and
+        // the signed-out landing surface this strip exists to annotate sits at
+        // z-index 9000, on top. It rendered, at the right size, in the right colour,
+        // underneath. Hoisting it to <body> puts it in the root stacking context
+        // where its own z-index means what it says.
+        armedStrip = element("div", "impersonation-armed-strip")
+        armedStrip.children(
+            element("span", "impersonation-armed-text", "Impersonation armed — sign in as anyone."),
+            button("Cancel", "btn impersonation-armed-cancel") {
+                viewModel.onStopImpersonatingTapped()
+            },
+        )
+        armedStrip.style.display = "none"
+        document.body?.appendChild(armedStrip)
 
         root.children(signInButton, accountButton, menuElement)
         host.appendChild(root)
@@ -189,28 +204,21 @@ class SignInView(
         // beat of empty space.
         root.style.visibility = if (state.isLoaded) "visible" else "hidden"
 
+        // A probing owner is genuinely signed in as somebody, so the corner is the
+        // ordinary signed-in corner carrying that person's real name — which is the
+        // point: it is what they would see. The impersonation is said separately, by
+        // the pill and the tint, which cannot be mistaken for the account's own
+        // label and cannot be dismissed.
         val signedIn = state.user != null
-        // Impersonating a signed-out visitor: the effective account is null, so
-        // there is no name and the app shows the public view — but the corner must
-        // stay, or "Stop impersonating" vanishes with it and the admin is stranded
-        // in the borrowed identity (LNL-103). So the corner appears whenever there
-        // is a menu to show: a real account, or this preview.
-        val impersonatingSignedOut = state.isImpersonating && !signedIn
-        val showAccount = signedIn || impersonatingSignedOut
+        val showAccount = signedIn
 
-        nameElement.setTextIfChanged(
-            when {
-                signedIn -> state.displayName ?: ""
-                impersonatingSignedOut -> "Signed-out visitor"
-                else -> ""
-            },
-        )
+        nameElement.setTextIfChanged(if (signedIn) state.displayName ?: "" else "")
         // The provider is the tooltip now that the corner shows the bare name.
         // Both providers can supply the same display name, so this is the only
         // thing that answers "which of my two accounts is this?".
         accountButton.title = when {
+            state.isImpersonating -> "You are signed in as this account through an impersonation"
             signedIn -> state.greeting ?: ""
-            impersonatingSignedOut -> "Previewing the signed-out view"
             else -> ""
         }
         accountButton.visible(showAccount, displayValue = "inline-flex")
@@ -226,22 +234,41 @@ class SignInView(
         // The class only says *whether a menu exists at all* — signed out, there
         // is nothing to open. When it opens is CSS's business alone.
         root.classList.toggle("account-signed-in", showAccount)
-        // Hidden while impersonating (LNL-101): signing out here would mean the
-        // admin's real session, not the borrowed identity, and the borrowed
-        // identity is what the menu is showing — the way back out is "Stop
-        // impersonating" below, not "Sign out". It returns when impersonation ends.
+
+        // The marker, and it is a CLASS for the reason the line above is one: the
+        // stylesheet owns what a tinted frame and a corner pill look like, and an
+        // inline style set from here would beat every rule it was meant to cooperate
+        // with. It is toggled off the server's answer on every session emission, so
+        // it survives a hard reload and there is nothing on screen that dismisses it.
+        root.classList.toggle("account-impersonating", state.isImpersonating)
+        document.body?.classList?.toggle("app-impersonating", state.isImpersonating)
+
+        // Hidden while impersonating: "Sign out" here would end the probe session
+        // and leave the browser holding a live grant with nothing to go back to.
+        // The way out is "Stop impersonating", which restores the owner.
         signOutButton.visible(!state.isImpersonating, displayValue = "block")
         signOutButton.disabled = state.isBusy
 
-        // "Impersonate" and "Stop impersonating" are the same slot, never both.
-        // Both hang off canImpersonate — the REAL user owning the instance (LNL-197)
-        // — and not off user.isSysAdmin, which is false for the whole time somebody is
-        // impersonating and would take "Stop impersonating" away exactly when it
-        // is the only thing needed. See SessionBackingViewModel.State.
-        impersonateItem.visible(state.canImpersonate && !state.isImpersonating, displayValue = "flex")
-        stopImpersonatingButton.visible(state.canImpersonate && state.isImpersonating, displayValue = "block")
+        // "Impersonate…" and "Stop impersonating" are the same slot, never both.
+        //
+        // The first hangs off canImpersonate, which already carries BOTH terms — the
+        // caller owns the instance and the deployment has the feature switched on —
+        // so an unarmed instance offers nothing to anybody, the owner included.
+        //
+        // The second hangs off isImpersonating alone, deliberately: while probing,
+        // the account being worn owns nothing and canImpersonate is false. Gating
+        // the way out on the entitlement would take it away exactly when it is the
+        // only thing needed. See SessionBackingViewModel.State.
+        impersonateItem.visible(state.canImpersonate && !state.isImpersonating, displayValue = "block")
+        impersonateItem.disabled = state.isBusy
+        stopImpersonatingButton.visible(state.isImpersonating, displayValue = "block")
         stopImpersonatingButton.disabled = state.isBusy
-        renderImpersonatableAddresses(state)
+
+        // The armed state belongs to a SIGNED-OUT browser, so it is the one thing on
+        // screen saying anything is going on — everything else is rendering what a
+        // stranger sees, which is itself part of what is being checked.
+        armedStrip.visible(state.isImpersonationArmed && !signedIn, displayValue = "flex")
+
         renderAddressDialog(state)
 
         // A deployment with no credentials renders no sign-in at all, rather
@@ -272,6 +299,12 @@ class SignInView(
     fun startSignIn() {
         val state = lastState ?: return
         when {
+            // Armed wins over everything. This browser holds a grant, so the button
+            // that would ordinarily open Google's popup or the code field opens the
+            // impersonation dialog instead — one address, one button, no mail and no
+            // code to redeem. It is the same button on purpose: signing in as
+            // somebody should go through the door a sign-in goes through.
+            state.isImpersonationArmed -> viewModel.onImpersonateAddressPromptOpened()
             state.hasSignInChoice -> viewModel.onSignInPickerOpened()
             state.isGoogleAvailable -> startGoogleSignIn()
             state.isEmailSignInAvailable -> viewModel.onSignInPickerOpened()
@@ -309,57 +342,30 @@ class SignInView(
     }
 
     /**
-     * Fill the impersonation submenu.
+     * Confirm before arming, because arming signs the owner out.
      *
-     * Rebuilt only when the addresses change, like the project picker: this runs on
-     * every session emission, and replacing the rows under a pointer that is
-     * hovering one of them makes the submenu flicker and lose the hover. Compared
-     * whole rather than by address, so a row whose *standing* changed — somebody
-     * finally signed in — redraws too.
-     *
-     * ── Addresses, not names (LNL-197) ─────────────────────────────────────
-     *
-     * Each row is an address and what it resolves to, because that is what the
-     * permission model keys on: staff-ness is derived from the address, somebody can
-     * hold rungs before an account exists, and an audience row is a statement about
-     * what an address *is*. A list of display names is a list of the wrong thing.
-     *
-     * The owner's own row is rendered and disabled rather than omitted, so the list
-     * matches the account directory they are looking at — and "become myself" is
-     * spelled "Stop impersonating", which is a different item.
+     * The one place in the product where pressing a menu item ends your session, so
+     * it says so before it does it. Not a nicety: without the warning, an owner who
+     * meant to look at a submenu finds themselves signed out of the instance they
+     * run, with no obvious way back beyond signing in again — and on a deployment
+     * whose sign-in is a Google popup that is a genuine interruption.
      */
-    private fun renderImpersonatableAddresses(state: SessionBackingViewModel.State) {
-        val targets = state.impersonatableAddresses
-        if (targets == renderedTargets) return
-        renderedTargets = targets
-        impersonateSubmenu.clear()
-        // A fixed choice, always first and always offered: see the app as a
-        // signed-out visitor does — no account at all — rather than as any named
-        // address (LNL-103). It stands even when there are no accounts to pick,
-        // so the submenu is never truly empty.
-        impersonateSubmenu.appendChild(
-            button("Signed-out visitor", MENU_ITEM_CLASS) {
-                viewModel.onImpersonateSignedOutTapped()
-            } as HTMLButtonElement,
-        )
-        targets.forEach { target ->
-            val row = button("${target.email} — ${target.standing.label}", MENU_ITEM_CLASS) {
-                viewModel.onImpersonateTapped(target.email)
-            } as HTMLButtonElement
-            if (target.standing == AddressStanding.SELF) {
-                row.disabled = true
-                row.title = "This is you."
-            }
-            impersonateSubmenu.appendChild(row)
-        }
-        // Last, because it is the general case behind the list rather than one of its
-        // rows, and because the three states worth reaching this way have no account
-        // and so appear nowhere above (LNL-197). See ImpersonateAddressDialog.
-        impersonateSubmenu.appendChild(
-            button("Any address…", MENU_ITEM_CLASS) {
-                viewModel.onImpersonateAddressPromptOpened()
-            } as HTMLButtonElement,
-        )
+    private fun confirmArm() {
+        var dialog: ConfirmDialog? = null
+        dialog = ConfirmDialog(
+            title = "Impersonate somebody",
+            message = "You will be signed out, and can then sign in as any address — for real. " +
+                "An address with no account here will get one, and anything you write will be theirs. " +
+                "Stop impersonating puts you back.",
+            // "Sign me out" rather than "OK", because being signed out is the part
+            // somebody would otherwise not expect from a menu item.
+            destructiveLabel = "Sign me out and arm it",
+            onConfirm = {
+                dialog?.dismiss()
+                viewModel.onArmImpersonationTapped()
+            },
+            onCancel = { dialog?.dismiss() },
+        ).also { it.mount(dialogHost) }
     }
 
     /**

@@ -509,7 +509,6 @@ class AttachmentTicketTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
         instanceSettings = instanceSettings,
     )
@@ -546,7 +545,6 @@ class AttachmentTicketTest {
         attachmentTickets = tickets,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

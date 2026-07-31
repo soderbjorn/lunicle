@@ -523,7 +523,6 @@ class McpAgentNameTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
         instanceSettings = instanceSettings,
     )
@@ -560,7 +559,6 @@ class McpAgentNameTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

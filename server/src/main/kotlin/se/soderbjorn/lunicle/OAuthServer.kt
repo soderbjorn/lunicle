@@ -92,13 +92,12 @@ class McpDependencies(
     /**
      * Read only by [mcpApiRoutes], and never by the token path.
      *
-     * The Connections section is a browser session, so an impersonating admin sees
-     * the impersonated user's connections like every other `/api` route. A token
-     * names one person forever and no impersonation applies to it — see
-     * McpServer.resolveMcpUser, where that asymmetry is the point rather than an
-     * oversight.
+     * The Connections section is a browser session, so a probing owner sees the
+     * connections of the account they signed in as, like every other `/api` route.
+     * A token names one person forever — see McpServer.resolveMcpUser, where that
+     * asymmetry is the point rather than an oversight.
      */
-    val impersonations: Impersonations,
+    val impersonation: OwnerImpersonation = OwnerImpersonation(),
     /** Which providers the sign-in page may offer. See [signInPage]. */
     val config: OAuthConfig,
     /**

@@ -69,7 +69,12 @@ class EmailChangeTest {
 
     private val users = UserStore(database)
     private val sessions = SessionStore(database)
-    private val impersonations = Impersonations()
+    /**
+     * Armed, so the one impersonation test below can reach the routes at all. Every
+     * other test here is unaffected: an armed deployment behaves identically until
+     * somebody actually arms a grant.
+     */
+    private val impersonation = OwnerImpersonation(isEnabled = true)
 
     /**
      * Ownership, and the oracle that reads it (LNL-197).
@@ -283,29 +288,48 @@ class EmailChangeTest {
     /**
      * Somebody wearing another's face may not redirect their mail.
      *
-     * Worth an explicit refusal rather than inheriting whatever `caller.effective`
-     * happens to do — which is what the old route did, silently allowing it.
-     * Once e-mail is the account key, redirecting where someone's mail goes is
-     * redirecting their account.
+     * Worth an explicit refusal rather than inheriting whatever the caller's own
+     * record happens to permit. Once e-mail is the account key, redirecting where
+     * someone's mail goes is redirecting their account.
+     *
+     * The guard reads the session row's **probe label**, not a comparison of users,
+     * and that is the whole reason this test still earns its place. Under the
+     * current design the owner is genuinely signed in as the victim — one account,
+     * not two — so the obvious-looking "is the effective user different from the
+     * real one?" check reads false and would never fire. See `Caller.isProbe`.
      */
     @Test
     fun `an impersonating owner cannot change the impersonated user's address`(): Unit = runBlocking {
         val owner = user("gh-owner", "Owner", email = "owner@example.com")
         user("gh-victim", "Victim", email = "victim@example.com")
-        val session = sessions.create(owner.id)
         seatInstanceOwner(users, instanceSettings)
         assertTrue(access.canImpersonate(owner), "The first user seeded did not end up owning the instance.")
 
         withRoutes { client ->
-            client.post(ApiRoutes.IMPERSONATE) {
-                cookie(SESSION_COOKIE, session)
+            val armed = client.post(ApiRoutes.IMPERSONATE_ARM) {
+                cookie(SESSION_COOKIE, sessions.create(owner.id))
+            }
+            val probeId = requireNotNull(
+                armed.headers.getAll(HttpHeaders.SetCookie)
+                    ?.firstOrNull { it.startsWith("$PROBE_COOKIE=") }
+                    ?.substringAfter('=')?.substringBefore(';'),
+            ) { "Arming handed back no probe cookie." }
+
+            val worn = client.post(ApiRoutes.IMPERSONATE) {
+                cookie(PROBE_COOKIE, probeId)
                 contentType(ContentType.Application.Json)
                 setBody(ImpersonateRequest("victim@example.com"))
             }
+            val probeSession = requireNotNull(
+                worn.headers.getAll(HttpHeaders.SetCookie)
+                    ?.firstOrNull { it.startsWith("$SESSION_COOKIE=") }
+                    ?.substringAfter('=')?.substringBefore(';'),
+            ) { "Signing in as the victim handed back no session." }
+
             assertEquals(
                 HttpStatusCode.Forbidden,
-                client.requestChange(session, "attacker@example.com").status,
-                "An admin redirected somebody else's mail while wearing their face.",
+                client.requestChange(probeSession, "attacker@example.com").status,
+                "An owner redirected somebody else's mail while wearing their face.",
             )
         }
         assertTrue(sent.none { it.first == "attacker@example.com" }, "A code was mailed on the refused path.")
@@ -423,7 +447,7 @@ class EmailChangeTest {
                     config = OAuthConfig(google = null),
                     sessions = sessions,
                     users = users,
-                    impersonations = impersonations,
+                    impersonation = impersonation,
                     emailCodes = codes,
                     notifications = NotificationDispatcher(users, capturingSender()),
                     instanceSettings = instanceSettings,

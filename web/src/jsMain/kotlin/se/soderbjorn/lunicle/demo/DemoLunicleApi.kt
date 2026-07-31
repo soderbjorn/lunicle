@@ -20,8 +20,6 @@ package se.soderbjorn.lunicle.demo
 
 import io.ktor.http.HttpStatusCode
 import kotlinx.browser.window
-import se.soderbjorn.lunicle.clientserver.AddressPreview
-import se.soderbjorn.lunicle.clientserver.AddressStanding
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
@@ -90,42 +88,19 @@ internal class DemoLunicleApi(
     override suspend fun requestEmailSignIn(email: String) = Unit
     override suspend fun signInWithEmailCode(email: String, code: String): SessionState = world.sessionState()
     override suspend fun signOut(): SessionState = world.sessionState()
-    override suspend fun impersonate(email: String): SessionState = world.sessionState()
-
     /**
-     * What an address resolves to in this world.
+     * The three impersonation calls, all no-ops that hand back the same session.
      *
-     * Unreachable, and answered properly anyway. The demo's `canImpersonate` is false by
-     * the fixed-account rule (LNL-146), so the menu that would raise this is not drawn —
-     * but the old answer was "the demo has no accounts to resolve an address against",
-     * which stopped being true the moment the world got a staff domain and thirty-odd
-     * accounts (LNL-199). A stub whose stated reason has expired is worse than one that
-     * answers, so this resolves the address the way the server would.
+     * Unreachable by construction: the demo's `canImpersonate` is false by the
+     * fixed-account rule (LNL-146), so nothing draws the menu item that would arm
+     * one — and even if something did, the whole facility is a server switch and
+     * this world has no server. The old preview stub that used to sit here answered
+     * properly, resolving an address against the demo's accounts; it has gone with
+     * the preview route it implemented, and nothing replaces it, because signing in
+     * for real is exactly what a fixed-account demo must not do.
      */
-    override suspend fun previewAddress(email: String): AddressPreview {
-        val normalized = email.trim().lowercase()
-        val existing = world.users.firstOrNull { it.email?.lowercase() == normalized }
-        val standing = when {
-            existing == null -> AddressStanding.NO_ACCOUNT
-            existing.id == world.demoUserId -> AddressStanding.SELF
-            !existing.hasSignedIn -> AddressStanding.NOT_SIGNED_IN
-            existing.isStaff -> AddressStanding.STAFF
-            else -> AddressStanding.MEMBER
-        }
-        return AddressPreview(
-            email = email,
-            standing = standing,
-            summary = when (standing) {
-                AddressStanding.SELF -> "That is your own account."
-                AddressStanding.STAFF -> "An account on $DEMO_STAFF_DOMAIN."
-                AddressStanding.MEMBER -> "An account from outside $DEMO_STAFF_DOMAIN."
-                AddressStanding.NOT_SIGNED_IN ->
-                    "An address somebody has been given access to and never signed in with."
-                AddressStanding.NO_ACCOUNT -> "No account here uses that address."
-            },
-        )
-    }
-    override suspend fun impersonateSignedOut(): SessionState = world.sessionState()
+    override suspend fun armImpersonation(): SessionState = world.sessionState()
+    override suspend fun impersonate(email: String): SessionState = world.sessionState()
     override suspend fun stopImpersonating(): SessionState = world.sessionState()
 
     // ── Profile ──────────────────────────────────────────────────────────────

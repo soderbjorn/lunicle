@@ -90,11 +90,6 @@ enum class AuthProvider {
  *   board's author fields remain a name. See the server's
  *   `UserRecord.toSignedInUser`.
  *
- *   The one exception is [impersonatableAddresses] (LNL-197), which is a list of
- *   addresses by construction — and it goes to **the instance owner alone**, who
- *   can read the account directory anyway. That is the trade the narrowing from
- *   "any administrator" bought: the list may say the true thing because the
- *   audience for it is one person.
  * @property id who this is, as an identity the client can COMPARE — never one it
  *   can act on.
  *
@@ -107,7 +102,7 @@ enum class AuthProvider {
  *   Sending it costs nothing. A user id is not a capability here: every route
  *   takes who is asking from the session cookie and never from the body, so
  *   knowing an id — your own or anyone's — grants exactly nothing. See the
- *   server's Impersonations, whose whole subject this is.
+ *   server's ProbeGrants, whose whole subject this is.
  *
  *   The email is the caller's own; see the property doc for why that one address
  *   crossing is not the directory leak this comment used to forbid.
@@ -155,25 +150,34 @@ data class SignedInUser(
  *   open the popup, and `null` when Google isn't configured. Public by design —
  *   it ships in every Google sign-in page on the web. The *secret* never leaves
  *   the server.
- * @property user the **effective** user — the impersonated one while an admin is
- *   impersonating. That is what the profile button shows, and it is not a display
- *   convenience: it is the same user every permission on the server is being
- *   gated on, so the name on screen and the rights in force can never disagree.
- *   Its `isSysAdmin` is the *impersonated* user's, which is why an impersonating
- *   admin loses the admin affordances — see the server's Impersonations.
- * @property isImpersonating whether [user] is somebody other than whoever signed
- *   in. Drives "Stop impersonating" replacing "Impersonate".
- * @property canImpersonate whether the **real** signed-in user owns this instance,
- *   and so may start or stop impersonating (LNL-197 — it was any administrator
- *   before, which is a wider audience than a facility with full write powers should
- *   have). Separate from `user.isSysAdmin` on purpose: while impersonating,
- *   `user.isSysAdmin` is false and this is still true — that is precisely the state
- *   in which "Stop impersonating" has to remain reachable. An affordance like every
- *   other flag here; the routes re-derive it from the session.
- * @property impersonatableAddresses the addresses on offer, each with what it
- *   resolves to. Empty unless [canImpersonate] — the server does not send the list
- *   to people who cannot use it, rather than sending it and trusting the menu to
- *   stay hidden.
+ * @property user whoever this session belongs to. Under an impersonation that is
+ *   the person being worn, with no second identity behind them: the owner was
+ *   signed out and then signed in for real as this account, so the name on screen
+ *   and the rights in force are the same fact rather than two that have to be kept
+ *   in step. Its `isSysAdmin` is theirs, which is why a probing owner loses the
+ *   admin affordances.
+ * @property isImpersonating whether this session was minted by an impersonation
+ *   rather than by somebody proving who they are.
+ *
+ *   **Not a comparison.** It used to mean "the effective user differs from the real
+ *   one", which under the current design would read false for every impersonation
+ *   there is — the two are the same account. It is now fed straight from the server's
+ *   `Caller.isProbe`, which reads the session row's own label. Drives the marker in
+ *   the corner, the tinted frame, and "Stop impersonating" replacing "Impersonate".
+ * @property isImpersonationArmed whether this **signed-out** browser holds a live
+ *   grant, and so may sign itself in as anybody.
+ *
+ *   The state between arming and choosing an address, and the reason there is a
+ *   third impersonation flag rather than two. The owner is genuinely signed out
+ *   here, so [user] is null and [isImpersonating] is false — everything renders as
+ *   it would for a stranger, which is itself part of what is being checked — and
+ *   this is the one thing on screen that says otherwise. The ordinary sign-in
+ *   button opens the impersonation dialog instead of Google's popup while it is set.
+ * @property canImpersonate whether this caller may arm one: they own the instance
+ *   **and** the deployment has the feature switched on (`LUNICLE_ENABLE_OWNER_IMPERSONATION`).
+ *   Both terms in one flag, so no menu can offer the item on an instance where the
+ *   routes would refuse it. An affordance like every other flag here; the routes
+ *   re-derive it from the session.
  * @property pendingEmail an address the caller has asked to attach and not yet
  *   confirmed, or null.
  *
@@ -205,8 +209,8 @@ data class SessionState(
     val isGoogleAvailable: Boolean = false,
     val googleClientId: String? = null,
     val isImpersonating: Boolean = false,
+    val isImpersonationArmed: Boolean = false,
     val canImpersonate: Boolean = false,
-    val impersonatableAddresses: List<ImpersonationTarget> = emptyList(),
     val pendingEmail: String? = null,
     val isEmailSignInAvailable: Boolean = false,
     val isDisplayNameHidden: Boolean = false,
@@ -230,10 +234,6 @@ data class SessionState(
  * everyone's accounts shipped to the browser for no reason. The id is unavoidable:
  * it is what "assign this one" has to name.
  *
- * **It is no longer the impersonation menu's row** — see [ImpersonationTarget],
- * which is keyed on the address because that is what the permission model keys on
- * (LNL-197).
- *
  * @property isSelf whether this is the caller's own account. Surfaces that need to
  *   mark or exclude "you" read this rather than comparing ids themselves.
  */
@@ -242,95 +242,6 @@ data class UserOption(
     val id: Long,
     val name: String,
     val isSelf: Boolean = false,
-)
-
-/**
- * What signing in with an address would make of it.
- *
- * ── Why the impersonation menu speaks of addresses at all ───────────────────
- *
- * Because the permission model keys on them (LNL-197). Staff-ness is derived from
- * the address and never chosen; somebody can be added, and hold rungs, before an
- * account exists (`users.added_at` beside `users.signed_in_at`); and an audience row
- * is a statement about what an address *is*. A list of display names is a list of
- * the wrong thing — it cannot express any of that, and it cannot name the three
- * states hardest to get right, none of which is an account.
- *
- * The labels are the words a menu row shows, so they are lower case and short: the
- * row reads `ada@acme.com — staff`.
- */
-@Serializable
-enum class AddressStanding(val label: String) {
-    /** The caller's own address. Shown, and not worth picking — "become myself" is Stop. */
-    SELF("you"),
-
-    /** An account on the deployment's own domain. The upper signed-in rung. */
-    STAFF("staff"),
-
-    /** An account from outside it. */
-    MEMBER("member"),
-
-    /**
-     * A row somebody added whose owner has never turned up.
-     *
-     * It holds whatever rungs it was given and has no session behind it, which is
-     * why it wins over [STAFF]/[MEMBER] as the thing to report: the tier is
-     * derivable from the address on screen, and "nobody has ever been here" is not.
-     */
-    NOT_SIGNED_IN("not signed in"),
-
-    /**
-     * No row at all — the first-time arrival.
-     *
-     * Only [AddressPreview] ever carries this. Every row in
-     * [SessionState.impersonatableAddresses] comes from a `users` row by
-     * construction, so the menu cannot show it; typing an address is the only way to
-     * reach this state, which is exactly why `Any address…` exists.
-     */
-    NO_ACCOUNT("no account here"),
-}
-
-/**
- * One row of the impersonation menu: an address, and what it resolves to.
- *
- * No id, deliberately. The route takes an address (see [ImpersonateRequest]), so an
- * id here would be a second way to name the same target and a second thing for the
- * server to trust. An account with **no address at all** therefore has no row and
- * cannot be impersonated — an accepted consequence of keying on addresses, and a
- * state only a hand-written row or a provider that returned no e-mail can produce.
- *
- * @property standing what a sign-in would make of it. [AddressStanding.SELF] marks
- *   the owner's own address, which the menu renders disabled so the list matches the
- *   account directory they are looking at.
- */
-@Serializable
-data class ImpersonationTarget(
-    val email: String,
-    val standing: AddressStanding,
-)
-
-/**
- * What an arbitrary address resolves to, answered before anything is done about it.
- *
- * The `Any address…` half of the menu, and the reason it exists: three of the states
- * a permission model has to get right are not accounts, so none can be picked from a
- * list of accounts — a stranger at the staff domain who has never signed in, an
- * outside address with no row at all, and a member who was added and never arrived.
- * Typing the address is the whole point, and seeing the resolution before committing
- * is what makes typing one safe.
- *
- * **Producing this writes nothing.** See [ApiRoutes.IMPERSONATE_PREVIEW].
- *
- * @property summary the whole answer as one sentence, composed on the server — which
- *   is the only place that knows the deployment's domain, its admission policy and
- *   what the row (if any) holds. A client that assembled its own could describe a
- *   deployment it cannot see.
- */
-@Serializable
-data class AddressPreview(
-    val email: String,
-    val standing: AddressStanding,
-    val summary: String,
 )
 
 /**
@@ -346,26 +257,28 @@ data class GoogleCodeRequest(
 )
 
 /**
- * "Let me act as this address", or "tell me what it resolves to".
+ * "Sign me in as this address."
  *
- * The only thing a client is permitted to say about identity, and note what it
- * does *not* say: it names who to become, never who is asking. Who is asking
- * comes from the session cookie, server-side, on every request — see the server's
- * Impersonations. A field here for the *acting* user would be the authorization
- * system asking the caller to authorize themselves.
+ * The only thing a client is permitted to say about identity, and note what it does
+ * *not* say: it names who to become, never who is asking. Who is asking comes from
+ * the probe cookie, server-side, and the request is refused unless that cookie
+ * carries a live grant whose owner still owns the instance — see the server's
+ * ProbeGrants. A field here for the *acting* user would be the authorization system
+ * asking the caller to authorize themselves.
  *
- * An address rather than the user id it carried before LNL-197. The id was the
- * narrower thing to send and the wrong thing to key on: it can only ever name a row
- * that exists, and the states worth previewing include an address that has none.
+ * So this is a **petition to become**, not an assertion of being. The distinction is
+ * the whole security model: an address in a body grants nothing on its own, and
+ * there is no header, field or parameter anywhere that asserts an identity.
  *
- * @property email the address to act as, or null to act as a signed-out visitor —
- *   no account at all (LNL-103). Refused either way unless the calling session's
- *   real user owns the instance. Null is a deliberate choice, not an omission: it is
- *   the only way to name "become nobody", which is a real thing to preview.
+ * @property email the address to sign in as. Run through the genuine sign-in
+ *   pipeline, admission gate included — an address this deployment refuses is
+ *   refused here too, with the real refusal, which is one of the behaviours the
+ *   facility exists to check. An address with no account gets one, exactly as a
+ *   first sign-in would.
  */
 @Serializable
 data class ImpersonateRequest(
-    val email: String? = null,
+    val email: String,
 )
 
 /**

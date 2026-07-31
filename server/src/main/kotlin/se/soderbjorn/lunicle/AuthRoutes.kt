@@ -27,8 +27,6 @@ import io.ktor.server.routing.post
 import io.ktor.server.request.receive
 import io.ktor.util.date.GMTDate
 import org.slf4j.LoggerFactory
-import se.soderbjorn.lunicle.clientserver.AddressPreview
-import se.soderbjorn.lunicle.clientserver.AddressStanding
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.ConfirmEmailRequest
@@ -36,7 +34,6 @@ import se.soderbjorn.lunicle.clientserver.EmailSignInRedeemRequest
 import se.soderbjorn.lunicle.clientserver.EmailSignInRequest
 import se.soderbjorn.lunicle.clientserver.GoogleCodeRequest
 import se.soderbjorn.lunicle.clientserver.ImpersonateRequest
-import se.soderbjorn.lunicle.clientserver.ImpersonationTarget
 import se.soderbjorn.lunicle.clientserver.RequestEmailChangeRequest
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SetDisplayNameRequest
@@ -178,6 +175,87 @@ private fun ApplicationCall.clearSessionCookie() {
     )
 }
 
+/** Read the caller's probe cookie. See [PROBE_COOKIE]. */
+private fun ApplicationCall.probeId(): String? = request.cookies[PROBE_COOKIE]
+
+/**
+ * The grant behind [probeId], if the deployment allows one at all and its owner is
+ * **still** the owner.
+ *
+ * ── Entitlement is re-derived per use, never remembered ─────────────────────
+ *
+ * The grant records *who* armed it, not that they were permitted to. Every use
+ * asks [AccessControl.canImpersonate] again, on the account it names, so somebody
+ * who transfers the instance away mid-probe loses the grant on their next request.
+ * Storing the answer instead would mean the authority could be taken away without
+ * taking away what it granted, which is the shape of a privilege-escalation bug.
+ *
+ * ── One null for four different failures ────────────────────────────────────
+ *
+ * The gate being off, no cookie, an expired or forged grant, and an owner who is no
+ * longer one all answer null and produce the same flat 403 at the three call sites.
+ * That is deliberate: these routes are reachable by an unauthenticated stranger —
+ * the caller is signed out for most of the flow — and telling them apart would let
+ * one probe which of the four it had hit. The log says which; the response never does.
+ */
+private suspend fun OwnerImpersonation.liveGrant(
+    probeId: String?,
+    access: AccessControl?,
+    users: se.soderbjorn.lunicle.store.UserStore,
+): Grant? {
+    if (!isEnabled) return null
+    val grant = grants.resolve(probeId) ?: return null
+    val owner = users.findById(grant.ownerUserId) ?: return null
+    if (access?.canImpersonate(owner) != true) {
+        // Not merely refused — revoked. The entitlement is gone for good as far as
+        // this grant is concerned, and leaving it resolvable would mean re-checking
+        // the same dead answer on every subsequent request.
+        grants.revoke(probeId)
+        logger.info("Impersonation: revoked a grant — user ${grant.ownerUserId} no longer owns this instance")
+        return null
+    }
+    return grant
+}
+
+/**
+ * Attach the probe cookie: the browser's half of an armed impersonation.
+ *
+ * **Every attribute mirrors [setSessionCookie] exactly, and for exactly the same
+ * reasons** — `HttpOnly` because this is a bearer credential no script needs;
+ * `Secure; SameSite=None; Partitioned` on https because this server is loaded in an
+ * iframe on lunamux.dev and a bare `SameSite=None` cookie is dropped there by
+ * Chrome's third-party-cookie restrictions; `SameSite=Lax` on local http because the
+ * browser rejects `None` without `Secure` and local HTTP is first-party anyway. That
+ * doc comment is the authority; do not re-derive this, and do not let the two drift.
+ *
+ * The one attribute that differs: `Max-Age`, matching the grant's own lifetime. A
+ * cookie that outlived its grant would leave the browser presenting a key to a lock
+ * that no longer exists — harmless, since [ProbeGrants.resolve] refuses it, but it
+ * would put an armed-looking cookie in a jar for thirty days after the arm was over.
+ * The two expiries are the same number so that they agree by construction.
+ */
+private fun ApplicationCall.setProbeCookie(id: String) {
+    val isSecure = serverOrigin().startsWith("https://")
+    response.headers.append(
+        HttpHeaders.SetCookie,
+        buildString {
+            append("$PROBE_COOKIE=$id; Path=/; HttpOnly; Max-Age=${PROBE_GRANT_LIFETIME_MILLIS / 1000}")
+            append(if (isSecure) "; Secure; SameSite=None; Partitioned" else "; SameSite=Lax")
+        },
+    )
+}
+
+/** Expire the probe cookie. */
+private fun ApplicationCall.clearProbeCookie() {
+    response.cookies.append(
+        name = PROBE_COOKIE,
+        value = "",
+        encoding = CookieEncoding.RAW,
+        expires = GMTDate.START,
+        path = "/",
+    )
+}
+
 /**
  * The caller's current [SessionState], given who (if anyone) they are and the
  * deployment's instance switches (LNL-137).
@@ -260,170 +338,35 @@ private suspend fun pendingEmailFor(user: UserRecord?, emailCodes: EmailCodeServ
     else emailCodes.pendingFor(user.id, EmailCodePurpose.EMAIL_CHANGE)
 
 /**
- * Every address on the instance, each with what a sign-in would make of it.
- *
- * ── Addresses, and only the ones that exist ─────────────────────────────────
- *
- * The list the account menu renders (LNL-197). One row per `users` row that carries
- * an address; an account with none has no row here and cannot be impersonated, which
- * is the accepted cost of keying on the thing the permission model keys on. The rows
- * are sorted by address so the menu is a list somebody can scan, rather than by
- * whatever order `selectAll` happens to return.
- *
- * The addresses themselves cross the wire, which they do nowhere else. That is the
- * narrowing from "any administrator" to "the owner" paying for itself: the one person
- * who sees this list can read the account directory anyway. See `SessionState`.
- *
- * @param domain the deployment's own domain, for the staff/member split. Null — an
- *   unbranded install — makes every address a member, exactly as sign-in would.
- */
-private suspend fun impersonationTargets(
-    users: se.soderbjorn.lunicle.store.UserStore,
-    realId: Long?,
-    domain: String?,
-): List<ImpersonationTarget> =
-    users.selectAll()
-        .mapNotNull { user -> user.email?.takeIf { it.isNotBlank() }?.let { user to it } }
-        .sortedBy { (_, email) -> email.lowercase() }
-        .map { (user, email) ->
-            ImpersonationTarget(
-                email = email,
-                standing = when {
-                    user.id == realId -> AddressStanding.SELF
-                    // Never having arrived outranks the tier as the thing to report: the
-                    // tier is derivable from the address on screen, and this is not.
-                    !user.hasSignedIn -> AddressStanding.NOT_SIGNED_IN
-                    // Re-derived rather than read from `users.kind`, so a row the startup
-                    // stamp has not reached yet still reads correctly here. The rule is the
-                    // one sign-in uses, from the same function.
-                    UserKind.forEmail(email, domain) == UserKind.STAFF -> AddressStanding.STAFF
-                    else -> AddressStanding.MEMBER
-                },
-            )
-        }
-
-/**
- * What an address resolves to on this deployment, server-side.
- *
- * The one answer both impersonation paths take: the preview route reports it, and the
- * start route acts on it. Two implementations would be two opinions, and the whole
- * promise of `Any address…` is that the sentence you were shown describes the thing
- * you then became.
- *
- * @property account the `users` row this address already has, or null for none. Null is
- *   the interesting case: it is the first-time arrival, and it is what makes
- *   [Impersonation.AsAddress] necessary.
- * @property kind staff or member, derived from the deployment's domain by the same
- *   function sign-in uses.
- */
-private data class AddressResolution(
-    val email: String,
-    val account: UserRecord?,
-    val kind: UserKind,
-    val standing: AddressStanding,
-    val summary: String,
-)
-
-/**
- * Resolve [email] the way a sign-in would, and say so in a sentence.
- *
- * ── Reads only ──────────────────────────────────────────────────────────────
- *
- * Nothing here writes. That is the ticket's central property and it is a property of
- * this function: the preview route calls it and responds, and the start route calls it
- * and puts the answer in memory. No `users` row is inserted, no `added_at` is stamped,
- * and the address appears in no project's People list — so an address previewed and
- * abandoned leaves the deployment exactly as it was.
- *
- * The row is found by scanning `selectAll()` rather than through a store lookup by
- * address, because there is no such lookup on [se.soderbjorn.lunicle.store.UserStore]
- * and adding one would mean two backends and a contract test to answer a question asked
- * on one owner-only path. `users` is a table an instance holds in memory — the startup
- * kind stamp already walks all of it on every boot — so this is the same trade made
- * there. Matching is case-insensitive: addresses are normalised on the way in (see
- * [normalizeEmail]) but rows written before that was true may not be.
- *
- * @param roles read for one number — how many boards the address holds a row on — or
- *   null to leave that out of the sentence. Audience rows are deliberately not counted:
- *   they are a statement about everybody like this address, not about the address, and
- *   folding the two together would make the number impossible to act on.
- */
-private suspend fun resolveAddress(
-    email: String,
-    users: se.soderbjorn.lunicle.store.UserStore,
-    identity: InstanceIdentity,
-    settings: se.soderbjorn.lunicle.store.InstanceSettings,
-    roles: se.soderbjorn.lunicle.store.RoleStore?,
-    realId: Long?,
-): AddressResolution {
-    val account = users.selectAll().firstOrNull { it.email.equals(email, ignoreCase = true) }
-    val kind = UserKind.forEmail(email, identity.domain)
-    val tier = if (kind == UserKind.STAFF) "staff" else "a member"
-    val grants = account?.let { row -> roles?.rolesForUser(row.id)?.size }
-    val rowsPhrase = when (grants) {
-        null -> ""
-        0 -> " It holds no board of its own, so what it reaches is whatever the audiences give it."
-        1 -> " It holds a row on 1 board, plus whatever the audiences give it."
-        else -> " It holds rows on $grants boards, plus whatever the audiences give it."
-    }
-    val standing = when {
-        account != null && account.id == realId -> AddressStanding.SELF
-        account == null -> AddressStanding.NO_ACCOUNT
-        !account.hasSignedIn -> AddressStanding.NOT_SIGNED_IN
-        kind == UserKind.STAFF -> AddressStanding.STAFF
-        else -> AddressStanding.MEMBER
-    }
-    val summary = when (standing) {
-        AddressStanding.SELF -> "This is your own address — you already see what it sees."
-        AddressStanding.NO_ACCOUNT -> {
-            // The only state where admission is worth mentioning: it is asked once, when a
-            // row would be created, so it can only ever refuse an address that has none.
-            // See AdmissionPolicy.admitsNewAccount.
-            val admitted = settings.admission.admitsNewAccount(email, identity)
-            "No account here. A first sign-in would create one as $tier" +
-                if (admitted) "." else ", but admission is set to “${settings.admission.label}”, so it could not sign in at all."
-        }
-        AddressStanding.NOT_SIGNED_IN ->
-            "Added as ${account?.resolvedName}, and has never signed in. It would arrive as $tier.$rowsPhrase"
-        AddressStanding.STAFF, AddressStanding.MEMBER ->
-            "Signs in as ${account?.resolvedName} — $tier" +
-                (if (account?.isInstanceAdmin == true) ", and administers this instance" else "") +
-                ".$rowsPhrase"
-    }
-    return AddressResolution(email = email, account = account, kind = kind, standing = standing, summary = summary)
-}
-
-/**
- * The caller's current [SessionState], resolved through impersonation.
+ * The caller's current [SessionState], impersonation included.
  *
  * The one builder every route that can *see* an impersonation uses. The plain
  * [sessionStateFor] above stays for the one route that cannot: a sign-out, which
  * produces no user at all and so has nothing to answer these questions about.
  *
- * The address list is fetched only for the owner — see [impersonationTargets], which
- * is also where the narrowing from whole [UserRecord]s happens rather than it being
- * left to the client.
+ * Three flags, and each answers a different question. [SessionState.isImpersonating]
+ * is *are you wearing somebody's face right now* and is fed from the session row's
+ * label rather than from any comparison — see [Caller.isProbe] for why that
+ * distinction is the whole of WP5. [SessionState.canImpersonate] is *may you arm
+ * one*, and already carries the deployment gate. And `isImpersonationArmed` is the
+ * state between the two, which belongs to a caller who is signed **out** — so it is
+ * set from the probe cookie by the routes that may read one, and never here.
  */
 private suspend fun impersonationAwareState(
     caller: Caller,
-    users: se.soderbjorn.lunicle.store.UserStore,
     config: OAuthConfig,
     emailCodes: EmailCodeService? = null,
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore? = null,
-    domain: String? = null,
-): SessionState {
-    val base = sessionStateFor(
-        caller.effective?.toSignedInUser(),
+): SessionState =
+    sessionStateFor(
+        caller.user?.toSignedInUser(),
         config,
         instanceSettingsOrDefault(instanceSettings),
-    ).copy(pendingEmail = pendingEmailFor(caller.effective, emailCodes))
-    if (!caller.canImpersonate) return base
-    return base.copy(
-        isImpersonating = caller.isImpersonating,
-        canImpersonate = true,
-        impersonatableAddresses = impersonationTargets(users, caller.real?.id, domain),
+    ).copy(
+        pendingEmail = pendingEmailFor(caller.user, emailCodes),
+        isImpersonating = caller.isProbe,
+        canImpersonate = caller.canImpersonate,
     )
-}
 
 /**
  * The [SessionState] for an account that has just signed in.
@@ -431,40 +374,42 @@ private suspend fun impersonationAwareState(
  * ── Why a fresh sign-in cannot use the plain builder ────────────────────────
  *
  * It used to, on the reasoning that a session one request old is definitionally
- * not impersonating anybody. True, and beside the point: [SessionState] carries
- * three impersonation fields, and only one of them is about *doing* it.
- * `canImpersonate` and `impersonatableAddresses` are about *being entitled*, which a
- * returning owner is the instant the exchange finds their row — so answering
- * "no, and nobody" left them signed out and back in with the Impersonate item gone
- * from their account menu until they reloaded the page, because nothing else
+ * not impersonating anybody. True, and beside the point: `canImpersonate` is about
+ * *being entitled*, which a returning owner is the instant the exchange finds their
+ * row — so answering "no" left them signed out and back in with the Impersonate item
+ * gone from their account menu until they reloaded the page, because nothing else
  * re-fetches the session. That is LNL-42.
  *
  * Written out rather than routed through [impersonationAwareState] because there
  * is no [Caller] here to route: the session was minted a line ago and resolving
  * the cookie back out of the response to ask who it belongs to would be a round
- * trip to learn what this function was handed. `isImpersonating` stays false,
- * which is the part of the old reasoning that was always right.
+ * trip to learn what this function was handed.
+ *
+ * `isImpersonating` stays false, which is the part of the old reasoning that was
+ * always right for the two *real* sign-ins — and is why the impersonation route does
+ * not use this builder. It signs somebody in too, but into a session that is a probe
+ * by construction, and reporting false there would take the marker off the screen.
  *
  * The entitlement is **ownership** since LNL-197, so it is read from the settings
  * rather than off the record: `instance_settings.owner_user_id` is the only place
  * ownership lives, and no [UserRecord] carries it. A null settings store — the OAuth
  * tests, which configure none — therefore reports no owner and so no entitlement,
  * which is the safe direction and matches what those tests assert about the exchange.
+ *
+ * @param isImpersonationEnabled the deployment gate, ANDed into `canImpersonate` for
+ *   the reason [SessionState.canImpersonate] gives: an owner on an unarmed instance
+ *   must be offered nothing, because the routes would refuse it.
  */
 internal suspend fun freshSignInState(
     user: UserRecord,
-    users: se.soderbjorn.lunicle.store.UserStore,
     config: OAuthConfig,
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore? = null,
-    domain: String? = null,
+    isImpersonationEnabled: Boolean = false,
 ): SessionState {
     val settings = instanceSettingsOrDefault(instanceSettings)
     val base = sessionStateFor(user.toSignedInUser(), config, settings)
-    if (settings.ownerUserId != user.id) return base
-    return base.copy(
-        canImpersonate = true,
-        impersonatableAddresses = impersonationTargets(users, user.id, domain),
-    )
+    if (settings.ownerUserId != user.id || !isImpersonationEnabled) return base
+    return base.copy(canImpersonate = true)
 }
 
 /**
@@ -478,10 +423,10 @@ internal suspend fun freshSignInState(
  * @param users the users table. Every completed exchange goes through it: an
  *   identity becomes an account before it becomes a session, which is what
  *   gives the session a user id to point at.
- * @param impersonations who each session is acting as. Shared with the board
- *   routes rather than owned here — an impersonation started at these routes has
- *   to be visible to the ones that enforce permissions, or it would be a costume
- *   with nothing behind it. See Impersonations.
+ * @param impersonation whether this deployment has owner impersonation at all, and
+ *   the live grants if it does. Shared with the board routes rather than owned here:
+ *   a grant armed at these routes decides what every other route makes of the
+ *   session it minted. See OwnerImpersonation.
  * @param mentions carries written `@mentions` across a change of display name.
  *   Nullable and defaulted, so the OAuth tests — which install these routes to
  *   exercise the exchange and own no issues table — need say nothing about it. A
@@ -496,25 +441,21 @@ internal suspend fun freshSignInState(
  *   been replaced. Nullable for the same reason, and its habit of swallowing send
  *   failures is right there — see the confirm endpoint.
  * @param access the permission oracle, asked one question here: does this session's
- *   real user own the instance, and so may they impersonate (LNL-197)? Nullable for
- *   [mentions]' reason, and a null one answers no — so the impersonation routes 403
- *   and no account menu offers the item, which is the safe direction for a gate.
- * @param roles the grants table, read by the address preview alone, to say how many
- *   boards an address already holds a row on. Nullable and defaulted like the rest:
- *   without it the preview simply says less, rather than failing.
+ *   user own the instance, and so may they arm an impersonation (LNL-197)? Nullable
+ *   for [mentions]' reason, and a null one answers no — so the impersonation routes
+ *   403 and no account menu offers the item, which is the safe direction for a gate.
  */
 fun Route.authRoutes(
     config: OAuthConfig,
     sessions: se.soderbjorn.lunicle.store.SessionStore,
     users: se.soderbjorn.lunicle.store.UserStore,
-    impersonations: Impersonations,
+    impersonation: OwnerImpersonation,
     httpClient: HttpClient = createProviderHttpClient(),
     mentions: MentionRenamer? = null,
     emailCodes: EmailCodeService? = null,
     notifications: NotificationDispatcher? = null,
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore? = null,
     access: AccessControl? = null,
-    roles: se.soderbjorn.lunicle.store.RoleStore? = null,
     // What this deployment says about itself (LNL-192): its own domain — the sole
     // input to the staff/member kind — and whether the Google chooser is pinned to
     // it. Defaulted to the unbranded shape: no domain, so no staff tier, and an
@@ -556,152 +497,198 @@ fun Route.authRoutes(
     // handles — and an endpoint the whole UI depends on should not have a
     // failure mode for the most common case.
     get(ApiRoutes.SESSION) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        call.respond(impersonationAwareState(caller, users, config, emailCodes, instanceSettings, identity.domain))
+        val caller = call.resolveCaller(sessions, impersonation, access)
+        // The one place outside the three impersonation routes that reads the probe
+        // cookie, and it reads it for exactly one thing: telling a SIGNED-OUT browser
+        // that it is armed. That is not authentication — nothing above depends on it,
+        // the caller is nobody either way, and the flag only decides which dialog a
+        // button opens. See PROBE_COOKIE on the line that must not be crossed.
+        //
+        // Through the same `liveGrant` the routes use, rather than a bare resolve, so
+        // the strip cannot promise something the next request would refuse: a grant
+        // whose owner has since handed the instance on reads as un-armed here exactly
+        // as it reads as refused there.
+        val armed = caller.user == null && impersonation.liveGrant(call.probeId(), access, users) != null
+        call.respond(
+            impersonationAwareState(caller, config, emailCodes, instanceSettings)
+                .copy(isImpersonationArmed = armed),
+        )
     }
 
     post(ApiRoutes.SIGN_OUT) {
-        // Drop the impersonation with the session. It is keyed by session id, and
-        // leaving it behind would mean a signed-out session id still had an
-        // opinion about who it was.
-        impersonations.clear(call.sessionId())
         sessions.destroy(call.sessionId())
         call.clearSessionCookie()
+        // An ordinary sign-out is also the way out of an armed-but-unused state, and
+        // out of a probe session by the long road. Revoking here rather than leaving
+        // the grant to expire means "sign out" genuinely ends everything it looks
+        // like it ends — the alternative is a browser that signs out and then finds
+        // the sign-in button still offering to make it somebody else.
+        impersonation.grants.revoke(call.probeId())
+        call.clearProbeCookie()
         call.respond(sessionStateFor(null, config, instanceSettingsOrDefault(instanceSettings)))
     }
 
     /**
-     * What would signing in with this address produce? Owner only (LNL-197).
+     * Arm an impersonation: hand back a grant, and sign the owner out.
      *
-     * **Writes nothing**, which is the whole reason it exists beside the route below:
-     * the owner is shown what an address resolved to *before* committing to wearing
-     * it, and having asked leaves no mark of any kind. See [resolveAddress], which
-     * both routes share so the sentence shown and the identity taken cannot disagree.
+     * ── Why signing out is the first thing that happens ─────────────────────
+     *
+     * Because what follows is a **genuine sign-in** as somebody else rather than a
+     * costume worn over this session, and a costume is exactly what a surviving
+     * owner session would be. Destroying it here means there is no second identity
+     * anywhere for a later request to reach past — and it makes the armed state
+     * render as what a stranger sees, which is itself one of the things worth
+     * looking at.
+     *
+     * ── Three refusals, one sentence ────────────────────────────────────────
+     *
+     * The gate, the entitlement, and "you are already probing". A caller who is
+     * already wearing a face must re-arm from the owner's chair rather than from
+     * inside somebody else's, or the grant chain would have no owner to return to.
      */
-    post(ApiRoutes.IMPERSONATE_PREVIEW) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        if (!caller.canImpersonate) {
+    post(ApiRoutes.IMPERSONATE_ARM) {
+        val caller = call.resolveCaller(sessions, impersonation, access)
+        // 403 and not 404: the route's existence is not a secret, and somebody
+        // debugging a failed impersonation deserves to know it was refused rather
+        // than misrouted. `canImpersonate` already carries the deployment gate — see
+        // Caller — so an unarmed instance refuses here without a second check.
+        if (!caller.canImpersonate || caller.isProbe) {
+            call.respond(HttpStatusCode.Forbidden, IMPERSONATION_REFUSAL)
+            return@post
+        }
+        val owner = caller.user ?: run {
+            // Unreachable: canImpersonate above required a user to ask about.
+            call.respond(HttpStatusCode.Forbidden, IMPERSONATION_REFUSAL)
+            return@post
+        }
+        call.setProbeCookie(impersonation.grants.arm(owner.id))
+        sessions.destroy(call.sessionId())
+        call.clearSessionCookie()
+        // The owner, never the grant id — that value is a bearer credential worth as
+        // much as their session cookie, and a log is a place values get copied out
+        // of. Same rule on every line below. See ProbeGrants.
+        logger.info("Impersonation: ${owner.resolvedName} (user ${owner.id}) armed an impersonation and was signed out")
+        call.respond(
+            sessionStateFor(null, config, instanceSettingsOrDefault(instanceSettings))
+                .copy(isImpersonationArmed = true),
+        )
+    }
+
+    /**
+     * Sign in as an address, on an owner's authority instead of a proof.
+     *
+     * ── It runs the real pipeline, and creates real accounts ────────────────
+     *
+     * [completeSignIn] is the same function Google and the mailed code end in: the
+     * admission gate, the `users` row, the staff/member stamp, the owner seat. So an
+     * address this deployment refuses is refused here **with the genuine refusal**,
+     * which is one of the behaviours the facility exists to check — and an address
+     * with no account gets one, which persists after stopping. That is the departure
+     * from the preview this replaced, and it is the point rather than a regret: the
+     * row is what makes the check honest.
+     *
+     * ── What authorises it, and what is deliberately not told apart ─────────
+     *
+     * A live grant from the probe cookie, whose owner is re-asked — **now**, not when
+     * it was armed — whether they still own the instance. An owner who loses
+     * ownership mid-probe loses the grant on their next request.
+     *
+     * Every refusal is one flat 403 with one sentence. "No grant", "expired grant"
+     * and "no longer the owner" are the same answer to the caller, because an
+     * unauthenticated stranger poking this route must learn nothing from it; the
+     * distinction goes in the log.
+     *
+     * Calling this while already probing switches target. The current session is
+     * destroyed before the next is minted, so one grant never has two sessions.
+     */
+    post(ApiRoutes.IMPERSONATE) {
+        val grant = impersonation.liveGrant(call.probeId(), access, users) ?: run {
             call.respond(HttpStatusCode.Forbidden, IMPERSONATION_REFUSAL)
             return@post
         }
         val address = normalizeEmail(runCatching { call.receive<ImpersonateRequest>() }.getOrNull()?.email)
         if (address == null || !isPlausibleEmail(address)) {
+            // Plain, because this caller has proved they hold an owner's grant and
+            // there is nothing to withhold from them about their own typing.
             call.respond(HttpStatusCode.BadRequest, "That is not the shape of an e-mail address.")
             return@post
         }
-        val resolved = resolveAddress(
-            address, users, identity, instanceSettingsOrDefault(instanceSettings), roles, caller.real?.id,
-        )
-        call.respond(AddressPreview(email = address, standing = resolved.standing, summary = resolved.summary))
-    }
 
-    /**
-     * Become an address. The instance owner only (LNL-197).
-     *
-     * The authorization is on `caller.real`, never `caller.effective`. Using the
-     * effective user would let the owner impersonate somebody and then, as that
-     * person, impersonate a *third* — the check would be asking permission of the
-     * identity that was just borrowed.
-     *
-     * ── Three outcomes, and the third is the point ──────────────────────────
-     *
-     *  - **No address** — become a signed-out visitor (LNL-103).
-     *  - **An address with a row** — become that account. Stored as its id, so a
-     *    deleted account drops the impersonation rather than silently becoming a
-     *    preview of an address nobody holds. See Impersonation.AsUser.
-     *  - **An address with no row** — become the first-time arrival. Nothing is
-     *    written: no `users` row, no `added_at`, no appearance in any project's People
-     *    list. It is one entry in an in-memory map, and stopping removes it. This is
-     *    the state that cannot be reached from a list of accounts, and it is why the
-     *    route takes an address at all.
-     *
-     * A malformed address is a 400 rather than a silent no-op, in the same spirit the
-     * board's plain refusals are written: this route is owner-only, so there is
-     * nothing to withhold from the caller.
-     */
-    post(ApiRoutes.IMPERSONATE) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        if (!caller.canImpersonate) {
-            // 403 and not 404: the route's existence is not a secret, and somebody
-            // debugging a failed impersonation deserves to know it was refused rather
-            // than misrouted.
-            call.respond(HttpStatusCode.Forbidden, IMPERSONATION_REFUSAL)
-            return@post
-        }
-        val request = runCatching { call.receive<ImpersonateRequest>() }.getOrNull()
-        if (request == null) {
-            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
-            return@post
-        }
-        // Resolved before touching the session so a bad address changes nothing. A
-        // null address is not an error — it is the request to become a signed-out
-        // visitor (LNL-103) — so only a *named* address that is not an address is
-        // refused. An address with no account is perfectly legal and is the whole
-        // point; see the route doc.
-        val address = request.email?.let { candidate ->
-            normalizeEmail(candidate)?.takeIf { isPlausibleEmail(it) } ?: run {
-                call.respond(HttpStatusCode.BadRequest, "That is not the shape of an e-mail address.")
+        // The proof, substituted. Everything downstream of this value is the code
+        // path a real sign-in takes — which is the entire fidelity claim, and why
+        // this is a ProviderIdentity rather than a shortcut around one.
+        val provided = ProviderIdentity(
+            provider = AuthProvider.EMAIL,
+            providerId = address,
+            providerName = address.substringBefore('@'),
+            // Non-null means proved, and an owner's assertion is what stands in for
+            // the proof here. Saying null instead would leave the new row unkeyed and
+            // make the impersonation land somewhere a real sign-in never would.
+            email = address,
+        )
+        val user = when (val outcome = completeSignIn(provided, users, instanceSettings, identity)) {
+            is SignInOutcome.Refused -> {
+                logger.info(
+                    "Impersonation: user ${grant.ownerUserId} was refused as <$address> by this instance's admission policy",
+                )
+                call.respond(HttpStatusCode.Forbidden, outcome.message)
                 return@post
             }
+            is SignInOutcome.Admitted -> outcome.user
         }
 
-        val sessionId = call.sessionId() ?: run {
-            // Unreachable in practice — canImpersonate above required a session to
-            // resolve a real user from. Handled rather than asserted because the
-            // cost is three lines and the alternative is a crash on a path nobody
-            // has a reproduction for.
-            call.respond(HttpStatusCode.Forbidden, IMPERSONATION_REFUSAL)
-            return@post
-        }
-        if (address == null) {
-            impersonations.startSignedOut(sessionId)
-            logger.info("Impersonation: ${caller.real?.resolvedName} is now acting as a signed-out visitor")
-        } else {
-            val resolved = resolveAddress(
-                address, users, identity, instanceSettingsOrDefault(instanceSettings), roles, caller.real?.id,
-            )
-            val target = resolved.account
-            when {
-                target != null && target.id == caller.real?.id -> {
-                    // Becoming yourself is "stop", not a self-referential entry that
-                    // resolveCaller would then have to treat as a special case forever.
-                    impersonations.stop(sessionId)
-                }
-                target != null -> {
-                    impersonations.start(sessionId, target.id)
-                    logger.info(
-                        "Impersonation: ${caller.real?.resolvedName} is now acting as ${target.resolvedName} <$address>",
-                    )
-                }
-                else -> {
-                    impersonations.startAsAddress(sessionId, address, resolved.kind)
-                    logger.info(
-                        "Impersonation: ${caller.real?.resolvedName} is now previewing <$address> " +
-                            "as ${resolved.kind.key}, which holds no account here",
-                    )
-                }
-            }
-        }
-        call.respond(impersonationAwareState(call.resolveCaller(sessions, users, impersonations, access), users, config, emailCodes, instanceSettings, identity.domain))
+        // Switching target: the session being worn now goes before the next is
+        // minted, so a single grant never has two sessions behind it.
+        sessions.destroy(call.sessionId())
+        call.setSessionCookie(sessions.create(user.id, probeId = call.probeId()))
+        logger.info(
+            "Impersonation: user ${grant.ownerUserId} is now signed in as ${user.resolvedName} " +
+                "<$address> (user ${user.id})",
+        )
+        call.respond(
+            impersonationAwareState(
+                // Built from what we know rather than re-resolved: the session was
+                // minted a line ago and its cookie is on the response, not the
+                // request, so resolveCaller would answer about the session that just
+                // went. isProbe is true by construction here.
+                Caller(user = user, isProbe = true),
+                config, emailCodes, instanceSettings,
+            ),
+        )
     }
 
     /**
-     * Stop, and be yourself again.
+     * Stop, and be the owner again.
      *
-     * Gated on `canImpersonate` — the real user owning the instance — for the reason
-     * ApiRoutes.STOP_IMPERSONATING gives: the effective user deliberately does not
-     * own it while this is in force, so checking them would trap the caller in the
-     * identity they borrowed.
+     * Authorised against the **grant**, never against whoever the session belongs to
+     * right now: that person is deliberately an ordinary user, so checking them would
+     * lock the owner in as whoever they became. The grant is the only thing here that
+     * remembers there is somebody to go back to.
      */
     post(ApiRoutes.STOP_IMPERSONATING) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        if (!caller.canImpersonate) {
+        val grant = impersonation.liveGrant(call.probeId(), access, users) ?: run {
             call.respond(HttpStatusCode.Forbidden, IMPERSONATION_REFUSAL)
             return@post
         }
-        impersonations.stop(call.sessionId())
-        logger.info("Impersonation: ${caller.real?.resolvedName} stopped impersonating")
-        call.respond(impersonationAwareState(call.resolveCaller(sessions, users, impersonations, access), users, config, emailCodes, instanceSettings, identity.domain))
+        sessions.destroy(call.sessionId())
+        val owner = users.findById(grant.ownerUserId) ?: run {
+            // The owner's account went while they were wearing somebody else's. There
+            // is nobody to restore, so the honest end state is signed out — with the
+            // grant revoked, because it names a user that no longer exists.
+            impersonation.grants.revoke(call.probeId())
+            call.clearProbeCookie()
+            call.clearSessionCookie()
+            logger.warn("Impersonation: user ${grant.ownerUserId} could not be restored — the account is gone")
+            call.respond(sessionStateFor(null, config, instanceSettingsOrDefault(instanceSettings)))
+            return@post
+        }
+        call.setSessionCookie(sessions.create(owner.id))
+        impersonation.grants.revoke(call.probeId())
+        call.clearProbeCookie()
+        logger.info("Impersonation: ${owner.resolvedName} (user ${owner.id}) stopped impersonating")
+        call.respond(
+            freshSignInState(owner, config, instanceSettings, isImpersonationEnabled = impersonation.isEnabled),
+        )
     }
 
     /**
@@ -721,8 +708,8 @@ fun Route.authRoutes(
      * deferring.
      */
     post(ApiRoutes.USER_DISPLAY_NAME) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        val user = caller.effective ?: run {
+        val caller = call.resolveCaller(sessions, impersonation, access)
+        val user = caller.user ?: run {
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
@@ -737,7 +724,7 @@ fun Route.authRoutes(
         users.findById(user.id)?.let { renamed ->
             mentions?.rename(user.id, previousName, renamed.resolvedName)
         }
-        call.respond(impersonationAwareState(call.resolveCaller(sessions, users, impersonations, access), users, config, emailCodes, instanceSettings, identity.domain))
+        call.respond(impersonationAwareState(call.resolveCaller(sessions, impersonation, access), config, emailCodes, instanceSettings))
     }
 
     /**
@@ -760,8 +747,8 @@ fun Route.authRoutes(
      * believing it worked.
      */
     post(ApiRoutes.USER_EMAIL) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        val user = caller.effective ?: run {
+        val caller = call.resolveCaller(sessions, impersonation, access)
+        val user = caller.user ?: run {
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
@@ -784,8 +771,7 @@ fun Route.authRoutes(
         emailCodes?.cancelFor(user.id, EmailCodePurpose.EMAIL_CHANGE)
         call.respond(
             impersonationAwareState(
-                call.resolveCaller(sessions, users, impersonations, access), users, config, emailCodes, instanceSettings,
-                identity.domain,
+                call.resolveCaller(sessions, impersonation, access), config, emailCodes, instanceSettings,
             ),
         )
     }
@@ -802,17 +788,22 @@ fun Route.authRoutes(
      * to. See [EmailCodePurpose].
      */
     post(ApiRoutes.USER_EMAIL_REQUEST) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        val user = caller.effective ?: run {
+        val caller = call.resolveCaller(sessions, impersonation, access)
+        val user = caller.user ?: run {
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
-        // An admin wearing somebody's face has no business changing where that
+        // An owner wearing somebody's face has no business changing where that
         // person's mail goes — and, once e-mail is the account key, redirecting it
-        // is redirecting the account. Consistent with how the settings pane's You
-        // tab treats other self-only actions, and stated here rather than inherited
-        // from `caller.effective` by accident, which is what the old route did.
-        if (caller.isImpersonating) {
+        // is redirecting the account.
+        //
+        // `isProbe`, and the change of field is the security-critical half of this
+        // whole rework. This guard used to read `isImpersonating`, which meant
+        // "effective differs from real" — and under a genuine probe session the two
+        // are the SAME account, so that comparison now reads false and this guard
+        // would silently never fire. It is a fact the session row carries or it is
+        // nothing. See Caller.isProbe.
+        if (caller.isProbe) {
             call.respond(
                 HttpStatusCode.Forbidden,
                 "You cannot change somebody else's e-mail address while impersonating them.",
@@ -867,8 +858,7 @@ fun Route.authRoutes(
         }
         call.respond(
             impersonationAwareState(
-                call.resolveCaller(sessions, users, impersonations, access), users, config, emailCodes, instanceSettings,
-                identity.domain,
+                call.resolveCaller(sessions, impersonation, access), config, emailCodes, instanceSettings,
             ),
         )
     }
@@ -882,12 +872,14 @@ fun Route.authRoutes(
      * decides identity.
      */
     post(ApiRoutes.USER_EMAIL_CONFIRM) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        val user = caller.effective ?: run {
+        val caller = call.resolveCaller(sessions, impersonation, access)
+        val user = caller.user ?: run {
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
-        if (caller.isImpersonating) {
+        // `isProbe`, never a comparison — see the request endpoint above for why the
+        // obvious-looking `isImpersonating` would never fire here.
+        if (caller.isProbe) {
             call.respond(
                 HttpStatusCode.Forbidden,
                 "You cannot change somebody else's e-mail address while impersonating them.",
@@ -954,24 +946,22 @@ fun Route.authRoutes(
         }
         call.respond(
             impersonationAwareState(
-                call.resolveCaller(sessions, users, impersonations, access), users, config, emailCodes, instanceSettings,
-                identity.domain,
+                call.resolveCaller(sessions, impersonation, access), config, emailCodes, instanceSettings,
             ),
         )
     }
 
     /** Drop a pending address change, so a mistyped address is not a fifteen-minute wait. */
     post(ApiRoutes.USER_EMAIL_CANCEL) {
-        val caller = call.resolveCaller(sessions, users, impersonations, access)
-        val user = caller.effective ?: run {
+        val caller = call.resolveCaller(sessions, impersonation, access)
+        val user = caller.user ?: run {
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
         emailCodes?.cancelFor(user.id, EmailCodePurpose.EMAIL_CHANGE)
         call.respond(
             impersonationAwareState(
-                call.resolveCaller(sessions, users, impersonations, access), users, config, emailCodes, instanceSettings,
-                identity.domain,
+                call.resolveCaller(sessions, impersonation, access), config, emailCodes, instanceSettings,
             ),
         )
     }
@@ -1110,25 +1100,21 @@ fun Route.authRoutes(
             // ProviderIdentity.email. This is what sets `email_verified`.
             email = redemption.address,
         )
-        // Admission, before the row exists (LNL-192). After the code is spent, which
-        // is right: the code proves the address, and a deployment refusing an address
-        // it has not been shown would be refusing a claim rather than a person.
-        admissionRefusal(provided, users, instanceSettings, identity)?.let {
-            call.respond(HttpStatusCode.Forbidden, it)
-            return@post
+        // Admission, the row, the kind stamp and the owner seat — all four in one
+        // function, shared with the Google branch below and with impersonation. See
+        // completeSignIn. Called after the code is spent, which is right: the code
+        // proves the address, and a deployment refusing an address it has not been
+        // shown would be refusing a claim rather than a person.
+        val user = when (val outcome = completeSignIn(provided, users, instanceSettings, identity)) {
+            is SignInOutcome.Refused -> {
+                call.respond(HttpStatusCode.Forbidden, outcome.message)
+                return@post
+            }
+            is SignInOutcome.Admitted -> outcome.user
         }
-        val user = users.upsert(
-            provided,
-            // Derived here rather than in the store, from the same function the
-            // startup stamp uses — see UserKind.forEmail. A code sign-in proves the
-            // address, so it is exactly as good a basis for the staff/member answer
-            // as Google's is.
-            kind = UserKind.forEmail(redemption.address, identity.domain),
-        )
-        seatOwnerIfVacant(users, instanceSettings)
         call.setSessionCookie(sessions.create(user.id))
         logger.info("Signed in with an e-mail code: ${user.resolvedName} (user ${user.id})")
-        call.respond(freshSignInState(user, users, config, instanceSettings, identity.domain))
+        call.respond(freshSignInState(user, config, instanceSettings, impersonation.isEnabled))
     }
 
     post(ApiRoutes.AUTH_GOOGLE) {
@@ -1151,15 +1137,16 @@ fun Route.authRoutes(
             // Find-or-create the account, then point a session at it. On a
             // returning user this finds the row written the first time — which
             // is what reunites them with their issues, and their admin bit.
-            admissionRefusal(googleIdentity, users, instanceSettings, identity)?.let {
-                call.respond(HttpStatusCode.Forbidden, it)
-                return@post
+            val user = when (val outcome = completeSignIn(googleIdentity, users, instanceSettings, identity)) {
+                is SignInOutcome.Refused -> {
+                    call.respond(HttpStatusCode.Forbidden, outcome.message)
+                    return@post
+                }
+                is SignInOutcome.Admitted -> outcome.user
             }
-            val user = users.upsert(googleIdentity, UserKind.forEmail(googleIdentity.email, identity.domain))
-            seatOwnerIfVacant(users, instanceSettings)
             call.setSessionCookie(sessions.create(user.id))
             logger.info("Signed in via Google: ${user.resolvedName} (user ${user.id})")
-            call.respond(freshSignInState(user, users, config, instanceSettings, identity.domain))
+            call.respond(freshSignInState(user, config, instanceSettings, impersonation.isEnabled))
         } catch (failure: SignInFailure) {
             call.respond(HttpStatusCode.BadGateway, failure.userMessage)
         }
@@ -1216,6 +1203,67 @@ private suspend fun seatOwnerIfVacant(
             seated?.let { logger.info("Instance: seated user $it as the instance owner — nobody held it") }
         }
         .onFailure { logger.warn("Instance: could not seat an owner after a sign-in", it) }
+}
+
+/**
+ * What [completeSignIn] made of an identity.
+ *
+ * Two shapes because the two are genuinely different acts, and a nullable
+ * [UserRecord] could not carry the refusal's *sentence* — which is the one thing
+ * about a refusal worth reporting. See [admissionRefusal] on why it is written out
+ * rather than generic.
+ */
+internal sealed interface SignInOutcome {
+    /** The deployment does not accept this address. [message] is the refusal to send. */
+    data class Refused(val message: String) : SignInOutcome
+
+    /** The account exists — found or created — and is seated if it had to be. */
+    data class Admitted(val user: UserRecord) : SignInOutcome
+}
+
+/**
+ * Everything a proved identity goes through between the proof and the session.
+ *
+ * ── Why this is one function ────────────────────────────────────────────────
+ *
+ * Both real sign-in branches ended in the same four steps — admission, `upsert`
+ * with a derived [UserKind], the owner seat, and then the caller's own session
+ * handling. Impersonation is a third caller of exactly those four, and the entire
+ * fidelity claim of that feature rests on it being **literally the same code**
+ * rather than a second implementation that agrees today and drifts next quarter.
+ * The only thing impersonation substitutes is the *proof* upstream of here: a
+ * Google code exchange or a mailed one-time code becomes an owner-authorised
+ * assertion, and everything downstream of a [ProviderIdentity] is this.
+ *
+ * ── What it deliberately does NOT do ────────────────────────────────────────
+ *
+ * Mint the session, or set a cookie. The three callers differ exactly there — one
+ * sets an ordinary session cookie, one sets a session cookie *labelled with a probe
+ * grant* — and that difference is the whole reason the split falls here rather than
+ * one line later. Folding the session in would mean handing this function a probe id
+ * it has no business knowing about.
+ *
+ * @return [SignInOutcome.Refused] with the sentence [admissionRefusal] produced, or
+ *   [SignInOutcome.Admitted] with the row that now exists.
+ */
+internal suspend fun completeSignIn(
+    provided: ProviderIdentity,
+    users: se.soderbjorn.lunicle.store.UserStore,
+    instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore?,
+    identity: InstanceIdentity,
+): SignInOutcome {
+    admissionRefusal(provided, users, instanceSettings, identity)?.let {
+        return SignInOutcome.Refused(it)
+    }
+    val user = users.upsert(
+        provided,
+        // Derived here rather than in the store, from the same function the startup
+        // stamp uses — see UserKind.forEmail. Whatever proved the address, it is
+        // exactly as good a basis for the staff/member answer as Google's is.
+        kind = UserKind.forEmail(provided.email, identity.domain),
+    )
+    seatOwnerIfVacant(users, instanceSettings)
+    return SignInOutcome.Admitted(user)
 }
 
 /**

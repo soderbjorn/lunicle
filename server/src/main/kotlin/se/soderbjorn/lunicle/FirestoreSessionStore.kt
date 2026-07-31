@@ -76,11 +76,21 @@ class FirestoreSessionStore(
      * Mint a session id for [userId] and store it, stamped with the moment it
      * expires. The token is 32 url-safe bytes — comfortably past guessing, and it
      * survives a cookie round-trip without encoding surprises.
+     *
+     * A null [probeId] — every ordinary sign-in — writes **no field at all** rather
+     * than an explicit null. That is the document analogue of the SQLite column
+     * being NULL, and it is what lets [deleteProbeSessions] below be a plain
+     * existence query.
      */
-    override suspend fun create(userId: Long): String {
+    override suspend fun create(userId: Long, probeId: String?): String {
         val bytes = ByteArray(32).also(random::nextBytes)
         val id = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-        doc(id).set(mapOf(USER_ID to userId, EXPIRES_AT to now() + SESSION_LIFETIME_MILLIS)).await()
+        val fields = buildMap {
+            put(USER_ID, userId)
+            put(EXPIRES_AT, now() + SESSION_LIFETIME_MILLIS)
+            probeId?.let { put(PROBE_ID, it) }
+        }
+        doc(id).set(fields).await()
         return id
     }
 
@@ -97,6 +107,23 @@ class FirestoreSessionStore(
         if (expiresAt <= now()) return null
         val userId = snapshot.getLong(USER_ID) ?: return null
         return resolveUser(userId)
+    }
+
+    /**
+     * The grant [id] was minted against, or null for a session somebody proved.
+     *
+     * Its own document read rather than a field [lookup] returns, matching the
+     * reference: the hot read stays as narrow as it is, and this one is asked only
+     * when the impersonation gate is on. Unlike [lookup] it does **not** filter on
+     * expiry — the caller is asking what a session is labelled, not whether it is
+     * still good, and it has already resolved the user through [lookup] to know
+     * there is anybody to ask about.
+     */
+    override suspend fun probeIdFor(id: String?): String? {
+        if (id == null) return null
+        val snapshot = doc(id).get().await()
+        if (!snapshot.exists()) return null
+        return snapshot.getString(PROBE_ID)
     }
 
     /** Forget [id]. Idempotent — a delete of a missing document is a no-op, and a null id nothing at all. */
@@ -120,6 +147,27 @@ class FirestoreSessionStore(
         return expired.size.toLong()
     }
 
+    /**
+     * Delete every session an owner-impersonation grant minted, and report how many
+     * went.
+     *
+     * The document form of `DELETE FROM sessions WHERE probe_id IS NOT NULL`. A
+     * field-exists filter is what [create] not writing the field at all buys: the
+     * ordering query `whereNotEqualTo(PROBE_ID, null)` would be an inequality on a
+     * field most documents do not have, and Firestore omits documents missing the
+     * ordered field from such a query — which is exactly the behaviour wanted here,
+     * but only by accident. `orderBy` on the field says the same thing outright and
+     * needs no composite index, since it is one field on one collection.
+     */
+    override suspend fun deleteProbeSessions(): Long {
+        val probes = collection().orderBy(PROBE_ID).get().await().documents
+        if (probes.isEmpty()) return 0
+        val batch = firestore.batch()
+        probes.forEach { batch.delete(it.reference) }
+        batch.commit().await()
+        return probes.size.toLong()
+    }
+
     /** How many sessions are stored, expired or not — the analogue of SQLite `countAll`. */
     override suspend fun size(): Long = collection().get().await().size().toLong()
 
@@ -127,5 +175,12 @@ class FirestoreSessionStore(
         const val COLLECTION = "sessions"
         const val USER_ID = "userId"
         const val EXPIRES_AT = "expiresAt"
+
+        /**
+         * The grant a session was minted against. **Absent** on an ordinary session
+         * rather than present-and-null, which is what makes [deleteProbeSessions] a
+         * plain ordered query. See [create].
+         */
+        const val PROBE_ID = "probeId"
     }
 }

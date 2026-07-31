@@ -449,7 +449,7 @@ class AdmissionRoutesTest {
      * deployment's configuration — the parameter that is the whole subject here.
      */
     private fun withRoutes(identity: InstanceIdentity, block: suspend (HttpClient) -> Unit) = testApplication {
-        val impersonations = Impersonations()
+        val impersonation = OwnerImpersonation()
         application {
             install(ServerContentNegotiation) { json() }
             routing {
@@ -457,12 +457,12 @@ class AdmissionRoutesTest {
                     config = OAuthConfig(google = null, isEmailAvailable = true),
                     sessions = sessions,
                     users = users,
-                    impersonations = impersonations,
+                    impersonation = impersonation,
                     emailCodes = EmailCodeService(database, capturingSender(), "https://issues.example.com"),
                     instanceSettings = instanceSettings,
                     identity = identity,
                 )
-                boardRoutes(dependencies(impersonations, identity))
+                boardRoutes(dependencies(impersonation, identity))
             }
         }
         block(createClient { install(ClientContentNegotiation) { json() } })
@@ -487,7 +487,7 @@ class AdmissionRoutesTest {
         },
     )
 
-    private fun dependencies(impersonations: Impersonations, identity: InstanceIdentity) = BoardDependencies(
+    private fun dependencies(impersonation: OwnerImpersonation, identity: InstanceIdentity) = BoardDependencies(
         access = access,
         projects = projects,
         projectRepository = projectRepository,
@@ -517,7 +517,7 @@ class AdmissionRoutesTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = impersonations,
+        impersonation = impersonation,
         instanceSettings = instanceSettings,
         identity = identity,
         subscriptions = SubscriptionStore(database),

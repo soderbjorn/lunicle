@@ -72,7 +72,13 @@ class EmailSignInTest {
 
     private val users = UserStore(database)
     private val sessions = SessionStore(database)
-    private val impersonations = Impersonations()
+    /**
+     * Armed, for one assertion: that the owner's own sign-in response already
+     * reports the impersonation affordance the seat just gave them (LNL-42). The
+     * gate is a term of `canImpersonate`, so an unarmed fixture would report false
+     * for a reason that has nothing to do with the seat this file is about.
+     */
+    private val impersonation = OwnerImpersonation(isEnabled = true)
     private val instanceSettings = InstanceSettingsStore(database)
 
     /** Every mail the fake Resend received: recipient and subject. */
@@ -507,7 +513,7 @@ class EmailSignInTest {
                     config = OAuthConfig(google = null, isEmailAvailable = emailSignInAvailable),
                     sessions = sessions,
                     users = users,
-                    impersonations = impersonations,
+                    impersonation = impersonation,
                     emailCodes = codes,
                     // Wired because the redeem seats an owner into a vacancy now, and
                     // an unwired store is the one shape that skips it — see

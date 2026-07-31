@@ -1130,7 +1130,6 @@ class ProjectAccessTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         instanceSettings = instanceSettings,
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
