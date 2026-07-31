@@ -1004,9 +1004,9 @@ fun Route.authRoutes(
      * address that can receive mail can end up with an account. That is exactly as
      * open as Google sign-in already is, so it is consistent rather than new. On a
      * genuinely fresh instance it does mean the first person to redeem a code
-     * becomes the instance administrator, and is seated as its owner at the next
-     * boot — the same rule Google sign-in has always had; see `Users.sq` and
-     * [seatInstanceOwner].
+     * becomes the instance administrator and is seated as its owner on the spot —
+     * the same rule Google sign-in has always had; see `Users.sq` and
+     * [seatOwnerIfVacant].
      */
     post(ApiRoutes.AUTH_EMAIL_REQUEST) {
         // Read and normalized before anything else, because every branch from here
@@ -1125,6 +1125,7 @@ fun Route.authRoutes(
             // as Google's is.
             kind = UserKind.forEmail(redemption.address, identity.domain),
         )
+        seatOwnerIfVacant(users, instanceSettings)
         call.setSessionCookie(sessions.create(user.id))
         logger.info("Signed in with an e-mail code: ${user.resolvedName} (user ${user.id})")
         call.respond(freshSignInState(user, users, config, instanceSettings, identity.domain))
@@ -1155,6 +1156,7 @@ fun Route.authRoutes(
                 return@post
             }
             val user = users.upsert(googleIdentity, UserKind.forEmail(googleIdentity.email, identity.domain))
+            seatOwnerIfVacant(users, instanceSettings)
             call.setSessionCookie(sessions.create(user.id))
             logger.info("Signed in via Google: ${user.resolvedName} (user ${user.id})")
             call.respond(freshSignInState(user, users, config, instanceSettings, identity.domain))
@@ -1162,6 +1164,58 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.BadGateway, failure.userMessage)
         }
     }
+}
+
+/**
+ * Seat the instance owner if nobody holds it, straight after a sign-in.
+ *
+ * ── Why boot alone was not enough ───────────────────────────────────────────
+ *
+ * Ownership is not a column on an account — there is exactly one owner, so it lives
+ * in `instance_settings.owner_user_id` (see `InstanceSettings.ownerUserId`). The
+ * account row carries only the administrator flag, and `upsert` sets that on the
+ * first sign-in into an empty instance. Seating the owner was `Application`'s job,
+ * once, at boot.
+ *
+ * On a fresh instance that boot happens before anybody exists, so it finds nobody to
+ * seat and correctly does nothing — and then the first person signs in, becomes an
+ * administrator, and the seat stays empty until some unrelated restart. Everything
+ * that asks `ownsInstance` is missing in the meantime: impersonation, handing the
+ * instance over, the project order and the cross-project delete. The person the
+ * instance belongs to spends their first session without the powers it gives them,
+ * and nothing on any screen explains why.
+ *
+ * So the seat is now also taken at the moment there is somebody to take it. Called
+ * BEFORE the sign-in response is built, deliberately: [freshSignInState] is what
+ * tells the client whether it holds the instance, and seating a beat later would
+ * hand the first owner a session that says no.
+ *
+ * ── Why it is safe to call on every sign-in ─────────────────────────────────
+ *
+ * [seatInstanceOwner] is idempotent and conservative, which is what lets this be an
+ * unconditional call rather than a "was this the first account" test that would have
+ * to stay in step with `upsert`. It never overwrites a seated owner, and it never
+ * promotes anybody who is not already an administrator — so it cannot invent
+ * authority, only finish handing out authority the instance already recorded.
+ *
+ * It also costs nothing on a normal instance: the vacancy check is a single lookup
+ * of the seated id and returns before the account scan.
+ *
+ * Failure is logged and swallowed. A sign-in that worked must not be turned into an
+ * error by a follow-up write, and the next sign-in — or the next boot — tries again.
+ * A null settings store — the partially-wired shape the routes already accept
+ * throughout this file — is nothing to seat into, and is skipped the same way.
+ */
+private suspend fun seatOwnerIfVacant(
+    users: se.soderbjorn.lunicle.store.UserStore,
+    instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore?,
+) {
+    if (instanceSettings == null) return
+    runCatching { seatInstanceOwner(users, instanceSettings) }
+        .onSuccess { seated ->
+            seated?.let { logger.info("Instance: seated user $it as the instance owner — nobody held it") }
+        }
+        .onFailure { logger.warn("Instance: could not seat an owner after a sign-in", it) }
 }
 
 /**

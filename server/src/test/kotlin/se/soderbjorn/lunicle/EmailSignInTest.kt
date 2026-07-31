@@ -61,6 +61,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
 
@@ -72,6 +73,7 @@ class EmailSignInTest {
     private val users = UserStore(database)
     private val sessions = SessionStore(database)
     private val impersonations = Impersonations()
+    private val instanceSettings = InstanceSettingsStore(database)
 
     /** Every mail the fake Resend received: recipient and subject. */
     private val sent = mutableListOf<Pair<String, String>>()
@@ -151,8 +153,7 @@ class EmailSignInTest {
 
     /**
      * Asking for a code is also registration, and on a fresh instance the first one
-     * through becomes the instance administrator — and is seated as the instance
-     * owner at the next boot, by `seatInstanceOwner` rather than by anything here.
+     * through becomes the instance administrator.
      *
      * The same rule Google sign-in has always had, and it has to survive being
      * reached by a second route — it lives as a subquery inside the INSERT
@@ -168,6 +169,56 @@ class EmailSignInTest {
             client.request("second@example.com")
             val second: SessionState = client.redeem("second@example.com", code()).body()
             assertFalse(second.user?.isSysAdmin == true, "A second account became an admin too.")
+        }
+    }
+
+    /**
+     * ...and is the **owner** by the time that same response is written.
+     *
+     * Ownership is not on the account row — it is `instance_settings.owner_user_id`,
+     * because there is exactly one owner — so becoming an administrator does not seat
+     * anybody. It used to be seated only at boot, and on a fresh instance that boot
+     * happens before there is anybody to seat: the first person in became an
+     * administrator and the seat stayed empty until some unrelated restart. Everything
+     * that asks `ownsInstance` was missing meanwhile — impersonation, handing the
+     * instance over, the project order, the cross-project delete.
+     *
+     * The assertion is deliberately on the **response**, not just the store. Nothing
+     * re-fetches the session after a sign-in, so a seat taken a moment too late would
+     * still leave the first owner looking at an account menu with no Impersonate in it
+     * until they reloaded — which is the shape of LNL-42, one layer down.
+     */
+    @Test
+    fun `the first person to redeem a code is seated as the owner, in that same response`(): Unit = runBlocking {
+        withRoutes { client ->
+            assertNull(
+                instanceSettings.current().ownerUserId,
+                "Precondition: a fresh instance has nobody seated.",
+            )
+
+            client.request("first@example.com")
+            val first: SessionState = client.redeem("first@example.com", code()).body()
+
+            val seated = assertNotNull(
+                instanceSettings.current().ownerUserId,
+                "The first sign-in left the instance ownerless.",
+            )
+            assertEquals(first.user?.id, seated, "Somebody other than the person who signed in was seated.")
+            assertTrue(
+                first.canImpersonate,
+                "The owner's own sign-in response did not report the powers it had just given them.",
+            )
+
+            // ...and the second person through changes nothing, which is the half that
+            // would make this a way in rather than a bootstrap.
+            client.request("second@example.com")
+            val second: SessionState = client.redeem("second@example.com", code()).body()
+            assertEquals(
+                seated,
+                instanceSettings.current().ownerUserId,
+                "A later sign-in moved the seat.",
+            )
+            assertFalse(second.canImpersonate, "A second account was handed the instance.")
         }
     }
 
@@ -458,6 +509,11 @@ class EmailSignInTest {
                     users = users,
                     impersonations = impersonations,
                     emailCodes = codes,
+                    // Wired because the redeem seats an owner into a vacancy now, and
+                    // an unwired store is the one shape that skips it — see
+                    // AuthRoutes.seatOwnerIfVacant. Every other test here is
+                    // unaffected: the seat is idempotent and reads nothing they assert.
+                    instanceSettings = instanceSettings,
                 )
             }
         }

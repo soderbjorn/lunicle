@@ -76,8 +76,9 @@ data class InstanceSettings(
      * in both: there is one field, so there is one owner.
      *
      * Null on a volume that has never had an owner seated, which the startup pass
-     * repairs by seating the first administrator. See stampUserKinds' neighbour,
-     * seatInstanceOwner.
+     * repairs by seating the first administrator — and so does every sign-in, which
+     * is what a fresh instance actually needs: its boot happens before there is
+     * anybody to seat. See stampUserKinds' neighbour, seatInstanceOwner.
      */
     val ownerUserId: Long? = null,
     /**

@@ -70,7 +70,7 @@ suspend fun stampUserKinds(users: UserStore, domain: String?): Int {
  * Make sure somebody owns this deployment, and change nothing if somebody already
  * does.
  *
- * ── The one grant a boot is allowed to make, and why it is safe ─────────────
+ * ── The one grant this is allowed to make, and why it is safe ───────────────
  *
  * An instance with no owner cannot hand out any rights at all: creating projects,
  * attributing writes and managing the project list are all the owner's, so an
@@ -86,11 +86,26 @@ suspend fun stampUserKinds(users: UserStore, domain: String?): Int {
  * it can only finish giving out authority the instance already recorded.
  *
  * A deployment with no accounts at all, or none with the administrator flag, is
- * left ownerless, which is correct: there is nobody to seat, and the first sign-in
- * creates one.
+ * left ownerless, which is correct: there is nobody to seat.
  *
- * @return the id just seated, or null if nothing was done — which is every boot
- *   but one.
+ * ── Called at boot AND after every sign-in ──────────────────────────────────
+ *
+ * Boot alone was not enough, and a fresh instance is exactly where it failed. That
+ * boot happens before anybody exists, so it correctly seats nobody — and then the
+ * first person signs in, becomes an administrator, and the seat stays empty until
+ * some unrelated restart. Everything that asks `ownsInstance` is missing meanwhile:
+ * impersonation, handing the instance over, the project order, the cross-project
+ * delete. The person the deployment belongs to spends their first session without
+ * the powers it gives them.
+ *
+ * The two properties above are what make a second call site free rather than a
+ * second rule to keep in step — it is idempotent and it cannot promote anybody the
+ * instance has not already made an administrator. The vacancy check is also a single
+ * lookup and returns before the account scan, so a seated instance pays almost
+ * nothing for asking. See `AuthRoutes.seatOwnerIfVacant`.
+ *
+ * @return the id just seated, or null if nothing was done — which is every call but
+ *   one in a deployment's life.
  */
 suspend fun seatInstanceOwner(users: UserStore, instanceSettings: InstanceSettingsStore): Long? {
     val current = instanceSettings.current().ownerUserId
