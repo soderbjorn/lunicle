@@ -387,7 +387,11 @@ class SettingsPane(
             ),
         )
 
-        accountSection = element("div", "").children(
+        // The class is spacing, not identity: hints in this tab are prose with a
+        // button under them rather than captions on the control above, and
+        // .field-hint carries no bottom margin — see .settings-you-tab in
+        // styles.css, which says why the rule is scoped here (LNL-185).
+        accountSection = element("div", "settings-you-tab").children(
             nameElement,
             displayNameSection,
             element("label", "field-label", "E-mail"),

@@ -556,6 +556,31 @@ body > .dt-pane-menu {
    holds — name, address, layout — read as three and not as one run-on column. */
 .profile-layout-section { margin-top: 22px; }
 
+/* Hints used as prose, in the settings pane's You tab (LNL-185).
+
+   `.field-hint` is a caption on the control ABOVE it — `margin: 6px 0 0`, no
+   bottom margin — which is right everywhere it is the last thing in its group.
+   Twice in this tab it is not: a hint is a whole sentence of prose and the next
+   thing is a button ("Restore default layout" under the layout blurb, "Cancel
+   this change" under the code hint), and with no gap at all the button read as
+   glued to the paragraph explaining it.
+
+   Same shape and same 22px as `.admin-general .field-hint` further down — a
+   container-scoped bottom margin with a `:last-child` reset — because it is the
+   same problem there: a hint that is prose rather than a caption, in a settings
+   surface. One idiom and one number, so the next person to hit this is not
+   flipping a coin between two. The reset is what keeps the margin honest: the
+   display-name group's hint IS the last thing in its group, and stays at 0.
+
+   Scoped to this tab, not global: the sign-in card has the same hint-then-button
+   adjacency but lives in a flex column whose `gap` already spaces it, with
+   `.signin-code .field-hint` zeroed on purpose — a global bottom margin would
+   stack on that gap. And on the hint rather than as `.field-hint + .btn`,
+   because `+` keys on strict adjacency: an inline error, a spinner or a wrapper
+   slipped between the two would silently take the spacing away again. */
+.settings-you-tab .field-hint { margin: 6px 0 22px; }
+.settings-you-tab .field-hint:last-child { margin-bottom: 0; }
+
 /* The brand/identity line, at the top of the SIDEBAR (LNL-160).
 
    It has moved four times and each move was the same argument losing ground: it
