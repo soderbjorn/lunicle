@@ -3,14 +3,14 @@
  * renaming, deleting and reordering a whole project over the document stores.
  *
  * The Firestore analogue of [ProjectRepository]. It exists because project
- * *creation* is not a store insert: a usable project is its row **and** its five
- * seeded vocabularies, and that orchestration is exactly what a store cannot hold.
- * The SQLite reference does it in one six-table transaction; here the row is
- * inserted through [se.soderbjorn.lunicle.store.ProjectStore] and the five default
+ * *creation* is not a store insert: a usable project is its row **and** its seeded
+ * vocabularies, and that orchestration is exactly what a store cannot hold.
+ * The SQLite reference does it in one seven-table transaction; here the row is
+ * inserted through [se.soderbjorn.lunicle.store.ProjectStore] and the default
  * vocabularies are seeded through their stores' `insert`, reusing the very same
  * [DEFAULT_LABELS]/[DEFAULT_COMPONENTS]/[DEFAULT_STATUSES]/[DEFAULT_PRIORITIES]/
- * [DEFAULT_RESOLUTIONS] lists (and [CLOSING_STATUS]) the SQLite path seeds, so the
- * two backends start a project identically.
+ * [DEFAULT_RESOLUTIONS]/[DEFAULT_RELATION_KINDS] lists (and [CLOSING_STATUS]) the
+ * SQLite path seeds, so the two backends start a project identically.
  *
  * ── Seeding is one transaction, exactly as SQLite's is (LNL-131) ─────────────
  *
@@ -74,6 +74,14 @@ class FirestoreProjectRepository(
                 add(SeedRow(VocabularyKind.RESOLUTION, n, i.toLong(), false, isDone = n == DONE_RESOLUTION))
             }
         }
+        // The relation kinds are seeded alongside the list above but not *in* it
+        // (LNL-215): a [SeedRow] carries a closing flag and a done flag, and a relation
+        // kind carries neither — what it carries is an opposite label and a blocking
+        // flag, which no other kind has. Folding all four onto one row type would put
+        // two permanently-null fields on twenty documents to save one loop. They still
+        // share the same reserved block of ids and the same transaction, which is what
+        // actually matters: a crash leaves a whole board or none.
+        val relationKinds = DEFAULT_RELATION_KINDS
         val createdAt = now()
 
         val projectsCollection = firestore.collection(FirestoreProjectStore.COLLECTION)
@@ -92,7 +100,10 @@ class FirestoreProjectRepository(
             // ── Writes — the counters bumped, then the project and its whole board ──
             val projectId = projectBase + 1L
             txn.set(projectCounter, mapOf(FirestoreCounters.VALUE to projectId))
-            txn.set(vocabCounter, mapOf(FirestoreCounters.VALUE to vocabBase + seed.size))
+            txn.set(
+                vocabCounter,
+                mapOf(FirestoreCounters.VALUE to vocabBase + seed.size + relationKinds.size),
+            )
             val project = projects.writeInTransaction(
                 txn, projectId, cleanName, cleanPrefix, position, createdAt,
             )
@@ -100,6 +111,16 @@ class FirestoreProjectRepository(
                 seedVocabularyRow(
                     txn, firestore, vocabBase + 1L + index, row.kind, projectId, row.name, row.position,
                     row.requiresResolution, row.isDone,
+                )
+            }
+            // The tail of the same block, so relation-kind ids come from the one
+            // counter every vocabulary row draws from and can never collide with a
+            // status's — which matters because the settings routes address all eight
+            // kinds by a bare Long.
+            relationKinds.forEachIndexed { index, kind ->
+                seedRelationKindRow(
+                    txn, firestore, vocabBase + 1L + seed.size + index, projectId,
+                    kind.name, index.toLong(), kind.inverse, kind.marksBlocked,
                 )
             }
             project

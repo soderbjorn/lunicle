@@ -119,6 +119,17 @@ internal suspend fun deleteAll(firestore: Firestore, docs: List<QueryDocumentSna
  * store's own delete path running per issue. `IssueRepository.delete` reaches the same
  * three sweeps through the store interfaces instead, because it is backend-agnostic
  * and must call them on SQLite too.
+ *
+ * **The issue's relations are not here either, and that is the same split** (LNL-215).
+ * Deleting one issue takes its links through
+ * [se.soderbjorn.lunicle.store.IssueRelationStore.deleteForIssue], which
+ * `IssueRepository.delete` calls on both backends — so the single-issue path is
+ * covered where every other backend-agnostic sweep is covered. The project path takes
+ * them in [projectCascade] with one query on `projectId` instead of two per issue:
+ * relations are the one child collection that carries the project id as well as the
+ * issue ids, precisely so the whole project's can go in a single sweep. Running them
+ * here as well would double this function's query count on the one path that already
+ * has an answer.
  */
 internal suspend fun issueContentsCascade(firestore: Firestore, issueId: Long) {
     deleteWhere(firestore.collection(FirestoreCommentStore.COLLECTION), FirestoreCommentStore.ISSUE_ID, issueId)
@@ -132,14 +143,15 @@ internal suspend fun issueContentsCascade(firestore: Firestore, issueId: Long) {
  * **The list.** A project owns, directly or transitively:
  *
  *  1. its **issues**, and under each of those its comments, history and watches;
- *  2. its **forums**, and under each of those its posts, those posts' comments, the
+ *  2. its **relations** — every link between two of its issues (LNL-215);
+ *  3. its **forums**, and under each of those its posts, those posts' comments, the
  *     forum's read marks, and the watches on both forum and post;
- *  3. its **vocabulary** — labels, components, statuses, priorities, resolutions,
- *     sprints and versions, all seven kinds in the one `vocabulary` collection, so
- *     one query takes them all;
- *  4. its **role grants**;
- *  5. its **new-issue watches**;
- *  6. its **statistics snapshot**.
+ *  4. its **vocabulary** — labels, components, statuses, priorities, resolutions,
+ *     sprints, versions and relation kinds, all eight kinds in the one `vocabulary`
+ *     collection, so one query takes them all;
+ *  5. its **role grants**;
+ *  6. its **new-issue watches**;
+ *  7. its **statistics snapshot**.
  *
  * Anything the product grows that hangs off a project belongs on that list. There is
  * no cascade to catch an omission; a forgotten collection is silent, permanent
@@ -165,7 +177,19 @@ internal suspend fun projectCascade(firestore: Firestore, projectId: Long) {
     issueIds.forEach { issueContentsCascade(firestore, it) }
     deleteWhere(issues, FirestoreIssueStore.PROJECT_ID, projectId)
 
-    // ── 2. Forums → posts → comments, and the reads and watches on them ──────
+    // ── 2. Every link between two of those issues (LNL-215) ──────────────────
+    // One query rather than two per issue, which is what `issue_relations` carries a
+    // project id *for* — see IssueRelations.sq. It also catches a link whose issue
+    // document has somehow already gone, which the per-issue sweep by definition
+    // cannot: a relation naming a deleted issue is exactly the garbage this walk
+    // exists to stop.
+    deleteWhere(
+        firestore.collection(FirestoreIssueRelationStore.COLLECTION),
+        FirestoreIssueRelationStore.PROJECT_ID,
+        projectId,
+    )
+
+    // ── 3. Forums → posts → comments, and the reads and watches on them ──────
     val forums = firestore.collection(FirestoreForumStore.COLLECTION)
     val posts = firestore.collection(FirestoreForumPostStore.COLLECTION)
     val postComments = firestore.collection(FirestoreForumCommentStore.COLLECTION)
@@ -193,14 +217,16 @@ internal suspend fun projectCascade(firestore: Firestore, projectId: Long) {
     }
     deleteWhere(forums, FirestoreForumStore.PROJECT_ID, projectId)
 
-    // ── 3. The whole board vocabulary, all seven kinds in one collection ─────
+    // ── 4. The whole board vocabulary, all eight kinds in one collection ─────
+    // Relation kinds ride along here for free precisely because they share the
+    // collection rather than owning one; see FirestoreIssueRelationKindStore.
     deleteWhere(
         firestore.collection(FirestoreVocabularyStore.COLLECTION),
         FirestoreVocabularyStore.PROJECT_ID,
         projectId,
     )
 
-    // ── 4-6. Role grants, project-level watches, the statistics snapshot ─────
+    // ── 5-7. Role grants, project-level watches, the statistics snapshot ─────
     deleteWhere(firestore.collection(FirestoreRoleStore.GRANTS), FirestoreRoleStore.PROJECT_ID, projectId)
     deleteWhere(
         firestore.collection(FirestoreSubscriptionStore.PROJECT_NEW_ISSUE),
