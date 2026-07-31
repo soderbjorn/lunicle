@@ -1,0 +1,141 @@
+-- Version 36 → 37: relations, estimates, and assigning to a person's agent (LNL-215).
+--
+-- Five things at once, because they were designed together and land together:
+--
+--  * two new tables — `issue_relation_kinds` (the per-project vocabulary) and
+--    `issue_relations` (the links themselves);
+--  * three new `issues` columns — `assignee_is_agent`, `estimate_amount`,
+--    `estimate_unit`;
+--  * one new `projects` column — `estimate_mode`;
+--  * one new `issue_events` column — `value_relation_kind`;
+--  * and the one real BACK-FILL in the whole change, seeding three relation kinds
+--    into every project that already exists.
+--
+-- The long reasoning for each column lives beside it in the .sq files —
+-- IssueRelationKinds.sq for why relation kinds are vocabulary rather than an enum,
+-- IssueRelations.sq for why one row is stored and both directions rendered,
+-- Issues.sq's estimate_unit for why the unit is stamped on the issue instead of
+-- read from the project, and IssueEvents.sq's value_relation_kind for why a name
+-- snapshot. None of it is repeated here.
+--
+-- ── Plain ALTER TABLE, and order ────────────────────────────────────────────
+--
+-- Every new column is single-column and either nullable or NOT NULL with a constant
+-- default, which is exactly the case SQLite's ALTER TABLE ADD COLUMN accepts.
+-- 29.sqm (the version references) and 31.sqm (the parent link) are the precedents,
+-- and nothing here needs the table-rebuild dance 2.sqm does — that one exists
+-- because a COMPOSITE foreign key cannot be added by ALTER, and no column added here
+-- has one.
+--
+-- The two CREATEs come first because `issue_relations` points at
+-- `issue_relation_kinds`, and the back-fill at the end points at both. SQLite with
+-- foreign keys off (how Database.migrateSchema runs) would resolve the targets
+-- lazily either way, but a file that only works with the constraints disabled is a
+-- trap for whoever edits it next — 29.sqm made the same call for the same reason.
+--
+-- The CREATEs below are duplicated from the .sq files minus their prose and must
+-- stay in step with them: MigrationTest applies every .sqm to the previous snapshot
+-- and compares the result column for column, foreign key for foreign key and index
+-- for index against what the .sq files create from scratch.
+--
+-- ── Nothing to back-fill, four times over ───────────────────────────────────
+--
+-- `assignee_is_agent` is NOT NULL DEFAULT 0, which lands every existing issue on "a
+-- person does this" — the state it was in before the column existed, and the state
+-- every issue in a team that runs no agents stays in forever.
+--
+-- The two estimate columns are NULL for every row, and NULL is "no estimate": an
+-- absence rather than a row, exactly as 29.sqm's version references and 31.sqm's
+-- parent are. Every existing issue is correctly un-estimated.
+--
+-- `estimate_mode` defaults to 'none', which is the state that renders nothing at
+-- all — so every existing board is visually indistinguishable from before this ran.
+-- 24.sqm's reasoning for a DEFAULT that reproduces the prior state applies verbatim.
+--
+-- `value_relation_kind` is NULL on every event that exists, which is correct rather
+-- than a guess: it is read by exactly two event kinds, neither of which could have
+-- been written before this migration. And no retroactive events are invented for the
+-- links, sprints and versions that already exist — 31.sqm's "nothing to back-fill"
+-- section is the precedent, and the reason is the same: a history that starts when
+-- the feature did is honest, where rows dated today for changes made months ago
+-- would put a lie in an append-only table.
+--
+-- ── The one REAL back-fill: three relation kinds per project ────────────────
+--
+-- This is the single place in this change where "nothing to back-fill" does not
+-- apply, and it is not a convenience. A project with NO relation kinds cannot create
+-- a relation at all — there is no vocabulary to pick from — so an unmigrated project
+-- would silently lose the feature entirely rather than start it empty. That is
+-- different in kind from a project with no versions, which is a project that has not
+-- made one yet.
+--
+-- The three seeded rows are the same three `ProjectRepository.create` now seeds for
+-- a NEW project, in the same order and with the same flags, so a migrated project and
+-- a fresh one are indistinguishable:
+--
+--     Blocked by / Blocks       marks_blocked = 1
+--     Duplicate of / Duplicated by
+--     Related to / (NULL — symmetric)
+--
+-- `SELECT id FROM projects` in each INSERT rather than three statements per project:
+-- the row count is the project count and this runs once, at boot, on a schema that
+-- is not yet serving. Firestore gets the same three rows through
+-- FirestoreBackfill/FirestoreMigration, which is the backend with no migration file
+-- to put them in.
+--
+-- 4.sqm is the precedent for a migration that changes no schema on the projects it
+-- touches and only writes rows, and — like it — MigrationTest is blind to this half
+-- by construction, since PRAGMA output cannot see a row. RelationKindMigrationTest
+-- covers it, exactly as StatusMigrationTest covers 4.sqm's seed.
+
+CREATE TABLE issue_relation_kinds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    inverse_name TEXT COLLATE NOCASE,
+    marks_blocked INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    UNIQUE (id, project_id)
+);
+
+CREATE TABLE issue_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    from_issue_id INTEGER NOT NULL,
+    to_issue_id INTEGER NOT NULL,
+    kind_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+
+    FOREIGN KEY (from_issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (kind_id, project_id) REFERENCES issue_relation_kinds(id, project_id) ON DELETE CASCADE,
+
+    UNIQUE (from_issue_id, to_issue_id, kind_id)
+);
+
+CREATE INDEX issue_relations_to_idx ON issue_relations (to_issue_id);
+
+CREATE INDEX issue_relations_project_idx ON issue_relations (project_id);
+
+ALTER TABLE issues ADD COLUMN assignee_is_agent INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE issues ADD COLUMN estimate_amount INTEGER;
+
+ALTER TABLE issues ADD COLUMN estimate_unit TEXT;
+
+ALTER TABLE projects ADD COLUMN estimate_mode TEXT NOT NULL DEFAULT 'none';
+
+ALTER TABLE issue_events ADD COLUMN value_relation_kind TEXT;
+
+INSERT INTO issue_relation_kinds (project_id, name, inverse_name, marks_blocked, position)
+SELECT id, 'Blocked by', 'Blocks', 1, 0 FROM projects;
+
+INSERT INTO issue_relation_kinds (project_id, name, inverse_name, marks_blocked, position)
+SELECT id, 'Duplicate of', 'Duplicated by', 0, 1 FROM projects;
+
+INSERT INTO issue_relation_kinds (project_id, name, inverse_name, marks_blocked, position)
+SELECT id, 'Related to', NULL, 0, 2 FROM projects;

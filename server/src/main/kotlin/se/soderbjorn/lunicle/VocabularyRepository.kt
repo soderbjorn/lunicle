@@ -61,6 +61,24 @@ data class VocabularyRow(
     /** A resolution's "the work was done" flag (LNL-134); always false for other kinds. See [StatusRecord.isDone]. */
     val isDone: Boolean = false,
     val usageCount: Long = 0,
+    /**
+     * A relation kind's **to**-side label — "Blocks" beside a [name] of "Blocked by"
+     * — or null because the kind reads the same in both directions (LNL-215). Null
+     * forever for every other kind.
+     *
+     * Null is the whole encoding of symmetry; see [IssueRelationKindRecord.inverseName].
+     * The third per-kind extra on this row, after [requiresResolution] and [isDone],
+     * and carried here for their reason: [VocabularyKind] is one family of routes and
+     * one editor, so a kind's extras ride on the shared row rather than forking the
+     * type.
+     */
+    val inverseName: String? = null,
+    /**
+     * A relation kind's "issues on the from side of this are blocked" flag (LNL-215);
+     * always false for other kinds. The same shape as a status's [requiresResolution],
+     * and rendered as the same kind of checkbox.
+     */
+    val marksBlocked: Boolean = false,
 )
 
 /**
@@ -97,6 +115,21 @@ class VocabularyRepository(
     private val resolutions: se.soderbjorn.lunicle.store.ResolutionStore,
     private val sprints: SprintStore,
     private val versions: se.soderbjorn.lunicle.store.VersionStore,
+    /**
+     * The relations themselves — for their usage counts, and only for that. This
+     * repository never writes one; the kind store's own `delete` is what cascades
+     * them, on both backends. See [IssueRelationKindStore.delete].
+     *
+     * Defaulted to a forgetful in-memory pair for [BoardDependencies.issueRelations]'
+     * reason: an empty store answers "this project has no relation kinds", which is a
+     * legitimate state rather than a hole, and it saves every test that assembles this
+     * class for an unrelated vocabulary from wiring two stores it never asks about.
+     * [Application.module] always passes the backend's own.
+     */
+    private val relations: se.soderbjorn.lunicle.store.IssueRelationStore = InMemoryIssueRelationStore(),
+    /** The relation kinds, the eighth vocabulary (LNL-215). */
+    private val relationKinds: se.soderbjorn.lunicle.store.IssueRelationKindStore =
+        InMemoryIssueRelationKindStore(relations),
     private val issues: se.soderbjorn.lunicle.store.IssueStore,
 ) : se.soderbjorn.lunicle.store.VocabularyStore {
     /**
@@ -114,6 +147,7 @@ class VocabularyRepository(
             VocabularyKind.RESOLUTION -> resolutions.forProject(projectId).map { it.toRow(uses) }
             VocabularyKind.SPRINT -> sprints.forProject(projectId).map { it.toRow(uses) }
             VocabularyKind.VERSION -> versions.forProject(projectId).map { it.toRow(uses) }
+            VocabularyKind.RELATION_KIND -> relationKinds.forProject(projectId).map { it.toRow(uses) }
         }
     }
 
@@ -135,6 +169,7 @@ class VocabularyRepository(
             VocabularyKind.RESOLUTION -> resolutions.findByIdInProject(id, projectId)?.toRow(uses)
             VocabularyKind.SPRINT -> sprints.findByIdInProject(id, projectId)?.toRow(uses)
             VocabularyKind.VERSION -> versions.findByIdInProject(id, projectId)?.toRow(uses)
+            VocabularyKind.RELATION_KIND -> relationKinds.findByIdInProject(id, projectId)?.toRow(uses)
         }
     }
 
@@ -155,10 +190,17 @@ class VocabularyRepository(
      *
      * @throws VocabularyConflict if the name is blank or already this project's.
      */
-    override suspend fun add(projectId: Long, kind: VocabularyKind, name: String): VocabularyRow {
+    override suspend fun add(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String?,
+        marksBlocked: Boolean,
+    ): VocabularyRow {
         val clean = name.trim()
+        val cleanInverse = inverseName?.trim()?.takeIf { it.isNotBlank() }
         val existing = rows(projectId, kind)
-        validateName(kind, clean, existing, renamingId = null)
+        validateName(kind, clean, cleanInverse, existing, renamingId = null)
 
         val next = (existing.maxOfOrNull { it.position } ?: -1L) + 1L
         when (kind) {
@@ -176,6 +218,14 @@ class VocabularyRepository(
             // activation stays a separate deliberate act. See SprintRepository.
             VocabularyKind.SPRINT -> sprints.insert(projectId, clean, next)
             VocabularyKind.VERSION -> versions.insert(projectId, clean, next)
+            // The two extras are accepted at ADD time rather than only on the rename
+            // that follows, unlike a status's closing flag. The web dialog does send a
+            // bare name and then edit the row — but the MCP tool creates a kind in one
+            // call, and a kind whose inverse name could only be set by a second write
+            // would be a kind that is briefly, and visibly, symmetric when it is not.
+            // Both default to the safe state anyway: symmetric, and not blocking.
+            VocabularyKind.RELATION_KIND ->
+                relationKinds.insert(projectId, clean, next, cleanInverse, marksBlocked)
         }
         return rows(projectId, kind).firstOrNull { it.name.equals(clean, ignoreCase = true) }
             ?: throw VocabularyConflict("That ${kind.noun} could not be saved.")
@@ -209,9 +259,15 @@ class VocabularyRepository(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean,
+        inverseName: String?,
+        marksBlocked: Boolean,
     ) {
         val clean = name.trim()
-        validateName(kind, clean, rows(projectId, kind), renamingId = row.id)
+        // Blank normalises to null rather than being stored, so "I cleared the field"
+        // and "I ticked same-in-both-directions" cannot become two stored states that
+        // render identically. Null IS symmetry; see IssueRelationKinds.sq.
+        val cleanInverse = inverseName?.trim()?.takeIf { it.isNotBlank() }
+        validateName(kind, clean, cleanInverse, rows(projectId, kind), renamingId = row.id)
         when (kind) {
             VocabularyKind.LABEL -> labels.update(row.id, clean)
             VocabularyKind.COMPONENT -> components.update(row.id, clean)
@@ -220,6 +276,7 @@ class VocabularyRepository(
             VocabularyKind.RESOLUTION -> resolutions.update(row.id, clean, isDone)
             VocabularyKind.SPRINT -> sprints.update(row.id, clean)
             VocabularyKind.VERSION -> versions.update(row.id, clean)
+            VocabularyKind.RELATION_KIND -> relationKinds.update(row.id, clean, cleanInverse, marksBlocked)
         }
     }
 
@@ -304,6 +361,8 @@ class VocabularyRepository(
             VocabularyKind.RESOLUTION -> resolutions.delete(id)
             VocabularyKind.SPRINT -> sprints.delete(id)
             VocabularyKind.VERSION -> versions.delete(id)
+            // Takes its relations with it, on both backends. See its own `delete`.
+            VocabularyKind.RELATION_KIND -> relationKinds.delete(id)
         }
     }
 
@@ -372,6 +431,8 @@ class VocabularyRepository(
                         VocabularyKind.RESOLUTION -> database.resolutionsQueries.setPosition(position, id)
                         VocabularyKind.SPRINT -> database.sprintsQueries.setPosition(position, id)
                         VocabularyKind.VERSION -> database.versionsQueries.setPosition(position, id)
+                        VocabularyKind.RELATION_KIND ->
+                            database.issueRelationKindsQueries.setPosition(position, id)
                     }
                 }
             }
@@ -393,15 +454,38 @@ class VocabularyRepository(
     private fun validateName(
         kind: VocabularyKind,
         name: String,
+        inverseName: String?,
         existing: List<VocabularyRow>,
         renamingId: Long?,
     ) {
         if (name.isBlank()) throw VocabularyConflict("A ${kind.noun} needs a name.")
-        val clash = existing.firstOrNull {
-            it.id != renamingId && it.name.lowercase() == name.lowercase()
+        // ── A relation kind occupies BOTH of its labels (LNL-215) ─────────────
+        //
+        // Every other kind owns one word. A relation kind owns two — "Blocked by" and
+        // "Blocks" — and both appear in the same picker, so uniqueness has to be over
+        // the union of the two columns across every row rather than over `name` alone.
+        // Without it, "Blocks" could be one kind's inverse and another kind's name and
+        // the picker would offer the same word twice meaning two different things.
+        //
+        // The UNIQUE (project_id, name) index backstops the `name` half only; this is
+        // the whole rule, and it is here for the reason every Unicode-aware fold in
+        // this method is here — the index cannot express it.
+        val taken = existing.filter { it.id != renamingId }
+            .flatMap { listOfNotNull(it.name, it.inverseName) }
+        val wanted = listOfNotNull(name.takeIf { it.isNotBlank() }, inverseName)
+        // A kind may not clash with ITSELF either: "Blocked by" / "Blocked by" is a
+        // kind that says one thing twice, which is what the symmetric case (a null
+        // inverse) is for and is not how to spell it.
+        if (inverseName != null && inverseName.lowercase() == name.lowercase()) {
+            throw VocabularyConflict(
+                "\"$name\" cannot also be its own opposite. Tick \"same in both directions\" instead.",
+            )
+        }
+        val clash = taken.firstOrNull { existingName ->
+            wanted.any { it.lowercase() == existingName.lowercase() }
         }
         if (clash != null) {
-            throw VocabularyConflict("There is already a ${kind.noun} called \"${clash.name}\".")
+            throw VocabularyConflict("There is already a ${kind.noun} called \"$clash\".")
         }
     }
 
@@ -441,6 +525,9 @@ class VocabularyRepository(
         VocabularyKind.RESOLUTION -> issues.usageByResolution(projectId)
         VocabularyKind.SPRINT -> issues.usageBySprint(projectId)
         VocabularyKind.VERSION -> issues.usageByVersion(projectId)
+        // Counted off the relations rather than off `issues`, alone among the eight:
+        // nothing on an issue row points at a relation kind. See IssueRelations.sq.
+        VocabularyKind.RELATION_KIND -> relations.usageByKind(projectId)
     }
 
     private fun VocabularyRecord.toRow(uses: Map<Long, Long>) =
@@ -448,6 +535,23 @@ class VocabularyRepository(
 
     private fun StatusRecord.toRow(uses: Map<Long, Long>) =
         VocabularyRow(id, projectId, name, position, requiresResolution, isDone, uses[id] ?: 0)
+
+    /**
+     * A relation kind as a vocabulary row, carrying both of its labels and its flag.
+     *
+     * The count is the relations using it, not the issues holding it — nothing on an
+     * issue row points here. It is a sentence for the delete confirmation rather than
+     * a gate, because the delete cascades; see [VocabularyKind.restrictsOnUse].
+     */
+    private fun IssueRelationKindRecord.toRow(uses: Map<Long, Long>) = VocabularyRow(
+        id = id,
+        projectId = projectId,
+        name = name,
+        position = position,
+        usageCount = uses[id] ?: 0,
+        inverseName = inverseName,
+        marksBlocked = marksBlocked,
+    )
 
     /**
      * A sprint's completion instant is dropped here, and that is deliberate.

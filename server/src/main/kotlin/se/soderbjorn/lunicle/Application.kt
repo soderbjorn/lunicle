@@ -357,10 +357,17 @@ fun Application.module() {
     // rebound interface-typed stores. One instance of the history, handed to both the
     // repository and BoardDependencies — a save records through the repository, a drag
     // or an assignment records from its route. See IssueHistory.
-    val issueHistory = IssueHistory(stores.issueEvents, statuses, labels, components, users)
+    // Sprints, versions, issues and projects join the five it already had (LNL-215):
+    // the three new field events snapshot a sprint's or a version's NAME, and the
+    // hierarchy and relation events snapshot the other issue's KEY. All four are
+    // resolved at write time and frozen, for the reason a status's name already is.
+    val issueHistory = IssueHistory(
+        stores.issueEvents, statuses, labels, components, users,
+        sprints = sprintRepository, versions = versions, issues = issues, projects = projects,
+    )
     val issueRepository = IssueRepository(
         issues, comments, statuses, priorities, attachmentRepository, attachments, notifications, subscriptions,
-        issueHistory,
+        issueHistory, stores.issueRelations, stores.issueRelationKinds,
     )
     val access = AccessControl(roles, instanceSettings)
     // The discussion and Messages repositories — backend-agnostic rules over the
@@ -403,6 +410,8 @@ fun Application.module() {
         sprints = sprintRepository,
         sprintRepository = sprintRepository,
         issues = issues,
+        issueRelations = stores.issueRelations,
+        issueRelationKinds = stores.issueRelationKinds,
         issueRepository = issueRepository,
         comments = comments,
         attachments = attachments,

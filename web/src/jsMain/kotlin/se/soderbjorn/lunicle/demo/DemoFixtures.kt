@@ -17,15 +17,27 @@
  * components and versions are themed to the project, and the status columns drop the
  * default "Backlog" in favour of sprints (see below).
  *
+ * It estimates in **time** (LNL-215) — days, hours and minutes, eight hours to a day —
+ * which is what a team working toward a publisher's date actually plans on.
+ * [seedMeridianProject] estimates in points and [seedKlinikProject] estimates not at
+ * all, so the three boards between them show all three modes, the empty one included.
+ * It also carries a handful of **relations**: a card genuinely blocked by work still in
+ * progress, one whose blocker has since shipped and is therefore clear, two duplicate
+ * links that make an existing comment clickable, and a symmetric pair.
+ *
  * The demo user is Captain Kathryn Janeway — instance system administrator and the
  * project's owner. The rest of the crew author, are assigned, and comment, but never
- * sign in.
+ * sign in. One card is handed to an assignee's **agent** rather than to them in person,
+ * so the initials avatar and the agent badge on it both render somewhere.
  *
  * @see DemoWorld
  */
 package se.soderbjorn.lunicle.demo
 
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
 import se.soderbjorn.lunicle.clientserver.NotificationKind
 
@@ -115,6 +127,14 @@ internal fun seedDemoWorld(): DemoWorld {
         // suspenders with never passing ?forums=1, so both tabs are gone.
         discussionsEnabled = false,
         messagesEnabled = false,
+        // This board estimates in **time** (LNL-215), which is the axis a games team
+        // working to a publisher's date actually plans on: the question here is "does the
+        // slice fit in the sprint", and the answer is in days. [seedMeridianProject]
+        // estimates in points instead and [seedKlinikProject] estimates not at all, so
+        // the three boards between them show every one of the three modes — including the
+        // one that renders nothing, which is the default and the one most projects stay
+        // on forever.
+        estimateMode = EstimateMode.TIME,
     )
     w.projects.add(p)
 
@@ -203,6 +223,13 @@ internal fun seedDemoWorld(): DemoWorld {
     val sprint4 = sprint("Sprint 4 — Bridge & Combat", 2)
     p.activeSprintId = sprint4.id
 
+    // Relation kinds — the three every real project is created with (LNL-215), seeded by
+    // the same helper `provisionProject` uses so this board cannot drift from a board a
+    // visitor makes. Destructured rather than looked up by name, because an administrator
+    // renaming "Blocked by" is something the demo actively invites and a name lookup
+    // would turn that into a fixture that silently stops linking anything.
+    val (rkBlockedBy, rkDuplicateOf, rkRelatedTo) = seedDefaultRelationKinds(w, p)
+
     // Who this board admits wholesale, over and above the members row every project
     // starts with (LNL-199). The crew are staff, so a staff row is what lets them work
     // here without a row each — and the two rows together are the ladder doing the thing
@@ -232,6 +259,19 @@ internal fun seedDemoWorld(): DemoWorld {
 
     var order = 0.0
 
+    /**
+     * An estimate in this board's unit, written the way the team says it out loud.
+     *
+     * **One working day is eight hours**, here and everywhere: that constant is not
+     * configurable and is not a decision this fixture is making — see the wire's
+     * `EstimateUnit.MINUTES`, which explains why a knob would only let two boards
+     * disagree about what `2d` means. Everything folds to whole minutes, which is what
+     * is actually stored, and the renderer normalises it back out — so `3d` is written
+     * here as three days and comes back as `3d` rather than as `1440m`.
+     */
+    fun workingTime(days: Int = 0, hours: Int = 0, minutes: Int = 0): Estimate =
+        Estimate(((days * 8 + hours) * 60L + minutes), EstimateUnit.MINUTES)
+
     fun issue(
         title: String,
         description: String,
@@ -248,6 +288,13 @@ internal fun seedDemoWorld(): DemoWorld {
         createdDaysAgo: Int,
         updatedDaysAgo: Int = createdDaysAgo,
         agentName: String? = null,
+        estimate: Estimate? = null,
+        /**
+         * Whether the work goes to [assignee]'s agent rather than to them in person
+         * (LNL-215). Only ever set beside an assignee — a flag about nobody is not a
+         * state, and the card would draw a robot badge onto no avatar.
+         */
+        assigneeIsAgent: Boolean = false,
     ): DemoIssue {
         val created = daysAgo(createdDaysAgo)
         val issue = DemoIssue(
@@ -261,6 +308,8 @@ internal fun seedDemoWorld(): DemoWorld {
             authorId = author.id,
             agentName = agentName,
             assigneeId = assignee?.id,
+            assigneeIsAgent = assignee != null && assigneeIsAgent,
+            estimate = estimate,
             sprintId = sprint?.id,
             plannedVersionId = plannedVersion?.id,
             fixedVersionId = fixedVersion?.id,
@@ -292,6 +341,41 @@ internal fun seedDemoWorld(): DemoWorld {
         values: List<String> = emptyList(),
     ) {
         p.events.add(DemoEvent(w.allocId(), issue.id, kind, value, values, author.id, createdAt = daysAgo(daysAgoValue)))
+    }
+
+    /**
+     * Link two issues, and record it on both of them (LNL-215).
+     *
+     * Reads as the sentence it makes: `relate(issBorgCube, rkBlockedBy, issSpriteMux)` is
+     * "the Borg cube is blocked by the sprite multiplexer". [from] is the side the kind's
+     * own name describes, which is also the side that goes grey when the kind marks
+     * blocked — so the argument order is not cosmetic and getting it backwards would dim
+     * the wrong card.
+     *
+     * **One row**, as everywhere else: the reverse direction is not stored, it is
+     * rendered. See [DemoRelation].
+     *
+     * The two history events are the same pair [DemoLunicleApi] writes when a visitor
+     * makes a link by hand, each carrying its own side's label — so a visitor opening
+     * either end finds a history that already speaks the new vocabulary rather than one
+     * that only starts to after they touch something.
+     */
+    fun relate(from: DemoIssue, kind: DemoRelationKind, to: DemoIssue, author: DemoUser, daysAgoValue: Int) {
+        p.relations.add(DemoRelation(w.allocId(), from.id, to.id, kind.id))
+        p.events.add(
+            DemoEvent(
+                w.allocId(), from.id, IssueEventKind.RELATION_ADDED, "${p.prefix}-${to.number}",
+                authorId = author.id, createdAt = daysAgo(daysAgoValue),
+                relationKind = kind.labelFor(isFromSide = true),
+            ),
+        )
+        p.events.add(
+            DemoEvent(
+                w.allocId(), to.id, IssueEventKind.RELATION_ADDED, "${p.prefix}-${from.number}",
+                authorId = author.id, createdAt = daysAgo(daysAgoValue),
+                relationKind = kind.labelFor(isFromSide = false),
+            ),
+        )
     }
 
     // ── Closed (Done, mostly) ─────────────────────────────────────────────────
@@ -369,8 +453,12 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stTest, priority = prHigh, author = laforge, assignee = laforge,
         labels = listOf(lbFeature), components = listOf(cmGraphics), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 12, updatedDaysAgo = 3,
+        estimate = workingTime(days = 1),
     )
     event(issWarpStars, IssueEventKind.STATUS_CHANGED, laforge, 3, value = "Ready for test")
+    // The planned release, moved on the record (LNL-215) — one of the three fields that
+    // used to change without leaving a trace anywhere.
+    event(issWarpStars, IssueEventKind.PLANNED_VERSION_CHANGED, janeway, 10, value = "0.5 — Vertical Slice")
     comment(issWarpStars, riker, "Looks fantastic. One nit: the snap-back is a frame too abrupt.", 3)
     comment(issWarpStars, laforge, "> Will: snap-back too abrupt\n\nEasing it over three frames. Will push a build.", 2)
 
@@ -381,6 +469,7 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stTest, priority = prNormal, author = kim, assignee = kim,
         labels = listOf(lbFeature), components = listOf(cmEngine), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 10, updatedDaysAgo = 4,
+        estimate = workingTime(hours = 6),
     )
     event(issSaveFloppy, IssueEventKind.STATUS_CHANGED, kim, 4, value = "Ready for test")
     comment(issSaveFloppy, tuvok, "I inserted a write-protected disk. It informed me politely. Acceptable.", 4)
@@ -394,6 +483,7 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stProgress, priority = prVeryHigh, author = janeway, assignee = worf,
         labels = listOf(lbFeature), components = listOf(cmEngine), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 16, updatedDaysAgo = 1,
+        estimate = workingTime(days = 3),
     )
     event(issPhaserCombat, IssueEventKind.ASSIGNEE_CHANGED, janeway, 15, value = "Worf")
     comment(issPhaserCombat, worf, "The beam renders. Today it does no damage. Tomorrow it will.", 2)
@@ -405,6 +495,7 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stProgress, priority = prHigh, author = janeway, assignee = data,
         labels = listOf(lbFeature), components = listOf(cmUI), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 15, updatedDaysAgo = 1,
+        estimate = workingTime(days = 2, hours = 4),
     )
     comment(issBridgeUI, troi, "The palette feels right. It reads as LCARS at a glance.", 3)
 
@@ -415,6 +506,7 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stProgress, priority = prHigh, author = torres, assignee = torres,
         labels = listOf(lbImprovement, lbCodebase), components = listOf(cmGraphics, cmEngine), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 9, updatedDaysAgo = 1,
+        estimate = workingTime(days = 1, hours = 4),
     )
     comment(issSpriteMux, laforge, "Watch the DMA contention on the left edge — that's where it bit us last time.", 2)
 
@@ -426,6 +518,15 @@ internal fun seedDemoWorld(): DemoWorld {
         labels = listOf(lbImprovement), components = listOf(cmMemory), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 8, updatedDaysAgo = 1,
         agentName = "Claude Code",
+        estimate = workingTime(days = 2),
+        // Handed to Seven's **agent** rather than to Seven (LNL-215) — instrumenting a
+        // free-memory figure and watching it across a session is exactly the errand you
+        // send a robot on. Two different facts about agents meet on this one card and it
+        // is worth knowing which is which: `agentName` above says an agent has already
+        // touched this issue, and this says the work is addressed to one. The board draws
+        // the second as a badge on Seven's initials, so both need an assignee to exist —
+        // hence the pairing rather than a flag on its own.
+        assigneeIsAgent = true,
     )
     comment(issMemoryBudget, seven, "We are at 471K of 512K. There is no margin for sentiment.", 1)
     comment(issMemoryBudget, janeway, "> Seven: no margin for sentiment\n\nUnderstood. Let's find the fat.", 1)
@@ -439,6 +540,7 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stReady, priority = prHigh, author = worf, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmEngine), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 7, updatedDaysAgo = 6,
+        estimate = workingTime(hours = 4),
     )
     val issShields = issue(
         title = "Shield energy model and the shield-hit flash",
@@ -447,6 +549,7 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stReady, priority = prNormal, author = worf, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmEngine), sprint = sprint4,
         plannedVersion = verSlice, createdDaysAgo = 7, updatedDaysAgo = 6,
+        estimate = workingTime(hours = 6),
     )
     val issLcarsPanel = issue(
         title = "LCARS panel frame — the elbow corners",
@@ -454,7 +557,7 @@ internal fun seedDemoWorld(): DemoWorld {
             "the bridge-UI epic.",
         status = stReady, priority = prNormal, author = data, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmUI), sprint = sprint4,
-        createdDaysAgo = 6, updatedDaysAgo = 6,
+        createdDaysAgo = 6, updatedDaysAgo = 6, estimate = workingTime(hours = 3),
     )
     val issWarpGauge = issue(
         title = "Warp-core status gauge on the bridge UI",
@@ -462,6 +565,7 @@ internal fun seedDemoWorld(): DemoWorld {
             "bridge-UI epic.",
         status = stReady, priority = prLow, author = data, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmUI), createdDaysAgo = 6, updatedDaysAgo = 6,
+        estimate = workingTime(hours = 2, minutes = 30),
     )
     val issRedAlert = issue(
         title = "Red-alert klaxon and screen tint",
@@ -470,6 +574,9 @@ internal fun seedDemoWorld(): DemoWorld {
         status = stReady, priority = prNormal, author = kim, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmAudio, cmUI), plannedVersion = verSlice,
         createdDaysAgo = 5, updatedDaysAgo = 5,
+        // Under an hour, so this is the card that proves the renderer normalises rather
+        // than always printing days — it reads "45m" where the epic beside it reads "3d".
+        estimate = workingTime(minutes = 45),
     )
     comment(issRedAlert, kim, "Three channels for the MOD, one for the klaxon. It'll fit.", 5)
 
@@ -479,6 +586,7 @@ internal fun seedDemoWorld(): DemoWorld {
             "and debounce fire so one press is one shot.",
         status = stReady, priority = prHigh, author = riker, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmEngine), createdDaysAgo = 5, updatedDaysAgo = 5,
+        estimate = workingTime(hours = 3),
     )
 
     // ── Backlog ───────────────────────────────────────────────────────────────
@@ -578,6 +686,8 @@ internal fun seedDemoWorld(): DemoWorld {
         fixedVersion = verSlice, createdDaysAgo = 13, updatedDaysAgo = 5,
     )
     event(issStarfield, IssueEventKind.STATUS_CHANGED, laforge, 5, value = "Closed")
+    // The release it actually shipped in, stamped as it was closed (LNL-215).
+    event(issStarfield, IssueEventKind.FIXED_VERSION_CHANGED, laforge, 5, value = "0.5 — Vertical Slice")
     comment(issStarfield, riker, "Depth reads beautifully. It finally feels like space.", 5)
 
     val issShipSprite = issue(
@@ -648,7 +758,7 @@ internal fun seedDemoWorld(): DemoWorld {
             "peel away and come around. Enough to make combat feel alive.",
         status = stProgress, priority = prVeryHigh, author = janeway, assignee = tuvok,
         labels = listOf(lbFeature), components = listOf(cmEngine), sprint = sprint4, plannedVersion = verSlice,
-        createdDaysAgo = 9, updatedDaysAgo = 1,
+        createdDaysAgo = 9, updatedDaysAgo = 1, estimate = workingTime(days = 4),
     )
     comment(issEnemyAI, tuvok, "The Kazon shuttle now strafes competently. It is, regrettably, still a Kazon.", 1)
 
@@ -707,8 +817,13 @@ internal fun seedDemoWorld(): DemoWorld {
             "resists it. The set-piece the slice builds to.",
         status = stTriage, priority = prHigh, author = janeway, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmEngine, cmGraphics), sprint = sprint4, createdDaysAgo = 6, updatedDaysAgo = 6,
+        estimate = workingTime(days = 5),
     )
     comment(issBorgCube, seven, "Adaptation is straightforward. Resistance is the interesting part.", 5)
+    // Scheduled into the active sprint on the record (LNL-215) — the second most common
+    // thing anybody does to a sprint, and until this event kind existed the history was
+    // silent about it.
+    event(issBorgCube, IssueEventKind.SPRINT_CHANGED, janeway, 6, value = "Sprint 4 — Bridge & Combat")
 
     val issDifficulty = issue(
         title = "Per-sector difficulty scaling",
@@ -1040,6 +1155,34 @@ internal fun seedDemoWorld(): DemoWorld {
     makeChild(issBridgeUI, issWarpGauge, 1)
     makeChild(issBridgeUI, issHullReadout, 2)
     makeChild(issBridgeUI, issViewscreen, 3)
+
+    // ── Relations (LNL-215): what depends on what, and what says the same thing ──
+    //
+    // Six links across the three seeded kinds, chosen so that every state the feature can
+    // be in is on the board at once rather than described in a comment:
+    //
+    //  - **A genuinely blocked card.** The Borg cube is a large multi-sprite boss and the
+    //    sprite multiplexer that would let it exist is still In progress, so the cube
+    //    dims and wears its blocker's key. This is the one link on the board that changes
+    //    how something looks.
+    //  - **A blocker that has since closed.** The klaxon-ducking bug waited on the audio
+    //    channel arbiter, which shipped in Sprint 3 — so the link is still there and the
+    //    card is *not* blocked. That contrast is the whole of the rule "open means the
+    //    blocker's status does not require a resolution", made visible: two cards with a
+    //    Blocked by link and only one of them grey.
+    //  - **Both duplicate links say out loud what a comment on each already says.** Two
+    //    issues here were closed as Duplicate with a comment naming what they duplicate;
+    //    until this feature that reference was prose, and now it is a link.
+    //  - **A symmetric pair.** The A1200 boot crash and the magenta torpedo are the same
+    //    AGA-versus-OCS misunderstanding wearing two hats — neither causes the other, so
+    //    "Related to" reads the same word from both ends. See DemoRelationKind, where a
+    //    null inverse IS the symmetry.
+    relate(issBorgCube, rkBlockedBy, issSpriteMux, janeway, 5)
+    relate(issMusicDuck, rkBlockedBy, issChannelArbiter, kim, 1)
+    relate(issDup, rkDuplicateOf, issDoubleBuffer, torres, 21)
+    relate(issOldDup, rkDuplicateOf, issSpriteMux, torres, 22)
+    relate(issCrashOnA1200, rkRelatedTo, issTorpedoColour, chakotay, 1)
+    relate(issInputLag, rkRelatedTo, issJoystick, riker, 2)
 
     // ── Notifications — a handful unread so the bell pulses on load ───────────
 

@@ -1,0 +1,147 @@
+-- The ways two issues in a project can be said to be related — per project,
+-- ordered, and editable by a project administrator (LNL-215).
+--
+-- ── Why this is vocabulary and not an enum ──────────────────────────────────
+--
+-- Because "Blocked by / Duplicate of / Related to" is a *house style*, not a
+-- domain truth. One team wants "Caused by", another wants "Supersedes", and a
+-- third wants none of it. That is the identical argument statuses, priorities and
+-- resolutions already won here: the tracker owns the mechanism and the project
+-- owns the words. So this is the eighth kind in `VocabularyKind` and reaches every
+-- one of its verbs — add, rename, reorder, delete — through the same
+-- `VocabularyRepository`, with the same `position` and the same `setPosition`
+-- below, rather than through a parallel path that would have to grow its own
+-- conflict handling.
+--
+-- It was also built BEFORE the relations that use it, deliberately. Shipping
+-- relations against a hardcoded enum first and turning it into vocabulary
+-- afterwards would mean migrating live relation rows from an enum string to a kind
+-- id *and* re-interpreting the history column that names the kind — a migration
+-- avoided entirely by doing it in this order. See IssueRelations.sq.
+--
+-- ── What is deliberately NOT here ───────────────────────────────────────────
+--
+-- Parent/child. Hierarchy stays a built-in concept on `issues.parent_id`, and is
+-- not a row anybody may rename or delete. It is singular, exclusive, ordered and
+-- validated: as a column, "at most one parent" is free and the schema cannot
+-- express otherwise, while as a relation row it would need a partial unique index
+-- SQLite supports and **Firestore cannot enforce at all**, moving the guarantee
+-- entirely into application code on the backend with no transactional uniqueness.
+-- `child_order` would also become a column exactly one kind ever used. Relations
+-- are added ALONGSIDE hierarchy; see Issues.sq's parent_id.
+
+CREATE TABLE issue_relation_kinds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+
+    -- The **from**-side label: "Blocked by". Read as a sentence about the issue
+    -- the relation row is stored FROM — "this issue is Blocked by that one".
+    --
+    -- COLLATE NOCASE and UNIQUE per project like every other vocabulary name here,
+    -- with the same ~95% caveat: NOCASE folds ASCII A–Z only, so the Unicode-aware
+    -- fold in VocabularyRepository.validateName is what actually settles
+    -- "Färdig"/"färdig". See Statuses.sq.
+    --
+    -- Note the uniqueness the application enforces is WIDER than this index: a name
+    -- must not collide with another kind's `inverse_name` either, so that the picker
+    -- can never offer two identical labels and "Blocks" cannot be one kind's inverse
+    -- and another kind's name. That cross-column rule spans two columns of two rows
+    -- and is checked in VocabularyRepository, which is where every other rule SQLite
+    -- cannot express already lives.
+    name TEXT NOT NULL COLLATE NOCASE,
+
+    -- The **to**-side label: "Blocks". NULL means the kind reads the SAME in both
+    -- directions — "Related to" — and that is the whole encoding of symmetry.
+    --
+    -- One nullable column rather than a separate `is_symmetric` flag beside a
+    -- possibly-stale second name, in the same idiom as a NULL `resolution_id`
+    -- meaning "not in a closing column": the absence IS the fact, so there is no
+    -- pair of columns that can disagree with each other. A symmetric kind renders
+    -- `name` on both sides, and the reader never has to ask which of two fields to
+    -- believe.
+    inverse_name TEXT COLLATE NOCASE,
+
+    -- Whether an issue on the **from** side of one of these relations counts as
+    -- BLOCKED, and is marked as such on the board.
+    --
+    -- A flag rather than `name = 'Blocked by'`, for exactly the reason
+    -- `statuses.requires_resolution` is a flag: the seed names the row and an admin
+    -- may rename it, so a rule keyed on the name would switch itself off silently
+    -- the moment somebody typed "Blocked on" instead. It also lets a project mark a
+    -- second kind blocking — "Waiting for", say — which costs nothing here.
+    --
+    -- What it does NOT say is whether a given issue is blocked *right now*. Being
+    -- blocked also requires the issue on the TO side to still be open, which is a
+    -- fact about that issue's status and cannot live on this row. See
+    -- BoardRoutes.buildBoard, which is where the two are combined.
+    marks_blocked INTEGER NOT NULL DEFAULT 0,
+
+    -- The sort rank, 0 first, as every vocabulary table has carried since 8.sqm.
+    -- No UNIQUE constraint, for VocabularyRepository.reorder's reason: every swap
+    -- passes through a duplicate on its way, so the constraint would refuse the
+    -- legal intermediate state of every reorder.
+    position INTEGER NOT NULL,
+
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name),
+    -- The target of `issue_relations`' composite foreign key: a relation may only
+    -- use a kind belonging to its own project, and the database refuses the row
+    -- otherwise. See IssueRelations.sq's kind_id — this is the guarantee an enum
+    -- could never have given.
+    UNIQUE (id, project_id)
+);
+
+-- Add a kind. Named at the end of the order by the caller's `position`, like every
+-- other vocabulary — see VocabularyRepository.add for why the end and never the
+-- front. A new kind is symmetric-by-default (`inverse_name` NULL) and non-blocking,
+-- both of which the settings row then edits: `marks_blocked` is the most
+-- consequential switch here — it decides which cards go grey on the board — and
+-- defaulting it on would arm it by accident, exactly as a new status never demands
+-- a resolution.
+insert:
+INSERT INTO issue_relation_kinds (project_id, name, inverse_name, marks_blocked, position)
+VALUES (?, ?, ?, ?, ?);
+
+-- Name, inverse name and flag together, for Statuses.sq's `update` reason: the
+-- settings row edits all three at once, and separate writes would each be able to
+-- fail on their own — leaving a kind renamed but still marking cards blocked, or
+-- carrying an inverse name for a direction it no longer has.
+--
+-- `position` is deliberately absent: it is written by `setPosition` over a whole
+-- project at once inside one transaction, and a rename that also carried a position
+-- would let the two disagree.
+update:
+UPDATE issue_relation_kinds SET name = ?, inverse_name = ?, marks_blocked = ? WHERE id = ?;
+
+-- One row's place in the order. Only ever called from inside the transaction that
+-- rewrites a whole project's positions; see Statuses.sq's setPosition.
+setPosition:
+UPDATE issue_relation_kinds SET position = ? WHERE id = ?;
+
+-- Delete a kind, and CASCADE the relations that used it.
+--
+-- Cascade rather than RESTRICT, and rather than the SET NULL a version takes.
+-- The three answers are genuinely different: a status cannot go while issues sit in
+-- it (there is nowhere for them to be), a version releases its issues (an issue
+-- without a fixed version is a normal issue), and a relation row without its kind is
+-- **nothing at all** — it would be two issue ids and no statement about them. So it
+-- goes with the kind.
+--
+-- The count is still shown before the fact. VocabularyRepository reads
+-- `usageByRelationKind` and puts it in the confirmation, exactly as it does for a
+-- sprint or a version: the cascade is a consequence to warn about, not a reason to
+-- refuse.
+delete:
+DELETE FROM issue_relation_kinds WHERE id = ?;
+
+findByIdInProject:
+SELECT id, project_id, name, inverse_name, marks_blocked, position FROM issue_relation_kinds
+WHERE id = ? AND project_id = ?;
+
+-- The whole vocabulary for one project, in render order. The board's blocked
+-- projection reads this too rather than a narrower "only the blocking kinds" query:
+-- it needs the full list anyway for the relation picker, and one read that serves
+-- both is cheaper than two that each serve one.
+forProject:
+SELECT id, project_id, name, inverse_name, marks_blocked, position FROM issue_relation_kinds
+WHERE project_id = ? ORDER BY position;

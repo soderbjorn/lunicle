@@ -42,10 +42,14 @@ import se.soderbjorn.lunicle.clientserver.tooLargeMessage
 import se.soderbjorn.lunicle.client.userMessage
 import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.CommentView
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
 import se.soderbjorn.lunicle.clientserver.IssueEventView
 import se.soderbjorn.lunicle.clientserver.IssueDetail
 import se.soderbjorn.lunicle.clientserver.IssueRef
+import se.soderbjorn.lunicle.clientserver.IssueRelationKindItem
+import se.soderbjorn.lunicle.clientserver.IssueRelationView
 import se.soderbjorn.lunicle.clientserver.SprintItem
 import se.soderbjorn.lunicle.clientserver.StatusItem
 import se.soderbjorn.lunicle.clientserver.UserOption
@@ -68,6 +72,69 @@ enum class CloseConfirm {
 
     /** The user toggled the Edit button back toward read mode. */
     LeaveEdit,
+}
+
+/**
+ * One heading's worth of links in the issue window's relations list (LNL-215).
+ *
+ * ── Why the key is the kind AND the label, not the kind alone ────────────────
+ *
+ * [IssueRelationView.kindId] is documented as the thing to group on, and it is *half*
+ * the answer: grouping on the rendered word instead would silently merge two distinct
+ * kinds that happen to read alike from one side ("Blocked by" and a second, softer
+ * "Blocked by"). But the kind alone is not enough either, and the failure is the more
+ * common of the two — one issue can sit on **both** ends of the same kind. A ticket
+ * that is blocked by LNL-9 and blocks LNL-4 has two relations with one `kindId` and
+ * two different labels, and a kind-only grouping would file them under one heading
+ * that is wrong for half its rows.
+ *
+ * So the key is the pair, which satisfies both concerns at once: different kinds stay
+ * apart because their ids differ, and the two directions of one kind stay apart
+ * because their labels do.
+ *
+ * @property label the word this whole group is headed by — this issue's side of the
+ *   link, resolved server-side. Taken from the group's first row, which is safe
+ *   precisely because the label is part of the key.
+ */
+data class RelationGroup(
+    val kindId: Long,
+    val label: String,
+    val relations: List<IssueRelationView>,
+)
+
+/**
+ * A run of history events that share one attribution (LNL-215, G3).
+ *
+ * One save that changes four fields writes four events, and rendering a byline under
+ * each of them repeats the same name and the same timestamp four times — a history
+ * where the loudest thing on screen is who you are, said over and over. Grouping the
+ * run and showing the attribution once is a **render** change and nothing more: no
+ * schema, no new kind, no server involvement. The events are still four rows in the
+ * table and still four sentences on screen; only the byline is folded.
+ *
+ * ── Exact-equality grouping, and why that is not too strict ──────────────────
+ *
+ * The run is cut wherever the author, the agent or the timestamp changes, compared
+ * exactly rather than within a tolerance. That works because `IssueEventStore.append`
+ * stamps `created_at` **once per batch**, so every event a single save writes carries
+ * the identical instant — verified rather than assumed.
+ *
+ * Where a gesture legitimately writes through more than one call, the stamps
+ * legitimately differ and the events legitimately show separate bylines: a reparent
+ * writes on the child and on the epic, and adding a relation writes on both issues.
+ * Those are two things happening, from this issue's point of view at two moments, and
+ * a tolerance window that glued them together would be inventing a batch that never
+ * existed. Exact equality is therefore the correct rule and not merely the cheap one.
+ *
+ * @property events the run, in the order the history sends them — oldest first.
+ */
+data class HistoryBlock(val events: List<IssueEventView>) {
+    /**
+     * The event whose byline speaks for the block. The first, arbitrarily among equals
+     * — every event in a block agrees about the author, the agent and the instant, which
+     * is what made them a block.
+     */
+    val attribution: IssueEventView get() = events.first()
 }
 
 /**
@@ -193,6 +260,18 @@ class IssueBackingViewModel(
         val fixedVersionId: Long?,
         val labelIds: Set<Long>,
         val componentIds: Set<Long>,
+        /**
+         * Whether the work goes to the assignee's agent, and how much work it is
+         * (LNL-215).
+         *
+         * Both are staged like the assignee and for its reason: both are controls in
+         * the editor, so ticking "assign to their agent" or typing an estimate and then
+         * closing the window has to raise the same Save / Discard question typing a
+         * title does. Note the *relations* are deliberately NOT here — they write
+         * immediately through their own route, as reparenting does.
+         */
+        val assigneeIsAgent: Boolean,
+        val estimate: Estimate?,
     )
 
     data class State(
@@ -272,10 +351,49 @@ class IssueBackingViewModel(
         val parentCandidates: List<IssueRef> = emptyList(),
         /** Issues offerable as a *child* of this epic — not already a child, not themselves an epic. */
         val childCandidates: List<IssueRef> = emptyList(),
+        /**
+         * Every issue in this project this caller could link to, as the server sent it
+         * (LNL-215). Empty unless [canEdit]; see IssueDetail.linkableIssues.
+         *
+         * Held RAW here, unlike [parentCandidates] and [childCandidates], which are
+         * narrowed once when the issue lands. Those two answer a fixed question, so
+         * pre-computing them is free. The relation picker's candidate set depends on
+         * which *kind* the add control is set to — a choice made with no round-trip and
+         * changed as often as the user likes — so narrowing at load time would produce a
+         * list that is wrong the moment the kind is switched. See [relationCandidates].
+         */
+        val linkableIssues: List<IssueRef> = emptyList(),
         /** The unanswered "detach from parent?" question. See [onRemoveParentRequested]. */
         val confirmingRemoveParent: Boolean = false,
         /** The child whose removal from this epic is being asked about, or null. */
         val confirmingRemoveChildId: Long? = null,
+        /**
+         * This issue's links to other issues, both directions, already resolved to this
+         * issue's side (LNL-215). Not a staged [Fields] member: a link writes
+         * immediately through its own route and folds the server's truth back, exactly
+         * as reparenting does — so it moves the baseline rather than dirtying it, and
+         * the close question has no claim on it.
+         */
+        val relations: List<IssueRelationView> = emptyList(),
+        /**
+         * The kinds of link this project offers, for the add control. **Empty unless
+         * [canEdit]** — the server narrows it, for the reason [assignableUsers] is
+         * narrowed — and empty for a project whose kinds have all been deleted, which is
+         * what hides the add control entirely. The emptiness-is-the-flag contract
+         * [showsSprint] keeps, applied one feature over.
+         */
+        val relationKinds: List<IssueRelationKindItem> = emptyList(),
+        /**
+         * Which kind the add control is currently set to, or null before anything has
+         * been chosen (in which case the first kind is used — see [relationKindSelectedId]).
+         *
+         * Held rather than read off the picker because the two halves of that control —
+         * "what kind of link" and "to which issue" — are answered in either order, and
+         * the kind has to survive the issue picker being typed into and cleared.
+         */
+        val relationKindId: Long? = null,
+        /** The link whose removal is being asked about, or null. [confirmingRemoveChildId]'s shape. */
+        val confirmingRemoveRelationId: Long? = null,
         /**
          * Whether the caller has an e-mail to send to. The toggle is hidden
          * without one — a switch promising mail we cannot send is a dead control.
@@ -332,7 +450,139 @@ class IssueBackingViewModel(
          * every one of them as the text it was written as.
          */
         val gitHubRepository: String? = null,
+        /**
+         * Whether the work goes to [assigneeId]'s agent rather than to them in person
+         * (LNL-215). Staged like the assignee; see [Fields.assigneeIsAgent].
+         */
+        val assigneeIsAgent: Boolean = false,
+        /** How much work this is, or null because nobody has said (LNL-215). Staged. */
+        val estimate: Estimate? = null,
+        /**
+         * The project's estimate mode as its wire key — `none`, `time` or `points`
+         * (LNL-215).
+         *
+         * The **key** rather than the decoded [EstimateMode], for the reason
+         * `ProjectSummary.estimateMode` carries it that way: a value from a newer server
+         * has to survive this far without failing, and [estimateMode] below is where it
+         * is folded to something this build can render. Defaults to `none`, so a state
+         * that has not loaded yet — and a project made before the column existed — offers
+         * no estimate control at all.
+         */
+        val estimateModeKey: String = EstimateMode.NONE.key,
     ) {
+        /**
+         * What the estimate control should offer. [EstimateMode.NONE] renders **nothing
+         * at all** — no cell, no popover, no greyed field — which is the whole promise
+         * this feature makes to the projects that will never configure it.
+         */
+        val estimateMode: EstimateMode get() = EstimateMode.fromKey(estimateModeKey)
+
+        /** Whether to render the estimate cell at all. The emptiness-is-the-flag rule again. */
+        val showsEstimate: Boolean get() = estimateMode != EstimateMode.NONE
+
+        /**
+         * The links, grouped for rendering — one heading per direction of per kind.
+         *
+         * Ordered by the kind's own position where this caller was sent the kinds, and by
+         * first appearance where they were not: a **reader** gets an empty
+         * [relationKinds] (the server narrows it to editors), so ordering that insisted on
+         * the vocabulary would collapse to arbitrary for exactly the people who cannot
+         * change anything about it. Falling back to encounter order at least keeps the
+         * list stable between renders, since the server sends the relations in a stable
+         * order of its own.
+         *
+         * See [RelationGroup] for why the key is the kind *and* the label.
+         */
+        val relationGroups: List<RelationGroup> get() {
+            val positions = relationKinds.associate { it.id to it.position }
+            return relations
+                .groupBy { it.kindId to it.label }
+                .map { (key, rows) -> RelationGroup(kindId = key.first, label = key.second, relations = rows) }
+                .sortedBy { positions[it.kindId] ?: Int.MAX_VALUE }
+        }
+
+        /**
+         * Whether to offer the add-a-link control: this caller may edit the issue, and
+         * the project has at least one kind to link under.
+         *
+         * The two conditions are one on the wire — [relationKinds] is empty for a
+         * non-editor — but they are separate facts and are written as such, because a
+         * project whose administrator deleted every kind must hide this from an editor
+         * too, and reading that off the same emptiness would be an accident that happens
+         * to work.
+         */
+        val showsRelationControls: Boolean get() = canEdit && relationKinds.isNotEmpty()
+
+        /**
+         * The kind the add control is set to. The explicit choice, else the first kind —
+         * never null while [showsRelationControls], so the control always names something
+         * and "add a link" never means "add a link of no kind".
+         */
+        val relationKindSelectedId: Long?
+            get() = relationKindId?.takeIf { id -> relationKinds.any { it.id == id } }
+                ?: relationKinds.firstOrNull()?.id
+
+        /**
+         * The issues this link could point at: everything linkable, less this issue and
+         * less whatever is already linked under the chosen kind.
+         *
+         * "Under the chosen kind" and not "at all", because the same two issues may
+         * legitimately be related twice in two different ways — LNL-4 can both block
+         * LNL-9 and duplicate it. The server refuses a duplicate pair under **one** kind
+         * in either direction, so excluding the far end of every existing link of that
+         * kind — whichever side this issue is on — is exactly the server's rule and not a
+         * stricter one. Everything else here is an affordance; the write is re-checked.
+         */
+        val relationCandidates: List<IssueRef> get() {
+            val kindId = relationKindSelectedId
+            val taken = relations.filter { it.kindId == kindId }.map { it.other.id }.toSet()
+            // Excluded by NUMBER, not by id, because this state carries the issue's
+            // number and not its id — and within one project the two identify the same
+            // row. A number of 0 (a state that has not loaded) matches nothing, which is
+            // the right answer for a list nobody is looking at yet.
+            return linkableIssues.filter { it.number != number && it.id !in taken }
+        }
+
+        /** "Remove the Blocked by link to LMX-9?" — the relations list's confirmation. */
+        val confirmRemoveRelationMessage: String get() {
+            val relation = relations.firstOrNull { it.id == confirmingRemoveRelationId }
+            val other = relation?.let { "$prefix-${it.other.number}" } ?: "that issue"
+            val label = relation?.label ?: "link"
+            return "Remove the \"$label\" link to $other? Both issues stay; only the link between " +
+                "them goes."
+        }
+
+        /**
+         * Consecutive history events that share an author, an agent and an instant, as
+         * one block apiece (LNL-215, G3). See [HistoryBlock] for the whole argument,
+         * including why the timestamps are compared exactly.
+         *
+         * `fold` rather than a hand-rolled index loop: the rule is "extend the current
+         * run or start a new one", which is what a fold over a list of runs says
+         * literally.
+         */
+        val historyBlocks: List<HistoryBlock> get() =
+            history.fold(mutableListOf<MutableList<IssueEventView>>()) { blocks, event ->
+                val run = blocks.lastOrNull()
+                if (run != null && run.last().sharesAttributionWith(event)) run.add(event)
+                else blocks.add(mutableListOf(event))
+                blocks
+            }.map { HistoryBlock(it.toList()) }
+
+        /**
+         * Whether two events were written by the same hand at the same instant.
+         *
+         * The agent is part of the test and not an afterthought: the same person can
+         * save by hand and, in the same second, have their agent save through MCP, and
+         * a block that folded those together would attribute one of them to the wrong
+         * actor. It costs nothing to compare and it is the field most likely to differ
+         * between two events that agree about everything else.
+         */
+        private fun IssueEventView.sharesAttributionWith(other: IssueEventView): Boolean =
+            authorName == other.authorName &&
+                agentName == other.agentName &&
+                createdAt == other.createdAt
+
         /** The editable fields as they are on screen right now. */
         val fields: Fields get() = Fields(
             title = title,
@@ -346,6 +596,8 @@ class IssueBackingViewModel(
             fixedVersionId = fixedVersionId,
             labelIds = labelIds,
             componentIds = componentIds,
+            assigneeIsAgent = assigneeIsAgent,
+            estimate = estimate,
         )
 
         /** Whether the caller currently holds this issue. Drives the button's two labels. */
@@ -358,9 +610,21 @@ class IssueBackingViewModel(
          * "nobody is on this" is the fact somebody opens an issue to learn, and a
          * line that disappears when the answer is "nobody" answers it by omission —
          * which reads as a missing feature rather than as information.
+         *
+         * When the work is going to that person's *agent* (LNL-215) the line says so
+         * — "Assigned to Robert's agent" — rather than leaving it to an icon. The read
+         * face has no other place to put the fact, and it changes who is expected to do
+         * the thing, which is precisely what somebody opening an issue is here to learn.
+         * A possessive rather than a parenthetical because the agent is not a second
+         * assignee: it acts through that person's own session, and the issue is still
+         * theirs. Same argument [agentBadge] makes about the word "Agent" being in the
+         * text and not left to a glyph.
          */
-        val assigneeLabel: String get() =
-            assigneeName?.let { "Assigned to $it" } ?: "Unassigned"
+        val assigneeLabel: String get() = when {
+            assigneeName == null -> "Unassigned"
+            assigneeIsAgent -> "Assigned to $assigneeName's agent"
+            else -> "Assigned to $assigneeName"
+        }
 
         /**
          * "Assign to me" / "Unassign me", or null when the button is not offered.
@@ -671,6 +935,49 @@ class IssueBackingViewModel(
             // IssueEventView.value.
             IssueEventKind.ASSIGNEE_CHANGED ->
                 event.value?.let { "assigned this to $it" } ?: "unassigned this issue"
+            // Null is the event on all four of these too, and each null gets its own
+            // verb rather than a shared "cleared X": "moved this to the backlog" is what
+            // somebody DID, where "cleared the sprint" is what the database saw. The
+            // history is read by the people who were there.
+            IssueEventKind.SPRINT_CHANGED ->
+                event.value?.let { "scheduled this into $it" } ?: "moved this to the backlog"
+            IssueEventKind.PLANNED_VERSION_CHANGED ->
+                event.value?.let { "planned this for $it" } ?: "cleared the planned version"
+            IssueEventKind.FIXED_VERSION_CHANGED ->
+                event.value?.let { "set the fixed version to $it" } ?: "cleared the fixed version"
+            IssueEventKind.PARENT_CHANGED ->
+                event.value?.let { "moved this under $it" } ?: "removed this from its epic"
+            // The epic's own side of a reparent. Its value is the CHILD's key, where
+            // PARENT_CHANGED's is the parent's — see IssueEventKind.PARENT_CHANGED for
+            // the asymmetry, which is not an accident: an issue has one parent and
+            // records a change, an epic has many children and records arrivals.
+            IssueEventKind.CHILD_ADDED -> "added ${event.value ?: "an issue"} as a child"
+            IssueEventKind.CHILD_REMOVED -> "removed ${event.value ?: "an issue"} as a child"
+            // GENERIC, and it has to be: relation kinds are user-defined vocabulary, so
+            // there is no fixed set of them to switch over and no way to write a
+            // sentence per kind. The kind's label is interpolated as the noun phrase it
+            // is — "linked this as Blocked by LNL-9" — which reads correctly for every
+            // name anybody is likely to give a kind, in both directions, because the
+            // label is already this issue's side of the link (see
+            // IssueEventView.relationKind).
+            //
+            // The fallback wording covers a row written before the column existed, or by
+            // a build that did not fill it in; "linked this to LNL-9" is true but
+            // less specific, which is the right way for this to degrade.
+            IssueEventKind.RELATION_ADDED -> describeRelation(event, added = true)
+            IssueEventKind.RELATION_REMOVED -> describeRelation(event, added = false)
+        }
+
+        /** "linked this as Blocked by LNL-9" / "removed the Blocked by link to LNL-9". */
+        private fun describeRelation(event: IssueEventView, added: Boolean): String {
+            val other = event.value ?: "another issue"
+            val kind = event.relationKind
+            return when {
+                added && kind != null -> "linked this as $kind $other"
+                added -> "linked this to $other"
+                kind != null -> "removed the $kind link to $other"
+                else -> "removed the link to $other"
+            }
         }
 
         /**
@@ -758,6 +1065,11 @@ class IssueBackingViewModel(
             children = children,
             parentCandidates = parentCandidatesFrom(linkableIssues, currentParentId = parentId),
             childCandidates = childCandidatesFrom(linkableIssues, currentChildren = children),
+            linkableIssues = linkableIssues,
+            assigneeIsAgent = assigneeIsAgent,
+            estimate = estimate,
+            relations = relations,
+            relationKinds = relationKinds,
             // The freshly fetched fields are the new dirty-baseline: whatever is
             // on screen after this apply is, by definition, unmodified.
             saved = Fields(
@@ -772,6 +1084,8 @@ class IssueBackingViewModel(
                 fixedVersionId = fixedVersionId,
                 labelIds = labelIds.toSet(),
                 componentIds = componentIds.toSet(),
+                assigneeIsAgent = assigneeIsAgent,
+                estimate = estimate,
             ),
             errorMessage = null,
             statuses = board.statuses,
@@ -786,6 +1100,12 @@ class IssueBackingViewModel(
             requireFixedVersionOnResolve = board.project.requireFixedVersionOnResolve,
             canMutateProject = board.permissions.canMutateProject,
             gitHubRepository = board.gitHubRepository,
+            // From the BOARD, not from the issue: the mode is a project setting and
+            // decides only what the editor offers, where the issue's own `estimate`
+            // carries the unit its number was written in. Keeping the two apart is the
+            // whole of why flipping a project from points to time does not silently
+            // reinterpret every estimate already stored. See EstimateUnit.
+            estimateModeKey = board.project.estimateMode,
         )
     }
 
@@ -852,7 +1172,20 @@ class IssueBackingViewModel(
         return linkable.filter { ref -> ref.id !in childIds && ref.id !in epics }
     }
 
-    /** Fold only the epic fields of a fresh detail back into state — see the section preamble. */
+    /**
+     * Fold only the *linking* fields of a fresh detail back into state — see the
+     * section preamble.
+     *
+     * "Only" is the whole point: these writes can land while the editor is open, so
+     * taking the server's whole [IssueDetail] would overwrite a half-typed title with
+     * the copy on disk. What comes back is what the write could have changed.
+     *
+     * Since LNL-215 that set includes the relations, which ride here rather than in a
+     * fold of their own because they keep the identical contract to the epic fields:
+     * written immediately, answered with the refreshed detail, never staged. Two
+     * functions doing the same thing to two adjacent lists would only be two places to
+     * forget `isBusy = false`.
+     */
     private fun State.foldEpic(detail: IssueDetail): State = copy(
         isBusy = false,
         parentId = detail.parentId,
@@ -860,9 +1193,12 @@ class IssueBackingViewModel(
         children = detail.children,
         parentCandidates = parentCandidatesFrom(detail.linkableIssues, detail.parentId),
         childCandidates = childCandidatesFrom(detail.linkableIssues, detail.children),
+        linkableIssues = detail.linkableIssues,
+        relations = detail.relations,
+        relationKinds = detail.relationKinds,
     )
 
-    /** The shared runner: busy-guard, run [block], fold the epic fields, report a board write. */
+    /** The shared runner: busy-guard, run [block], fold the linking fields, report a board write. */
     private fun epicWrite(errorFallback: String, block: suspend () -> IssueDetail) {
         val current = _stateFlow.value
         if (current.isBusy) return
@@ -1287,8 +1623,100 @@ class IssueBackingViewModel(
         }
     }
 
+    /**
+     * The editor's assignee dropdown.
+     *
+     * Choosing somebody **clears** the agent flag, and choosing nobody clears it too.
+     * That is not tidiness: the previous assignee's agent is definitionally not on this
+     * issue any more, and a flag left standing across a hand-over would silently route
+     * the work to a machine belonging to somebody who has just been taken off it. The
+     * server applies the same rule on the write (see Issues.sq); doing it here as well
+     * is what stops the tick sitting there, apparently set, until the next fetch takes
+     * it away.
+     */
     fun onAssigneeChanged(id: Long) {
-        _stateFlow.value = _stateFlow.value.copy(assigneeId = id.takeIf { it != UNASSIGNED_ID })
+        val current = _stateFlow.value
+        val next = id.takeIf { it != UNASSIGNED_ID }
+        _stateFlow.value = current.copy(
+            assigneeId = next,
+            assigneeIsAgent = if (next == null || next != current.assigneeId) false else current.assigneeIsAgent,
+        )
+    }
+
+    /**
+     * "Assign to their agent" (LNL-215).
+     *
+     * Staged like every other editor field rather than written on the click, which is
+     * the difference from the read face's "Assign to me": this control only exists
+     * inside the editor, where there is a Save to press, and a switch that wrote
+     * immediately would be the one field in that form whose change could not be
+     * discarded.
+     *
+     * Refused when nobody holds the issue, because a flag about nobody is not a state
+     * — the same rule [saveCurrent] and the server both apply. The view hides the
+     * control there; this re-checks, because a view model that relies on a view having
+     * hidden a control has an unenforced precondition.
+     */
+    fun onAssigneeIsAgentChanged(value: Boolean) {
+        val current = _stateFlow.value
+        if (current.assigneeId == null && value) return
+        _stateFlow.value = current.copy(assigneeIsAgent = value)
+    }
+
+    /**
+     * The estimate popover committed (LNL-215). Null is "cleared", which is a thing
+     * somebody says on purpose — see EstimateDropdown's Clear button.
+     *
+     * Staged, for [onAssigneeIsAgentChanged]'s reason: the control lives in the editor
+     * beside the fields Save commits, and it belongs to the same Save.
+     */
+    fun onEstimateChanged(estimate: Estimate?) {
+        _stateFlow.value = _stateFlow.value.copy(estimate = estimate)
+    }
+
+    // ── Relations (LNL-215) ──────────────────────────────────────────────────
+    //
+    // Written immediately, never staged, and folded back from the server's answer —
+    // the same contract the epic controls above keep, and for the same reason: a link
+    // is a gesture ("link this to that"), not a field with a value that Save commits.
+    // The consequence is the same too: these move the dirty baseline rather than
+    // dirtying it, so linking something and then closing the window asks nothing.
+
+    /** The add control's kind picker moved. Changes what [State.relationCandidates] offers. */
+    fun onRelationKindChosen(kindId: Long) {
+        _stateFlow.value = _stateFlow.value.copy(relationKindId = kindId)
+    }
+
+    /**
+     * The add control's issue picker chose somebody — link this issue to it, under the
+     * kind currently selected.
+     *
+     * Posted to THIS issue's id, so this issue is the link's *from* side and the labels
+     * fall out accordingly: picking "Blocked by" and LNL-9 makes this issue read
+     * "Blocked by LNL-9" and LNL-9 read "Blocks" this one. See IssueRelationRequest.
+     */
+    fun onRelationAdded(otherIssueId: Long) {
+        val kindId = _stateFlow.value.relationKindSelectedId ?: return
+        epicWrite("Could not link those issues.") {
+            storage.addIssueRelation(issueId, otherIssueId, kindId)
+        }
+    }
+
+    /** Ask before unlinking. The child-removal gesture, one feature over. */
+    fun onRemoveRelationRequested(relationId: Long) {
+        val current = _stateFlow.value
+        if (current.isBusy) return
+        _stateFlow.value = current.copy(confirmingRemoveRelationId = relationId)
+    }
+
+    fun onRemoveRelationConfirmed() {
+        val relationId = _stateFlow.value.confirmingRemoveRelationId ?: return
+        _stateFlow.value = _stateFlow.value.copy(confirmingRemoveRelationId = null)
+        epicWrite("Could not remove that link.") { storage.removeIssueRelation(issueId, relationId) }
+    }
+
+    fun onRemoveRelationCancelled() {
+        _stateFlow.value = _stateFlow.value.copy(confirmingRemoveRelationId = null)
     }
 
     /**
@@ -1411,6 +1839,12 @@ class IssueBackingViewModel(
             fixedVersionId = current.fixedVersionId,
             labelIds = current.labelIds.toList(),
             componentIds = current.componentIds.toList(),
+            // Forced false when nobody holds the issue, before it is sent. The server
+            // does this too and its answer is the one that counts — but sending a flag
+            // about nobody and having it quietly dropped would leave the editor showing
+            // a tick that the next fetch removes, which reads as the save losing an edit.
+            assigneeIsAgent = current.assigneeIsAgent && current.assigneeId != null,
+            estimate = current.estimate,
         )
     }
 

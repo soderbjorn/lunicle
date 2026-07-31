@@ -47,7 +47,11 @@ class FirestoreIssueStoreContractTest : IssueStoreContract() {
 
     override suspend fun fileIssue(project: Seeded, statusId: Long): Long {
         val (id, _) = store.insertDraft(project.projectId, "Issue", statusId, project.priorityId, Author.Nobody)
-        store.publish(id, "Issue $id", "", statusId, project.priorityId, null, null, null, null, null)
+        store.publish(
+            id, "Issue $id", "", statusId, project.priorityId, null,
+            assigneeId = null, assigneeIsAgent = false,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null, estimate = null,
+        )
         return id
     }
 

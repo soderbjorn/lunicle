@@ -35,7 +35,11 @@ class FirestoreStatisticsStoreContractTest : StatisticsStoreContract() {
         val statusId = ++seq
         val priorityId = ++seq
         val (id, _) = issues.insertDraft(projectId, "Issue", statusId, priorityId, Author.Nobody)
-        issues.publish(id, "Issue $id", "", statusId, priorityId, null, null, null, null, null)
+        issues.publish(
+            id, "Issue $id", "", statusId, priorityId, null,
+            assigneeId = null, assigneeIsAgent = false,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null, estimate = null,
+        )
     }
 
     @BeforeTest

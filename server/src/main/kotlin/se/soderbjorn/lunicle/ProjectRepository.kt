@@ -79,6 +79,44 @@ internal val DEFAULT_PRIORITIES = listOf(
 internal val DEFAULT_RESOLUTIONS = listOf("Done", "Will not fix", "Duplicate")
 
 /**
+ * One seeded relation kind: a from-side label, a to-side label, and whether it marks
+ * the from side blocked (LNL-215).
+ *
+ * A triple rather than a bare list of names, because unlike every other vocabulary
+ * here a relation kind is not just a word — it is a word, its opposite, and a flag,
+ * and two of the three defaults differ per row. Nullable [inverse] is symmetry; see
+ * IssueRelationKinds.sq.
+ */
+internal data class SeededRelationKind(val name: String, val inverse: String?, val marksBlocked: Boolean)
+
+/**
+ * The relation kinds every new project starts with.
+ *
+ * Three, chosen because between them they cover what trackers are actually asked for:
+ * a dependency, a de-duplication, and a catch-all. All three are ordinary vocabulary
+ * from the moment the project exists — renameable, reorderable, deletable — so this
+ * list is a starting point rather than a set of built-ins.
+ *
+ * **Copied into 36.sqm**, which seeds the same three into every project that existed
+ * before relation kinds did. That is the one real back-fill in LNL-215, and it is not
+ * a convenience: a project with no kinds cannot create a relation at all, so an
+ * unmigrated project would lose the feature outright rather than start it empty. Same
+ * drift hazard as 4.sqm's copy of [DEFAULT_STATUSES], and the same answer — it is
+ * written down in both places and has to be changed in both. Firestore gets the same
+ * three through its own backfill.
+ *
+ * Only the first marks blocked. "Duplicate of" deliberately does not: an issue that
+ * duplicates another is not waiting on it, it *is* it, and dimming both halves of
+ * every duplicate pair would grey a board for no reason anybody could act on.
+ */
+internal val DEFAULT_RELATION_KINDS = listOf(
+    SeededRelationKind("Blocked by", "Blocks", marksBlocked = true),
+    SeededRelationKind("Duplicate of", "Duplicated by", marksBlocked = false),
+    // Symmetric: null inverse, so it reads "Related to" from both ends.
+    SeededRelationKind("Related to", null, marksBlocked = false),
+)
+
+/**
  * The seeded status that demands a resolution.
  *
  * Named here, once, at the only moment naming it is safe: the instant a project
@@ -106,7 +144,7 @@ class ProjectConflict(val userMessage: String) : Exception(userMessage)
  * Creates, renames and deletes projects — with their vocabularies.
  *
  * @param database needed directly, not just through the stores: seeding is one
- *   transaction across six tables, and a transaction is exactly the thing a
+ *   transaction across seven tables, and a transaction is exactly the thing a
  *   store cannot express.
  */
 class ProjectRepository(
@@ -130,7 +168,7 @@ class ProjectRepository(
         validate(cleanName, cleanPrefix, existingId = null)
 
         return withContext(DatabaseDispatcher) {
-            // One transaction for all six tables. The alternative — insert the
+            // One transaction for all seven tables. The alternative — insert the
             // project, then seed — leaves a project with no board columns behind
             // whenever the second half fails, and nothing in the UI can repair
             // that.
@@ -175,6 +213,15 @@ class ProjectRepository(
                         if (resolution == DONE_RESOLUTION) 1L else 0L,
                     )
                 }
+                DEFAULT_RELATION_KINDS.forEachIndexed { index, kind ->
+                    database.issueRelationKindsQueries.insert(
+                        row.id,
+                        kind.name,
+                        kind.inverse,
+                        if (kind.marksBlocked) 1L else 0L,
+                        index.toLong(),
+                    )
+                }
                 ProjectRecord(
                     row.id,
                     row.name,
@@ -187,6 +234,8 @@ class ProjectRepository(
                     row.require_fixed_version_on_resolve != 0L,
                     row.show_issue_author != 0L,
                     row.created_at,
+                    row.hide_issue_numbers?.let { stored -> stored != 0L },
+                    se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(row.estimate_mode),
                 )
             }
         }

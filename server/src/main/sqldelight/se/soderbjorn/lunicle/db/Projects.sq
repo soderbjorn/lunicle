@@ -109,6 +109,32 @@ CREATE TABLE projects (
     -- sees. See copyBoardDisplayFromOwners.
     hide_issue_numbers INTEGER,
 
+    -- Whether this project estimates work at all, and in what unit: 'none', 'time'
+    -- or 'points' (LNL-215).
+    --
+    -- ── 'none' is the default, and must leave every board unchanged ─────────
+    --
+    -- Most projects will never estimate anything, so the third state is not an
+    -- afterthought beside the reporter's time-or-points — it is the one nearly every
+    -- row will hold. On 'none' the issue window renders no estimate cell, no popover
+    -- and no read-mode line: nothing at all, not a greyed control. That is
+    -- GitHubStatistics.kt's house rule applied here — a feature nobody has configured
+    -- is OFF, never broken — and 29.sqm's reasoning for a DEFAULT that reproduces the
+    -- prior state applies verbatim.
+    --
+    -- ── This governs the EDITOR, not the meaning of stored values ───────────
+    --
+    -- The unit an existing estimate is read in comes from `issues.estimate_unit`, not
+    -- from here. This column decides only what the editor OFFERS: three inputs
+    -- (days/hours/minutes) on 'time', one on 'points', none on 'none'. Flipping it
+    -- therefore changes what people can enter next and reinterprets nothing already
+    -- entered — which is the whole reason the unit is stamped on the issue. See
+    -- Issues.sq's estimate_unit for the long version of why that matters.
+    --
+    -- TEXT holding the constant name rather than an integer, for issue_events.kind's
+    -- reason: the name is already the wire format.
+    estimate_mode TEXT NOT NULL DEFAULT 'none',
+
     created_at INTEGER NOT NULL,
 
     -- Where this project sits in the instance-wide list, 0 first — the same
@@ -206,7 +232,7 @@ CREATE TABLE projects (
 insert:
 INSERT INTO projects (name, name_prefix, position, created_at, hide_issue_numbers)
 VALUES (?, ?, ?, ?, 0)
-RETURNING id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at;
+RETURNING id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at;
 
 update:
 UPDATE projects SET name = ?, name_prefix = ? WHERE id = ?;
@@ -245,6 +271,19 @@ UPDATE projects SET require_label = ?, require_component = ?, require_fixed_vers
 setBoardDisplay:
 UPDATE projects SET show_issue_author = ?, hide_issue_numbers = ? WHERE id = ?;
 
+-- Whether this project estimates, and in what unit — project-administrator only
+-- (LNL-215). Its own query rather than folded into setBoardDisplay for that one's
+-- own reason turned one notch further: those two decide how a board *reads*, and
+-- this decides what an editor *offers*, which is a different kind of switch — and a
+-- stale client sending the display pair must not be able to reset it in passing.
+--
+-- The route validates the string against EstimateMode before it gets here; a store
+-- makes no decisions. Note this deliberately does not touch any issue's
+-- `estimate_unit`, which is what makes flipping it reinterpret nothing already
+-- estimated. See Issues.sq.
+setEstimateMode:
+UPDATE projects SET estimate_mode = ? WHERE id = ?;
+
 -- One row at a time, inside the transaction that rewrites the whole instance's
 -- order. See ProjectRepository.reorder and Labels.sq's setPosition.
 setPosition:
@@ -260,14 +299,14 @@ delete:
 DELETE FROM projects WHERE id = ?;
 
 findById:
-SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at
 FROM projects WHERE id = ?;
 
 -- Name lookup for the embed's ?project= parameter. NOCASE on the column makes
 -- this case-insensitive without a function on either side, so the UNIQUE index
 -- is still usable.
 findByName:
-SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at
 FROM projects WHERE name = ?;
 
 -- Every project, for the picker and for the Unicode-fold uniqueness check.
@@ -282,7 +321,7 @@ FROM projects WHERE name = ?;
 -- needs the whole list to do it. A store makes no decisions. See §2 — the route
 -- is what must never ship a private project's name to a signed-out visitor.
 selectAll:
-SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, created_at
+SELECT id, name, name_prefix, discussions_enabled, messages_enabled, require_label, require_component, require_fixed_version_on_resolve, show_issue_author, hide_issue_numbers, estimate_mode, created_at
 FROM projects ORDER BY position, id;
 
 -- Which sprint this project is working on. Its own query rather than a column on

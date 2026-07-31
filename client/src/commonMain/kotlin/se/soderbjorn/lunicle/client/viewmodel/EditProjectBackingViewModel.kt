@@ -46,6 +46,7 @@ import kotlinx.coroutines.launch
 import se.soderbjorn.lunicle.client.StorageRepository
 import se.soderbjorn.lunicle.client.formatTimestamp
 import se.soderbjorn.lunicle.client.userMessage
+import se.soderbjorn.lunicle.clientserver.EstimateMode
 import se.soderbjorn.lunicle.clientserver.PersonCandidate
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
 import se.soderbjorn.lunicle.clientserver.ProjectSection
@@ -138,6 +139,29 @@ data class VocabularyRowState(
     val canMoveDown: Boolean,
     val showsClosingFlag: Boolean,
     val showsDoneFlag: Boolean,
+    /**
+     * A relation kind's to-side label — "Blocks" for a kind whose name is "Blocked by"
+     * — or null because the kind reads the same in both directions (LNL-215).
+     *
+     * **Null IS symmetry.** There is no separate "is symmetric" flag on the wire that
+     * could disagree with it (see IssueRelationKinds.sq), and this row deliberately does
+     * not invent one either: the checkbox the view renders is a *view* of this being
+     * null, and ticking it sends null. A flag here would be a second source of truth
+     * for a fact the schema already answers.
+     */
+    val inverseName: String?,
+    /**
+     * Whether the *from* side of one of these counts as blocked (LNL-215) — what turns
+     * a card grey on everybody's board. Shaped exactly like a status's
+     * [requiresResolution]: one flag on one row, written with the name in a single edit.
+     */
+    val marksBlocked: Boolean,
+    /**
+     * Whether to render the inverse-name field and the two checkboxes that go with it.
+     * Relation kinds only, for [showsClosingFlag]'s reason — an inverse name beside a
+     * label would be a control that writes nothing.
+     */
+    val showsRelationFields: Boolean,
     /**
      * Whether this row may be renamed, moved or deleted at all (LNL-196).
      *
@@ -319,6 +343,50 @@ val GITHUB_TOKEN_MODE_OPTIONS: List<Pair<String, String>> = listOf(
     TokenModes.NONE to "None",
     TokenModes.ENV to "Environment variable",
     TokenModes.LITERAL to "Paste token",
+)
+
+/** The heading over the estimate-mode control, in Structure (LNL-215). */
+const val ESTIMATE_SECTION_TITLE: String = "Estimates"
+
+/**
+ * The line under it.
+ *
+ * Leads with the fact that most projects want none, because that is the state every
+ * project is in and the one this control must not make anybody feel they are missing
+ * out on. Then what each of the other two puts on screen, in concrete terms — an
+ * administrator choosing between "Time" and "Points" is choosing what their team will
+ * be typing into every issue for the next year, and "days, hours and minutes" is a
+ * better description of that than the word "time" is.
+ *
+ * The last sentence is the important one and is the reason estimates are stamped with
+ * their unit rather than read through this setting: switching does not rewrite what is
+ * already there. Saying so here is what stops somebody switching to see what happens
+ * and quietly changing the meaning of two hundred numbers.
+ */
+const val ESTIMATE_HINT: String =
+    "Most projects need none — with estimates off, no estimate field appears on any issue " +
+        "and the board is exactly as it is now. Time gives each issue days, hours and " +
+        "minutes (one day is eight hours); Points gives it a single number. Switching later " +
+        "changes only what new estimates are entered in — estimates already recorded keep " +
+        "the unit they were written in."
+
+/**
+ * The three estimate modes, in the order the buttons show them, each paired with its
+ * [EstimateMode] wire key (LNL-215).
+ *
+ * A list rather than three constants, for [GITHUB_TOKEN_MODE_OPTIONS]' reason exactly:
+ * the DOM builds one button per entry and reads the same list back to decide which is
+ * lit, so the ordering and the labels have one source and the control cannot drift from
+ * the logic behind it.
+ *
+ * "Off" rather than "None", which is what the key spells. The wire word is the absence
+ * of a value; the screen word is the state of a feature, and an administrator reading a
+ * row of three buttons is choosing whether something is on.
+ */
+val ESTIMATE_MODE_OPTIONS: List<Pair<String, String>> = listOf(
+    EstimateMode.NONE.key to "Off",
+    EstimateMode.TIME.key to "Time",
+    EstimateMode.POINTS.key to "Points",
 )
 
 /** The literal-token field's label (LNL-107). */
@@ -879,6 +947,30 @@ class EditProjectBackingViewModel(
         val hasLabels: Boolean get() = settings?.labels?.isNotEmpty() ?: false
         val hasComponents: Boolean get() = settings?.components?.isNotEmpty() ?: false
 
+        // ── Estimates (LNL-215) ───────────────────────────────────────────────
+
+        /**
+         * Whether this project estimates, and in what unit, as the wire key — `none`,
+         * `time` or `points`.
+         *
+         * The key rather than the decoded enum, so a value from a newer server survives
+         * the trip and the *view* decides which of its three buttons to light. An
+         * unrecognised key lights none of them, which reads as "something else is set
+         * here" rather than as a wrong answer confidently given.
+         *
+         * Defaults to `none` before the settings land, which is also what an old server
+         * that does not send the field means.
+         */
+        val estimateMode: String get() = settings?.estimateMode ?: EstimateMode.NONE.key
+
+        /**
+         * Whether to render the estimates group at all. Shown to anybody who can see the
+         * Structure section, live only for an administrator — the same shape as the
+         * ticket requirements it sits beside, and for the same reason: knowing whether a
+         * board estimates is not the same as deciding it.
+         */
+        val showEstimateSection: Boolean get() = hasSettings
+
         // ── The notification section, for everyone the cog opens for ──────────
 
         /**
@@ -969,6 +1061,23 @@ class EditProjectBackingViewModel(
                     title = "Components",
                     hint = "Which part of the thing an issue is about, in the order they are " +
                         "offered. Deleting one removes it from its issues, like a label.",
+                ),
+                // Sixth, and last, because it is the one an admin visits least: the
+                // three kinds a project starts with cover what nearly everybody means by
+                // linking two issues, so this list is read far more often than it is
+                // changed. See [structureSections]' own note on why the order here is an
+                // argument rather than an accident.
+                section(
+                    loaded,
+                    VocabularyKind.RELATION_KIND,
+                    title = "Relation kinds",
+                    hint = "Ways two issues can be linked, in the order the picker offers them. " +
+                        "Each has a name for the issue you are looking at and — unless it reads " +
+                        "the same both ways — an opposite for the issue at the other end, so one " +
+                        "stored link reads \"Blocked by LNL-9\" here and \"Blocks\" there. Tick " +
+                        "\"marks blocked\" on the kinds that hold work up: cards on the waiting " +
+                        "end go grey on the board. Deleting a kind deletes every link made with " +
+                        "it; the issues themselves are untouched.",
                 ),
             )
         }.orEmpty()
@@ -1142,6 +1251,9 @@ class EditProjectBackingViewModel(
                 canMoveDown = isEditable && index < siblings.size - 1 && !isBusy,
                 showsClosingFlag = kind == VocabularyKind.STATUS,
                 showsDoneFlag = kind == VocabularyKind.RESOLUTION,
+                inverseName = inverseName,
+                marksBlocked = marksBlocked,
+                showsRelationFields = kind == VocabularyKind.RELATION_KIND,
                 isEditable = isEditable,
                 // Sprints only, and both states worded (LNL-196). "Open" is not a
                 // placeholder: the alternative is a row whose completion is signalled by
@@ -1466,6 +1578,27 @@ class EditProjectBackingViewModel(
 
     // ── The vocabularies ─────────────────────────────────────────────────────
 
+    /**
+     * Turn estimates on, off, or switch the unit (LNL-215).
+     *
+     * A no-op when the mode is already what was pressed, like every other choice row
+     * here: the buttons are always all present, so pressing the live one is a click that
+     * expresses nothing and would otherwise write the same value back and re-render
+     * every open board for it.
+     *
+     * The write is deliberately NOT guarded on anything else. Switching from time to
+     * points does not touch a single stored estimate — each carries the unit it was
+     * written in — so there is no destructive case here to confirm, and asking "are you
+     * sure?" over a change that loses nothing is how confirmations stop being read.
+     */
+    fun onEstimateModeChanged(mode: String) {
+        val project = existing ?: return
+        if (_stateFlow.value.estimateMode == mode) return
+        write("Could not change how this project estimates.") {
+            storage.setProjectEstimateMode(project.id, mode)
+        }
+    }
+
     fun onVocabularyDraftChanged(kind: VocabularyKind, value: String) {
         _stateFlow.value = _stateFlow.value.copy(
             vocabularyDrafts = _stateFlow.value.vocabularyDrafts + (kind to value),
@@ -1513,10 +1646,31 @@ class EditProjectBackingViewModel(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean = false,
+        /**
+         * A relation kind's to-side label, or null because it reads the same both ways
+         * (LNL-215). **Null is how symmetry is expressed** — see
+         * [VocabularyRowState.inverseName] — so the "same in both directions" checkbox
+         * sends null here and nothing else does.
+         *
+         * Defaulted, but note the default is a *value* and not "leave alone": this
+         * function is the whole-row write, so a caller that forgot to pass it would make
+         * a kind symmetric. Every caller in the settings view passes all five.
+         */
+        inverseName: String? = null,
+        /** A relation kind's blocking flag (LNL-215). Same whole-row rule as above. */
+        marksBlocked: Boolean = false,
     ) {
         val project = existing ?: return
         val current = _stateFlow.value.settings?.entriesFor(kind)?.firstOrNull { it.id == id } ?: return
-        if (current.name == name && current.requiresResolution == requiresResolution && current.isDone == isDone) return
+        if (
+            current.name == name &&
+            current.requiresResolution == requiresResolution &&
+            current.isDone == isDone &&
+            current.inverseName == inverseName &&
+            current.marksBlocked == marksBlocked
+        ) {
+            return
+        }
         if (name.isBlank()) {
             // Refused here rather than sent: the server would refuse it too, with
             // the same sentence, but this way the field still holds what was typed
@@ -1527,7 +1681,7 @@ class EditProjectBackingViewModel(
             return
         }
         write("Could not save that ${kind.noun}.") {
-            storage.editVocabulary(project.id, kind, id, name, requiresResolution, isDone)
+            storage.editVocabulary(project.id, kind, id, name, requiresResolution, isDone, inverseName, marksBlocked)
         }
     }
 
@@ -1587,6 +1741,20 @@ class EditProjectBackingViewModel(
             kind == VocabularyKind.SPRINT ->
                 "$issues ${if (plural) "are" else "is"} in this sprint; " +
                     "${if (plural) "they" else "it"} will go back to the backlog."
+            // A relation kind CASCADES, which is the one consequence in this list that is
+            // not about a field being emptied: deleting the kind deletes the links
+            // themselves, on both issues, and there is nothing left afterwards saying the
+            // two were ever connected. The server does the cascading (see
+            // IssueRelationKinds.sq's `delete`); the confirmation's job is to make sure
+            // nobody learns it afterwards. The count is stated in LINKS rather than in
+            // issues because that is what goes, and because one link touches two issues —
+            // "12 issues will lose it" would be both wrong and reassuringly small.
+            kind == VocabularyKind.RELATION_KIND ->
+                "${entry.usageCount} ${if (plural) "links" else "link"} " +
+                    "${if (plural) "use" else "uses"} this kind; " +
+                    "${if (plural) "they" else "it"} will be deleted along with it. " +
+                    "The issues at both ends stay; only the ${if (plural) "links" else "link"} " +
+                    "between them ${if (plural) "go" else "goes"}."
             // Labels and components: the links cascade, so deleting one unlabels the
             // issues and leaves them standing. See IssueLabels.sq.
             else -> "$issues will lose it. The issues themselves are not affected."

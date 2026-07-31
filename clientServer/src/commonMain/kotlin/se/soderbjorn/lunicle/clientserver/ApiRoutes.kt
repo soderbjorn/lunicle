@@ -667,6 +667,19 @@ object ApiRoutes {
     fun projectDisplay(id: Long): String = "$PROJECTS/$id/display"
 
     /**
+     * `POST` — whether this project estimates, and in what unit, from a
+     * [ProjectEstimateSettings] (LNL-215). Returns the refreshed
+     * [ProjectSettingsState].
+     *
+     * Its own route beside [projectDisplay] and the requirements one rather than a
+     * third field on either: a display choice is about how a board *reads*, a
+     * requirement about what a ticket must *carry*, and this about what the editor
+     * *offers*. Three kinds of switch, three routes, so a stale client sending one
+     * cannot reset another in passing. Admin and above.
+     */
+    fun projectEstimates(id: Long): String = "$PROJECTS/$id/estimates"
+
+    /**
      * `POST` — subscribe or unsubscribe the caller from this project's new-issue
      * e-mails, from a [NotificationSubscriptionRequest]. Returns the refreshed
      * [ProjectSettingsState].
@@ -923,6 +936,26 @@ object ApiRoutes {
      * Gated by `canEditIssue` on the epic, like [issueOrder] for a board group.
      */
     fun issueChildrenOrder(id: Long): String = "/api/issues/$id/children/order"
+
+    /**
+     * `POST` — link this issue to another, from an [IssueRelationRequest] (LNL-215).
+     * Returns the refreshed [IssueDetail].
+     *
+     * Posted to the **from** issue — the one whose window the link is being added in —
+     * and gated by `canEditIssue` on it alone. The far side is not asked, for
+     * [issueParent]'s reason: an issue does not own who points at it.
+     */
+    fun issueRelations(id: Long): String = "/api/issues/$id/relations"
+
+    /**
+     * `DELETE` — remove one link (LNL-215). Returns the refreshed [IssueDetail].
+     *
+     * Addressed by the RELATION's id rather than by the pair and the kind, because the
+     * caller is looking at a rendered row and has one — and because naming the pair
+     * would have to say which direction it meant, which is the ambiguity storing one
+     * row per link exists to remove. See IssueRelations.sq.
+     */
+    fun issueRelation(id: Long, relationId: Long): String = "/api/issues/$id/relations/$relationId"
 
     /** `POST` — create a hidden draft comment on this issue, returning its id. */
     fun comments(issueId: Long): String = "/api/issues/$issueId/comments"

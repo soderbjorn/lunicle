@@ -42,7 +42,9 @@ import se.soderbjorn.lunicle.clientserver.PersonCandidate
 import se.soderbjorn.lunicle.clientserver.PersonCandidates
 import se.soderbjorn.lunicle.clientserver.PersonRow
 import se.soderbjorn.lunicle.clientserver.ProjectAccessState
+import se.soderbjorn.lunicle.clientserver.EstimateMode
 import se.soderbjorn.lunicle.clientserver.ProjectDisplaySettings
+import se.soderbjorn.lunicle.clientserver.ProjectEstimateSettings
 import se.soderbjorn.lunicle.clientserver.ProjectFeatures
 import se.soderbjorn.lunicle.clientserver.ProjectRequirements
 import se.soderbjorn.lunicle.clientserver.ProjectSection
@@ -144,7 +146,11 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
         }
         if (!call.nameIsSane(body.name)) return@post
         deps.runVocabularyWrite(call) {
-            val row = deps.vocabularies.add(scope.project.id, kind, body.name)
+            // The two relation-kind extras ride on the add rather than waiting for the
+            // rename that follows, and the repository ignores them for every other
+            // kind. See VocabularyAdd.inverseName for why a kind cannot be briefly
+            // symmetric on its way to not being.
+            val row = deps.vocabularies.add(scope.project.id, kind, body.name, body.inverseName, body.marksBlocked)
             logger.info("Vocabulary added: ${kind.key} \"${row.name}\" in project ${scope.project.id}")
             call.respond(deps.buildSettings(scope.project, scope.user))
         }
@@ -168,7 +174,10 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
         }
         if (!call.nameIsSane(body.name)) return@put
         deps.runVocabularyWrite(call) {
-            deps.vocabularies.rename(scope.project.id, kind, row, body.name, body.requiresResolution, body.isDone)
+            deps.vocabularies.rename(
+                scope.project.id, kind, row, body.name, body.requiresResolution, body.isDone,
+                body.inverseName, body.marksBlocked,
+            )
             call.respond(deps.buildSettings(scope.project, scope.user))
         }
     }
@@ -287,6 +296,40 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
             "Project ${scope.project.id} display: showIssueAuthor=${body.showIssueAuthor}, " +
                 "hideIssueNumbers=${body.hideIssueNumbers}",
         )
+        val updated = deps.projects.findById(scope.project.id) ?: scope.project
+        call.respond(deps.buildSettings(updated, scope.user))
+    }
+
+    /**
+     * Whether this project estimates, and in what unit (LNL-215).
+     *
+     * Its own route beside `/display` and `/requirements` rather than a third field on
+     * either, for the reason those two are separate from each other: a display choice
+     * is about how a board *reads*, a requirement is about what a ticket must *carry*,
+     * and this is about what the editor *offers*. Three kinds of switch, three routes,
+     * so a stale client sending one cannot reset another in passing.
+     *
+     * **Admin and above**, with the vocabulary rather than with the sprints: deciding
+     * whether a team estimates at all is a decision about what the board is.
+     *
+     * An unrecognised mode folds to `none` rather than being refused — see
+     * [EstimateMode.fromKey]. That is the safe direction: `none` renders nothing, so a
+     * client sending a mode this build has never heard of turns the feature off rather
+     * than leaving the project in a state nothing can draw.
+     *
+     * Note what this does NOT do: it never touches an issue's stored estimate unit. A
+     * project switched from points to time reinterprets nothing already entered, which
+     * is the whole reason that unit is stamped on the issue. See Issues.sq.
+     */
+    post("${ApiRoutes.PROJECTS}/{id}/estimates") {
+        val scope = call.adminProject(deps, "change this project's estimate settings") ?: return@post
+        val body = call.receiveOrNull<ProjectEstimateSettings>() ?: run {
+            call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+        val mode = EstimateMode.fromKey(body.mode)
+        deps.projects.setEstimateMode(scope.project.id, mode)
+        logger.info("Project ${scope.project.id} estimates: ${mode.key}")
         val updated = deps.projects.findById(scope.project.id) ?: scope.project
         call.respond(deps.buildSettings(updated, scope.user))
     }
@@ -882,6 +925,11 @@ private suspend fun BoardDependencies.buildSettings(
         requireFixedVersionOnResolve = project.requireFixedVersionOnResolve,
         showIssueAuthor = project.showIssueAuthor,
         hideIssueNumbers = project.hideIssueNumbers,
+        // In `base`, so every caller who reaches this state receives it — the issue
+        // window reads it to decide what the estimate control offers, and a Viewer who
+        // opens an issue needs the answer as much as the admin who set it. Only the
+        // admin half renders it as editable; see the /estimates route.
+        estimateMode = project.estimateMode.key,
         // ── The two maintainer vocabularies (LNL-196) ────────────────────────
         //
         // In `base` rather than in the administrator's copy below, because the Sprints
@@ -922,6 +970,11 @@ private suspend fun BoardDependencies.buildSettings(
         statuses = vocabularies.rows(project.id, VocabularyKind.STATUS).map { it.toEntry() },
         priorities = vocabularies.rows(project.id, VocabularyKind.PRIORITY).map { it.toEntry() },
         resolutions = vocabularies.rows(project.id, VocabularyKind.RESOLUTION).map { it.toEntry() },
+        // In the administrator's copy with the other five that define what the board
+        // *is*, not in `base` with the two maintainer lists: one of these rows carries
+        // `marksBlocked`, which decides which cards everybody's board dims. See
+        // VocabularyKind.minimumRole.
+        relationKinds = vocabularies.rows(project.id, VocabularyKind.RELATION_KIND).map { it.toEntry() },
         // `sprints` and `versions` are set in `base` above — they are a maintainer's, one
         // rung below everything on this list. See LNL-196.
         //
@@ -1447,6 +1500,11 @@ private fun VocabularyRow.toEntry(): VocabularyEntry = VocabularyEntry(
     // toInt() on a count: a project with two billion issues on one label has
     // problems this cast is not among.
     usageCount = usageCount.toInt(),
+    // Relation kinds only; null and false forever for the other seven (LNL-215). The
+    // shared row already carries per-kind extras for statuses and resolutions, and
+    // these two join them rather than forking the type — see VocabularyRow.
+    inverseName = inverseName,
+    marksBlocked = marksBlocked,
 )
 
 /**

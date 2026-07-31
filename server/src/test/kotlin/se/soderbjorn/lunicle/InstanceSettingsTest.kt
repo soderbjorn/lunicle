@@ -81,7 +81,7 @@ class InstanceSettingsTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     // The real SQLite-backed store, shared by both route bundles below — the whole
     // point of the file is that a switch set through the admin route is the same
     // switch the session and project routes read.

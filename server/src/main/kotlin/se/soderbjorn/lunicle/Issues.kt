@@ -94,6 +94,36 @@ data class IssueRecord(
      * work order. Meaningless when [parentId] is null. See Issues.sq's child_order.
      */
     val childOrder: Long,
+    /**
+     * Whether the work should be picked up by [assigneeId]'s *agent* rather than by
+     * them in person (LNL-215).
+     *
+     * It says THAT an agent should do it, never WHICH — which agent a person runs is
+     * their own business. Deliberately not a second reading of [agentName], which
+     * records who held the pen on something that already happened: this is
+     * forward-looking, and both can be set on one issue at once.
+     *
+     * Meaningless when [assigneeId] is null, and forced false there by
+     * [IssueRepository]. Three lifecycle rules govern it — changing the assignee
+     * clears it, closing keeps it, and a reopened issue therefore comes back still
+     * flagged — all of which live in [IssueRepository.save]. See Issues.sq.
+     *
+     * Last in the record, with a default, for [ProjectRecord.hideIssueNumbersStored]'s
+     * reason: so the positional constructions in this file and in the Firestore store
+     * did not all have to be rewritten.
+     */
+    val assigneeIsAgent: Boolean = false,
+    /**
+     * How much work this is, or null because nobody has said (LNL-215).
+     *
+     * A pair rather than two nullable fields, because the amount and its unit move
+     * together and one without the other is a state this application can neither
+     * produce nor render. The unit is the ISSUE'S — stamped at write time, never
+     * re-derived from the project's [ProjectRecord.estimateMode] — which is what
+     * stops an administrator's settings change from silently reinterpreting every
+     * estimate already entered. See Issues.sq's estimate_unit.
+     */
+    val estimate: se.soderbjorn.lunicle.clientserver.Estimate? = null,
 )
 
 /** Reads and writes `issues`, `issue_labels` and `issue_components`. */
@@ -173,14 +203,22 @@ class IssueStore(
         priorityId: Long,
         resolutionId: Long?,
         assigneeId: Long?,
+        assigneeIsAgent: Boolean,
         sprintId: Long?,
         plannedVersionId: Long?,
         fixedVersionId: Long?,
+        estimate: se.soderbjorn.lunicle.clientserver.Estimate?,
         updatedAt: Long?,
     ): Unit = withContext(DatabaseDispatcher) {
         database.issuesQueries.publish(
-            title, description, statusId, priorityId, resolutionId, assigneeId, sprintId,
-            plannedVersionId, fixedVersionId, updatedAt ?: now(), id,
+            title, description, statusId, priorityId, resolutionId, assigneeId,
+            if (assigneeIsAgent) 1L else 0L, sprintId,
+            plannedVersionId, fixedVersionId,
+            // Written as a pair, always: two columns that mean nothing apart, so a
+            // cleared estimate nulls both in the one statement rather than leaving a
+            // unit behind for the next amount to inherit. See Issues.sq.
+            estimate?.amount, estimate?.unit?.name,
+            updatedAt ?: now(), id,
         )
     }
 
@@ -237,8 +275,12 @@ class IssueStore(
      * The route decides whether this caller may name this assignee; by the time it
      * gets here that has been settled.
      */
-    override suspend fun setAssignee(id: Long, assigneeId: Long?): Unit = withContext(DatabaseDispatcher) {
-        database.issuesQueries.setAssignee(assigneeId, now(), id)
+    override suspend fun setAssignee(
+        id: Long,
+        assigneeId: Long?,
+        assigneeIsAgent: Boolean,
+    ): Unit = withContext(DatabaseDispatcher) {
+        database.issuesQueries.setAssignee(assigneeId, if (assigneeIsAgent) 1L else 0L, now(), id)
     }
 
     /**
@@ -287,10 +329,11 @@ class IssueStore(
         sprintId: Long?,
         plannedVersionId: Long?,
         fixedVersionId: Long?,
+        estimate: se.soderbjorn.lunicle.clientserver.Estimate?,
     ): Unit = withContext(DatabaseDispatcher) {
         database.issuesQueries.update(
             title, description, statusId, priorityId, resolutionId, sprintId,
-            plannedVersionId, fixedVersionId, now(), id,
+            plannedVersionId, fixedVersionId, estimate?.amount, estimate?.unit?.name, now(), id,
         )
     }
 
@@ -574,4 +617,25 @@ private fun se.soderbjorn.lunicle.db.Issues.toRecord(): IssueRecord = IssueRecor
     fixedVersionId = fixed_version_id,
     parentId = parent_id,
     childOrder = child_order,
+    assigneeIsAgent = assignee_is_agent != 0L,
+    // Both columns or neither — see Issues.sq. A row carrying one and not the other is
+    // not a state anything writes, so it reads as no estimate rather than as half of
+    // one: a half-pair cannot be rendered, and inventing a unit for a stray amount
+    // would be worse than admitting there is nothing to show.
+    estimate = estimateOf(estimate_amount, estimate_unit),
 )
+
+/**
+ * The two estimate columns as one value, or null.
+ *
+ * Null unless BOTH are present and the unit is one this build knows. An unrecognised
+ * unit degrades to "no estimate" rather than throwing, for [IssueEventKind]'s reason
+ * one table over: a row written by a newer build must leave an issue readable, and a
+ * missing line beats an issue that will not open.
+ */
+private fun estimateOf(amount: Long?, unit: String?): se.soderbjorn.lunicle.clientserver.Estimate? {
+    if (amount == null || unit == null) return null
+    val parsed = se.soderbjorn.lunicle.clientserver.EstimateUnit.entries.firstOrNull { it.name == unit }
+        ?: return null
+    return se.soderbjorn.lunicle.clientserver.Estimate(amount, parsed)
+}

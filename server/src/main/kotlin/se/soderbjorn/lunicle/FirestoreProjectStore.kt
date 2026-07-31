@@ -109,6 +109,12 @@ class FirestoreProjectStore(
                 // nobody has ever looked at. See toRecord, where absence is the
                 // migration's marker.
                 HIDE_ISSUE_NUMBERS to false,
+                // Nobody estimates until somebody says so (LNL-215). Written
+                // explicitly, like the flags above and unlike HIDE_ISSUE_NUMBERS,
+                // because absence carries no second meaning here: there is no
+                // migration looking for a "not yet decided" project, and `none` is
+                // both the default and the state a fresh board should be in.
+                ESTIMATE_MODE to se.soderbjorn.lunicle.clientserver.EstimateMode.NONE.key,
                 POSITION to position,
                 CREATED_AT to createdAt,
                 ACTIVE_SPRINT to null,
@@ -130,6 +136,7 @@ class FirestoreProjectStore(
             showIssueAuthor = false,
             createdAt = createdAt,
             hideIssueNumbersStored = false,
+            estimateMode = se.soderbjorn.lunicle.clientserver.EstimateMode.NONE,
         )
     }
 
@@ -169,6 +176,26 @@ class FirestoreProjectStore(
                 HIDE_ISSUE_NUMBERS to hideIssueNumbers,
             ),
         ).await()
+    }
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * Its own write rather than a third field on [setBoardDisplay], for that method's
+     * own reason turned one notch: those two decide how a board *reads*, and this
+     * decides what the issue editor *offers*. Three kinds of switch, three writes, so
+     * a stale client sending one cannot reset another in passing.
+     *
+     * Stored as [se.soderbjorn.lunicle.clientserver.EstimateMode.key] — the `none` /
+     * `time` / `points` string the SQLite column holds — rather than the enum's
+     * `name`, so a row of either backend says the same word and a value from a newer
+     * build folds to `none` on read rather than failing.
+     *
+     * It touches no issue's stored unit, which is what makes flipping it reinterpret
+     * nothing already estimated.
+     */
+    override suspend fun setEstimateMode(id: Long, mode: se.soderbjorn.lunicle.clientserver.EstimateMode) {
+        doc(id).update(ESTIMATE_MODE, mode.key).await()
     }
 
     override suspend fun delete(id: Long) {
@@ -289,6 +316,20 @@ class FirestoreProjectStore(
          * mirrors the SQLite column being nullable with no DEFAULT.
          */
         const val HIDE_ISSUE_NUMBERS = "hideIssueNumbers"
+
+        /**
+         * Whether this project estimates, and in what unit — one of
+         * [se.soderbjorn.lunicle.clientserver.EstimateMode]'s keys (LNL-215).
+         *
+         * Absent **is** `none`, unlike [HIDE_ISSUE_NUMBERS] above: there is no
+         * migration that needs to tell "not yet decided" from "decided off", because
+         * off is what every project that has never been asked should be. That is also
+         * what makes this backend need no migration step for the field at all — a
+         * document written before LNL-215 reads back as a project that estimates
+         * nothing, which is exactly what `estimate_mode TEXT NOT NULL DEFAULT 'none'`
+         * gives the SQLite rows.
+         */
+        const val ESTIMATE_MODE = "estimateMode"
         const val POSITION = "position"
         const val CREATED_AT = "createdAt"
         const val ACTIVE_SPRINT = "activeSprintId"
@@ -317,4 +358,8 @@ private fun DocumentSnapshot.toRecord(): ProjectRecord = ProjectRecord(
     // NOT defaulted, unlike every flag above: absent means "not yet decided", which is
     // what the startup copy looks for. See HIDE_ISSUE_NUMBERS.
     hideIssueNumbersStored = getBoolean("hideIssueNumbers"),
+    // Absent, or a key a newer build wrote, folds to NONE — which renders nothing at
+    // all, so an unreadable value costs a project its estimate control rather than its
+    // board. See EstimateMode.fromKey and ESTIMATE_MODE.
+    estimateMode = se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(getString("estimateMode")),
 )

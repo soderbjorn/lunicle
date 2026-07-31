@@ -72,14 +72,26 @@ interface FirestoreMigration {
 /**
  * The ordered chain of Firestore migrations — the analog of the `.sqm` directory.
  *
- * One step today: the LNL-111 stores wrote the then-current document shape
- * directly, so the permission rework is the first prior shape there has been to
- * move. Appending is the *only* correct edit — a released step's
- * [FirestoreMigration.version] is frozen the moment a production database has
- * checkpointed past it, exactly as a released `.sqm` is frozen.
+ * Two steps: the permission rework (LNL-191), which was the first prior document
+ * shape there had been to move, and the relation-kind seed (LNL-215), which is the
+ * first step here that *creates* rows rather than reshaping them. Appending is the
+ * *only* correct edit — a released step's [FirestoreMigration.version] is frozen the
+ * moment a production database has checkpointed past it, exactly as a released `.sqm`
+ * is frozen.
+ *
+ * The two chains do not share numbers and never will: SQLite is at 36.sqm and this is
+ * at version 2, because a document backend needs a step only where a *shape* moved,
+ * and most `.sqm` files add a column whose absence a Firestore reader already defaults.
+ * LNL-215 is the exception that proves it — of everything 36.sqm does, the three new
+ * columns, the two new tables and the four "nothing to back-fill" sections all cost
+ * this backend nothing, and only the seed of three relation kinds per project has to
+ * be performed. See [FirestoreRelationKindBackfill].
  */
 object FirestoreMigrations {
-    val ALL: List<FirestoreMigration> = listOf(FirestorePermissionModelMigration())
+    val ALL: List<FirestoreMigration> = listOf(
+        FirestorePermissionModelMigration(),
+        FirestoreRelationKindBackfill(),
+    )
 }
 
 /**

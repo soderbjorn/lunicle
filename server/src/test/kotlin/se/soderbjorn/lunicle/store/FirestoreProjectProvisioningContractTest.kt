@@ -128,7 +128,8 @@ class FirestoreProjectProvisioningContractTest : ProjectProvisioningContract() {
         val (issueId, _) = issues.insertDraft(projectId, "Issue $n", status.id, priority.id, Author.Nobody)
         issues.publish(
             id = issueId, title = "Issue $n", description = "", statusId = status.id, priorityId = priority.id,
-            resolutionId = null, assigneeId = null, sprintId = null, plannedVersionId = null, fixedVersionId = null,
+            resolutionId = null, assigneeId = null, assigneeIsAgent = false,
+            sprintId = null, plannedVersionId = null, fixedVersionId = null, estimate = null,
         )
         val commentId = comments.insertDraft(issueId, Author.Nobody)
         comments.publish(commentId, "a comment")
