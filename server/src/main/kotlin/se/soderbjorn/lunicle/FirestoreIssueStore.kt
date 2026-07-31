@@ -114,13 +114,32 @@ class FirestoreIssueStore(
                     CHILD_ORDER to 0L,
                     LABEL_IDS to emptyList<Long>(),
                     COMPONENT_IDS to emptyList<Long>(),
+                    // A draft is nobody's and unestimated (LNL-215) — the state
+                    // `assignee_is_agent INTEGER NOT NULL DEFAULT 0` and two NULL
+                    // estimate columns put a fresh SQLite row in. Written explicitly
+                    // rather than left absent so an insert and a later publish produce
+                    // the same document shape, which is what stops a reader having to
+                    // know which write got there first.
+                    ASSIGNEE_IS_AGENT to false,
+                    ESTIMATE_AMOUNT to null,
+                    ESTIMATE_UNIT to null,
                 ),
             )
             id to number
         }.await()
     }
 
-    /** Write the editor's fields and clear the draft flag — the one write that makes an issue visible. */
+    /**
+     * Write the editor's fields and clear the draft flag — the one write that makes an
+     * issue visible.
+     *
+     * [assigneeIsAgent] goes in the same statement as the assignee and [estimate] as a
+     * pair, both for the reason the interface gives: an editor commits its whole field
+     * set at once, and a store that split them would open a window in which an issue is
+     * assigned to one person and flagged for another person's agent, or carries a unit
+     * with no amount. A null [estimate] therefore nulls **both** fields rather than
+     * leaving a unit behind for the next amount to inherit.
+     */
     override suspend fun publish(
         id: Long,
         title: String,
@@ -129,9 +148,11 @@ class FirestoreIssueStore(
         priorityId: Long,
         resolutionId: Long?,
         assigneeId: Long?,
+        assigneeIsAgent: Boolean,
         sprintId: Long?,
         plannedVersionId: Long?,
         fixedVersionId: Long?,
+        estimate: se.soderbjorn.lunicle.clientserver.Estimate?,
         updatedAt: Long?,
     ) {
         doc(id).update(
@@ -142,9 +163,12 @@ class FirestoreIssueStore(
                 PRIORITY_ID to priorityId,
                 RESOLUTION_ID to resolutionId,
                 ASSIGNEE_ID to assigneeId,
+                ASSIGNEE_IS_AGENT to assigneeIsAgent,
                 SPRINT_ID to sprintId,
                 PLANNED_VERSION_ID to plannedVersionId,
                 FIXED_VERSION_ID to fixedVersionId,
+                ESTIMATE_AMOUNT to estimate?.amount,
+                ESTIMATE_UNIT to estimate?.unit?.name,
                 UPDATED_AT to (updatedAt ?: now()),
                 IS_DRAFT to false,
             ),
@@ -173,8 +197,24 @@ class FirestoreIssueStore(
             .flatMap { listOfNotNull(it.getLong(PLANNED_VERSION_ID), it.getLong(FIXED_VERSION_ID)) }
             .groupingBy { it }.eachCount().mapValues { it.value.toLong() }
 
-    override suspend fun setAssignee(id: Long, assigneeId: Long?) {
-        doc(id).update(mapOf(ASSIGNEE_ID to assigneeId, UPDATED_AT to now())).await()
+    /**
+     * Hand an issue to somebody, or take it back with null — and say in the same
+     * statement whether it goes to their agent (LNL-215).
+     *
+     * One write for both, in both directions: taking an issue carries what the caller
+     * asked for, and handing it to somebody else carries false. Two writes would leave
+     * a window in which the issue is assigned to one person and flagged for another
+     * person's robot. The route has already settled whether this caller may name this
+     * assignee, and whether the flag is allowed to be true at all.
+     */
+    override suspend fun setAssignee(id: Long, assigneeId: Long?, assigneeIsAgent: Boolean) {
+        doc(id).update(
+            mapOf(
+                ASSIGNEE_ID to assigneeId,
+                ASSIGNEE_IS_AGENT to assigneeIsAgent,
+                UPDATED_AT to now(),
+            ),
+        ).await()
     }
 
     override suspend fun withPossibleMentions(): List<Pair<Long, String>> = descriptionsContaining("@")
@@ -196,6 +236,7 @@ class FirestoreIssueStore(
         sprintId: Long?,
         plannedVersionId: Long?,
         fixedVersionId: Long?,
+        estimate: se.soderbjorn.lunicle.clientserver.Estimate?,
     ) {
         doc(id).update(
             mapOf(
@@ -207,6 +248,12 @@ class FirestoreIssueStore(
                 SPRINT_ID to sprintId,
                 PLANNED_VERSION_ID to plannedVersionId,
                 FIXED_VERSION_ID to fixedVersionId,
+                // The pair again, and note what is NOT here: the assignee. This is the
+                // MCP/edit path, which never reassigns — that is `setAssignee`'s one
+                // statement — so the agent flag has no business being written here
+                // either. See Issues.sq's update.
+                ESTIMATE_AMOUNT to estimate?.amount,
+                ESTIMATE_UNIT to estimate?.unit?.name,
                 UPDATED_AT to now(),
             ),
         ).await()
@@ -448,6 +495,38 @@ class FirestoreIssueStore(
         const val CHILD_ORDER = "childOrder"
         const val LABEL_IDS = "labelIds"
         const val COMPONENT_IDS = "componentIds"
+
+        /**
+         * Whether the work goes to [ASSIGNEE_ID]'s *agent* rather than to them in
+         * person (LNL-215). Meaningless when nobody is assigned, and false when absent
+         * — "a person does this", the state every issue written before the field
+         * existed is correctly in, exactly as the SQLite column's `DEFAULT 0` leaves
+         * them.
+         */
+        const val ASSIGNEE_IS_AGENT = "assigneeIsAgent"
+
+        /**
+         * How much work this is, in the unit [ESTIMATE_UNIT] names — or null on both,
+         * which is "no estimate" (LNL-215).
+         *
+         * The two are written and cleared **together**, always, because neither means
+         * anything alone: an amount with no unit cannot be rendered and a unit with no
+         * amount is a leftover for the next amount to inherit. [DocumentSnapshot.toRecord]
+         * accordingly reads a half-pair as no estimate rather than as half of one.
+         */
+        const val ESTIMATE_AMOUNT = "estimateAmount"
+
+        /**
+         * Which unit [ESTIMATE_AMOUNT] counts, as an
+         * [se.soderbjorn.lunicle.clientserver.EstimateUnit] name — the same string the
+         * SQLite column stores, so the two backends' rows say the same word.
+         *
+         * Stamped on the ISSUE and never re-derived from the project's estimate mode,
+         * which is the whole point of the feature: an administrator switching the
+         * project from points to time must not silently reinterpret every estimate
+         * already entered. See Issues.sq's estimate_unit.
+         */
+        const val ESTIMATE_UNIT = "estimateUnit"
     }
 }
 
@@ -472,7 +551,30 @@ private fun DocumentSnapshot.toRecord(): IssueRecord = IssueRecord(
     fixedVersionId = getLong("fixedVersionId"),
     parentId = getLong("parentId"),
     childOrder = getLong("childOrder") ?: 0L,
+    assigneeIsAgent = getBoolean("assigneeIsAgent") ?: false,
+    // Both fields or neither — see [FirestoreIssueStore.ESTIMATE_AMOUNT]. A document
+    // carrying one and not the other is not a state anything writes, so it reads as no
+    // estimate rather than as half of one.
+    estimate = estimateOf(getLong("estimateAmount"), getString("estimateUnit")),
 )
+
+/**
+ * The two estimate fields as one value, or null — the mirror of the SQLite gateway's
+ * `estimateOf`, and it has to be a mirror: the two backends must agree on what a
+ * half-written or a future-written estimate reads as.
+ *
+ * Null unless BOTH are present and the unit is one this build knows. An unrecognised
+ * unit degrades to "no estimate" rather than throwing, for the same reason an
+ * unrecognised `IssueEventKind` is dropped one collection over: a document written by
+ * a newer build must leave the issue readable, and a missing line beats an issue that
+ * will not open.
+ */
+private fun estimateOf(amount: Long?, unit: String?): se.soderbjorn.lunicle.clientserver.Estimate? {
+    if (amount == null || unit == null) return null
+    val parsed = se.soderbjorn.lunicle.clientserver.EstimateUnit.entries.firstOrNull { it.name == unit }
+        ?: return null
+    return se.soderbjorn.lunicle.clientserver.Estimate(amount, parsed)
+}
 
 /** An id-array field read back, or empty when absent. Firestore stores integer arrays as `List<Long>`. */
 private fun DocumentSnapshot.longList(field: String): List<Long> {

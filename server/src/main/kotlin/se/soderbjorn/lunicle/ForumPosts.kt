@@ -387,11 +387,14 @@ class ForumPostRepository(
      *
      * ── Why this exists at all, when the web app has no edit button ──────────
      *
-     * LNL-78 gives a system administrator a forum surface over MCP whose stated
-     * purpose is importing and exporting, and an import that cannot be corrected
-     * is an import that has to be deleted and redone from the top. `update_comment`
-     * on the issue side carries the same argument at greater length; see
-     * [CommentStore.edit] and McpTools' preamble.
+     * LNL-78 gave the forum surface over MCP a stated purpose of importing and
+     * exporting, and an import that cannot be corrected is an import that has to be
+     * deleted and redone from the top. `update_comment` on the issue side carries the
+     * same argument at greater length; see [CommentStore.edit] and McpTools' preamble.
+     *
+     * Nothing reaches this today: discussions are retired (LNL-190) and
+     * `AccessControl.canUseForumTools` answers false for every caller, whoever they
+     * are. The argument above is why the function is still here to be re-enabled.
      *
      * The title and body rules are [publishPost]'s, unchanged — a correction
      * cannot leave a post with no title, and a caller who wants an empty one

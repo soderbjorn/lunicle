@@ -17,8 +17,19 @@
  *    as "show me the Commodore queue";
  *  - has **no sprints and no versions at all**, which is the whole contrast: one
  *    project using every axis, one using almost none;
+ *  - **estimates nothing** (LNL-215), for the same reason. A bench quotes a price, not
+ *    a number of days, and half this queue is waiting on a part or on a customer rather
+ *    than on anybody's hands. So the board stays on `EstimateMode.NONE` — the default,
+ *    and the state most real projects stay in forever — which means no estimate cell, no
+ *    popover and no read-mode line anywhere on it. That the feature can be *entirely
+ *    absent* is worth seeing beside two boards where it is present;
  *  - turns on `requireComponent`, because a job that does not say which machine it
  *    is has not been booked in properly.
+ *
+ * It does carry the three relation kinds every project is created with (LNL-215),
+ * because a workshop relates jobs to each other as readily as a development team does —
+ * two machines from one collector with the same fault, or a job waiting on a donor
+ * that is itself still in a crate somewhere.
  *
  * The faults are real ones these machines actually suffer: leaking Varta barrel
  * batteries on the A600 and the A501 trapdoor, the Macintosh SE's chirp, the
@@ -83,7 +94,6 @@ internal fun seedKlinikProject(w: DemoWorld) {
         id = w.allocId(),
         name = "Kilobyte Klinik",
         prefix = "FIX",
-        isPublic = true,
         // Same as the Amiga board: forums and private messages stay off in the demo.
         discussionsEnabled = false,
         messagesEnabled = false,
@@ -164,25 +174,23 @@ internal fun seedKlinikProject(w: DemoWorld) {
     val cmPeripherals = component("Peripherals & drives", 6)
 
     // No sprints and no versions. A workshop has neither, and leaving both empty is
-    // the point of this board — see the file preamble.
+    // the point of this board — see the file preamble. `estimateMode` is left at its
+    // default, `none`, for the same reason and is deliberately not stated above: the
+    // default is exactly what is being demonstrated, and writing it out would suggest
+    // somebody chose it.
+
+    // Relation kinds, though — a shop does relate jobs to one another (LNL-215). Seeded
+    // by the same helper `provisionProject` uses, so this board's vocabulary cannot drift
+    // from a board a visitor creates.
+    val (rkBlockedBy, _, rkRelatedTo) = seedDefaultRelationKinds(w, p)
 
     // Membership. Janeway owns it; Nadia runs the bench day to day; Otto is on the
     // front desk and books jobs in; Milo is the apprentice and may only look and talk.
-    p.members[janeway.id] = mutableSetOf(DemoRoleKeys.PROJECT_OWNER)
-    val bench = mutableSetOf(
-        DemoRoleKeys.CREATE_ISSUE,
-        DemoRoleKeys.COMMENT_ON_ISSUE,
-        DemoRoleKeys.CHANGE_UNOWNED_ISSUES,
-        DemoRoleKeys.BE_ASSIGNED_ISSUE,
-    )
-    listOf(priya, sam, elin, marcus, hedvig).forEach { p.members[it.id] = bench.toMutableSet() }
-    p.members[nadia.id] = mutableSetOf(DemoRoleKeys.PROJECT_ADMIN, DemoRoleKeys.BE_ASSIGNED_ISSUE)
-    p.members[otto.id] = mutableSetOf(
-        DemoRoleKeys.CREATE_ISSUE,
-        DemoRoleKeys.COMMENT_ON_ISSUE,
-        DemoRoleKeys.CHANGE_UNOWNED_ISSUES,
-    )
-    p.members[milo.id] = mutableSetOf(DemoRoleKeys.VIEW_PROJECT, DemoRoleKeys.COMMENT_ON_ISSUE)
+    p.members[janeway.id] = DemoRungKeys.OWNER
+    listOf(priya, sam, elin, marcus, hedvig).forEach { p.members[it.id] = DemoRungKeys.MAINTAINER }
+    p.members[nadia.id] = DemoRungKeys.ADMIN
+    p.members[otto.id] = DemoRungKeys.MAINTAINER
+    p.members[milo.id] = DemoRungKeys.CONTRIBUTOR
 
     // ── Jobs ──────────────────────────────────────────────────────────────────
     //
@@ -233,6 +241,31 @@ internal fun seedKlinikProject(w: DemoWorld) {
 
     fun event(issue: DemoIssue, kind: IssueEventKind, author: DemoUser, daysAgoValue: Int, value: String? = null) {
         p.events.add(DemoEvent(w.allocId(), issue.id, kind, value, emptyList(), author.id, createdAt = daysAgo(daysAgoValue)))
+    }
+
+    /**
+     * Link two jobs, and record it on both (LNL-215).
+     *
+     * The same helper the Amiga board has, for the same reasons — one stored row, two
+     * history events, each carrying its own side's word. [from] is the side the kind's
+     * own name describes and, for a blocking kind, the side that dims.
+     */
+    fun relate(from: DemoIssue, kind: DemoRelationKind, to: DemoIssue, author: DemoUser, daysAgoValue: Int) {
+        p.relations.add(DemoRelation(w.allocId(), from.id, to.id, kind.id))
+        p.events.add(
+            DemoEvent(
+                w.allocId(), from.id, IssueEventKind.RELATION_ADDED, "${p.prefix}-${to.number}",
+                authorId = author.id, createdAt = daysAgo(daysAgoValue),
+                relationKind = kind.labelFor(isFromSide = true),
+            ),
+        )
+        p.events.add(
+            DemoEvent(
+                w.allocId(), to.id, IssueEventKind.RELATION_ADDED, "${p.prefix}-${from.number}",
+                authorId = author.id, createdAt = daysAgo(daysAgoValue),
+                relationKind = kind.labelFor(isFromSide = false),
+            ),
+        )
     }
 
     // ── Closed — collected, or ended some other way ───────────────────────────
@@ -589,6 +622,23 @@ internal fun seedKlinikProject(w: DemoWorld) {
     makeChild(jobClearance, jobClearance64, 0)
     makeChild(jobClearance, jobClearance1541, 1)
     makeChild(jobClearance, jobClearance1702, 2)
+
+    // ── Two jobs that depend on one another (LNL-215) ─────────────────────────
+    //
+    // A workshop's version of the same two shapes the Amiga board shows:
+    //
+    //  - The C128 is **blocked by** the Ekerö crate, which is still sitting in Intake and
+    //    therefore still open — so the C128 dims on the board and names what it is waiting
+    //    for. That is the honest bench answer: the VDC RAM is on order, but there may be a
+    //    donor C128 in that garage and nobody will know until somebody triages it. Note
+    //    that a *parent* would have been the wrong tool here — the C128 is not part of the
+    //    crate, it is merely waiting on it, and the crate's three children genuinely are
+    //    its contents.
+    //  - The two Amiga 1200s are **related**, symmetrically: neither causes the other, and
+    //    the link exists so that whoever picks up the second reads the first one's bench
+    //    log. "Related to" says exactly that from both ends and nothing more.
+    relate(jobC128Vdc, rkBlockedBy, jobClearance, elin, 4)
+    relate(jobA1200Guru, rkRelatedTo, jobA1200Recap, sam, 5)
 
     // ── Notifications ─────────────────────────────────────────────────────────
     //

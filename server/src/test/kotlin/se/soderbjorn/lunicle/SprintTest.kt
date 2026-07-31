@@ -87,8 +87,9 @@ class SprintTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     @AfterTest
     fun tearDown() {
@@ -624,12 +625,11 @@ class SprintTest {
         val cookie = sessions.create(ordinary.id)
         // Since LNL-57 a private project is invisible to somebody holding
         // nothing in it, and an invisible project answers 404 to everything —
-        // including to a route whose admin gate had been deleted. `view_project`
-        // grants no ability at all (see Role.VIEW_PROJECT), so this is the
-        // smallest grant that keeps the refusals below about administering the
-        // sprint rather than about seeing the project.
-        roles.seed()
-        roles.grant(ordinary.id, f.projectId, Role.VIEW_PROJECT)
+        // including to a route whose rung gate had been deleted. The bottom rung
+        // grants no ability at all (see ProjectRole.VIEWER), so this is the
+        // smallest grant that keeps the refusals below about shaping the sprint
+        // rather than about seeing the project.
+        roles.setRole(ordinary.id, f.projectId, ProjectRole.VIEWER)
 
         withRoutes { client ->
             assertEquals(
@@ -659,7 +659,13 @@ class SprintTest {
 
     private suspend fun seed(name: String = "Lunamux", prefix: String = "LMX"): Fixture {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin-$prefix", "Admin", null))
-        val project = projectRepository.create(name, prefix, isPublic = false)
+        val project = projectRepository.create(name, prefix)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -720,7 +726,7 @@ class SprintTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -742,7 +748,6 @@ class SprintTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

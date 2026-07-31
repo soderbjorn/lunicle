@@ -511,6 +511,21 @@ data class OAuthGrant(
 class OAuthTokenStore(
     private val database: LunicleDatabase,
     private val now: () -> Long = System::currentTimeMillis,
+    /**
+     * May an agent act as this account right now — both halves of `canUseMcp`?
+     *
+     * A seam rather than a read of the user row, and that is what changed with
+     * LNL-192: the *permission* is a per-tier instance setting now, so the answer is
+     * no longer derivable from the columns this store already had in hand. It is the
+     * shape [FirestoreOAuthTokenStore] has taken since LNL-122, and for the same
+     * reason — a token store that reached for the settings store would couple two
+     * subsystems with no other business with each other.
+     *
+     * Defaulted to "no", which is the safe direction for a store built without the
+     * seam: a test that never wires it sees refresh refused rather than a gate that
+     * silently passes everybody. [StoreGraph] always wires it.
+     */
+    private val canUseMcp: suspend (Long) -> Boolean = { false },
 ) : se.soderbjorn.lunicle.store.OAuthTokenStore {
     /** Mint an access + refresh pair in a brand new family. What a redeemed code produces. */
     override suspend fun issueTokens(
@@ -681,37 +696,39 @@ class OAuthTokenStore(
      * returned. The elvis is what makes that reasoning explicit rather than a
      * `!!` that would crash if the cascade ever changed.
      */
-    override suspend fun rotateRefresh(refreshToken: String): RefreshResult = withContext(DatabaseDispatcher) {
-        if (!refreshToken.startsWith(REFRESH_TOKEN_PREFIX)) return@withContext RefreshResult.Invalid
+    override suspend fun rotateRefresh(refreshToken: String): RefreshResult {
+        if (!refreshToken.startsWith(REFRESH_TOKEN_PREFIX)) return RefreshResult.Invalid
         val hash = OAuthCrypto.sha256Hex(refreshToken)
-        database.transactionWithResult {
+
+        // ── The gate, asked before the transaction opens ─────────────────────
+        //
+        // It used to be a check on the user row inside the transaction, because the
+        // whole answer lived in two columns of that row. LNL-192 moved the
+        // permission to a per-tier instance setting, which is a *suspending* read,
+        // and a transaction body cannot suspend — so the owner is looked up first
+        // and the gate asked outside.
+        //
+        // This gate is the fifth of the five `canUseMcp`'s KDoc enumerates, and the
+        // one that proves the point it makes: it *was* a hand-written
+        // `mcp_enabled != 0 && mcp_allowed != 0`, and when admins became permitted
+        // by virtue of being admins the other four moved and this one did not.
+        // Nothing failed to build. An admin simply got a working agent that died at
+        // the first token refresh — the worst shape a permission bug can take,
+        // because it looks like an expiry problem and not like a permission one.
+        // Going through the same seam every other gate goes through is what makes
+        // that drift impossible rather than merely unlikely.
+        //
+        // Still strictly *before* anything is consumed, which is the property the
+        // doc above spends its length on: a refusal must spend nothing.
+        val ownerId = withContext(DatabaseDispatcher) {
+            database.oAuthTokensQueries.findValid(hash, TYPE_REFRESH, now()).executeAsOneOrNull()?.user_id
+        } ?: return RefreshResult.Invalid
+        if (!canUseMcp(ownerId)) return RefreshResult.Refused
+
+        return withContext(DatabaseDispatcher) {
+            database.transactionWithResult {
             val row = database.oAuthTokensQueries.findValid(hash, TYPE_REFRESH, now()).executeAsOneOrNull()
                 ?: return@transactionWithResult RefreshResult.Invalid
-
-            val owner = database.usersQueries.findById(row.user_id).executeAsOneOrNull()
-                ?: return@transactionWithResult RefreshResult.Invalid
-            // [UserRecord.canUseMcp] itself, via the shared row mapper, rather
-            // than the raw columns rewritten to match it.
-            //
-            // This gate is the fifth of the five that property's KDoc enumerates,
-            // and it is the one that proves the point it makes: it *was* a
-            // hand-written `mcp_enabled != 0 && mcp_allowed != 0`, and when admins
-            // became permitted by virtue of being admins (see isMcpPermitted) the
-            // other four moved and this one did not. Nothing failed to build. An
-            // admin simply got a working agent that died at the first token
-            // refresh — the worst shape a permission bug can take, because it
-            // looks like an expiry problem and not like a permission one.
-            //
-            // Building the record costs one already-loaded row's worth of mapping
-            // and makes the drift impossible rather than merely unlikely.
-            val record = userRecordOf(
-                owner.id, owner.provider, owner.provider_id, owner.provider_name,
-                owner.display_name, owner.email, owner.email_verified, owner.is_sys_admin,
-                owner.mcp_enabled, owner.mcp_allowed,
-            ) ?: return@transactionWithResult RefreshResult.Refused
-            if (!record.canUseMcp) {
-                return@transactionWithResult RefreshResult.Refused
-            }
 
             if (row.consumed != 0L) {
                 logger.warn(
@@ -732,6 +749,7 @@ class OAuthTokenStore(
                 familyId = row.family_id,
             )
             RefreshResult.Rotated(tokens, row.user_id, row.family_id)
+            }
         }
     }
 

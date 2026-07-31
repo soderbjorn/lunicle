@@ -27,8 +27,10 @@ package se.soderbjorn.lunicle
 
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.SetOptions
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.store.InstanceSettings
+import se.soderbjorn.lunicle.store.newProjectAudienceKey
 
 class FirestoreInstanceSettingsStore(
     private val firestore: Firestore,
@@ -44,9 +46,33 @@ class FirestoreInstanceSettingsStore(
             (snapshot.get(VALUES) as? Map<String, Any?>).orEmpty()
         }
         return InstanceSettings(
-            requireSignIn = values[InstanceSettingKey.REQUIRE_SIGN_IN.storageKey] == true,
-            anyoneCanCreateProject = values[InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT.storageKey] == true,
             hideDisplayName = values[InstanceSettingKey.HIDE_DISPLAY_NAME.storageKey] == true,
+            // Not a switch (LNL-192): three values, stored as the policy's key
+            // string. Anything unrecognised reads as the default rather than as
+            // "admit nobody" — a deployment must not lock every future account out
+            // on the strength of a hand-edited field. Matches the SQLite store.
+            admission = AdmissionPolicy.byKey(values[ADMISSION_KEY] as? String) ?: AdmissionPolicy.ANYONE,
+            // Presence, not parseability — see the SQLite store, which says why an
+            // unreadable value still counts as somebody's choice.
+            isAdmissionStored = values.containsKey(ADMISSION_KEY),
+            allowPublicProjects = values[InstanceSettingKey.ALLOW_PUBLIC_PROJECTS.storageKey] == true,
+            staffMayCreateProjects = values[InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS.storageKey] == true,
+            memberMayCreateProjects = values[InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS.storageKey] == true,
+            staffMayUseAgents = values[InstanceSettingKey.STAFF_MAY_USE_AGENTS.storageKey] == true,
+            memberMayUseAgents = values[InstanceSettingKey.MEMBER_MAY_USE_AGENTS.storageKey] == true,
+            // Not a switch (LNL-191): a user id, stored as a number beside the
+            // booleans in the same map. Anything that is not a number — including the
+            // absent case — reads as "nobody owns this instance", which withholds
+            // authority rather than handing it to whoever has id 0.
+            ownerUserId = (values[OWNER_USER_ID_KEY] as? Number)?.toLong(),
+            // Not switches either (LNL-195): one entry per audience, holding a rung key
+            // string. An unrecognised rung drops the row rather than defaulting to one
+            // — guessing would hand an audience a rung nobody chose on every project
+            // created afterwards. Matches the SQLite store.
+            newProjectAudiences = Audience.entries.mapNotNull { audience ->
+                val stored = values[newProjectAudienceKey(audience)] as? String
+                stored?.let { ProjectRole.byKey(it) }?.let { audience to it }
+            }.toMap(),
         )
     }
 
@@ -58,9 +84,42 @@ class FirestoreInstanceSettingsStore(
         doc.set(mapOf(VALUES to mapOf(key.storageKey to isEnabled)), SetOptions.merge()).await()
     }
 
+    override suspend fun setOwnerUserId(userId: Long?) {
+        // The same single-entry merge as `set`. A null writes a null rather than
+        // deleting the key, which reads back identically through the `as? Number`
+        // above — one write path instead of a delete branch that only Firestore has.
+        doc.set(mapOf(VALUES to mapOf(OWNER_USER_ID_KEY to userId)), SetOptions.merge()).await()
+    }
+
+    override suspend fun setAdmissionPolicy(policy: AdmissionPolicy) {
+        // The same single-entry merge, storing the key string rather than the
+        // constant's name so a Kotlin rename is not a migration of the document.
+        doc.set(mapOf(VALUES to mapOf(ADMISSION_KEY to policy.key)), SetOptions.merge()).await()
+    }
+
+    /**
+     * One audience's row for future projects, or none.
+     *
+     * A null writes a null rather than deleting the entry, which reads back identically
+     * through the `as? String` above — one write path instead of a delete branch only
+     * this backend would have, exactly as [setOwnerUserId] does.
+     */
+    override suspend fun setNewProjectAudience(audience: Audience, role: ProjectRole?) {
+        doc.set(
+            mapOf(VALUES to mapOf(newProjectAudienceKey(audience) to role?.key)),
+            SetOptions.merge(),
+        ).await()
+    }
+
     private companion object {
         const val COLLECTION = "instanceSettings"
         const val DOCUMENT = "singleton"
         const val VALUES = "values"
+
+        /** Admission's key in the map — the same string the SQLite store writes. */
+        const val ADMISSION_KEY = "admission"
+
+        /** Ownership's key in the map — the same string 33.sqm writes on the SQLite side. */
+        const val OWNER_USER_ID_KEY = "owner_user_id"
     }
 }

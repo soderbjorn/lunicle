@@ -39,6 +39,29 @@ class IssueHistory(
     private val labels: se.soderbjorn.lunicle.store.LabelStore,
     private val components: se.soderbjorn.lunicle.store.ComponentStore,
     private val users: se.soderbjorn.lunicle.store.UserStore,
+    /**
+     * The sprints and versions whose NAMES the three new field events snapshot
+     * (LNL-215).
+     *
+     * Nullable so the tests and deployments that assembled this class with five stores
+     * still can: a null store means the event is written with a null value rather than
+     * not written at all, which degrades the same way a status whose row cannot be
+     * found already does — an event is a record of something that has *already
+     * happened*, and refusing to record it because its label is missing trades a
+     * slightly poorer history for no history.
+     */
+    private val sprints: se.soderbjorn.lunicle.store.SprintStore? = null,
+    private val versions: se.soderbjorn.lunicle.store.VersionStore? = null,
+    /**
+     * The issues and projects behind [keyOf] — how a hierarchy or relation event
+     * turns an issue id into the `LNL-98` a human reads (LNL-215).
+     *
+     * Both nullable, like the two above and for the same reason: an assembly without
+     * them writes the event with a null key rather than not writing it. A history line
+     * that says an issue was moved under *something* is still a record that it moved.
+     */
+    private val issues: se.soderbjorn.lunicle.store.IssueStore? = null,
+    private val projects: se.soderbjorn.lunicle.store.ProjectStore? = null,
 ) {
     /**
      * One issue's history, oldest first.
@@ -133,6 +156,9 @@ class IssueHistory(
         description: String,
         statusId: Long,
         assigneeId: Long?,
+        sprintId: Long?,
+        plannedVersionId: Long?,
+        fixedVersionId: Long?,
         labelIds: List<Long>,
         componentIds: List<Long>,
         author: Author,
@@ -163,8 +189,160 @@ class IssueHistory(
                 if (before.assigneeId != assigneeId) {
                     add(assigneeEvent(assigneeId))
                 }
+                // The three fields that used to leave no trace at all (LNL-215).
+                // Scheduling an issue, planning it for a release and recording which
+                // release it shipped in are exactly the changes somebody asks "when did
+                // this happen" about, and until now the answer was nowhere.
+                if (before.sprintId != sprintId) {
+                    add(sprintEvent(before.projectId, sprintId))
+                }
+                if (before.plannedVersionId != plannedVersionId) {
+                    add(versionEvent(IssueEventKind.PLANNED_VERSION_CHANGED, before.projectId, plannedVersionId))
+                }
+                if (before.fixedVersionId != fixedVersionId) {
+                    add(versionEvent(IssueEventKind.FIXED_VERSION_CHANGED, before.projectId, fixedVersionId))
+                }
             }
             events.append(before.id, changes, author, agentName, createdAt)
+        }
+    }
+
+    /**
+     * A sprint change made outside the editor — `/api/issues/{id}/sprint`, the card
+     * menu, the planning dialog, MCP's `sprint` field (LNL-215).
+     *
+     * Its own entry point beside [recordStatusChanged] for that method's reason
+     * exactly: the write it accompanies touches one column, and handing this path a
+     * full before/after issue so it could discover that only the sprint differs would
+     * be inventing eight comparisons to throw eight away.
+     */
+    suspend fun recordSprintChanged(issue: IssueRecord, sprintId: Long?, author: Author, agentName: String?) {
+        // Guarded like [recordStatusChanged]: putting an issue in the sprint it is
+        // already in is a gesture, not an event.
+        if (issue.sprintId == sprintId) return
+        record {
+            events.append(issue.id, listOf(sprintEvent(issue.projectId, sprintId)), author, agentName)
+        }
+    }
+
+    /**
+     * The fixed version written alongside a drag-to-close, outside the editor
+     * (LNL-215). [recordSprintChanged]'s twin, guarded the same way.
+     */
+    suspend fun recordFixedVersionChanged(
+        issue: IssueRecord,
+        fixedVersionId: Long?,
+        author: Author,
+        agentName: String?,
+    ) {
+        if (issue.fixedVersionId == fixedVersionId) return
+        record {
+            val event = versionEvent(IssueEventKind.FIXED_VERSION_CHANGED, issue.projectId, fixedVersionId)
+            events.append(issue.id, listOf(event), author, agentName)
+        }
+    }
+
+    /**
+     * A reparent, recorded on **both** issues — and on the old epic too (LNL-215).
+     *
+     * Up to three events for one write, and the asymmetry between them is correct
+     * rather than sloppy: an issue has at most one parent, so its own history records a
+     * *change*, while an epic has many children and its history records arrivals and
+     * departures. Somebody reading an epic needs to see that LNL-9 turned up under it;
+     * somebody reading LNL-9 needs to see where it went.
+     *
+     * Written as three separate `append` calls rather than one, because they are three
+     * different issues — [IssueEventStore.append] is per-issue, and its single
+     * timestamp per batch is about one save on one issue rather than about one gesture.
+     *
+     * @param before the parent the issue had, read before the write. Passed in for
+     *   [recordSaved.beforeLabelIds]'s reason: by the time this is called the column
+     *   has been overwritten and the old value exists nowhere else.
+     */
+    suspend fun recordParentChanged(
+        issue: IssueRecord,
+        before: Long?,
+        parentId: Long?,
+        author: Author,
+        agentName: String?,
+    ) {
+        if (before == parentId) return
+        record {
+            val newKey = parentId?.let { keyOf(it) }
+            events.append(
+                issue.id,
+                listOf(NewIssueEvent(IssueEventKind.PARENT_CHANGED, value = newKey)),
+                author,
+                agentName,
+            )
+            val childKey = keyOf(issue.id)
+            before?.let { old ->
+                events.append(
+                    old,
+                    listOf(NewIssueEvent(IssueEventKind.CHILD_REMOVED, value = childKey)),
+                    author,
+                    agentName,
+                )
+            }
+            parentId?.let { now ->
+                events.append(
+                    now,
+                    listOf(NewIssueEvent(IssueEventKind.CHILD_ADDED, value = childKey)),
+                    author,
+                    agentName,
+                )
+            }
+        }
+    }
+
+    /**
+     * A link added or removed, recorded on **both** issues (LNL-215).
+     *
+     * Two events for one relation row, and this is deliberately not a contradiction of
+     * IssueRelations.sq's one-row rule. That rule is about *state*, where a second row
+     * would be a second source of truth that can drift; this is per-issue and
+     * append-only, and both issues genuinely had something happen to them. Somebody
+     * reading B's history needs to see that it now blocks A.
+     *
+     * Each event carries the label for ITS OWN side — `Blocked by` on the from issue,
+     * `Blocks` on the to issue, the same word twice when the kind is symmetric — so
+     * each history reads as a sentence about the issue it belongs to.
+     *
+     * @param added whether this is the arrival or the departure.
+     */
+    suspend fun recordRelationChanged(
+        relation: IssueRelationRecord,
+        kind: IssueRelationKindRecord,
+        added: Boolean,
+        author: Author,
+        agentName: String?,
+    ) {
+        record {
+            val eventKind = if (added) IssueEventKind.RELATION_ADDED else IssueEventKind.RELATION_REMOVED
+            events.append(
+                relation.fromIssueId,
+                listOf(
+                    NewIssueEvent(
+                        eventKind,
+                        value = keyOf(relation.toIssueId),
+                        relationKind = kind.labelFrom,
+                    ),
+                ),
+                author,
+                agentName,
+            )
+            events.append(
+                relation.toIssueId,
+                listOf(
+                    NewIssueEvent(
+                        eventKind,
+                        value = keyOf(relation.fromIssueId),
+                        relationKind = kind.labelTo,
+                    ),
+                ),
+                author,
+                agentName,
+            )
         }
     }
 
@@ -246,6 +424,51 @@ class IssueHistory(
      * distinguishable from "assigned to somebody who has since left" once
      * `ON DELETE SET NULL` has emptied the id. See IssueEvents.sq.
      */
+    /**
+     * The sprint's name **as it stands now**, frozen into the event — or null, which
+     * means THE BACKLOG rather than "we do not know" (LNL-215).
+     *
+     * Null is load-bearing exactly as it is on [assigneeEvent]: "moved this to the
+     * backlog" is the second most common thing anybody does to a sprint, and a history
+     * that could not say it would be silent about half the feature. There is no
+     * snapshot/live pair here as there is for an assignee, because a sprint is a
+     * project's word for a fortnight rather than a person — see [statusEvent].
+     *
+     * A sprint that cannot be found, or a deployment with no sprint store wired,
+     * leaves the value null rather than failing the write. That collapses into the
+     * backlog reading, which is the one wrinkle worth naming and is the cheaper of the
+     * two failures: the alternative is refusing to record a change that has already
+     * happened.
+     */
+    private suspend fun sprintEvent(projectId: Long, sprintId: Long?) = NewIssueEvent(
+        kind = IssueEventKind.SPRINT_CHANGED,
+        value = sprintId?.let { id -> sprints?.forProject(projectId)?.firstOrNull { it.id == id }?.name },
+    )
+
+    /** The version's name as it stands now, or null because it was cleared. See [statusEvent]. */
+    private suspend fun versionEvent(kind: IssueEventKind, projectId: Long, versionId: Long?) = NewIssueEvent(
+        kind = kind,
+        value = versionId?.let { id -> versions?.forProject(projectId)?.firstOrNull { it.id == id }?.name },
+    )
+
+    /**
+     * `LNL-98` for an issue id, or null when it cannot be resolved.
+     *
+     * A **snapshot**, like every other value on this table: the key is written into the
+     * event and never re-resolved, so re-prefixing a project does not rewrite what its
+     * histories say happened. That is the same argument [statusEvent] makes about a
+     * renamed column, applied to the one identifier a project can change.
+     *
+     * Two reads per call, and deliberately not cached: hierarchy and relation events
+     * are written a handful at a time by one gesture, never per card and never in a
+     * loop over a board.
+     */
+    private suspend fun keyOf(issueId: Long): String? {
+        val issue = issues?.findById(issueId) ?: return null
+        val prefix = projects?.findById(issue.projectId)?.namePrefix ?: return null
+        return "$prefix-${issue.number}"
+    }
+
     private suspend fun assigneeEvent(assigneeId: Long?) = NewIssueEvent(
         kind = IssueEventKind.ASSIGNEE_CHANGED,
         value = assigneeId?.let { users.findById(it)?.resolvedName },

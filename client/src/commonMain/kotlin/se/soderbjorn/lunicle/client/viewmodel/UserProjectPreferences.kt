@@ -47,16 +47,18 @@ import kotlinx.serialization.json.Json
  *   project's board (LNL-100). Ids, not names, so the choice survives a column
  *   rename. Order is not meaningful — the board draws hidden columns in their own
  *   board order, not this list's — so it is compared as a set on the way in.
- * @property hideIssueNumbers whether this user has chosen to hide the issue number
- *   — the FOO-123 key, prefix and all — on this project's board cards and issue
- *   detail (LNL-105). The first field to arrive after [hiddenColumnIds], and the
- *   proof the "grow a field, not a key" design holds: a blob written before it
- *   existed decodes to false, which is the number shown, the state everyone had.
+ *
+ * `hideIssueNumbers` was the second field here (LNL-105) and is **gone** (LNL-194):
+ * hiding the FOO-123 key describes how a shared board reads, so it moved onto the
+ * project row and became an administrator's switch. Removing it from this record is
+ * what retires the old rows without a pass over every account — `decode` ignores
+ * unknown keys and `encode` does not emit them, so the next time anybody hides a
+ * column their blob loses the field on the way through. The values were copied onto
+ * the projects first; see the server's copyBoardDisplayFromOwners.
  */
 @Serializable
 data class UserProjectPrefs(
     val hiddenColumnIds: List<Long> = emptyList(),
-    val hideIssueNumbers: Boolean = false,
 )
 
 /**

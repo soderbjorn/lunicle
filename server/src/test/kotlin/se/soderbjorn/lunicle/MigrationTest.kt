@@ -153,30 +153,36 @@ class MigrationTest {
     }
 
     /**
-     * The `roles` table starts empty and is filled at startup.
+     * A fresh volume grants nobody anything.
      *
-     * Pinned as a test because it is the one deliberate departure from the
-     * schema doc, which put the seed in the schema *and* in the create branch.
-     * If someone later adds the INSERTs back to a .sq, this fails and points at
-     * RoleStore.seed — where the single, idempotent seed lives.
+     * This test used to say "creating the schema does not seed roles", about the
+     * `roles` vocabulary table that LNL-191 removed — a rung's name is the only thing
+     * stored and its description is on the [ProjectRole] enum, so there is no
+     * vocabulary to seed and no startup seed to keep out of the schema.
      *
-     * Against `create` rather than against a migration, which is where it used
-     * to point: the .sqm that used to be the risk is gone, and `create` is now
-     * the only path that builds the table at all. The invariant is the same one
-     * and it is worth more here — every fresh volume takes this path.
+     * What it was really protecting is worth more now than it was then, so it is
+     * kept pointed at the two tables that replaced it: **a fresh database contains no
+     * grant of any kind.** A `.sq` that seeded a row here would hand somebody a rung
+     * on every new deployment, which is the same class of mistake in a place where
+     * it is much harder to see — and it is exactly what 33.sqm refuses to do on a
+     * migrated volume, so the two paths agree by both being empty.
      */
     @Test
-    fun `creating the schema does not seed roles`() {
-        val count = withDriver { driver ->
+    fun `creating the schema grants nobody anything`() {
+        val counts = withDriver { driver ->
             LunicleDatabase.Schema.create(driver).value
-            driver.executeQuery(
-                identifier = null,
-                sql = "SELECT count(*) FROM roles;",
-                mapper = { cursor -> QueryResult.Value(if (cursor.next().value) cursor.getLong(0) ?: 0L else 0L) },
-                parameters = 0,
-            ).value
+            listOf("project_roles", "project_audience_roles").map { table ->
+                table to driver.executeQuery(
+                    identifier = null,
+                    sql = "SELECT count(*) FROM $table;",
+                    mapper = { cursor -> QueryResult.Value(if (cursor.next().value) cursor.getLong(0) ?: 0L else 0L) },
+                    parameters = 0,
+                ).value
+            }
         }
-        assertEquals(0L, count, "The schema seeds roles; RoleStore.seed() is the only place that should.")
+        counts.forEach { (table, count) ->
+            assertEquals(0L, count, "A fresh schema seeds $table; nothing should ever grant on creation.")
+        }
     }
 
     // ── Plumbing ─────────────────────────────────────────────────────────────

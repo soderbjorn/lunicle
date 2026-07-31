@@ -126,9 +126,22 @@ private val brandJson = Json { ignoreUnknownKeys = true }
  * @property hasLogo     whether `logo.svg` exists.
  * @property hasFavicon  whether `favicon.png` exists.
  * @property hasFontsCss whether `fonts/fonts.css` exists.
- * @property googleHostedDomain optional Google Workspace domain the deployment
- *   pins sign-in to (LNL-125): when set, the Google chooser is pre-filtered to it
- *   and the server refuses any other account's `hd`. Null ⇒ open chooser, no gate.
+ * @property domain the organisation's own domain (LNL-192), or null. **Identity
+ *   only**: the sole input to `users.kind`, and nothing else reads it. Falls back to
+ *   the legacy [googleHostedDomain] when the manifest does not name it — see
+ *   [InstanceIdentity] for the whole compatibility story.
+ * @property onlyHostedGoogleAccounts whether the Google chooser is pinned to
+ *   [domain] (LNL-125, renamed by LNL-192). **Sign-in ergonomics only**: it grants
+ *   nothing. Defaults to whether the legacy [googleHostedDomain] was set, which is
+ *   exactly what that field used to mean.
+ * @property allowEmailCodeSignIn whether a mailed code is offered as a way in.
+ *   Defaults to **true** — an unbranded install has every door available. The claim
+ *   only ever narrows the truth: a deployment with no mail transport has no code
+ *   sign-in whatever this says. See [InstanceIdentity.isCodeSignInAvailable].
+ * @property googleHostedDomain the raw legacy field, kept only so the two new ones
+ *   can fall back to it and so the boot log can say a manifest is still on it.
+ *   Nothing else should read it — [InstanceIdentity.googleHostedDomainPin] is what
+ *   the sign-in path takes.
  */
 internal data class BrandInfo(
     val dir: File,
@@ -139,13 +152,20 @@ internal data class BrandInfo(
     val hasLogo: Boolean,
     val hasFavicon: Boolean,
     val hasFontsCss: Boolean,
+    val domain: String?,
+    val onlyHostedGoogleAccounts: Boolean,
+    val allowEmailCodeSignIn: Boolean,
     val googleHostedDomain: String?,
 ) {
     /** A one-line summary for the startup log, mirroring the sign-in/email lines. */
     fun describe(): String {
         val themes = if (themeNames.isEmpty()) "none" else themeNames.joinToString(", ")
-        val hd = googleHostedDomain?.let { "; google-hd=$it" } ?: ""
-        return "dir=${dir.path}; themes=[$themes]; font=${fontFamily ?: "(default)"}$hd"
+        val identity = "; domain=${domain ?: "(unset — no staff tier)"}" +
+            "; google-pin=$onlyHostedGoogleAccounts; code-sign-in=$allowEmailCodeSignIn"
+        // Named explicitly when a manifest is still on the retired spelling, because
+        // the fix is a two-line edit somebody has to know to make.
+        val legacy = if (googleHostedDomain != null) "; (legacy googleHostedDomain=$googleHostedDomain)" else ""
+        return "dir=${dir.path}; themes=[$themes]; font=${fontFamily ?: "(default)"}$identity$legacy"
     }
 }
 
@@ -161,11 +181,21 @@ internal fun loadBrandInfo(dir: File): BrandInfo {
     }.getOrNull()
 
     val title = (manifest?.get("title") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
-    // Optional Workspace-domain pin (LNL-125). Read here so the server can enforce
-    // it (BrandInfo → authRoutes → exchangeGoogleCode); the client reads the same
-    // field straight off the /brand.json response for the chooser hint.
-    val googleHostedDomain = (manifest?.get("googleHostedDomain") as? JsonPrimitive)
-        ?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+
+    // ── Identity, the chooser pin, and the second door (LNL-192) ─────────────
+    //
+    // Three fields that used to be one. `googleHostedDomain` remains readable as a
+    // legacy spelling and seeds both of the ones that replaced it, so a manifest
+    // that has not been updated behaves exactly as it did — see InstanceIdentity
+    // for why that is the whole compatibility story and why nothing is migrated.
+    val googleHostedDomain = manifest.trimmedString("googleHostedDomain")
+    val domain = manifest.trimmedString("domain") ?: googleHostedDomain
+    val onlyHostedGoogleAccounts = manifest.boolean("onlyHostedGoogleAccounts")
+        ?: (googleHostedDomain != null)
+    // Defaults to on, so an unbranded install and a brand dir that says nothing
+    // about sign-in both keep every way in. It can only narrow: the effective
+    // answer ANDs a configured transport, in resolveOAuthConfig.
+    val allowEmailCodeSignIn = manifest.boolean("allowEmailCodeSignIn") ?: true
     // Font families named for the boot log only (the client is what actually
     // applies them). Reads the `fonts` array, falling back to the legacy single
     // `font` object, so the log stays accurate across both manifest shapes.
@@ -202,9 +232,32 @@ internal fun loadBrandInfo(dir: File): BrandInfo {
         hasLogo = File(dir, "logo.svg").isFile,
         hasFavicon = File(dir, "favicon.png").isFile,
         hasFontsCss = File(dir, "fonts/fonts.css").isFile,
+        domain = domain,
+        onlyHostedGoogleAccounts = onlyHostedGoogleAccounts,
+        allowEmailCodeSignIn = allowEmailCodeSignIn,
         googleHostedDomain = googleHostedDomain,
     )
 }
+
+/** A non-blank, trimmed string field, or null. Blank is absent, as everywhere here. */
+private fun JsonObject?.trimmedString(key: String): String? =
+    (this?.get(key) as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+
+/**
+ * A boolean field, or null when the manifest does not name it.
+ *
+ * Nullable rather than defaulted so each caller states its own default, which is
+ * what lets `onlyHostedGoogleAccounts` fall back to the legacy field while
+ * `allowEmailCodeSignIn` falls back to true. Accepts a JSON boolean or the strings
+ * "true"/"false", because these are hand-written files; anything else is absent,
+ * so a typo takes the documented default rather than the opposite of what was meant.
+ */
+private fun JsonObject?.boolean(key: String): Boolean? =
+    when ((this?.get(key) as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()) {
+        "true" -> true
+        "false" -> false
+        else -> null
+    }
 
 /**
  * Resolve a path made of single [segments] under [base], refusing anything that
@@ -259,14 +312,28 @@ private suspend fun io.ktor.server.application.ApplicationCall.respondBrandFile(
  * Mount the `/brand` asset endpoints for [info]'s directory. Only called when
  * branding is on, so the routes simply do not exist for a default deployment.
  *
- * `brand.json` is the one endpoint that is not served verbatim: its response is
- * enriched with a server-computed `themes` array (the `themes/` filenames) so the
- * client can enumerate the set without a directory-listing endpoint of its own.
- * Every other endpoint streams the file straight off disk, guarded by
- * [safeChild] so a request can never read outside the brand dir.
+ * `brand.json` is the one endpoint that is not served verbatim. Two server-computed
+ * fields replace what the file says:
+ *
+ *  - `themes`, the `themes/` filenames, so the client can enumerate the set without
+ *    a directory-listing endpoint of its own;
+ *  - `googleHostedDomain`, **resolved** to the domain the chooser is actually pinned
+ *    to (LNL-192). The file now carries `domain` and `onlyHostedGoogleAccounts`
+ *    separately, and combining them is a rule with a legacy fallback in it — so it
+ *    is applied once, here, and the client goes on reading one field and passing it
+ *    to Google as the `hd` hint. A second copy of that rule in the browser would be
+ *    a chooser pinned to a domain the server's own gate disagrees with. Absent from
+ *    the response entirely when nothing is pinned.
+ *
+ * Every other endpoint streams the file straight off disk, guarded by [safeChild] so
+ * a request can never read outside the brand dir.
  */
 internal fun Route.brandRoutes(info: BrandInfo) {
     val dir = info.dir
+    // Only the chooser pin is read below, and that term does not involve mail — so
+    // this takes the manifest's own claim about code sign-in rather than threading
+    // the transport in to compute a field nothing here looks at.
+    val identity = info.toInstanceIdentity(info.allowEmailCodeSignIn)
     route("/brand") {
         get("/brand.json") {
             val file = File(dir, "brand.json")
@@ -276,8 +343,11 @@ internal fun Route.brandRoutes(info: BrandInfo) {
             }
             val base = runCatching { brandJson.parseToJsonElement(file.readText()).jsonObject }
                 .getOrNull() ?: JsonObject(emptyMap())
+            val pin = identity.googleHostedDomainPin
             val enriched = JsonObject(
-                base + ("themes" to JsonArray(info.themeFiles.map { JsonPrimitive(it) })),
+                base - "googleHostedDomain" +
+                    ("themes" to JsonArray(info.themeFiles.map { JsonPrimitive(it) })) +
+                    if (pin != null) mapOf("googleHostedDomain" to JsonPrimitive(pin)) else emptyMap(),
             )
             call.respondText(enriched.toString(), ContentType.Application.Json)
         }

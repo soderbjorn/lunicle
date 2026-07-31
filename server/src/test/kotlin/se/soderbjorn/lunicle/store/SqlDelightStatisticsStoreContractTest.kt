@@ -46,7 +46,7 @@ class SqlDelightStatisticsStoreContractTest : StatisticsStoreContract() {
         StatisticsRepository(projects, ProjectStatisticsStore(db), IssueStatisticsStore(db))
 
     override suspend fun newProject(): Long =
-        projectRepository.create("Project ${seq}", "ST${seq++}", isPublic = false).id
+        projectRepository.create("Project ${seq}", "ST${seq++}").id
 
     override suspend fun fileIssue(projectId: Long) {
         val (id, _) = issueRepository.createDraft(projectId, Author.Nobody)

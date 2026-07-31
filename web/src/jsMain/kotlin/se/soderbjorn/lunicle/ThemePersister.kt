@@ -10,14 +10,13 @@
  *
  * ── Which keys, and why not all of them ─────────────────────────────────────
  *
- * Only [UiSettingKeys.persisted] travels: the theme selection and the user's own
- * themes. Everything else the shell writes — window layout, sidebar state,
- * hotkeys — stays in memory and dies with the tab, deliberately. The redesign
- * wants the board maximised on every launch (see main.kt), and a persister that
- * durably remembered layout would quietly undo that decision from a different
- * file. Two keys is also the whole of what LNL-20 asked for.
+ * Only [UiSettingKeys.persisted] travels: the theme selection, the user's own
+ * themes, where the panes sit, and how wide they dragged the sidebar. Everything
+ * else the shell writes — collapsed sidebar sections, hotkeys — stays in memory
+ * and dies with the tab, deliberately: a key reaches this list when some part of
+ * the app would be *wrong* without it across a reload, not merely different.
  *
- * That the *custom themes* key is one of the two is not a bonus. The toolkit's
+ * That the *custom themes* key is on the list is not a bonus. The toolkit's
  * theme manager lets a user build and edit themes, and the selection names the
  * chosen one by string — so persisting the choice without the themes would store
  * a reference to something that no longer exists anywhere. On the next load the
@@ -129,12 +128,12 @@ class ThemePersister(
     // browser to land on, so the frame matches the surrounding chrome instead of
     // clashing with it. Three parameters, because the mismatch has two halves:
     //
-    //   - `?theme=dark|light|auto` → [defaultAppearance]: which slot is active.
-    //     Lunicle's own default is Light (GitHub Light, LNL-149), which flashes
-    //     white inside a dark host.
-    //   - `?darkTheme=` / `?lightTheme=` → the slot *contents*. Going dark is not
-    //     enough on its own: the dark slot would still hold GitHub Dark, a neutral
-    //     grey, inside (say) the near-black-navy-and-cyan Lunamux site. A host that
+    //   - `?theme=dark|light|auto` → [defaultAppearance]: which slot is active. A
+    //     *light* host embedding the tracker gets a dark frame otherwise, Lunicle's
+    //     own default now being Dark ([LUNICLE_DEFAULT_APPEARANCE]).
+    //   - `?darkTheme=` / `?lightTheme=` → the slot *contents*. Picking a side is not
+    //     enough on its own: the slot would still hold Lunicle's own Classic palette,
+    //     green-glowing, inside (say) the cyan-and-navy Lunamux site. A host that
     //     knows which theme matches its chrome names it — "Lunamux Dark" — and the
     //     embed paints it.
     //
@@ -145,7 +144,7 @@ class ThemePersister(
     // user's saved theme still wins. The full precedence, highest first:
     //
     //     the user's own choice  >  these embed hints  >  the deployment's
-    //     brand.json default  >  Lunicle's GitHub default  >  the toolkit's
+    //     brand.json default  >  Lunicle's Classic default  >  the toolkit's
     //
     // The embed sits above brand.json deliberately: brand.json is one instance-wide
     // default, while these describe *this frame on this site*, which is the more
@@ -154,7 +153,7 @@ class ThemePersister(
     // Held as fields rather than threaded through [start] because a sign-*out*
     // while embedded reseeds ([onIdentityChanged] also calls [seedDefault]) and must
     // land back on the host's look, not on Lunicle's.
-    private var defaultAppearance: Appearance = Appearance.Light
+    private var defaultAppearance: Appearance = LUNICLE_DEFAULT_APPEARANCE
     private var embedDefaultDark: String? = null
     private var embedDefaultLight: String? = null
 
@@ -164,7 +163,7 @@ class ThemePersister(
      * un-embedded load (no parameters at all) behaves exactly as before.
      *
      * @param appearance which slot an unchosen browser seeds on, or null for
-     *   Lunicle's own Light default.
+     *   Lunicle's own default ([LUNICLE_DEFAULT_APPEARANCE]).
      * @param darkTheme  name for the dark slot when it was never chosen, or null to
      *   fall through to the brand/Lunicle default. Blank is treated as null.
      * @param lightTheme the same for the light slot.
@@ -192,12 +191,12 @@ class ThemePersister(
      * Load the caller's theme, or fall back to Lunicle's default. Call this
      * once, before `mountAppShell`.
      *
-     * The default is GitHub Light — a light appearance, on Lunicle's own slot
-     * defaults (GitHub Light / GitHub Dark, see [applyBrandDefaultSelectionJson]).
-     * Only the appearance is named here; the slot names come from that merge, so
-     * naming them again would be repeating it back to itself. This is a Lunicle
-     * choice, not a Lunula one: the toolkit's own [ThemeSnapshotV2] still defaults
-     * to Auto for every other app.
+     * The default is Lunamux Classic Dark — [LUNICLE_DEFAULT_APPEARANCE], on
+     * Lunicle's own slot defaults (see [applyBrandDefaultSelectionJson]). Only the
+     * appearance is named here; the slot names come from that merge, so naming them
+     * again would be repeating it back to itself. This is a Lunicle choice, not a
+     * Lunula one: the toolkit's own [ThemeSnapshotV2] still defaults to Auto for
+     * every other app.
      */
     suspend fun start() {
         if (!load()) seedDefault()
@@ -296,10 +295,10 @@ class ThemePersister(
     /**
      * Lunicle's own default, for a browser with nothing stored. See [start].
      *
-     * The appearance is [defaultAppearance] — Lunicle's own Light unless a host
-     * embedding the tracker asked for another via `?theme=` (see
-     * [setDefaultAppearance]). Only the appearance is named here; the slot names
-     * come from the brand-default merge, so naming them again would repeat it back.
+     * The appearance is [defaultAppearance] — [LUNICLE_DEFAULT_APPEARANCE] unless a
+     * host embedding the tracker asked for another via `?theme=` (see
+     * [setEmbedDefaults]). Only the appearance is named here; the slot names come
+     * from the brand-default merge, so naming them again would repeat it back.
      */
     private suspend fun seedDefault() {
         write(
@@ -385,14 +384,42 @@ internal fun stripBrandThemesJson(json: String, brandThemes: List<Theme>): Strin
 }
 
 /**
- * Lunicle's own slot defaults (LNL-149): GitHub Light for the light slot, GitHub
- * Dark for the dark slot. These sit *beneath* both a deployment's brand default
- * and the user's own choice — they are what an unbranded, never-chosen slot lands
- * on, in place of the toolkit's own Lunamux defaults. They are a Lunicle choice,
- * not a Lunula one: the toolkit still defaults to Lunamux for every other app.
+ * Lunicle's own slot defaults: the Classic Lunamux pair. These sit *beneath* both a
+ * deployment's brand default and the user's own choice — they are what an unbranded,
+ * never-chosen slot lands on, in place of the toolkit's own Lunamux defaults. They
+ * are a Lunicle choice, not a Lunula one: the toolkit still defaults to plain Lunamux
+ * for every other app.
+ *
+ * Was GitHub Light/Dark (LNL-149), which is what a *neutral* default looks like — a
+ * grey that belongs to nobody. Lunicle has a look of its own now and the site shows
+ * it: the marketing frame, the demo and a bare `issues.lunicle.dev` all land on the
+ * same green-glow Classic palette rather than three different first impressions.
+ * The change reaches every passive user, by design — [applyBrandDefaultSelectionJson]
+ * applies this beneath the stored selection rather than seeding it into one, so
+ * nobody is pinned to the default that happened to be current when they first
+ * loaded. Anyone who *picked* GitHub Dark keeps it.
+ *
+ * "Lunamux Classic Dark" is deliberately not the toolkit's [DEFAULT_DARK_THEME]
+ * ("Lunamux Dark"): that name is the sentinel meaning "never chosen", so a slot
+ * holding it is one this function is still entitled to move.
  */
-const val LUNICLE_DEFAULT_DARK_THEME: String = "GitHub Dark"
-const val LUNICLE_DEFAULT_LIGHT_THEME: String = "GitHub Light"
+const val LUNICLE_DEFAULT_DARK_THEME: String = "Lunamux Classic Dark"
+const val LUNICLE_DEFAULT_LIGHT_THEME: String = "Lunamux Classic Light"
+
+/**
+ * The appearance a browser with nothing stored seeds on: dark.
+ *
+ * The other half of the default look, and the half that decides which of the two
+ * slots above is actually showing. Dark because the house look is the dark one —
+ * the site is committed dark and passed `?theme=dark` to say so, which was the
+ * embed papering over an app default that disagreed with it.
+ *
+ * Not [Appearance.Auto]: following the OS would make the first impression a
+ * property of the visitor's machine, and half of them would still see a palette
+ * nothing on the site had shown them. A visitor who wants their system followed
+ * has the Appearance control, and that choice is stored and wins over this.
+ */
+val LUNICLE_DEFAULT_APPEARANCE: Appearance = Appearance.Dark
 
 /**
  * The [Appearance] a host embedding the tracker named on the frame URL's
@@ -417,8 +444,8 @@ internal fun appearanceFromThemeParam(value: String?): Appearance? = when (value
  * user's choice: a slot still on the toolkit's built-in default (i.e. never
  * chosen) is swung to the brand default when the deployment names one, and
  * otherwise to Lunicle's own default ([LUNICLE_DEFAULT_DARK_THEME] /
- * [LUNICLE_DEFAULT_LIGHT_THEME], LNL-149); a slot the user set to anything else
- * is left alone.
+ * [LUNICLE_DEFAULT_LIGHT_THEME]); a slot the user set to anything else is left
+ * alone.
  *
  * Applied here, non-persisted, rather than through a persisting seed — so a
  * passive user is never pinned to today's default, and a re-brand (or a change to

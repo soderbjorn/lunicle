@@ -111,6 +111,27 @@ fun queryValue(search: String, name: String): String? =
  *   There is deliberately no `comment` parameter, though the deep link has one, and
  *   it is exactly the `message` case above: a comment is a position inside a post.
  *   Read at load, never written, and preserved here as any unknown parameter is.
+ * @param settings the settings pane's open tab, by key, or null to remove
+ *   `?settings=` (LNL-193).
+ *
+ *   A **view**, like [ticket]: the settings pane is one surface with five tabs
+ *   rather than the three dialogs it replaced, so which tab is showing is a thing
+ *   being looked at and "none, the pane is shut" has to be expressible or closing
+ *   it would leave a link that reopens it.
+ *
+ *   Note what this deliberately is *not*: a path. The design for this pane spelled
+ *   it `settings/<tab>/<project>/<section>`, and Lunicle addresses state with query
+ *   parameters — the embed is an `<iframe src>` on somebody else's page, with
+ *   somebody else's parameters beside ours and no path of our own to spend. So the
+ *   scheme grows a parameter rather than a router, which is also what keeps this
+ *   function the whole of the rule.
+ * @param section which section of [settings]' tab, by key, or null to remove
+ *   `?section=`. A view for [settings]' reason and always beside it: a section
+ *   without the tab that holds it names nothing.
+ *
+ *   The project the Projects tab is showing rides the existing `?projectId=`
+ *   rather than a parameter of its own — it is the same question that parameter has
+ *   always answered, and a second name for it would be two things to keep in step.
  * @return the new query string without its `?`, or null if nothing changed.
  */
 fun nextSearch(
@@ -121,6 +142,8 @@ fun nextSearch(
     conversation: String? = null,
     forum: String? = null,
     post: String? = null,
+    settings: String? = null,
+    section: String? = null,
 ): String? {
     val current = parseQuery(search)
     val project = projectId?.toString()
@@ -132,8 +155,10 @@ fun nextSearch(
     val conversationChanged = valueOf("conversation") != conversation
     val forumChanged = valueOf("forum") != forum
     val postChanged = valueOf("post") != post
+    val settingsChanged = valueOf("settings") != settings
+    val sectionChanged = valueOf("section") != section
     if (!issueChanged && !projectChanged && !tabChanged && !conversationChanged &&
-        !forumChanged && !postChanged
+        !forumChanged && !postChanged && !settingsChanged && !sectionChanged
     ) {
         return null
     }
@@ -148,6 +173,8 @@ fun nextSearch(
         if (conversation != null) add("conversation" to conversation)
         if (forum != null) add("forum" to forum)
         if (post != null) add("post" to post)
+        if (settings != null) add("settings" to settings)
+        if (section != null) add("section" to section)
     }
     val written = mutableSetOf<String>()
     val result = mutableListOf<Pair<String, String>>()
@@ -158,14 +185,17 @@ fun nextSearch(
                 result.add(replacement)
                 written.add(name)
             }
-            // `issue`, `conversation`, `forum` and `post` are the names a null
-            // argument removes — the four that name something being *looked at*.
-            // Every other parameter here, known or not, is carried across; see
-            // their @param docs for the split, which is views against positions.
+            // `issue`, `conversation`, `forum`, `post`, `settings` and `section`
+            // are the names a null argument removes — the ones that name something
+            // being *looked at*. Every other parameter here, known or not, is
+            // carried across; see their @param docs for the split, which is views
+            // against positions.
             name == "issue" && ticket == null -> Unit
             name == "conversation" && conversation == null -> Unit
             name == "forum" && forum == null -> Unit
             name == "post" && post == null -> Unit
+            name == "settings" && settings == null -> Unit
+            name == "section" && section == null -> Unit
             else -> result.add(name to value)
         }
     }

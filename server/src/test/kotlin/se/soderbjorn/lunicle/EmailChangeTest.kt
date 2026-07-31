@@ -69,7 +69,22 @@ class EmailChangeTest {
 
     private val users = UserStore(database)
     private val sessions = SessionStore(database)
-    private val impersonations = Impersonations()
+    /**
+     * Armed, so the one impersonation test below can reach the routes at all. Every
+     * other test here is unaffected: an armed deployment behaves identically until
+     * somebody actually arms a grant.
+     */
+    private val impersonation = OwnerImpersonation(isEnabled = true)
+
+    /**
+     * Ownership, and the oracle that reads it (LNL-197).
+     *
+     * Both here because impersonation is the owner's alone now, and `resolveCaller`
+     * asks this rather than the record — so the one test below that impersonates has to
+     * seat an owner or its impersonation is dropped before the route it is aimed at.
+     */
+    private val instanceSettings = InstanceSettingsStore(database)
+    private val access = AccessControl(RoleStore(database), instanceSettings)
 
     /** Every mail the fake Resend received: recipient, subject, body. */
     private val sent = mutableListOf<Triple<String, String, String>>()
@@ -271,30 +286,50 @@ class EmailChangeTest {
     // ── Impersonation, and the old address ───────────────────────────────────
 
     /**
-     * An admin wearing somebody's face may not redirect their mail.
+     * Somebody wearing another's face may not redirect their mail.
      *
-     * Worth an explicit refusal rather than inheriting whatever `caller.effective`
-     * happens to do — which is what the old route did, silently allowing it.
-     * Once e-mail is the account key, redirecting where someone's mail goes is
-     * redirecting their account.
+     * Worth an explicit refusal rather than inheriting whatever the caller's own
+     * record happens to permit. Once e-mail is the account key, redirecting where
+     * someone's mail goes is redirecting their account.
+     *
+     * The guard reads the session row's **probe label**, not a comparison of users,
+     * and that is the whole reason this test still earns its place. Under the
+     * current design the owner is genuinely signed in as the victim — one account,
+     * not two — so the obvious-looking "is the effective user different from the
+     * real one?" check reads false and would never fire. See `Caller.isProbe`.
      */
     @Test
-    fun `an impersonating admin cannot change the impersonated user's address`(): Unit = runBlocking {
-        val admin = user("gh-admin", "Admin")
-        val victim = user("gh-victim", "Victim")
-        val session = sessions.create(admin.id)
-        assertTrue(admin.isSysAdmin, "The first user seeded was not the admin; the fixture is wrong.")
+    fun `an impersonating owner cannot change the impersonated user's address`(): Unit = runBlocking {
+        val owner = user("gh-owner", "Owner", email = "owner@example.com")
+        user("gh-victim", "Victim", email = "victim@example.com")
+        seatInstanceOwner(users, instanceSettings)
+        assertTrue(access.canImpersonate(owner), "The first user seeded did not end up owning the instance.")
 
         withRoutes { client ->
-            client.post(ApiRoutes.IMPERSONATE) {
-                cookie(SESSION_COOKIE, session)
-                contentType(ContentType.Application.Json)
-                setBody(ImpersonateRequest(victim.id))
+            val armed = client.post(ApiRoutes.IMPERSONATE_ARM) {
+                cookie(SESSION_COOKIE, sessions.create(owner.id))
             }
+            val probeId = requireNotNull(
+                armed.headers.getAll(HttpHeaders.SetCookie)
+                    ?.firstOrNull { it.startsWith("$PROBE_COOKIE=") }
+                    ?.substringAfter('=')?.substringBefore(';'),
+            ) { "Arming handed back no probe cookie." }
+
+            val worn = client.post(ApiRoutes.IMPERSONATE) {
+                cookie(PROBE_COOKIE, probeId)
+                contentType(ContentType.Application.Json)
+                setBody(ImpersonateRequest("victim@example.com"))
+            }
+            val probeSession = requireNotNull(
+                worn.headers.getAll(HttpHeaders.SetCookie)
+                    ?.firstOrNull { it.startsWith("$SESSION_COOKIE=") }
+                    ?.substringAfter('=')?.substringBefore(';'),
+            ) { "Signing in as the victim handed back no session." }
+
             assertEquals(
                 HttpStatusCode.Forbidden,
-                client.requestChange(session, "attacker@example.com").status,
-                "An admin redirected somebody else's mail while wearing their face.",
+                client.requestChange(probeSession, "attacker@example.com").status,
+                "An owner redirected somebody else's mail while wearing their face.",
             )
         }
         assertTrue(sent.none { it.first == "attacker@example.com" }, "A code was mailed on the refused path.")
@@ -412,9 +447,11 @@ class EmailChangeTest {
                     config = OAuthConfig(google = null),
                     sessions = sessions,
                     users = users,
-                    impersonations = impersonations,
+                    impersonation = impersonation,
                     emailCodes = codes,
                     notifications = NotificationDispatcher(users, capturingSender()),
+                    instanceSettings = instanceSettings,
+                    access = access,
                 )
             }
         }

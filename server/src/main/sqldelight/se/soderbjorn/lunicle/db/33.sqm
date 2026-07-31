@@ -1,0 +1,162 @@
+-- Version 33 → 34: the permission model, rebuilt (LNL-191).
+--
+-- ── What this does, in one sentence ─────────────────────────────────────────
+--
+-- It carries every person forward untouched, throws away every privilege, and
+-- seats exactly enough authority for somebody to start handing rights back out.
+--
+-- ── Granting nothing is the whole design, not a shortcut ────────────────────
+--
+-- There is a translation of the old keys into the new rungs, and it is not written
+-- here on purpose. `create_issue` is *nearly* Contributor and `project_admin` is
+-- *nearly* Admin, and "nearly" is the problem: the rungs are cumulative where the
+-- old keys were a set, so any mapping has to answer what somebody holding only
+-- `be_assigned_issue` becomes, or somebody holding `change_unowned_issues` without
+-- `create_issue`. Every answer to that is a guess, and a guess in this direction
+-- hands somebody a power nobody chose to give them — silently, on a deploy, with
+-- no row anywhere saying it happened.
+--
+-- So: nobody carries a rung across. Everyone lands with the least rights on
+-- everything, and an owner puts them back deliberately. The cost is a day of
+-- re-granting on a small instance; the alternative is a permission system whose
+-- first act was to invent grants.
+--
+-- It is also what makes this migration safe to be interrupted. Nothing here needs
+-- to be consistent with anything else, because there is no state where somebody has
+-- half of a privilege they were never given.
+--
+-- ── The two exceptions, and why each is one ─────────────────────────────────
+--
+-- 1. The system administrator becomes the **instance owner**. Without this the
+--    deployment comes up with nobody able to grant anything to anybody, which is
+--    not "least privilege", it is a brick.
+--
+-- 2. Every project gets an **Owner**, so no board is unadministrable. Its old
+--    `project_owner` if there is exactly one, else the instance owner.
+--
+--    Worth stating rather than leaving to be rediscovered: **25.sqm granted
+--    `project_owner` to the sys admin on every project**, so on any volume that has
+--    been through it the "old project_owner" is the sys admin — and, unless
+--    somebody was granted ownership since, the sys admin is the *only* holder and
+--    therefore the unambiguous one. In practice both branches below resolve to the
+--    same person on nearly every real volume. The two-branch shape is still right:
+--    it is correct on a volume where ownership was handed to somebody else, and it
+--    is correct on a volume where two people hold it and neither can be picked.
+--
+-- Other administrators arrive as ordinary accounts. `is_sys_admin` is a boolean and
+-- the ladder has five rungs; carrying "was an admin" forward as `instance_role =
+-- 'admin'` for everyone who had the flag would be a grant, and grants are what this
+-- migration does not make.
+--
+-- ── One transaction ─────────────────────────────────────────────────────────
+--
+-- SQLDelight runs a migration file's statements inside one transaction, and the
+-- ordering below depends on it: the owner seat is read out of `project_roles`
+-- before that table is dropped, and `instance_settings` learns the owner's id
+-- before `is_sys_admin` goes.
+
+-- ── 1. The new audience table ───────────────────────────────────────────────
+--
+-- Created first and left empty. `is_public = 1` would map to a `guest → viewer`
+-- row and `visible_to_all_signed_in = 1` to a `member → viewer` row, and neither is
+-- written, for the reason above: a public project is a *grant* to the entire
+-- internet, and this migration makes none. Every project comes back private, and
+-- an owner opens it again in one gesture from the dialog.
+CREATE TABLE project_audience_roles (
+    project_id INTEGER NOT NULL,
+    audience TEXT NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY (project_id, audience),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+-- ── 2. The new grant table, seated with owners and nothing else ─────────────
+
+CREATE TABLE project_roles_new (
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY (user_id, project_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+-- The unambiguous old owner: a project with exactly one `project_owner` holder
+-- keeps them. COUNT(*) = 1 is the whole of "unambiguous" — two holders and nobody
+-- can be picked without inventing a rule, so those projects fall to the next
+-- statement instead.
+INSERT INTO project_roles_new (user_id, project_id, role)
+SELECT owners.user_id, owners.project_id, 'owner'
+FROM (
+    SELECT project_roles.project_id AS project_id,
+           MIN(project_roles.user_id) AS user_id,
+           COUNT(*) AS holders
+    FROM project_roles
+    JOIN roles ON roles.id = project_roles.role_id
+    WHERE roles.role_key = 'project_owner'
+    GROUP BY project_roles.project_id
+) AS owners
+WHERE owners.holders = 1;
+
+-- Everything else falls to the instance owner — the lowest-id system administrator,
+-- which is the same account the setting below names. An instance with no system
+-- administrator at all inserts nothing here, and comes up with unowned boards; that
+-- is a deployment that already had nobody in charge, and inventing one is not this
+-- migration's business.
+INSERT OR IGNORE INTO project_roles_new (user_id, project_id, role)
+SELECT (SELECT id FROM users WHERE is_sys_admin = 1 ORDER BY id LIMIT 1), projects.id, 'owner'
+FROM projects
+WHERE EXISTS (SELECT 1 FROM users WHERE is_sys_admin = 1)
+  AND NOT EXISTS (SELECT 1 FROM project_roles_new WHERE project_roles_new.project_id = projects.id);
+
+-- ── 3. Ownership of the instance, before the flag that names it goes ────────
+--
+-- A key-value row rather than a column, deliberately — see Users.sq's
+-- `instance_role` for why "exactly one owner" is a setting and not a third enum
+-- value. The value is the id as text, because that table's `value` is TEXT and has
+-- always held the string form of whatever the setting is.
+INSERT OR REPLACE INTO instance_settings (key, value)
+SELECT 'owner_user_id', CAST(id AS TEXT) FROM users WHERE is_sys_admin = 1 ORDER BY id LIMIT 1;
+
+-- ── 4. The old privilege tables, read and gone ──────────────────────────────
+DROP TABLE project_roles;
+DROP TABLE roles;
+ALTER TABLE project_roles_new RENAME TO project_roles;
+
+-- ── 5. The instance ladder replaces the boolean ─────────────────────────────
+--
+-- `instance_role` lands NULL for everybody, including the person who was the sys
+-- admin: they are the *owner*, which is senior to administrator and is held by the
+-- setting above. Adding 'admin' to their row as well would be a second, redundant
+-- statement of the same authority, and the sort of redundancy that ends with the
+-- two disagreeing after an ownership transfer.
+ALTER TABLE users ADD COLUMN instance_role TEXT;
+
+-- `member` for everybody. The staff/member split is derived from the deployment's
+-- domain, and SQL has no way to know what that is — so the stamp happens in Kotlin
+-- at startup (see stampUserKinds), from the same UserKind.forEmail that sign-in
+-- uses. Landing everyone on the lesser value first is what makes that stamp safe to
+-- interrupt: a half-run leaves people under-privileged, never over.
+ALTER TABLE users ADD COLUMN kind TEXT NOT NULL DEFAULT 'member';
+
+-- A row is no longer necessarily the residue of a sign-in — see the column's
+-- comment in Users.sq. RENAME COLUMN preserves every value, so this is a change of
+-- meaning with no data movement: what the column held was already the moment the
+-- row appeared.
+ALTER TABLE users RENAME COLUMN created_at TO added_at;
+
+ALTER TABLE users DROP COLUMN is_sys_admin;
+
+-- Per-account MCP permission returns as a per-tier rule in LNL-192. Until it does,
+-- every account is permitted and only the user's own `mcp_enabled` decides — see
+-- UserRecord.isMcpPermitted.
+ALTER TABLE users DROP COLUMN mcp_allowed;
+
+-- ── 6. Project visibility becomes audience rows ─────────────────────────────
+--
+-- Dropped rather than translated, for the reason the empty audience table above
+-- gives. Nothing reads them after this deploy; leaving them would leave two answers
+-- to "who can see this" with only one of them enforced, which is the exact shape of
+-- bug the audience table exists to retire.
+ALTER TABLE projects DROP COLUMN is_public;
+ALTER TABLE projects DROP COLUMN visible_to_all_signed_in;

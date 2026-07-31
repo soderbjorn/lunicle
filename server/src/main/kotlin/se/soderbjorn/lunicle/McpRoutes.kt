@@ -47,7 +47,7 @@ private val logger = LoggerFactory.getLogger("McpRoutes")
 private suspend fun ApplicationCall.mcpStateFor(user: UserRecord, deps: McpDependencies): McpState {
     val fresh = deps.users.findById(user.id) ?: user
     return McpState(
-        isAllowed = fresh.isMcpPermitted,
+        isAllowed = deps.instanceSettings.permitsAgentsFor(fresh),
         isEnabled = fresh.isMcpEnabled,
         // Computed here, from the origin the browser actually reached, and never
         // in the client. The one place this is rendered is inside an iframe on
@@ -69,17 +69,17 @@ private suspend fun ApplicationCall.mcpStateFor(user: UserRecord, deps: McpDepen
 /**
  * Who is asking, for the Connections section.
  *
- * The **effective** user, matching every other `/api` route: an admin
- * impersonating somebody sees that person's connections, which is the entire
- * point of impersonation and is why this does not reach for `caller.real`.
+ * The session's user, matching every other `/api` route: an owner probing as
+ * somebody sees that person's connections, because the session genuinely is that
+ * person's.
  *
  * Note the asymmetry with [mcpRoutes], which resolves a token straight to a
- * [UserRecord] and never honours an impersonation. That is not an inconsistency:
- * this is a browser session, where "acting as" is a real and deliberate state;
- * that is a token, which names one person forever. See McpServer.resolveMcpUser.
+ * [UserRecord]. That is not an inconsistency: this is a browser session, where the
+ * caller may have signed in as somebody deliberately; that is a token, which names
+ * one person forever. See McpServer.resolveMcpUser.
  */
 private suspend fun ApplicationCall.mcpCaller(deps: McpDependencies): UserRecord? =
-    resolveCaller(deps.sessions, deps.users, deps.impersonations).effective
+    resolveCaller(deps.sessions, deps.impersonation, deps.access).user
 
 /** Mount the Connections section's routes. */
 fun Route.mcpApiRoutes(deps: McpDependencies) {
@@ -113,7 +113,7 @@ fun Route.mcpApiRoutes(deps: McpDependencies) {
         // switch them live without either party having asked for it in that
         // moment. A permission that silently arms a preference set while it was
         // withheld is not what anybody means by "off by default".
-        if (!user.isMcpPermitted) {
+        if (!deps.instanceSettings.permitsAgentsFor(user)) {
             call.respond(
                 HttpStatusCode.Forbidden,
                 "An administrator has not given your account agent access.",

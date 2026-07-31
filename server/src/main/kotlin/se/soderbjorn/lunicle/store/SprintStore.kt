@@ -39,6 +39,22 @@ interface SprintStore {
     suspend fun complete(projectId: Long, sprintId: Long, moveUnfinishedTo: Long?)
 
     /**
+     * Clear [sprintId]'s completion stamp, and nothing else (LNL-196).
+     *
+     * Not the inverse of [complete]: the work that was rolled forward stays where it
+     * went, and the project's active sprint is untouched. Both would be guesses — see
+     * [se.soderbjorn.lunicle.SprintRepository.reopen].
+     *
+     * Reopening a sprint that is already open writes the same NULL again rather than
+     * being refused — [activate]'s reasoning exactly: it is what a second click on a
+     * slow connection sends, and an error for a request whose end state already holds
+     * is a worse answer than doing nothing.
+     *
+     * @throws se.soderbjorn.lunicle.SprintRefusal if the sprint is not this project's.
+     */
+    suspend fun reopen(projectId: Long, sprintId: Long)
+
+    /**
      * Set exactly which issues are in [sprintId] — the complete set, not a delta.
      *
      * @throws se.soderbjorn.lunicle.SprintRefusal if the sprint is completed or not this project's,

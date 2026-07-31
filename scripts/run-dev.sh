@@ -15,7 +15,14 @@
 # this mode can never prove something the deployed site wouldn't allow.
 #
 # Env:
-#   LUNICLE_PORT   the tracker's port (default: 8080)
+#   LUNICLE_PORT        the tracker's port (default: 8080)
+#   LUNICLE_LOCAL_DATA  where to keep the database and attachments
+#   LUNICLE_BRAND_DIR   a brand directory to apply (default: unbranded)
+#
+# LUNICLE_BRAND_DIR is the same variable the deployed container sets and
+# run-demo.sh already read. It matters for more than the look now: brand.json is
+# where a deployment names its staff domain, so the Staff rung cannot be
+# exercised without one.
 #
 # See the repo's README.md ("The scripts/ directory") for how this relates to
 # the other run scripts.

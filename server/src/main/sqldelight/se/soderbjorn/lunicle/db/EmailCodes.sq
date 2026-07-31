@@ -137,7 +137,7 @@ WHERE address = ? AND purpose = ? AND expires_at > ?;
 
 -- The address one user is currently waiting to confirm, if any.
 --
--- What makes LNL-71's pending state survive the profile dialog being closed and
+-- What makes LNL-71's pending state survive the settings pane being closed and
 -- reopened: the pending change is a row here rather than a field in a view
 -- model, so a user who closes the dialog to go and read their mail comes back to
 -- find the request still waiting. Expiry is in the WHERE clause for `find`'s
@@ -151,7 +151,7 @@ FROM email_codes
 WHERE user_id = ? AND purpose = ? AND expires_at > ?;
 
 -- Give up on a pending change. The user's own "never mind", so that a mistyped
--- address is not a fifteen-minute wait — see the profile dialog's Cancel.
+-- address is not a fifteen-minute wait — see the You tab's Cancel.
 deleteForUser:
 DELETE FROM email_codes WHERE user_id = ? AND purpose = ?;
 

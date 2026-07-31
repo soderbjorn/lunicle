@@ -50,7 +50,7 @@ class SqlDelightSubscriptionStoreContractTest : SubscriptionStoreContract() {
         return users.upsert(ProviderIdentity(AuthProvider.GITHUB, "sub-$n", "User $n", email)).id
     }
 
-    override suspend fun newProject(): Long = projectRepository.create("Project ${seq}", "SB${seq++}", isPublic = false).id
+    override suspend fun newProject(): Long = projectRepository.create("Project ${seq}", "SB${seq++}").id
 
     override suspend fun newPublishedIssue(projectId: Long): Long {
         val (id, _) = issueRepository.createDraft(projectId, Author.Nobody)

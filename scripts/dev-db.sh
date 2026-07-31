@@ -7,7 +7,7 @@
 #   ./scripts/dev-db.sh dump [table]      # everything, or one table
 #   ./scripts/dev-db.sh sql "SELECT …"    # ad-hoc query
 #   ./scripts/dev-db.sh seed              # a project with issues to look at
-#   ./scripts/dev-db.sh admin             # make yourself the admin
+#   ./scripts/dev-db.sh admin             # seat yourself at the top of the ladder
 #   ./scripts/dev-db.sh wipe              # delete it; next run recreates it
 #
 # ── Why the database lives at ~/.lunicle ─────────────────────────────────────
@@ -38,7 +38,7 @@
 # lunicle.db and attachments/ inside it (see Database.kt). Locally there is no
 # Railway, so a local run takes the `lunicle.databasePath` branch instead —
 # defaulted to ~/.lunicle by server/build.gradle.kts, or pointed elsewhere with
-# LUNICLE_LOCAL_DATA, which this script and the run-dev-*.sh scripts both read. Same directory layout, same create and
+# LUNICLE_LOCAL_DATA, which this script and run-dev.sh both read. Same directory layout, same create and
 # migrate paths, same orphan sweep — a real directory on your disk rather than a
 # mount. That is the whole trick, and it is why you can test all of this without
 # building a container.
@@ -115,15 +115,66 @@ cmd_inspect() {
     printf '%-20s %s\n' "$table" "$(sqlite3 "$DB_PATH" "SELECT count(*) FROM \"$table\";")"
   done
   echo
+  # No `2>/dev/null` on any of the queries below, and that is the point of this
+  # note. They used to be silenced, and it cost real time: `is_public` was dropped
+  # by 33.sqm and `is_admin` by 11.sqm before it, so two of these sections printed
+  # their heading and then nothing at all — which reads as "this database is empty"
+  # rather than "this script is asking for a column that no longer exists". A
+  # schema drift here should be loud, because it means this file has fallen behind
+  # the migrations and every other section is suspect too.
   echo "== Projects"
   sqlite3 -header -column "$DB_PATH" \
-    "SELECT id, name, name_prefix AS prefix, is_public AS public FROM projects ORDER BY id;" 2>/dev/null
+    "SELECT id, name, name_prefix AS prefix, position AS pos FROM projects ORDER BY position, id;"
+  echo
+  echo "== Who each project admits"
+  # The audience rows: at most three per project (guest | member | staff), each
+  # naming the rung that audience arrives on. This replaced the two booleans
+  # `is_public` and `visible_to_all_signed_in` in 33.sqm. A project with no rows
+  # here and no own-row grants below is invisible to everybody but an instance
+  # administrator — which is what every project is immediately after that
+  # migration, deliberately.
+  sqlite3 -header -column "$DB_PATH" "
+    SELECT p.name_prefix AS project, a.audience, a.role AS rung
+    FROM project_audience_roles a
+    JOIN projects p ON p.id = a.project_id
+    ORDER BY p.id, a.audience;"
+  echo
+  echo "== Own-row grants"
+  # The exceptions to the audience rows. One rung per person per project; the
+  # effective rung is max(audience rows they match, this row), so a row here can
+  # only ever raise somebody. See AccessControl.effectiveRole.
+  sqlite3 -header -column "$DB_PATH" "
+    SELECT p.name_prefix AS project, u.provider_name AS who, r.role AS rung
+    FROM project_roles r
+    JOIN projects p ON p.id = r.project_id
+    JOIN users u ON u.id = r.user_id
+    ORDER BY p.id, u.id;"
   echo
   echo "== Users"
   # The email column is deliberately not selected: it never crosses the wire,
   # and it does not need to be on your terminal either.
-  sqlite3 -header -column "$DB_PATH" \
-    "SELECT id, provider, provider_name, display_name, is_admin FROM users ORDER BY id;" 2>/dev/null
+  #
+  # `kind` is the staff/member split, derived from the address against the
+  # deployment's own domain and re-derived on every boot — never written by hand.
+  # `instance_role` is only ever 'admin' or NULL. Neither column says who OWNS the
+  # instance: that is a single row in instance_settings, printed below, because
+  # "exactly one owner" is a setting rather than a third enum value.
+  #
+  # `signed_in` is what tells a real account apart from a placeholder somebody
+  # typed into an Access list for an address that has never arrived.
+  sqlite3 -header -column "$DB_PATH" "
+    SELECT id, provider, provider_name, display_name, kind,
+           coalesce(instance_role, '') AS instance_role,
+           CASE WHEN signed_in_at IS NULL THEN 'no' ELSE 'yes' END AS signed_in
+    FROM users ORDER BY id;"
+  echo
+  echo "== Instance"
+  sqlite3 -header -column "$DB_PATH" "
+    SELECT s.key,
+           CASE WHEN s.key = 'owner_user_id'
+                THEN s.value || ' (' || coalesce((SELECT provider_name FROM users WHERE id = CAST(s.value AS INTEGER)), 'no such account') || ')'
+                ELSE s.value END AS value
+    FROM instance_settings s ORDER BY s.key;"
   echo
   echo "== Issues"
   sqlite3 -header -column "$DB_PATH" "
@@ -152,24 +203,58 @@ cmd_sql() {
   sqlite3 -header -column "$DB_PATH" "$1"
 }
 
-# Make the first user the admin.
+# Put every account at the top of the instance ladder, and seat the first one as
+# the owner.
 #
-# The first person to sign in becomes the admin automatically (see the upsert in
-# Users.sq), so this is only needed when you have already signed in as someone
-# else first — or when you wiped and want the bit back without re-signing-in.
+# The first person to sign in becomes the instance administrator automatically
+# (see the upsert in Users.sq) and the next boot seats them as owner (see
+# seatInstanceOwner), so this is only needed when you have already signed in as
+# someone else first — or when you want a second account able to reach the
+# instance tabs without going through a grant.
+#
+# ── Two writes, because the ladder is stored in two places ───────────────────
+#
+# This wrote `users.is_admin = 1` until the permission rework, and had in fact
+# been broken since 11.sqm renamed that column — long enough that nobody noticed
+# the command was dead. The replacement cannot be one write, and the reason is
+# structural rather than incidental:
+#
+#   * `users.instance_role` is the ADMIN rung. Only ever 'admin' or NULL.
+#   * `instance_settings.owner_user_id` is the OWNER rung, and it is a setting
+#     rather than a third value of that column so that "exactly one owner" needs
+#     no partial unique index — which Firestore has no equivalent of. See
+#     Users.sq's comment on the column.
+#
+# The distinction now matters to what you can test. An instance administrator
+# reaches the instance tabs and the account directory; the OWNER alone may delete
+# projects across the deployment, attribute writes over MCP, send agent mail,
+# delete an attachment and impersonate. So this seats one owner as well as raising
+# everybody — otherwise half the interesting screens stay out of reach.
 cmd_admin() {
   require_sqlite; require_db; refuse_if_running
   local count
   count=$(sqlite3 "$DB_PATH" "SELECT count(*) FROM users;")
   if [[ "$count" -eq 0 ]]; then
-    echo "There are no users yet. Sign in once — the first user to do so becomes the admin."
+    echo "There are no users yet. Sign in once — the first user to do so becomes the instance administrator."
     exit 0
   fi
-  sqlite3 "$DB_PATH" "UPDATE users SET is_admin = 1;"
-  echo "Every user is now an admin ($count):"
-  sqlite3 -header -column "$DB_PATH" "SELECT id, provider, provider_name, is_admin FROM users;"
+  sqlite3 "$DB_PATH" <<SQL
+BEGIN;
+UPDATE users SET instance_role = 'admin';
+INSERT INTO instance_settings (key, value)
+VALUES ('owner_user_id', (SELECT CAST(id AS TEXT) FROM users ORDER BY id LIMIT 1))
+ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+COMMIT;
+SQL
+  echo "Every account is now an instance administrator ($count), and the first one owns the instance:"
+  sqlite3 -header -column "$DB_PATH" "
+    SELECT u.id, u.provider, u.provider_name, u.kind, u.instance_role,
+           CASE WHEN CAST(s.value AS INTEGER) = u.id THEN 'yes' ELSE '' END AS owner
+    FROM users u
+    LEFT JOIN instance_settings s ON s.key = 'owner_user_id'
+    ORDER BY u.id;"
   echo
-  echo "Sign out and back in if the UI is already open — the admin bit rides on the session lookup."
+  echo "Sign out and back in if the UI is already open — the rung rides on the session lookup."
 }
 
 # A project with issues in it, so there is something to look at.
@@ -195,8 +280,46 @@ cmd_seed() {
   # second definition of it.
   sqlite3 "$DB_PATH" <<SQL
 BEGIN;
-INSERT INTO projects (name, name_prefix, is_public, created_at)
-VALUES ('Lunamux', 'LMX', 1, $now);
+INSERT INTO projects (name, name_prefix, created_at)
+VALUES ('Lunamux', 'LMX', $now);
+
+-- Who the board admits, which used to be \`is_public, 1\` on the row above.
+--
+-- 33.sqm replaced the two visibility booleans with audience rows, and the reason
+-- is worth knowing before changing this line: a row says at what RUNG an audience
+-- arrives, so "the world may read this" and "the world may comment on this" are
+-- the same mechanism rather than a boolean plus a feature request.
+--
+-- \`member → contributor\` rather than the \`guest → viewer\` that \`is_public = 1\`
+-- literally became. Two reasons, and the second is the important one:
+--
+--   * Contributor is what makes a seeded board worth opening — you can file,
+--     move and comment on the issues below rather than only look at them.
+--   * A \`guest\` row is vetoed by the instance's \`allow_public_projects\` switch,
+--     which is OFF by default. Writing one here in SQL would slip past a veto the
+--     UI enforces, leaving a board that is public while the screen that governs
+--     it says public boards are not allowed. That is exactly the "two answers to
+--     who can see this, one of them enforced" state the audience table exists to
+--     retire, and a seed script has no business creating it.
+--
+-- To make it genuinely public, turn the instance switch on first and then set the
+-- guest row from the project's Access section — in that order, through the UI
+-- that checks it.
+INSERT INTO project_audience_roles (project_id, audience, role)
+SELECT id, 'member', 'contributor' FROM projects WHERE name = 'Lunamux';
+
+-- An owner for the board, so it is administrable by somebody.
+--
+-- Every project gets one on a migrated volume (33.sqm's second exception, "no
+-- board is unadministrable"), so a seeded board without one would be the only
+-- project on the instance in a state the migration goes out of its way to
+-- prevent. Whoever signed in first, or nobody if the table is still empty — in
+-- which case run \`$0 admin\` after your first sign-in and an instance
+-- administrator reaches it that way instead.
+INSERT INTO project_roles (user_id, project_id, role)
+SELECT u.id, p.id, 'owner'
+FROM projects p, (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE p.name = 'Lunamux';
 
 INSERT INTO labels (project_id, name)
 SELECT id, value FROM projects, (
@@ -301,8 +424,9 @@ SELECT p.id, 5, 'A draft nobody finished', 'If you can see this on the board, is
 FROM projects p WHERE p.name = 'Lunamux';
 
 -- Imported history: an author with no account, which is the other real state
--- worth seeing render. The card should say "octocat" and be uneditable by
--- anyone but an admin — there is no account for it to belong to. Note
+-- worth seeing render. The card should say "octocat" and be uneditable below
+-- Maintainer on the board — there is no account for it to belong to, so the "your
+-- own issue as a Contributor" half of canEditIssue can never reach it. Note
 -- created_by is NULL and must stay that way; the CHECK forbids the pair.
 INSERT INTO issues (project_id, number, title, description, status_id, priority_id, is_draft, created_at, updated_at, created_by, created_by_external)
 SELECT p.id, 6, 'Imported from GitHub', 'Filed by somebody who has never signed in here.',
@@ -335,7 +459,15 @@ WHERE i.number = 2 AND l.name = 'Feature' AND i.project_id = (SELECT id FROM pro
 COMMIT;
 SQL
 
-  echo "Seeded \"Lunamux\" (LMX), public, with 5 issues and 1 invisible draft."
+  echo "Seeded \"Lunamux\" (LMX) with 5 issues and 1 invisible draft."
+  # Two sentences, because the second is only true when there was an account to
+  # seat. Saying "the first account owns the board" on an empty table would be the
+  # script asserting a row it had just declined to write.
+  if [[ "$(sqlite3 "$DB_PATH" "SELECT count(*) FROM project_roles WHERE role = 'owner';")" == "0" ]]; then
+    echo "Members arrive as Contributors. Nobody owns the board yet."
+  else
+    echo "Members arrive as Contributors; the first account owns the board."
+  fi
   echo "LMX-6 is imported history: its author is a name, not an account."
   echo
   # Foreign keys are OFF by default in the sqlite3 CLI — unlike the server,
@@ -350,8 +482,16 @@ SQL
   fi
   echo "Foreign keys check out. Start the server and pick Lunamux in the picker."
   echo
-  echo "Note: nobody has a role in this project yet, so a signed-in non-admin can"
-  echo "read it and nothing more. Make yourself the admin:  $0 admin"
+  # This note used to say "nobody has a role in this project yet, so a signed-in
+  # non-admin can read it and nothing more". Both halves stopped being true: with
+  # no audience row and no own row, effectiveRole returns null and such an account
+  # cannot see the board AT ALL — reading is the bottom rung rather than the
+  # absence of one. The seed writes the member row above so that it can say
+  # something true here instead.
+  if [[ "$(sqlite3 "$DB_PATH" "SELECT count(*) FROM project_roles WHERE role = 'owner';")" == "0" ]]; then
+    echo "Note: nobody has signed in yet, so the board has no owner row. Sign in once,"
+    echo "then:  $0 admin   — which seats you at the top of the instance ladder."
+  fi
 }
 
 cmd_wipe() {

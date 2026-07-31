@@ -70,6 +70,15 @@ class BoardWindow(
     private val onOpenAnalytics: () -> Unit = {},
     /** ...and its settings. Same reason. */
     private val onOpenSettings: () -> Unit = {},
+    /**
+     * ...and its access — who may see this project and who may change it (LNL-193).
+     *
+     * Its own entry rather than a click inside settings, because it is the question a
+     * board raises: somebody is looking at work and wonders who else can. Settings is
+     * one pane with five tabs now, so this names a section of it instead of opening a
+     * second dialog — see main.kt's SettingsRoute.
+     */
+    private val onManageAccess: () -> Unit = {},
 ) {
     /** The pane content element the shell mounts. Built eagerly, filled by [render]. */
     val root: HTMLElement = element("div", "board-pane")
@@ -199,6 +208,7 @@ class BoardWindow(
      */
     private val analyticsButton = toolButton("Analytics", chartIcon(), onOpenAnalytics)
     private val settingsButton = toolButton("Project settings", gearIcon(), onOpenSettings)
+    private val accessButton = toolButton("Manage access", peopleIcon(), onManageAccess)
 
     init {
         filterField.classList.add("board-filter")
@@ -215,7 +225,7 @@ class BoardWindow(
         // sit at the trailing edge (they open something new).
         val toolbar = element("div", "board-toolbar")
         val projectEntries = element("div", "board-toolbar-project")
-        projectEntries.children(analyticsButton, settingsButton)
+        projectEntries.children(analyticsButton, accessButton, settingsButton)
         toolbar.children(filterBox, scopePicker.element, projectEntries)
 
         boardElement = element("div", "board")
@@ -283,6 +293,9 @@ class BoardWindow(
         // do anything reads as broken rather than as forbidden.
         analyticsButton.visible(state.canOpenStatistics, displayValue = "inline-flex")
         settingsButton.visible(state.canOpenProjectSettings, displayValue = "inline-flex")
+        // Gated exactly as the gear is: both land in the same pane, one tab apart, so
+        // a reader who may open one may open the other.
+        accessButton.visible(state.canOpenProjectSettings, displayValue = "inline-flex")
 
         emptyElement.setTextIfChanged(state.emptyMessage ?: "")
         emptyElement.visible(state.emptyMessage != null)
@@ -502,6 +515,120 @@ class BoardWindow(
         null -> ""
     }
 
+    /**
+     * The assignee's initials, as a round mark at the trailing edge of the title line
+     * (LNL-215) — or null, which is the whole of what an unassigned card shows.
+     *
+     * ── Why a profile mark and not a name ────────────────────────────────────
+     *
+     * The card already spends a full line on the author's name at its foot, and a
+     * second name would double the text on a card whose job is to be scanned. A
+     * circular two-letter mark is the idiom every tracker uses for "who is on this",
+     * it costs one glyph-pair of width whatever the name's length, and it is
+     * recognisable across a column without being read. The full name rides on the
+     * `title` attribute — the same trick the agent badge already uses on this card,
+     * for the same reason: the discoverable half must not cost layout.
+     *
+     * ── Deliberately NOT gated on showIssueAuthor ────────────────────────────
+     *
+     * That switch is about the *author*, and the assignee is a different fact — one is
+     * who filed the work, the other is who is doing it. A project that hides the author
+     * to keep its cards quiet has said nothing about the assignee, and reading it as
+     * having done so would silently take a feature away from every board that had that
+     * switch off.
+     *
+     * ── Initials, including for names this file cannot read ──────────────────
+     *
+     * The first letters of the first two whitespace-separated words, uppercased:
+     * "Robert Söderbjörn" → "RS". A single-word name falls back to its own first two
+     * characters, so "soderbjorn" → "SO" rather than a lone letter that looks like a
+     * bug. Non-Latin scripts get whatever their first characters are and are NOT
+     * transliterated — a Latinised initial is a guess about somebody's name that a
+     * board card has no standing to make, and taking the characters as given at least
+     * produces a mark that person recognises.
+     *
+     * ── Neutral, never generated per name ────────────────────────────────────
+     *
+     * A hash-to-hue avatar is the obvious flourish and is wrong here: the priority
+     * stripe and the label dots already spend this card's colour budget on facts about
+     * the issue, and a third hue that means "this is Robert" would compete with them
+     * while carrying no information the letters do not. So the mark takes a theme
+     * token; see `.card-avatar`.
+     */
+    private fun assigneeAvatar(issue: IssueSummary): HTMLElement? {
+        val name = issue.assigneeName?.takeIf { it.isNotBlank() } ?: return null
+        val mark = element("span", "card-avatar")
+        mark.title = if (issue.assigneeIsAgent) "$name's agent" else name
+        mark.appendChild(element("span", "card-avatar-initials", initialsOf(name)))
+        // The agent mark badges the avatar's bottom-right corner, overlapping it —
+        // the status-dot idiom, and not a second element beside it. Beside would read
+        // as two people; on the corner it reads as a property of the one, which is what
+        // it is: the work is going to this person's agent, through this person's own
+        // session. See IssueSummary.assigneeIsAgent.
+        if (issue.assigneeIsAgent) {
+            val badge = element("span", "card-avatar-agent")
+            badge.appendChild(agentIcon())
+            mark.appendChild(badge)
+        }
+        return mark
+    }
+
+    /**
+     * Two letters for a display name. See [assigneeAvatar] for the rules and why they
+     * are what they are.
+     *
+     * Split on any whitespace run rather than on a single space, because a name pasted
+     * out of a directory can carry a tab or a double space, and "R" beside an empty
+     * second initial would be the one output that looks broken rather than merely
+     * approximate.
+     */
+    private fun initialsOf(name: String): String {
+        val words = name.trim().split(WHITESPACE).filter { it.isNotEmpty() }
+        val letters = when {
+            words.size >= 2 -> "${words[0].first()}${words[1].first()}"
+            words.size == 1 -> words[0].take(2)
+            else -> ""
+        }
+        return letters.uppercase()
+    }
+
+    /**
+     * The "blocked" chip for the meta line (LNL-215): the app's own forbidden mark and
+     * the word, muted and unfilled.
+     *
+     * **No fill colour**, unlike the epic badge one line up. A filled chip is a claim on
+     * attention, and a blocked card is not more important than an unblocked one — it is
+     * *less* actionable, which is the opposite argument. The dim on the card around it
+     * is already saying "not now"; a red pill would say "look here" at the same time.
+     *
+     * The blockers ride on the `title` — "Blocked by LNL-98, LNL-140" — built from the
+     * server's [IssueSummary.blockedByNumbers] and the reader's own project prefix,
+     * which is the right prefix because a relation's two ends share a project. Naming
+     * them on the chip itself was the alternative and does not survive contact with an
+     * issue blocked by three things: the line would wrap, and the card would grow the
+     * row this design just spent a paragraph avoiding.
+     *
+     * The glyph is [FORBIDDEN_SVG] rather than a ⛔ emoji, for the reason Icons.kt gives
+     * about the agent mark: an emoji renders in the operating system's own colour and
+     * weight, neither of which this stylesheet can reach, and it would be the one mark
+     * on the board that did not follow the theme.
+     */
+    private fun blockedChip(state: MainScreenBackingViewModel.BoardScreen, issue: IssueSummary): HTMLElement {
+        val chip = element("span", "card-blocked-chip")
+        val glyph = element("span", "card-blocked-icon")
+        // Sanctioned innerHTML: the markup is Icons.kt's own constant, so there is
+        // nothing here a user could have typed. See Icons.kt's FORBIDDEN_SVG.
+        glyph.innerHTML = FORBIDDEN_SVG
+        chip.children(glyph, element("span", "card-blocked-label", "Blocked"))
+        val prefix = state.project?.namePrefix
+        val keys = issue.blockedByNumbers.mapNotNull { number -> prefix?.let { "$it-$number" } }
+        // "Blocked" on its own when the blockers could not be named — an unprefixed
+        // board is not a state this app produces, but a title reading "Blocked by " with
+        // nothing after it would be worse than no title at all.
+        chip.title = if (keys.isEmpty()) "Blocked" else "Blocked by ${keys.joinToString(", ")}"
+        return chip
+    }
+
     private fun renderCard(
         state: MainScreenBackingViewModel.BoardScreen,
         issue: IssueSummary,
@@ -531,42 +658,74 @@ class BoardWindow(
             if ((event.target as? Element)?.closest("a") != null) event.stopPropagation()
             Unit
         }
-        // An epic wears a FILLED count badge on the title line (LNL-154). The title
-        // is line-clamped (display:-webkit-box), which cannot hold an inline sibling
-        // — so title and badge share a flex row instead, the badge fixed at the end
-        // while the title takes the rest. childCount is the server's project-wide
-        // count, not a tally of this board's cards; see IssueSummary.childCount.
-        if (issue.childCount > 0) {
+        // An epic wears a FILLED count badge on the title line (LNL-154), and an
+        // assigned card wears an initials avatar at the trailing edge of the same line
+        // (LNL-215). The title is line-clamped (display:-webkit-box), which cannot hold
+        // an inline sibling — so title, badge and avatar share a flex row instead, the
+        // two marks fixed at the end while the title takes the rest.
+        //
+        // The avatar rides IN the row rather than being absolutely positioned over the
+        // card's corner, which was the obvious alternative and is the wrong one twice
+        // over: it would sit on top of the epic badge, which already owns that corner,
+        // and "the title must never run underneath it" would then be a padding value
+        // kept in step with the avatar's width by hand. A flex sibling cannot be run
+        // underneath, so the requirement is met by construction rather than by arithmetic.
+        //
+        // childCount is the server's project-wide count, not a tally of this board's
+        // cards; see IssueSummary.childCount.
+        val avatar = assigneeAvatar(issue)
+        if (issue.childCount > 0 || avatar != null) {
             val head = element("div", "card-head")
             head.appendChild(cardTitle)
-            val badge = element("span", "card-epic", "▦ ${issue.childCount}")
-            badge.title = if (issue.childCount == 1) "Epic — 1 child" else "Epic — ${issue.childCount} children"
-            head.appendChild(badge)
+            if (issue.childCount > 0) {
+                val badge = element("span", "card-epic", "▦ ${issue.childCount}")
+                badge.title = if (issue.childCount == 1) "Epic — 1 child" else "Epic — ${issue.childCount} children"
+                head.appendChild(badge)
+            }
+            avatar?.let { head.appendChild(it) }
             card.appendChild(head)
         } else {
             card.appendChild(cardTitle)
         }
 
-        // A child points back at its epic on a thin meta line under the title
-        // (LNL-154): the parent's key, muted, clickable to open the parent. The key
-        // and number come from the server (state.parentKey over
+        // The meta line under the title, carrying up to two facts about where this card
+        // stands rather than what it is: the epic it belongs to (LNL-154) and whether
+        // something is blocking it (LNL-215).
+        //
+        // ONE line for both, on purpose. A blocked card that grew a row of its own
+        // would be taller than an unblocked one, so a column with three blocked cards
+        // in it would be visibly ragged — and a card gets no more attention for being
+        // blocked than the chip itself already asks for. A card that is both a child
+        // and blocked reads "↳ LNL-98   ⛔ Blocked" across the one line.
+        //
+        // A child points back at its epic with the parent's key, muted, clickable. The
+        // key and number come from the server (state.parentKey over
         // IssueSummary.parentNumber), so this renders even when the parent is not a
         // card on this board. stopPropagation so opening the parent does not also
         // fire the card's own onclick — the title's inline links do the same above.
         val parentKey = state.parentKey(issue)
         val parentId = issue.parentId
-        if (parentKey != null && parentId != null) {
+        val showsParent = parentKey != null && parentId != null
+        if (showsParent || issue.isBlocked) {
             val meta = element("div", "card-parent")
-            val link = element("a", "card-parent-link", "↳ $parentKey")
-            link.title = "Part of $parentKey"
-            link.onclick = { event ->
-                event.stopPropagation()
-                viewModel.onIssueOpened(projectId, parentId)
-                Unit
+            if (showsParent) {
+                val link = element("a", "card-parent-link", "↳ $parentKey")
+                link.title = "Part of $parentKey"
+                link.onclick = { event ->
+                    event.stopPropagation()
+                    viewModel.onIssueOpened(projectId, parentId)
+                    Unit
+                }
+                meta.appendChild(link)
             }
-            meta.appendChild(link)
+            if (issue.isBlocked) meta.appendChild(blockedChip(state, issue))
             card.appendChild(meta)
         }
+
+        // Blocked cards are dimmed as well as chipped (LNL-215) — see .card-blocked in
+        // styles.css for why the treatment had to differ in KIND from anything a closed
+        // card wears, and what a closed card actually wears (nothing).
+        if (issue.isBlocked) card.classList.add("card-blocked")
 
         val labelNames = state.board?.labels.orEmpty().filter { it.id in issue.labelIds }.map { it.name }
         val componentNames = state.board?.components.orEmpty().filter { it.id in issue.componentIds }.map { it.name }
@@ -593,9 +752,14 @@ class BoardWindow(
         // name rides on the title attribute so it stays discoverable on hover. The
         // badge sits beside the author name rather than in place of it — the issue is
         // still the author's. See IssueWindow.renderComment and IssueBackingViewModel.agentBadge.
+        //
+        // "Filed by Robert", not a bare "Robert" (LNL-215). The name alone at the foot
+        // of a card is unattributed: it could as easily be who is *on* it, and now that
+        // the card really does carry an assignee two lines above, the ambiguity is one
+        // somebody would have to resolve by clicking. Two words fix it.
         if (state.board?.project?.showIssueAuthor == true && !issue.authorName.isNullOrBlank()) {
             val footer = element("div", "card-author")
-            footer.appendChild(element("span", "card-author-name", issue.authorName!!))
+            footer.appendChild(element("span", "card-author-name", "Filed by ${issue.authorName}"))
             issue.agentName?.let { agent ->
                 val badge = element("span", "agent-badge agent-badge-icononly")
                 badge.appendChild(agentIcon())
@@ -726,5 +890,10 @@ class BoardWindow(
                 .filterIsInstance<HTMLElement>()
                 .forEach { it.classList.remove("column-drop") }
         })
+    }
+
+    private companion object {
+        /** Any run of whitespace, for splitting a display name into words. See [initialsOf]. */
+        val WHITESPACE = Regex("""\s+""")
     }
 }

@@ -47,14 +47,17 @@ class SqlDelightSprintStoreContractTest : SprintStoreContract() {
     private val projectRepository = ProjectRepository(db, projects, attachments, attachmentStore)
     private val issueRepository = IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val vocabulary =
-        VocabularyRepository(db, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(
+            db, labels, components, statuses, priorities, resolutions, sprints, versions,
+            issues = issues,
+        )
 
     private var seq = 0
 
     override val store: SprintStore = SprintRepository(db, sprints, projects, issues, statuses)
 
     override suspend fun newProject(): Long =
-        projectRepository.create("Project ${seq}", "SP${seq++}", isPublic = false).id
+        projectRepository.create("Project ${seq}", "SP${seq++}").id
 
     override suspend fun newSprint(projectId: Long, name: String): Long =
         vocabulary.add(projectId, VocabularyKind.SPRINT, name).id

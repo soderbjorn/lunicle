@@ -41,6 +41,16 @@ data class IssueEventRecord(
     val createdAt: Long,
     val author: Author,
     val agentName: String?,
+    /**
+     * The relation kind's label, for `RELATION_ADDED` / `RELATION_REMOVED`; null for
+     * every other kind (LNL-215).
+     *
+     * A snapshot **for this issue's side of the link** — the kind's `name` on the
+     * from-side issue, its `inverseName` on the to-side one — frozen at write time for
+     * [value]'s reason: relation kinds are user-editable vocabulary, so a rename must
+     * not reach backwards and alter what the event says happened.
+     */
+    val relationKind: String? = null,
 )
 
 /**
@@ -55,6 +65,8 @@ data class NewIssueEvent(
     val value: String? = null,
     val values: List<String> = emptyList(),
     val valueUserId: Long? = null,
+    /** The relation kind's label for this issue's side (LNL-215). See [IssueEventRecord.relationKind]. */
+    val relationKind: String? = null,
 )
 
 /**
@@ -109,6 +121,7 @@ class IssueEventStore(
                     author.accountId,
                     author.externalName,
                     agentName,
+                    event.relationKind,
                 ).executeAsOne()
                 event.values.forEachIndexed { index, value ->
                     database.issueEventsQueries.insertValue(eventId, index.toLong(), value)
@@ -150,6 +163,7 @@ class IssueEventStore(
                 createdAt = row.created_at,
                 author = authorOf(row.created_by, row.created_by_external),
                 agentName = row.agent_name,
+                relationKind = row.value_relation_kind,
             )
         }
     }
@@ -179,6 +193,7 @@ class IssueEventStore(
                 createdAt = row.created_at,
                 author = authorOf(row.created_by, row.created_by_external),
                 agentName = row.agent_name,
+                relationKind = row.value_relation_kind,
             )
         }
     }

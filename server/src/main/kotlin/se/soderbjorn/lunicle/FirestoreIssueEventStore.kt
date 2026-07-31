@@ -86,6 +86,7 @@ class FirestoreIssueEventStore(
                         VALUE_TEXT to event.value,
                         VALUES to event.values,
                         VALUE_USER_ID to event.valueUserId,
+                        VALUE_RELATION_KIND to event.relationKind,
                         CREATED_AT to timestamp,
                         CREATED_BY to author.accountId,
                         CREATED_BY_EXTERNAL to author.externalName,
@@ -158,6 +159,10 @@ class FirestoreIssueEventStore(
             createdAt = getLong(CREATED_AT)!!,
             author = authorOf(getLong(CREATED_BY), getString(CREATED_BY_EXTERNAL)),
             agentName = getString(AGENT_NAME),
+            // Read even when [includeValues] is false, unlike the `values` array: this
+            // is a scalar on the event, not a child table, so there is no SQLite read
+            // that omits it and nothing here should either. See VALUE_RELATION_KIND.
+            relationKind = getString(VALUE_RELATION_KIND),
         )
     }
 
@@ -177,6 +182,23 @@ class FirestoreIssueEventStore(
         const val VALUE_TEXT = "valueText"
         const val VALUES = "values"
         const val VALUE_USER_ID = "valueUserId"
+
+        /**
+         * The relation kind's label, for `RELATION_ADDED` / `RELATION_REMOVED`; null
+         * on every other kind (LNL-215). Named for the SQLite column
+         * `issue_events.value_relation_kind`, like [VALUE_USER_ID] beside it.
+         *
+         * A **snapshot for this issue's side of the link** — the kind's `name` on the
+         * from-side issue, its `inverseName` on the to-side one — frozen at write time
+         * for [VALUE_TEXT]'s reason: relation kinds are user-editable vocabulary, so
+         * renaming or deleting one must not reach backwards and alter what an event
+         * says happened.
+         *
+         * Its own field rather than a second entry in [VALUES], which is documented as
+         * carrying *the whole set* a kind refers to; using that array as a positional
+         * tuple would contradict its own contract on both backends at once.
+         */
+        const val VALUE_RELATION_KIND = "valueRelationKind"
         const val CREATED_AT = "createdAt"
         const val CREATED_BY = "createdBy"
         const val CREATED_BY_EXTERNAL = "createdByExternal"

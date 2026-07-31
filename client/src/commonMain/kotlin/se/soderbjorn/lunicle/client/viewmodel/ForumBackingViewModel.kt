@@ -128,7 +128,7 @@ class ForumBackingViewModel(
      * @property canReceiveEmailNotifications whether the caller has an address at
      *   all. The Watch pill is hidden without one rather than shown disabled: a
      *   control that can never do anything is worse than no control, and the fix
-     *   is somewhere else entirely (the profile dialog). Same position the issue
+     *   is somewhere else entirely (the settings pane's You tab). Same position the issue
      *   window takes.
      * @property openPostId the post being read, or null for the list.
      *

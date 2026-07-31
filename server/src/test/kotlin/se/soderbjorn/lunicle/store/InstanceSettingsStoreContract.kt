@@ -1,14 +1,16 @@
 /**
- * The behaviour every [InstanceSettingsStore] implementation must exhibit (LNL-115),
- * specified once and run against each backend.
+ * The behaviour every [InstanceSettingsStore] implementation must exhibit (LNL-115,
+ * extended by LNL-192), specified once and run against each backend.
  *
- * The same linchpin [UiSettingsStoreContract] describes: SQLite today and Firestore
- * later run these same assertions, so the two cannot quietly diverge on the things
- * easy to get subtly different — what an unset switch reads as, whether one switch's
- * write disturbs the other, and whether a second write replaces or appends.
+ * The same linchpin [UiSettingsStoreContract] describes: SQLite and Firestore run
+ * these same assertions, so the two cannot quietly diverge on the things easy to get
+ * subtly different — what an unset setting reads as, whether one write disturbs
+ * another, and whether a second write replaces or appends.
  *
  * Simpler than the UiSettings contract in one way: there is no user to mint, because
- * these switches belong to the instance, not to an account.
+ * these belong to the instance and not to an account. Harder in one: [admission] is
+ * not a boolean, and its unrecognised-value behaviour is a rule both backends have to
+ * reach the same way.
  */
 package se.soderbjorn.lunicle.store
 
@@ -17,24 +19,31 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import se.soderbjorn.lunicle.Audience
+import se.soderbjorn.lunicle.ProjectRole
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 
 abstract class InstanceSettingsStoreContract {
     /** The store under test, over a freshly-prepared backend. */
     protected abstract val store: InstanceSettingsStore
 
+    /**
+     * Every permission off, and anybody who can sign in admitted.
+     *
+     * The whole-object comparison is the point: a field added to [InstanceSettings]
+     * without a default, or with the wrong one, fails here rather than somewhere
+     * downstream where it would read as a permission somebody was granted.
+     */
     @Test
-    fun `every switch defaults to off when nothing has been stored`() = runBlocking {
-        assertEquals(
-            InstanceSettings(requireSignIn = false, anyoneCanCreateProject = false, hideDisplayName = false),
-            store.current(),
-        )
+    fun `everything defaults to the closed answer, and admission to anyone`() = runBlocking {
+        assertEquals(InstanceSettings(), store.current())
     }
 
     @Test
     fun `a set switch reads back on`() = runBlocking {
-        store.set(InstanceSettingKey.REQUIRE_SIGN_IN, true)
-        assertTrue(store.current().requireSignIn)
+        store.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+        assertTrue(store.current().allowPublicProjects)
     }
 
     @Test
@@ -43,19 +52,141 @@ abstract class InstanceSettingsStoreContract {
         assertTrue(store.current().hideDisplayName)
     }
 
+    /**
+     * Every switch, one at a time, each disturbing nothing else.
+     *
+     * Written as a loop over the enum rather than as one hand-picked pair, because
+     * the failure this guards is a store that folds a *new* key onto an existing
+     * field — which a fixed pair would never notice.
+     */
     @Test
     fun `the switches are independent`() = runBlocking {
-        store.set(InstanceSettingKey.ANYONE_CAN_CREATE_PROJECT, true)
-        val settings = store.current()
-        assertTrue(settings.anyoneCanCreateProject, "The switch that was set is off.")
-        assertFalse(settings.requireSignIn, "Setting one switch turned another on.")
-        assertFalse(settings.hideDisplayName, "Setting one switch turned another on.")
+        for (key in InstanceSettingKey.entries) {
+            store.set(key, true)
+            val settings = store.current()
+            val on = InstanceSettingKey.entries.filter { it.isOn(settings) }
+            assertEquals(listOf(key), on, "Setting ${key.storageKey} did not set exactly one switch.")
+            store.set(key, false)
+            assertTrue(
+                InstanceSettingKey.entries.none { it.isOn(store.current()) },
+                "Turning ${key.storageKey} back off left something on.",
+            )
+        }
     }
 
     @Test
     fun `a second set replaces the value, last write wins`() = runBlocking {
-        store.set(InstanceSettingKey.REQUIRE_SIGN_IN, true)
-        store.set(InstanceSettingKey.REQUIRE_SIGN_IN, false)
-        assertFalse(store.current().requireSignIn)
+        store.set(InstanceSettingKey.STAFF_MAY_USE_AGENTS, true)
+        store.set(InstanceSettingKey.STAFF_MAY_USE_AGENTS, false)
+        assertFalse(store.current().staffMayUseAgents)
     }
+
+    // ── Admission (LNL-192) ─────────────────────────────────────────────────
+
+    @Test
+    fun `every admission policy round-trips`() = runBlocking {
+        for (policy in AdmissionPolicy.entries) {
+            store.setAdmissionPolicy(policy)
+            assertEquals(policy, store.current().admission, "${policy.key} did not read back.")
+        }
+    }
+
+    /**
+     * Setting admission is not setting a switch, and vice versa.
+     *
+     * Both live in the same key-value space on both backends — a row in one table on
+     * SQLite, an entry in one map on Firestore — which is exactly the arrangement in
+     * which a key collision would be invisible until somebody flipped a switch and
+     * lost their admission policy.
+     */
+    @Test
+    fun `admission and the switches do not disturb one another`() = runBlocking {
+        store.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_ONLY)
+        store.set(InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS, true)
+        val settings = store.current()
+        assertEquals(AdmissionPolicy.STAFF_DOMAIN_ONLY, settings.admission, "A switch write cost the policy.")
+        assertTrue(settings.memberMayCreateProjects, "The policy write cost a switch.")
+    }
+
+    // ── What a new project starts with (LNL-195) ────────────────────────────
+
+    /**
+     * A fresh instance names no audience at all, so a new project admits nobody.
+     *
+     * The closed answer LNL-194 chose, restated here as the *stored* default rather
+     * than as a rule in the create path — which is what makes a deployment able to
+     * choose otherwise on purpose.
+     */
+    @Test
+    fun `no audience is named for a new project until somebody names one`() = runBlocking {
+        assertTrue(store.current().newProjectAudiences.isEmpty())
+    }
+
+    /** Every audience, every rung, one at a time, each reading back as itself. */
+    @Test
+    fun `every new-project audience row round-trips at every rung`() = runBlocking {
+        for (audience in Audience.entries) {
+            for (rung in ProjectRole.entries) {
+                store.setNewProjectAudience(audience, rung)
+                assertEquals(
+                    rung,
+                    store.current().newProjectAudiences[audience],
+                    "${audience.key} at ${rung.key} did not read back.",
+                )
+            }
+            store.setNewProjectAudience(audience, null)
+        }
+        assertTrue(store.current().newProjectAudiences.isEmpty(), "Clearing the rows left something behind.")
+    }
+
+    /**
+     * Null removes the row rather than storing a rung, and the three audiences are
+     * independent of each other.
+     *
+     * The failure this guards is a store that folds all three onto one key — invisible
+     * until an administrator set the members row and watched the staff row change with
+     * it.
+     */
+    @Test
+    fun `the new-project audience rows are independent, and null removes one`() = runBlocking {
+        store.setNewProjectAudience(Audience.MEMBER, ProjectRole.CONTRIBUTOR)
+        store.setNewProjectAudience(Audience.STAFF, ProjectRole.MAINTAINER)
+        assertEquals(
+            mapOf(Audience.MEMBER to ProjectRole.CONTRIBUTOR, Audience.STAFF to ProjectRole.MAINTAINER),
+            store.current().newProjectAudiences,
+        )
+        store.setNewProjectAudience(Audience.MEMBER, null)
+        assertEquals(
+            mapOf(Audience.STAFF to ProjectRole.MAINTAINER),
+            store.current().newProjectAudiences,
+            "Clearing one audience disturbed another.",
+        )
+    }
+
+    /**
+     * These rows share the key-value space with the switches, admission and ownership
+     * on both backends, and must collide with none of them.
+     */
+    @Test
+    fun `the new-project rows disturb neither the switches nor admission nor ownership`() = runBlocking {
+        store.set(InstanceSettingKey.STAFF_MAY_USE_AGENTS, true)
+        store.setAdmissionPolicy(AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)
+        store.setOwnerUserId(7L)
+        store.setNewProjectAudience(Audience.GUEST, ProjectRole.VIEWER)
+        val settings = store.current()
+        assertTrue(settings.staffMayUseAgents, "The new-project row cost a switch.")
+        assertEquals(AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED, settings.admission, "It cost the admission policy.")
+        assertEquals(7L, settings.ownerUserId, "It cost the instance owner.")
+        assertEquals(mapOf(Audience.GUEST to ProjectRole.VIEWER), settings.newProjectAudiences)
+    }
+}
+
+/** Whether this switch reads as on in [settings]. Test-local, so the contract can sweep them all. */
+private fun InstanceSettingKey.isOn(settings: InstanceSettings): Boolean = when (this) {
+    InstanceSettingKey.ALLOW_PUBLIC_PROJECTS -> settings.allowPublicProjects
+    InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS -> settings.staffMayCreateProjects
+    InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS -> settings.memberMayCreateProjects
+    InstanceSettingKey.STAFF_MAY_USE_AGENTS -> settings.staffMayUseAgents
+    InstanceSettingKey.MEMBER_MAY_USE_AGENTS -> settings.memberMayUseAgents
+    InstanceSettingKey.HIDE_DISPLAY_NAME -> settings.hideDisplayName
 }

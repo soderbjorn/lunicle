@@ -14,10 +14,10 @@
  * catches the case this cannot see (someone else creating "Lunamux" while this
  * dialog was open).
  *
- * ── Two dialogs in one, and why the halves behave differently ────────────────
+ * ── Two screens in one, and why the halves behave differently ────────────────
  *
- * Editing an existing project also shows its **vocabularies** and its
- * **privileges**, and those sections do not obey the form around them. The form
+ * Editing an existing project also shows its **vocabularies** and its **Access**
+ * section, and those sections do not obey the form around them. The form
  * is a draft: nothing is written until OK, and Cancel throws it away. The
  * sections are not — adding a status writes a status, immediately, and there is
  * no OK to press and nothing for Cancel to undo. That is not an inconsistency to
@@ -44,7 +44,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunicle.client.StorageRepository
+import se.soderbjorn.lunicle.client.formatTimestamp
 import se.soderbjorn.lunicle.client.userMessage
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.PersonCandidate
+import se.soderbjorn.lunicle.clientserver.ProjectAccessState
+import se.soderbjorn.lunicle.clientserver.ProjectSection
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
 import se.soderbjorn.lunicle.clientserver.TokenModes
@@ -52,20 +57,18 @@ import se.soderbjorn.lunicle.clientserver.VocabularyEntry
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
 
 /**
- * The two senior roles' wire keys, as the server spells them.
+ * The two senior rungs' wire keys, as the server spells them (LNL-191).
  *
- * Literals here because the client has no copy of the server's `Role` enum — the
- * keys ARE the wire format and are branched on by name (see Roles.kt, which says
- * so and warns that changing one is a migration). These are the only keys the
- * client has to recognise rather than merely render, because they are the two rows
- * of the privileges table whose availability depends on who is looking: both are
- * handed out only by an owner or a system administrator (LNL-107).
+ * Literals here because the client has no copy of the server's `ProjectRole` enum
+ * — the keys ARE the wire format and are branched on by name (see Roles.kt, which
+ * says so and warns that changing one is a migration). These are the only keys the
+ * client had to recognise rather than merely render.
+ *
+ * They are **gone** (LNL-194). Which rungs a caller may hand out is decided on the
+ * server and arrives per rung on [se.soderbjorn.lunicle.clientserver.RungOption], with
+ * the sentence saying why a dead one is dead — so the client no longer has to know
+ * which two rungs are senior, or that seniority is what makes them special.
  */
-private const val PROJECT_ADMIN_ROLE_KEY = "project_admin"
-private const val PROJECT_OWNER_ROLE_KEY = "project_owner"
-
-/** The two rows gated on [ProjectSettingsState.canGrantSeniorRoles]. */
-private val SENIOR_ROLE_KEYS = setOf(PROJECT_ADMIN_ROLE_KEY, PROJECT_OWNER_ROLE_KEY)
 
 /**
  * The phrase an owner must type to arm the delete-project button (LNL-107).
@@ -82,9 +85,9 @@ const val DELETE_PROJECT_CONFIRMATION_PHRASE = "i really want to delete this pro
  * Carries the sentence and the phrase the owner must type, rather than a boolean
  * the view branches on, so the view renders a confirmation while deciding nothing
  * — the counterpart to AdminSettingsBackingViewModel.PendingProjectDelete, which
- * the instance-settings dialog uses for the system administrator's copy of this
- * same power. Named apart from that one because they live in the same package and
- * carry different fields: this dialog already knows its project, so it needs no id.
+ * the instance tabs use for the instance owner's copy of this same power. Named
+ * apart from that one because they live in the same package and carry different
+ * fields: this dialog already knows its project, so it needs no id.
  */
 data class ProjectDeletePrompt(
     val title: String,
@@ -136,6 +139,58 @@ data class VocabularyRowState(
     val canMoveDown: Boolean,
     val showsClosingFlag: Boolean,
     val showsDoneFlag: Boolean,
+    /**
+     * A relation kind's to-side label — "Blocks" for a kind whose name is "Blocked by"
+     * — or null because the kind reads the same in both directions (LNL-215).
+     *
+     * **Null IS symmetry.** There is no separate "is symmetric" flag on the wire that
+     * could disagree with it (see IssueRelationKinds.sq), and this row deliberately does
+     * not invent one either: the checkbox the view renders is a *view* of this being
+     * null, and ticking it sends null. A flag here would be a second source of truth
+     * for a fact the schema already answers.
+     */
+    val inverseName: String?,
+    /**
+     * Whether the *from* side of one of these counts as blocked (LNL-215) — what turns
+     * a card grey on everybody's board. Shaped exactly like a status's
+     * [requiresResolution]: one flag on one row, written with the name in a single edit.
+     */
+    val marksBlocked: Boolean,
+    /**
+     * Whether to render the inverse-name field and the two checkboxes that go with it.
+     * Relation kinds only, for [showsClosingFlag]'s reason — an inverse name beside a
+     * label would be a control that writes nothing.
+     */
+    val showsRelationFields: Boolean,
+    /**
+     * Whether this row may be renamed, moved or deleted at all (LNL-196).
+     *
+     * The caller's rung, not a fact about the row, which is why [isDeletable] does not
+     * cover it: that one answers "would the server refuse this delete", and this one
+     * answers "may this caller write in this list". False renders the row with dead
+     * controls, never as an absent row — a list you may read and not change is worth
+     * seeing, and a Versions section that showed a reader nothing would read as a project
+     * with no releases.
+     */
+    val isEditable: Boolean,
+    /**
+     * When this sprint finished, as a sentence — "Completed 17 Jul 2026, 14:32" — or
+     * "Open" while it has not (LNL-196). Null for every kind that is not a sprint.
+     *
+     * Both states are worded, not only the interesting one. A row with a date beside it
+     * and a row with nothing beside it are told apart by noticing an absence, which is
+     * exactly the reading nobody does down a list of five.
+     */
+    val completionLine: String?,
+    /**
+     * What the completion button says — "Complete…" or "Reopen" — or null for a kind
+     * that has no such thing.
+     *
+     * The ellipsis is on one of them only, and it is load-bearing: completing asks where
+     * the unfinished work goes, and reopening asks nothing. See
+     * [PendingSprintCompletion].
+     */
+    val completionActionLabel: String?,
 )
 
 /**
@@ -159,38 +214,58 @@ data class VocabularySection(
     val draftName: String,
     val isAddEnabled: Boolean,
     val rows: List<VocabularyRowState>,
+    /**
+     * Whether this caller may add to and edit this list (LNL-196).
+     *
+     * False hides the add field — an add field that cannot add is not an explanation of
+     * anything, unlike a greyed Delete, which at least sits beside the row it would have
+     * removed — and greys every row's controls. [readOnlyReason] is the sentence.
+     */
+    val isEditable: Boolean = true,
+    /** Why this list is read-only, shown once under the hint. Null when it is not. */
+    val readOnlyReason: String? = null,
 )
 
 /**
- * One role checkbox against one user.
+ * "This sprint is over — where does the unfinished work go?", held while the
+ * confirmation is up (LNL-196).
  *
- * Never built for an instance admin — their row carries no toggles at all, only
- * the note saying why. See [State.members].
+ * The question is asked rather than defaulted because rolling into the next sprint and
+ * dropping back to the backlog are different intentions, and the wrong one is tedious
+ * to undo: the issues end up spread across two places with nothing recording which of
+ * them moved.
  *
- * @property isEnabled false while a write is in flight, so a second click cannot
- *   be sent from a state the first has already invalidated.
+ * The whole prompt rather than an id, for [PendingVocabularyDelete]'s reason — the
+ * dialog names what is about to happen and needs the name and the count to say it, and
+ * looking them back up from the id would confirm one thing and complete another if a
+ * reload landed in between.
  */
-data class RoleToggle(
-    val key: String,
-    val description: String,
-    val isOn: Boolean,
-    val isEnabled: Boolean,
+data class PendingSprintCompletion(
+    val sprintId: Long,
+    val sprintName: String,
+    val unfinishedCount: Int,
+    /**
+     * Where the unfinished work may go: this project's other **open** sprints, in
+     * planning order. Empty is normal and fine — the dialog then offers only the
+     * backlog. A finished sprint is never a destination; work put there could not leave
+     * again. See the server's SprintRepository.complete.
+     */
+    val destinations: List<SprintDestination>,
 )
 
-/**
- * One account, and what it may do here.
- *
- * @property note the sentence that stands in place of the checkboxes for this row
- *   — "Admin — can do everything in every project" — or null for an ordinary
- *   user. Where there is a note, [roles] is empty: the note is not an annotation
- *   on the boxes, it is what the row says instead of them.
- */
-data class MemberRowState(
-    val userId: Long,
+/** One place unfinished work could be rolled to. See [PendingSprintCompletion]. */
+data class SprintDestination(
+    val sprintId: Long,
     val name: String,
-    val note: String?,
-    val roles: List<RoleToggle>,
 )
+
+// `RoleToggle` and `MemberRowState` stood here: one checkbox per role per account,
+// and a row per account on the instance. Both are gone (LNL-194). The Access section
+// renders the server's own
+// [se.soderbjorn.lunicle.clientserver.PersonRow]/[se.soderbjorn.lunicle.clientserver.AudienceRow]
+// directly, because there is nothing left for a view model to decide about them —
+// every label, every dead control and every reason is computed where the write is
+// enforced. See ProjectAccessState.
 
 /**
  * A vocabulary row the admin has asked to delete, held while the confirmation is
@@ -270,6 +345,50 @@ val GITHUB_TOKEN_MODE_OPTIONS: List<Pair<String, String>> = listOf(
     TokenModes.LITERAL to "Paste token",
 )
 
+/** The heading over the estimate-mode control, in Structure (LNL-215). */
+const val ESTIMATE_SECTION_TITLE: String = "Estimates"
+
+/**
+ * The line under it.
+ *
+ * Leads with the fact that most projects want none, because that is the state every
+ * project is in and the one this control must not make anybody feel they are missing
+ * out on. Then what each of the other two puts on screen, in concrete terms — an
+ * administrator choosing between "Time" and "Points" is choosing what their team will
+ * be typing into every issue for the next year, and "days, hours and minutes" is a
+ * better description of that than the word "time" is.
+ *
+ * The last sentence is the important one and is the reason estimates are stamped with
+ * their unit rather than read through this setting: switching does not rewrite what is
+ * already there. Saying so here is what stops somebody switching to see what happens
+ * and quietly changing the meaning of two hundred numbers.
+ */
+const val ESTIMATE_HINT: String =
+    "Most projects need none — with estimates off, no estimate field appears on any issue " +
+        "and the board is exactly as it is now. Time gives each issue days, hours and " +
+        "minutes (one day is eight hours); Points gives it a single number. Switching later " +
+        "changes only what new estimates are entered in — estimates already recorded keep " +
+        "the unit they were written in."
+
+/**
+ * The three estimate modes, in the order the buttons show them, each paired with its
+ * [EstimateMode] wire key (LNL-215).
+ *
+ * A list rather than three constants, for [GITHUB_TOKEN_MODE_OPTIONS]' reason exactly:
+ * the DOM builds one button per entry and reads the same list back to decide which is
+ * lit, so the ordering and the labels have one source and the control cannot drift from
+ * the logic behind it.
+ *
+ * "Off" rather than "None", which is what the key spells. The wire word is the absence
+ * of a value; the screen word is the state of a feature, and an administrator reading a
+ * row of three buttons is choosing whether something is on.
+ */
+val ESTIMATE_MODE_OPTIONS: List<Pair<String, String>> = listOf(
+    EstimateMode.NONE.key to "Off",
+    EstimateMode.TIME.key to "Time",
+    EstimateMode.POINTS.key to "Points",
+)
+
 /** The literal-token field's label (LNL-107). */
 const val GITHUB_TOKEN_LITERAL_LABEL: String = "Token"
 
@@ -287,6 +406,91 @@ const val GITHUB_TOKEN_LITERAL_STORED_PLACEHOLDER: String = "••••••�
 const val GITHUB_TOKEN_LITERAL_HINT: String =
     "Stored on the server as entered. Prefer an environment variable where you can set one. " +
         "Leave blank to keep the token already stored."
+
+/**
+ * The people picker's own state, while it is open (LNL-204).
+ *
+ * ── Why this replaced a form with an address field ───────────────────────────
+ *
+ * The Access section's person list is exceptions only, so somebody who is not an
+ * exception yet has no row to click — and the only way to give them one was to type their
+ * address into a dialog. For an account the instance already knows that is the wrong
+ * question: it asks an administrator to recall something the server is holding, and a
+ * typo silently makes a second never-signed-into account beside the real person. So the
+ * gesture is a search over the directory, and typing a whole address is the *fallback*
+ * for somebody who genuinely has no account yet.
+ *
+ * ── Every pick is written immediately, and that is why Undo exists ──────────
+ *
+ * There is no OK. Picking a row grants, at once, like every other control in this pane —
+ * which is what lets you add four people without four round trips through a dialog. The
+ * price is that a mistake is already saved, so [addedUserIds] remembers this session's
+ * grants and offers to take them back. It remembers **ids**, not rows, because the undo
+ * is "set these people back to no own row" and that is all it needs to know.
+ *
+ * @property query what has been typed into the search field. Matched server-side against
+ *   name and address; empty is the head of the directory rather than nothing, because
+ *   opening the picker should show who is there.
+ * @property roleKey the rung every pick grants, chosen once at the top of the panel. Null
+ *   only before the first list arrives — the panel picks the lowest rung this caller may
+ *   hand out as soon as it knows what those are, so a pick can never mean "at no rung".
+ * @property candidates the rows to draw, already ordered and truncated by the server.
+ * @property totalMatches how many matched in all, so the footer can say how many were
+ *   left out. Never a silent truncation; see the footer's wording.
+ * @property addedUserIds who this picker session has granted, oldest first. Drives both
+ *   the footer's count and [EditProjectBackingViewModel.onAddedPeopleUndone].
+ * @property isSearching whether a search is in flight. Only interesting for the very
+ *   first one — the list is deliberately left on screen while a later query resolves,
+ *   because blanking it on every keystroke is what makes a search feel broken.
+ * @property searchSequence which search the newest response must match to be believed.
+ *   Typing is faster than the network and responses can overtake each other; without
+ *   this, a slow answer for `ma` lands after the quick one for `markus` and the list
+ *   silently disagrees with the field above it.
+ */
+data class PeoplePicker(
+    val query: String = "",
+    val roleKey: String? = null,
+    val candidates: List<PersonCandidate> = emptyList(),
+    val totalMatches: Int = 0,
+    val addedUserIds: List<Long> = emptyList(),
+    val isSearching: Boolean = false,
+    val searchSequence: Int = 0,
+) {
+    /**
+     * Whether [query] is a **whole** address, and so whether to offer to add it as one.
+     *
+     * ── Nothing can tell when you have stopped typing ────────────────────────
+     *
+     * So this never guesses. `n`, `na`, `nadia`, `nadia@`, `nadia@vessel` are all somebody
+     * halfway through, and offering to create an account for any of them is offering to
+     * act on a fragment. The offer appears only for a structurally complete address —
+     * local part, domain, and a suffix of at least two letters — and even then it stays an
+     * *offer*: nothing is written until it is clicked or Enter is pressed, with the whole
+     * address printed back first.
+     *
+     * A complete-but-wrong address is beyond any check that can be made here. That is what
+     * the footer's undo and the NOT SIGNED IN badge are for: a grant nobody claimed stays
+     * visible as one, rather than being mistaken for somebody who has arrived.
+     *
+     * Deliberately **not** a validity check for the server to trust — the route normalises
+     * and re-checks with `isPlausibleEmail`, and it is the one that refuses. This decides
+     * whether to show a row.
+     */
+    val isWholeAddress: Boolean get() = WHOLE_ADDRESS.matches(query.trim())
+
+    private companion object {
+        /**
+         * A structurally complete address: something, `@`, a domain of at least two
+         * labels, and a final label of two or more letters.
+         *
+         * Not RFC 5322, and not trying to be — a full-fidelity address grammar accepts
+         * things no mail system here will ever see and would still not answer the question
+         * this asks, which is "has the person finished typing?". The two-letter floor on
+         * the last label is what stops `nadia@vessel.s` reading as done mid-keystroke.
+         */
+        val WHOLE_ADDRESS = Regex("""^[^\s@]+@[^\s@.]+(\.[^\s@.]+)*\.[a-zA-Z]{2,}$""")
+    }
+}
 
 /**
  * Owns the project dialog.
@@ -312,27 +516,14 @@ class EditProjectBackingViewModel(
     private val storage: StorageRepository = StorageRepository(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onFinished: (changed: Boolean, saved: ProjectSummary?) -> Unit,
-    /**
-     * The caller's current hide-issue-numbers choice for this project (LNL-105),
-     * and the sink for a change to it. A per-user view preference owned by the board
-     * view model, not a project setting the server keeps — so it is seeded in and
-     * written back through [onHideIssueNumbersChanged] rather than through [storage]
-     * here. The dialog is where the ticket asks the toggle to live; the board is
-     * where the preference lives.
-     */
-    private val hideIssueNumbers: Boolean = false,
-    private val persistHideIssueNumbers: (Boolean) -> Unit = {},
 ) {
     private val _stateFlow = MutableStateFlow(
         State(
             name = existing?.name.orEmpty(),
             namePrefix = existing?.namePrefix.orEmpty(),
-            isPublic = existing?.isPublic ?: false,
-            visibleToAllSignedIn = existing?.visibleToAllSignedIn ?: false,
             isNew = existing == null,
             canConfigure = canConfigure,
             canConfigureIdentity = canConfigureIdentity,
-            hideIssueNumbers = hideIssueNumbers,
         ),
     )
 
@@ -368,23 +559,18 @@ class EditProjectBackingViewModel(
      * @property settingsErrorMessage a refusal from one of the sections, shown as
      *   a modal over this dialog rather than as text inside it. Separate from
      *   [errorMessage], which belongs to the *form* and sits under the fields it
-     *   is about: a "3 issues are in that status" printed under the public
-     *   checkbox would be nowhere near the button that caused it, and would sit
+     *   is about: a "3 issues are in that status" printed under the name and prefix
+     *   would be nowhere near the row whose delete caused it, and would sit
      *   there afterwards describing something that already happened.
      */
     data class State(
         val name: String = "",
         val namePrefix: String = "",
-        val isPublic: Boolean = false,
-        /**
-         * Whether any signed-in account may read this project — the middle read
-         * tier, staged into the form and written on OK beside [isPublic] (LNL-138).
-         * A read-only grant: the server admits these callers to browse but no write
-         * gate widens for them. Independent of [isPublic] in the model, but the
-         * dialog reads [signedInVisibilityImpliedByPublic] to show that turning
-         * "public" on already covers it.
-         */
-        val visibleToAllSignedIn: Boolean = false,
+        // `isPublic` and `visibleToAllSignedIn` were staged here and written on OK
+        // (LNL-138). They are gone: who may see a project is its audience rows, which
+        // the Access section sets one row at a time and immediately, so there is
+        // nothing about visibility left to stage into this form. See
+        // ProjectAccessState.
         /**
          * The linked GitHub repository, as typed. Admin only, and empty for
          * everyone else because the server does not send it to them.
@@ -431,6 +617,8 @@ class EditProjectBackingViewModel(
         val settings: ProjectSettingsState? = null,
         val vocabularyDrafts: Map<VocabularyKind, String> = emptyMap(),
         val pendingVocabularyDelete: PendingVocabularyDelete? = null,
+        /** The sprint whose completion is being confirmed, or null (LNL-196). */
+        val pendingSprintCompletion: PendingSprintCompletion? = null,
         val settingsErrorMessage: String? = null,
         val hasWrittenSettings: Boolean = false,
         /**
@@ -443,25 +631,19 @@ class EditProjectBackingViewModel(
          */
         val canConfigure: Boolean = true,
         /**
-         * Whether they may also rename the project, change its prefix or
-         * visibility, or delete it.
+         * Whether they may also rename the project, change its prefix, or delete it.
          *
          * Narrower than [canConfigure] and held separately because exactly one
          * kind of caller sits between them: a PROJECT administrator, who
          * administers the board and does not own the project's identity in the
          * instance. Defaults to [canConfigure] so every existing caller of this
-         * view model — and the new-project path, which is system-administrator
-         * only anyway — behaves as it did.
+         * view model — and the new-project path, whose creator is seated as the
+         * new board's owner and so holds this anyway — behaves as it did.
+         *
+         * Visibility is no longer among these. It left the project row for the
+         * audience rows in the Access section (LNL-191), which the owner sets there.
          */
         val canConfigureIdentity: Boolean = true,
-        /**
-         * Whether THIS user hides issue numbers on this project (LNL-105) — a
-         * per-user view choice, shown to any signed-in caller who opens an existing
-         * project's settings, alongside the notification toggle. Held here only to
-         * drive the switch; the value of record lives on the board view model, which
-         * [onHideIssueNumbersChanged] writes through.
-         */
-        val hideIssueNumbers: Boolean = false,
         /**
          * The name or prefix already being another project's, phrased — or null.
          *
@@ -482,21 +664,18 @@ class EditProjectBackingViewModel(
          * the instance-settings copy of this power.
          */
         val pendingProjectDelete: ProjectDeletePrompt? = null,
+        /**
+         * The people picker, while it is open (LNL-204). Null when it is closed.
+         *
+         * A nested object rather than eight fields with a `isPickerOpen` beside them,
+         * because every one of them is meaningless while it is closed and "open" is
+         * exactly "this exists". Closing it is dropping it, which is also what
+         * guarantees the query, the picked-role and the just-added list cannot survive
+         * into the next open and quietly offer an undo for a session that ended.
+         */
+        val peoplePicker: PeoplePicker? = null,
     ) {
         val title: String get() = if (isNew) "New project" else "Project settings"
-
-        /**
-         * Whether the signed-in-visibility toggle is made redundant by [isPublic]
-         * (LNL-138).
-         *
-         * A public project is readable by everyone including signed-out visitors, so
-         * the server's read rule ORs the two — a public project already admits every
-         * signed-in account. The dialog reads this to render the second toggle as
-         * checked-and-disabled with a caption while public is on, rather than
-         * offering a switch that changes nothing. It stays a real, independent stored
-         * value underneath, so unticking "public" reveals whatever was chosen here.
-         */
-        val signedInVisibilityImpliedByPublic: Boolean get() = isPublic
 
         /**
          * Whether to offer the Delete button in the form's footer.
@@ -509,23 +688,24 @@ class EditProjectBackingViewModel(
         val showDelete: Boolean get() = !isNew && canConfigureIdentity
 
         /**
-         * Whether to show the name/prefix/public form and the OK button.
+         * Whether to show the name/prefix form and the OK button.
          *
-         * The form IS the project's identity — name, prefix, visibility — so this
+         * The form IS the project's identity — its name and its prefix — so this
          * follows [canConfigureIdentity] rather than [canConfigure]. Three
-         * outcomes, and LNL-107 widened the top one from the system administrator
-         * to the owner:
+         * outcomes, and LNL-107 widened the top one from the instance administrator
+         * to the project owner:
          *
-         *  - **Owner or system administrator** — the form, OK, Delete, and the
-         *    sections. Identity, repository and deletion are the owner's tier now.
+         *  - **Project owner** — the form, OK, Delete, and the sections. Identity,
+         *    repository and deletion are the owner's rung now, and an instance
+         *    administrator reaches it by holding that rung everywhere.
          *  - **Project administrator** — the sections and the notification toggle,
          *    no form and no OK. They administer the board; the project's name and
          *    existence are senior to running it (LNL-37, LNL-107). Showing them a
          *    name field that 403s on save is precisely what this flag prevents.
          *  - **Anyone else** — the notification toggle alone. Unchanged.
          *
-         * A new project is always this caller's to fill in, since only a system
-         * administrator can create one at all.
+         * A new project is always this caller's to fill in: they would not have been
+         * offered the dialog unless the instance permits their tier to create one.
          */
         val showForm: Boolean get() = isNew || canConfigureIdentity
 
@@ -567,7 +747,7 @@ class EditProjectBackingViewModel(
         // ── The settings half ────────────────────────────────────────────────
 
         /**
-         * Whether to render the vocabulary and privilege sections at all.
+         * Whether to render the vocabulary and Access sections at all.
          *
          * Both halves matter now that the dialog opens for non-admins: the
          * settings must have loaded, *and* this caller must be an admin. A
@@ -576,6 +756,27 @@ class EditProjectBackingViewModel(
          * buildSettings.
          */
         val hasSettings: Boolean get() = settings != null && canConfigure
+
+        /**
+         * Whether the Sprints and Versions sections have anything to draw (LNL-196).
+         *
+         * The settings alone, with **no rung in the condition** — unlike [hasSettings],
+         * which insists on an administrator. The two sections are offered from Maintainer
+         * up and are read-only below, so what decides whether they paint is whether the
+         * response has arrived; what decides whether their controls are live is
+         * [canPlanProject]. Collapsing the two into one flag is what left a Maintainer
+         * looking at an empty Sprints pane before this ticket.
+         */
+        val hasPlanningSettings: Boolean get() = settings != null
+
+        /**
+         * Whether this caller may shape the sprints and the versions — Maintainer and
+         * above, one rung below the vocabularies. [planningReadOnlyReason] is the
+         * sentence when they may not.
+         */
+        val canPlanProject: Boolean get() = settings?.canMutateProjectPlanning == true
+        val planningReadOnlyReason: String? get() =
+            if (canPlanProject || settings == null) null else settings?.planningReadOnlyReason
 
         // ── The Features section (LNL-96) ──
 
@@ -595,9 +796,14 @@ class EditProjectBackingViewModel(
         val discussionsEnabled: Boolean get() = settings?.discussionsEnabled ?: true
         val messagesEnabled: Boolean get() = settings?.messagesEnabled ?: true
 
-        // ── The Structure tab's new-ticket requirements (LNL-106) ─────────────
+        // ── The new-ticket requirements (LNL-106), across two sections (LNL-196) ──
 
-        /** Shown on the Structure tab for a project administrator; same gate as the vocabularies. */
+        /**
+         * Shown in Structure for a project administrator; same gate as the vocabularies.
+         *
+         * Two of the three switches, since LNL-196: the fixed-version rule moved to the
+         * Versions section, under the list it depends on. Structure keeps a pointer.
+         */
         val showRequirementsSection: Boolean get() = hasSettings
 
         /** Whether a new ticket must carry a label, and whether it must carry a component. */
@@ -607,15 +813,127 @@ class EditProjectBackingViewModel(
         /** Whether closing an issue with a done resolution must carry a fixed version (LNL-134). */
         val requireFixedVersionOnResolve: Boolean get() = settings?.requireFixedVersionOnResolve ?: false
 
+        /**
+         * Whether the fixed-version switch renders in the Versions section (LNL-196).
+         *
+         * [hasPlanningSettings], not [hasSettings]: it lives in a section a Maintainer
+         * reaches, and it is written by an administrator — so a Maintainer sees it and
+         * cannot change it, which is the arrangement Board display already has in General.
+         * Hiding it would leave a Maintainer wondering why the board demands a version.
+         */
+        val showFixedVersionRequirement: Boolean get() = hasPlanningSettings
+
+        /**
+         * Whether the fixed-version switch is live, and [requirementsReadOnlyReason] why
+         * not.
+         *
+         * The requirements route is an administrator's, and it did not move with the
+         * switch — so this is the one control in a Maintainer's Versions section that is
+         * dead, and it says whose it is rather than vanishing.
+         */
+        val canSetRequirements: Boolean get() = settings?.canMutateProject == true
+        val requirementsReadOnlyReason: String? get() =
+            if (canSetRequirements || settings == null) {
+                null
+            } else {
+                "What a ticket must carry is an administrator of this project's."
+            }
+
+        /**
+         * The line under the fixed-version switch: why it is currently doing nothing, or
+         * what it asks for (LNL-196).
+         *
+         * Said where the switch is rather than left to be discovered, because a switch
+         * that is *on* and has no effect is the thing people file bugs about. The rule
+         * needs two things — a version to pick, and a resolution that means the work was
+         * done — and naming which half is missing is the difference between an
+         * explanation and "it needs setting up".
+         *
+         * Decided here rather than in the view, and the reason is the one thing that is
+         * easy to get wrong: **a Maintainer is not sent the resolutions.** They are an
+         * administrator's list, so [hasDoneResolution] would read false for a project that
+         * has one and the line would state something untrue — and then point at a
+         * Structure section that caller does not have. So the resolution half is only
+         * asserted by somebody who can see it, and the version half, which travels to
+         * everybody who reaches this section, is asserted either way.
+         */
+        val fixedVersionCaveat: String get() {
+            val knowsResolutions = canSetRequirements
+            return when {
+                !hasVersions && knowsResolutions && !hasDoneResolution ->
+                    "Ignored for now: this project has no versions to pick and no resolution " +
+                        "ticked \"means done\". Add a version above and tick one in Structure."
+                !hasVersions ->
+                    "Ignored for now: this project has no versions to pick. Add one above."
+                knowsResolutions && !hasDoneResolution ->
+                    "Ignored for now: no resolution is ticked \"means done\", so no close counts " +
+                        "as done. Tick one in Structure."
+                knowsResolutions ->
+                    "Asks only for resolutions ticked \"means done\" in Structure, and only for " +
+                        "the versions above."
+                // No Structure section to point at, and no resolutions to have read.
+                else ->
+                    "Asks only for resolutions that mean the work was done, and only for the " +
+                        "versions above."
+            }
+        }
+
         /** Whether the board shows each card's author on a muted footer line (LNL-157). */
         val showIssueAuthor: Boolean get() = settings?.showIssueAuthor ?: false
 
         /**
+         * Whether the board and its issue windows hide the issue number (LNL-194).
+         *
+         * Read off the settings like [showIssueAuthor], and that is the change: until
+         * LNL-194 this was a per-user view choice seeded into this view model and
+         * written back to the board's preference blob. It is the project's now, so it
+         * arrives and departs the same way every other project setting does.
+         */
+        val hideIssueNumbers: Boolean get() = settings?.hideIssueNumbers ?: false
+
+        /**
+         * Whether the Board display switches are this caller's to change — Admin and
+         * above (LNL-194).
+         *
+         * Not the same question as whether the group is *shown*: it always is, to
+         * everybody who can see the project. Hiding the switch that explains why the
+         * board looks the way it does only prompts "where did the issue numbers go", so
+         * a Maintainer and below see both switches, set as the project has them, and
+         * dead. [boardDisplayReadOnlyReason] is the sentence beside them.
+         */
+        val canSetBoardDisplay: Boolean get() = settings?.canMutateProject == true
+
+        /**
+         * Why the Board display switches are dead, or null because they are not.
+         *
+         * Names the rung rather than saying "you cannot": somebody reading this needs
+         * to know who to ask, and "an administrator of this project" is that answer.
+         */
+        val boardDisplayReadOnlyReason: String? get() =
+            if (canSetBoardDisplay || settings == null) null
+            else "How this board reads is set by an administrator of this project."
+
+        /**
+         * Why the name and the prefix are dead, or null because they are not.
+         *
+         * The owner's, one rung above the switches above — a rename changes every
+         * ticket reference in every commit message that ever named this project, which
+         * is not a decision about the board so much as about the project's identity.
+         */
+        val identityReadOnlyReason: String? get() =
+            if (canConfigureIdentity) null
+            else "The project's name and prefix are its owner's to change."
+
+        /**
          * Whether the project has any versions to pick, and any resolution marked
          * done — the two things the fix-version requirement needs to be satisfiable
-         * (LNL-134). Like [hasLabels], a toggle with neither would be a trap: the
-         * view uses this to explain, next to the switch, that making a version and
-         * marking a resolution done is what turns it on in practice.
+         * (LNL-134). Like [hasLabels], a toggle with neither would be a trap, so
+         * [fixedVersionCaveat] says so beside the switch.
+         *
+         * [hasDoneResolution] is only **answerable** for an administrator: the resolutions
+         * are their list, and a Maintainer is sent none — so it reads false for a project
+         * that has one, and only [fixedVersionCaveat]'s `knowsResolutions` guard keeps that
+         * from becoming a sentence stating something untrue (LNL-196).
          */
         val hasVersions: Boolean get() = settings?.versions?.isNotEmpty() ?: false
         val hasDoneResolution: Boolean get() = settings?.resolutions?.any { it.isDone } ?: false
@@ -628,6 +946,30 @@ class EditProjectBackingViewModel(
          */
         val hasLabels: Boolean get() = settings?.labels?.isNotEmpty() ?: false
         val hasComponents: Boolean get() = settings?.components?.isNotEmpty() ?: false
+
+        // ── Estimates (LNL-215) ───────────────────────────────────────────────
+
+        /**
+         * Whether this project estimates, and in what unit, as the wire key — `none`,
+         * `time` or `points`.
+         *
+         * The key rather than the decoded enum, so a value from a newer server survives
+         * the trip and the *view* decides which of its three buttons to light. An
+         * unrecognised key lights none of them, which reads as "something else is set
+         * here" rather than as a wrong answer confidently given.
+         *
+         * Defaults to `none` before the settings land, which is also what an old server
+         * that does not send the field means.
+         */
+        val estimateMode: String get() = settings?.estimateMode ?: EstimateMode.NONE.key
+
+        /**
+         * Whether to render the estimates group at all. Shown to anybody who can see the
+         * Structure section, live only for an administrator — the same shape as the
+         * ticket requirements it sits beside, and for the same reason: knowing whether a
+         * board estimates is not the same as deciding it.
+         */
+        val showEstimateSection: Boolean get() = hasSettings
 
         // ── The notification section, for everyone the cog opens for ──────────
 
@@ -653,13 +995,14 @@ class EditProjectBackingViewModel(
 
         /**
          * Whether the caller has an e-mail at all. Without one the toggle is
-         * replaced by a hint pointing at the profile dialog — a switch that
+         * replaced by a hint pointing at the settings pane's You tab — a switch that
          * promises mail we cannot send is a dead control.
          */
         val canReceiveEmailNotifications: Boolean get() = settings?.canReceiveEmailNotifications == true
 
         /**
-         * The six vocabularies, in the order the dialog stacks them.
+         * The five vocabularies that define what the board **is** — the Structure
+         * section's lists.
          *
          * Statuses first because they are the board: they are what an admin came
          * here to change, and the one whose order is visible on screen five
@@ -669,13 +1012,14 @@ class EditProjectBackingViewModel(
          * Labels and components last because they are the ones an issue merely
          * wears rather than the ones that place it.
          *
-         * Sprint is last of all and the view lifts it onto its own tab (LNL-102);
-         * everything above shares the Structure tab. All six are arrangeable —
-         * labels and components used to be the exception, sorted by name with no
-         * arrows, which read as a missing feature rather than a rule, because it
-         * was one. See LNL-28.
+         * All five are arrangeable — labels and components used to be the exception,
+         * sorted by name with no arrows, which read as a missing feature rather than a
+         * rule, because it was one. See LNL-28.
+         *
+         * Sprints and versions are **not** here: they are a rung lower and a section
+         * each. See [planningSections].
          */
-        val sections: List<VocabularySection> get() = settings?.let { loaded ->
+        val structureSections: List<VocabularySection> get() = settings?.let { loaded ->
             listOf(
                 section(
                     loaded,
@@ -689,9 +1033,13 @@ class EditProjectBackingViewModel(
                     loaded,
                     VocabularyKind.RESOLUTION,
                     title = "Resolutions",
+                    // "…below" until LNL-196, when the switch it points at moved to the
+                    // Versions section. A hint that says "below" about something two
+                    // sections away is worse than no hint: it sends the reader scrolling.
                     hint = "Why an issue was closed. Offered when an issue moves into a column " +
                         "that needs a resolution. Tick \"means done\" on the ones that finish " +
-                        "the work — that is what \"require a fixed version\" below asks about.",
+                        "the work — that is what \"closing as done must have a fixed version\", " +
+                        "in the Versions section, asks about.",
                 ),
                 section(
                     loaded,
@@ -714,11 +1062,42 @@ class EditProjectBackingViewModel(
                     hint = "Which part of the thing an issue is about, in the order they are " +
                         "offered. Deleting one removes it from its issues, like a label.",
                 ),
-                // Last, and empty in most projects. The hint has to do more work
-                // than the others': every section above describes something the
-                // project already has, and this one has to explain what making
-                // the first sprint would turn on — including that nothing here
-                // changes until somebody does. See Sprints.sq.
+                // Sixth, and last, because it is the one an admin visits least: the
+                // three kinds a project starts with cover what nearly everybody means by
+                // linking two issues, so this list is read far more often than it is
+                // changed. See [structureSections]' own note on why the order here is an
+                // argument rather than an accident.
+                section(
+                    loaded,
+                    VocabularyKind.RELATION_KIND,
+                    title = "Relation kinds",
+                    hint = "Ways two issues can be linked, in the order the picker offers them. " +
+                        "Each has a name for the issue you are looking at and — unless it reads " +
+                        "the same both ways — an opposite for the issue at the other end, so one " +
+                        "stored link reads \"Blocked by LNL-9\" here and \"Blocks\" there. Tick " +
+                        "\"marks blocked\" on the kinds that hold work up: cards on the waiting " +
+                        "end go grey on the board. Deleting a kind deletes every link made with " +
+                        "it; the issues themselves are untouched.",
+                ),
+            )
+        }.orEmpty()
+
+        /**
+         * The two vocabularies whose **presence** is the feature flag: sprints, then
+         * versions. One section each, side by side in the rail (LNL-196).
+         *
+         * They are together and one rung below the five above because they are the same
+         * kind of thing: empty in most projects, and making the first one turns something
+         * on across the whole board. Both hints have to carry more than the others' — every
+         * Structure hint describes something the project already has, and these two have
+         * to explain what does not exist yet and what would appear if it did, including
+         * that nothing changes until somebody makes one. See Sprints.sq and Versions.sq.
+         *
+         * Read-only below Maintainer, not absent: knowing what the releases are is not the
+         * same as changing them. See [VocabularySection.isEditable].
+         */
+        val planningSections: List<VocabularySection> get() = settings?.let { loaded ->
+            listOf(
                 section(
                     loaded,
                     VocabularyKind.SPRINT,
@@ -729,9 +1108,6 @@ class EditProjectBackingViewModel(
                         "picker. Deleting a sprint releases its issues to the backlog rather " +
                         "than refusing.",
                 ),
-                // Empty in most projects, like sprints — presence is the flag. The
-                // hint carries the same weight: nothing about versions appears until
-                // the first one is made. See Versions.sq.
                 section(
                     loaded,
                     VocabularyKind.VERSION,
@@ -746,65 +1122,36 @@ class EditProjectBackingViewModel(
         }.orEmpty()
 
         /**
-         * Every account, and what it holds here.
+         * The sections this caller has on this project, in rail order (LNL-194).
          *
-         * Admins first, and `sortedByDescending` because it is stable — the
-         * server's order survives among the rest. They lead because they are the
-         * answer to "who can do this?" that outranks every row below them: read
-         * top-down, the table now states the blanket permission before the
-         * granted ones, which is the order they actually apply in.
+         * Named `railSections` and not `sections` because [structureSections] and
+         * [planningSections] above are the *vocabulary* sections those panes render — an
+         * older, unrelated use of the word that predates the rail.
+         *
+         * Straight from the server, undecided here — see
+         * [se.soderbjorn.lunicle.clientserver.ProjectSection]. Empty until the settings
+         * land, which is what the rail draws as "loading" rather than as "no sections".
          */
-        val members: List<MemberRowState> get() = settings?.let { loaded ->
-            loaded.members.sortedByDescending { it.isSysAdmin }.map { member ->
-                MemberRowState(
-                    userId = member.userId,
-                    name = if (member.isSelf) "${member.name} (you)" else member.name,
-                    note = when {
-                        member.isSysAdmin ->
-                            "System administrator — can do everything in every project."
-                        else -> null
-                    },
-                    // No boxes at all on an admin's row, rather than boxes that
-                    // are ticked-and-dead or unticked-and-dead. Either way they
-                    // describe a grant that decides nothing: AccessControl says
-                    // yes to an admin before it looks at a role. The note is the
-                    // whole truth of the row, so it is the only thing on it.
-                    roles = if (member.isSysAdmin) {
-                        emptyList()
-                    } else {
-                        loaded.roles.map { role ->
-                            RoleToggle(
-                                key = role.key,
-                                description = role.description,
-                                isOn = role.key in member.roleKeys,
-                                // Not while a write is in flight: two clicks on the
-                                // same box before the first answer arrives would send
-                                // the second from a state that is already stale.
-                                //
-                                // And never the two senior boxes — project
-                                // administrator and project owner — unless the caller
-                                // may grant them: an administrator opens this dialog
-                                // and hands out the ordinary roles freely, but may
-                                // promote neither a peer nor an owner. Shown rather
-                                // than hidden, so the row still explains what the role
-                                // is and who would have to grant it — see
-                                // AccessControl.canGrant, which refuses it regardless.
-                                isEnabled = !isBusy && (
-                                    role.key !in SENIOR_ROLE_KEYS || loaded.canGrantSeniorRoles
-                                    ),
-                            )
-                        }
-                    },
-                )
-            }
-        }.orEmpty()
+        val railSections: List<ProjectSection> get() = settings?.sections.orEmpty()
 
-        /** The heading over the privileges table, and what it is for. */
-        val membersHint: String get() =
-            "Who may do what in this project. Everyone with an account is listed — " +
-                "tick a box to grant, untick to revoke. It takes effect immediately."
+        /** Who this project admits, or null for a caller below Maintainer. */
+        val access: ProjectAccessState? get() = settings?.access
 
-        private fun section(
+        /** What **you** hold here, in one sentence. Empty until the settings land. */
+        val yourAccessLine: String get() = settings?.yourAccessLine.orEmpty()
+
+        /**
+         * Whether to offer "Delete this project", and [deleteBlockedReason] why the row
+         * is there and dead.
+         *
+         * Two flags rather than one, because there are three states: offered, offered and
+         * dead with a reason (an Admin, who would reasonably expect it), and absent
+         * (everybody below, for whom an explanation of a power two rungs up is noise).
+         */
+        val canDeleteProject: Boolean get() = settings?.canDeleteProject == true
+        val deleteBlockedReason: String? get() = settings?.deleteBlockedReason
+
+                private fun section(
             loaded: ProjectSettingsState,
             kind: VocabularyKind,
             title: String,
@@ -812,15 +1159,31 @@ class EditProjectBackingViewModel(
         ): VocabularySection {
             val entries = loaded.entriesFor(kind)
             val draft = vocabularyDrafts[kind].orEmpty()
+            // Which rung owns this list, asked once. Sprints and versions are a
+            // maintainer's and the five that define the board are an administrator's —
+            // the same split the server draws in VocabularyKind.minimumRole, read here
+            // off the two flags it sends rather than re-derived from a ladder this side
+            // does not have (LNL-196).
+            val isEditable = when (kind) {
+                VocabularyKind.SPRINT, VocabularyKind.VERSION -> canPlanProject
+                else -> canConfigure
+            }
+            val readOnlyReason = when {
+                isEditable -> null
+                kind == VocabularyKind.SPRINT || kind == VocabularyKind.VERSION -> planningReadOnlyReason
+                else -> null
+            }
             return VocabularySection(
                 kind = kind,
                 title = title,
                 hint = hint,
                 draftName = draft,
-                isAddEnabled = draft.isNotBlank() && !isBusy,
+                isAddEnabled = isEditable && draft.isNotBlank() && !isBusy,
                 rows = entries.mapIndexed { index, entry ->
-                    entry.toRow(kind, index, entries)
+                    entry.toRow(kind, index, entries, isEditable)
                 },
+                isEditable = isEditable,
+                readOnlyReason = readOnlyReason,
             )
         }
 
@@ -846,6 +1209,7 @@ class EditProjectBackingViewModel(
             kind: VocabularyKind,
             index: Int,
             siblings: List<VocabularyEntry>,
+            isEditable: Boolean,
         ): VocabularyRowState {
             val isLastOfAKindThatMatters = siblings.size <= 1 && kind.isLoadBearing
             val isBlockedByUse = kind.restrictsOnUse && usageCount > 0
@@ -854,7 +1218,7 @@ class EditProjectBackingViewModel(
                 name = name,
                 requiresResolution = requiresResolution,
                 isDone = isDone,
-                isDeletable = !isLastOfAKindThatMatters && !isBlockedByUse && !isBusy,
+                isDeletable = isEditable && !isLastOfAKindThatMatters && !isBlockedByUse && !isBusy,
                 // Two or three words, on the row. The long sentence below says what
                 // to do; this says what is true, and it is the half somebody
                 // reading a greyed-out Delete actually gets to see.
@@ -883,10 +1247,34 @@ class EditProjectBackingViewModel(
                     }
                     else -> null
                 },
-                canMoveUp = index > 0 && !isBusy,
-                canMoveDown = index < siblings.size - 1 && !isBusy,
+                canMoveUp = isEditable && index > 0 && !isBusy,
+                canMoveDown = isEditable && index < siblings.size - 1 && !isBusy,
                 showsClosingFlag = kind == VocabularyKind.STATUS,
                 showsDoneFlag = kind == VocabularyKind.RESOLUTION,
+                inverseName = inverseName,
+                marksBlocked = marksBlocked,
+                showsRelationFields = kind == VocabularyKind.RELATION_KIND,
+                isEditable = isEditable,
+                // Sprints only, and both states worded (LNL-196). "Open" is not a
+                // placeholder: the alternative is a row whose completion is signalled by
+                // an empty space beside it, which is a reading nobody performs.
+                // `finished` rather than reading `completedAt` twice: it is a property from
+                // another module, so a smart cast is not available and the null check would
+                // not narrow it.
+                completionLine = completedAt.let { finished ->
+                    when {
+                        kind != VocabularyKind.SPRINT -> null
+                        finished != null -> "Completed ${formatTimestamp(finished)}"
+                        else -> "Open"
+                    }
+                },
+                completionActionLabel = when {
+                    kind != VocabularyKind.SPRINT -> null
+                    completedAt != null -> "Reopen"
+                    // The ellipsis, because this one asks a question — where the
+                    // unfinished work goes. Reopening asks nothing and has none.
+                    else -> "Complete…"
+                },
             )
         }
     }
@@ -909,28 +1297,10 @@ class EditProjectBackingViewModel(
         )
     }
 
-    fun onPublicChanged(value: Boolean) {
-        _stateFlow.value = _stateFlow.value.copy(isPublic = value)
-    }
-
-    /**
-     * The signed-in-visibility toggle was flipped (LNL-138).
-     *
-     * Staged into the form and written on OK beside [onPublicChanged], because it is
-     * the same owner identity write — not a project-administrator setting like the
-     * feature toggles, which write immediately. Stored independently of [isPublic]
-     * even while public makes it redundant, so unticking public later restores what
-     * was chosen here rather than silently clearing it.
-     */
-    fun onVisibleToAllSignedInChanged(value: Boolean) {
-        _stateFlow.value = _stateFlow.value.copy(visibleToAllSignedIn = value)
-    }
-
     /**
      * A Features toggle was flipped (LNL-96).
      *
-     * Unlike [onPublicChanged], which stages into the form and writes on OK, these
-     * write at once — they are project-administrator settings like the vocabularies
+     * These write at once — they are project-administrator settings like the vocabularies
      * and grants, and go through the same [write] helper, so a flip reloads the
      * board on close and the tab appears or disappears. The pair is always sent
      * whole: the flag not being changed is read from the current [State] so the
@@ -1013,25 +1383,36 @@ class EditProjectBackingViewModel(
      * it goes through its own storage call rather than the requirements one.
      */
     fun onShowIssueAuthorChanged(value: Boolean) {
-        val project = existing ?: return
-        write("Could not change this project's display settings.") {
-            storage.setProjectDisplaySettings(project.id, showIssueAuthor = value)
-        }
+        setBoardDisplay(showIssueAuthor = value, hideIssueNumbers = _stateFlow.value.hideIssueNumbers)
     }
 
     /**
-     * Hide or show issue numbers for this project, for THIS user (LNL-105).
+     * Hide or show issue numbers on this project's board and issue windows (LNL-194).
      *
-     * Unlike the toggles above this writes no project setting: it updates local
-     * state so the switch reflects the click, and hands the choice to the board view
-     * model through [persistHideIssueNumbers], which owns the per-user preference
-     * blob and persists it. Fire-and-forget, like the board's own column-hide — a
-     * view choice whose honest failure is not surviving a reload, not an alert.
+     * A **project** setting since LNL-194, and this method is where that shows: it
+     * used to update local state and hand the choice to the board view model's
+     * per-user preference blob, fire-and-forget, because it changed nothing for
+     * anybody else. It now writes through [setBoardDisplay] like its sibling above,
+     * with an error an administrator can see, because it changes the board for
+     * everybody looking at it.
      */
     fun onHideIssueNumbersChanged(value: Boolean) {
-        if (_stateFlow.value.hideIssueNumbers == value) return
-        _stateFlow.value = _stateFlow.value.copy(hideIssueNumbers = value)
-        persistHideIssueNumbers(value)
+        setBoardDisplay(showIssueAuthor = _stateFlow.value.showIssueAuthor, hideIssueNumbers = value)
+    }
+
+    /**
+     * Write both board-display switches.
+     *
+     * The pair, because the route takes the pair — see ProjectDisplaySettings. Each
+     * handler passes its own new value and the other's current one, read from the
+     * state rather than remembered, so two flips in quick succession cannot send a
+     * stale partner.
+     */
+    private fun setBoardDisplay(showIssueAuthor: Boolean, hideIssueNumbers: Boolean) {
+        val project = existing ?: return
+        write("Could not change how this board reads.") {
+            storage.setProjectDisplaySettings(project.id, showIssueAuthor, hideIssueNumbers)
+        }
     }
 
     fun onRepositoryUrlChanged(value: String) {
@@ -1092,19 +1473,12 @@ class EditProjectBackingViewModel(
         scope.launch {
             val result = runCatching {
                 if (existing == null) {
-                    storage.createProject(
-                        current.name,
-                        current.namePrefix,
-                        current.isPublic,
-                        current.visibleToAllSignedIn,
-                    )
+                    storage.createProject(current.name, current.namePrefix)
                 } else {
                     storage.updateProject(
                         existing.id,
                         current.name,
                         current.namePrefix,
-                        current.isPublic,
-                        current.visibleToAllSignedIn,
                         current.repositoryUrl,
                         current.githubTokenEnv,
                         current.githubTokenMode,
@@ -1115,6 +1489,12 @@ class EditProjectBackingViewModel(
             result.fold(
                 onSuccess = {
                     println("EditProject: saved ${it.name}")
+                    // Cleared on success too, which it was not (LNL-194). The modal dismissed
+                    // itself on the next tick so a busy flag left standing was invisible; the
+                    // settings pane does not go anywhere, so a rename left every switch in the
+                    // General section dead until the reader selected another project. Found by
+                    // driving the app.
+                    _stateFlow.value = _stateFlow.value.copy(isBusy = false)
                     onFinished(true, it)
                 },
                 onFailure = { t ->
@@ -1146,7 +1526,7 @@ class EditProjectBackingViewModel(
     //
     // Back in this dialog since LNL-107, for the caller LNL-93 could not serve: an
     // owner may delete their own project but cannot open the instance-settings
-    // dialog where LNL-93 had put the power. The system administrator's copy still
+    // tabs where LNL-93 had put the power. The instance owner's copy still
     // lives there too, over projects at large; this one is one owner deleting one
     // board they hold. Both go through DELETE /api/projects and both are guarded by
     // the typed-phrase confirmation the ticket asked for.
@@ -1198,6 +1578,27 @@ class EditProjectBackingViewModel(
 
     // ── The vocabularies ─────────────────────────────────────────────────────
 
+    /**
+     * Turn estimates on, off, or switch the unit (LNL-215).
+     *
+     * A no-op when the mode is already what was pressed, like every other choice row
+     * here: the buttons are always all present, so pressing the live one is a click that
+     * expresses nothing and would otherwise write the same value back and re-render
+     * every open board for it.
+     *
+     * The write is deliberately NOT guarded on anything else. Switching from time to
+     * points does not touch a single stored estimate — each carries the unit it was
+     * written in — so there is no destructive case here to confirm, and asking "are you
+     * sure?" over a change that loses nothing is how confirmations stop being read.
+     */
+    fun onEstimateModeChanged(mode: String) {
+        val project = existing ?: return
+        if (_stateFlow.value.estimateMode == mode) return
+        write("Could not change how this project estimates.") {
+            storage.setProjectEstimateMode(project.id, mode)
+        }
+    }
+
     fun onVocabularyDraftChanged(kind: VocabularyKind, value: String) {
         _stateFlow.value = _stateFlow.value.copy(
             vocabularyDrafts = _stateFlow.value.vocabularyDrafts + (kind to value),
@@ -1245,10 +1646,31 @@ class EditProjectBackingViewModel(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean = false,
+        /**
+         * A relation kind's to-side label, or null because it reads the same both ways
+         * (LNL-215). **Null is how symmetry is expressed** — see
+         * [VocabularyRowState.inverseName] — so the "same in both directions" checkbox
+         * sends null here and nothing else does.
+         *
+         * Defaulted, but note the default is a *value* and not "leave alone": this
+         * function is the whole-row write, so a caller that forgot to pass it would make
+         * a kind symmetric. Every caller in the settings view passes all five.
+         */
+        inverseName: String? = null,
+        /** A relation kind's blocking flag (LNL-215). Same whole-row rule as above. */
+        marksBlocked: Boolean = false,
     ) {
         val project = existing ?: return
         val current = _stateFlow.value.settings?.entriesFor(kind)?.firstOrNull { it.id == id } ?: return
-        if (current.name == name && current.requiresResolution == requiresResolution && current.isDone == isDone) return
+        if (
+            current.name == name &&
+            current.requiresResolution == requiresResolution &&
+            current.isDone == isDone &&
+            current.inverseName == inverseName &&
+            current.marksBlocked == marksBlocked
+        ) {
+            return
+        }
         if (name.isBlank()) {
             // Refused here rather than sent: the server would refuse it too, with
             // the same sentence, but this way the field still holds what was typed
@@ -1259,7 +1681,7 @@ class EditProjectBackingViewModel(
             return
         }
         write("Could not save that ${kind.noun}.") {
-            storage.editVocabulary(project.id, kind, id, name, requiresResolution, isDone)
+            storage.editVocabulary(project.id, kind, id, name, requiresResolution, isDone, inverseName, marksBlocked)
         }
     }
 
@@ -1302,12 +1724,39 @@ class EditProjectBackingViewModel(
     fun onDeleteVocabularyTapped(kind: VocabularyKind, id: Long) {
         val entry = _stateFlow.value.settings?.entriesFor(kind)?.firstOrNull { it.id == id } ?: return
         val issues = "${entry.usageCount} ${if (entry.usageCount == 1) "issue" else "issues"}"
+        val plural = entry.usageCount != 1
         val consequence = when {
             entry.usageCount == 0 -> "Nothing uses it."
-            // The only kinds that reach a confirmation while in use: the others
-            // are refused before the button lights up. Deleting one of these
-            // unlabels the issues; it does not touch the issues themselves. See
-            // IssueLabels.sq.
+            // A version RELEASES the issues that named it, exactly as a sprint does — the
+            // schema says so (both references are ON DELETE SET NULL; see
+            // VocabularyKind.restrictsOnUse) and the count is therefore context for this
+            // confirmation and never a reason the Delete is dead. That is the whole
+            // difference from a status or a resolution, whose count is a refusal: those
+            // never reach here, because the button does not light up (LNL-196).
+            kind == VocabularyKind.VERSION ->
+                "$issues ${if (plural) "name" else "names"} this version; " +
+                    "${if (plural) "they" else "it"} will lose it. " +
+                    "The ${if (plural) "issues" else "issue"} " +
+                    "${if (plural) "themselves are" else "itself is"} not affected."
+            kind == VocabularyKind.SPRINT ->
+                "$issues ${if (plural) "are" else "is"} in this sprint; " +
+                    "${if (plural) "they" else "it"} will go back to the backlog."
+            // A relation kind CASCADES, which is the one consequence in this list that is
+            // not about a field being emptied: deleting the kind deletes the links
+            // themselves, on both issues, and there is nothing left afterwards saying the
+            // two were ever connected. The server does the cascading (see
+            // IssueRelationKinds.sq's `delete`); the confirmation's job is to make sure
+            // nobody learns it afterwards. The count is stated in LINKS rather than in
+            // issues because that is what goes, and because one link touches two issues —
+            // "12 issues will lose it" would be both wrong and reassuringly small.
+            kind == VocabularyKind.RELATION_KIND ->
+                "${entry.usageCount} ${if (plural) "links" else "link"} " +
+                    "${if (plural) "use" else "uses"} this kind; " +
+                    "${if (plural) "they" else "it"} will be deleted along with it. " +
+                    "The issues at both ends stay; only the ${if (plural) "links" else "link"} " +
+                    "between them ${if (plural) "go" else "goes"}."
+            // Labels and components: the links cascade, so deleting one unlabels the
+            // issues and leaves them standing. See IssueLabels.sq.
             else -> "$issues will lose it. The issues themselves are not affected."
         }
         _stateFlow.value = _stateFlow.value.copy(
@@ -1333,20 +1782,342 @@ class EditProjectBackingViewModel(
         }
     }
 
-    // ── The privileges ───────────────────────────────────────────────────────
+    // ── Completing and reopening a sprint (LNL-196) ───────────────────────────
+    //
+    // This used to be a row in the board's scope picker, which is where it was found
+    // and not where it belonged: it changed the meaning of everybody's columns from a
+    // control that reads as a view switch, and it sat within reach of everybody looking
+    // at the board rather than beside the people planning it. Here it is one action per
+    // row, next to the date it sets, in the section that owns the sprints.
 
     /**
-     * Grant or revoke one role for one user.
+     * The Complete-or-Reopen button on a sprint row was pressed.
      *
-     * No confirmation, deliberately, and it is the one destructive-looking thing
-     * here that does not get one: revoking is instantly reversible by ticking the
-     * box again, and nothing is lost when you do. A confirmation on an action that
-     * undoes itself teaches people to click through confirmations.
+     * One entry point for both, and the view decides nothing: it renders the label the
+     * row was handed and reports the click. Which of the two verbs this is depends on
+     * whether the sprint is stamped, and that answer has to come from the same state
+     * that drew the label — two places deciding it is how a button ends up saying
+     * "Reopen" and completing.
+     *
+     * Reopening writes immediately, with no confirmation: it asks nothing — the server's
+     * `SprintRepository.reopen` clears the stamp and nothing else — and it is undone by
+     * completing again. Completing asks where the unfinished work goes.
      */
-    fun onRoleToggled(userId: Long, roleKey: String, isGranted: Boolean) {
+    fun onSprintCompletionTapped(sprintId: Long) {
         val project = existing ?: return
-        write("Could not change that privilege.") {
-            storage.setProjectRole(project.id, userId, roleKey, isGranted)
+        val loaded = _stateFlow.value.settings ?: return
+        val sprint = loaded.sprints.firstOrNull { it.id == sprintId } ?: return
+
+        if (sprint.completedAt != null) {
+            // Both writes take the board back and then re-read the settings, because
+            // completion is the one sprint fact that lives on both: the board's scope
+            // picker has to stop offering a finished sprint as a destination, and this
+            // pane's row has to show the date. `write` adopts the settings, and the
+            // fresh state is what tells the board to catch up — see the view's
+            // onSettingsWritten.
+            write("Could not reopen that sprint.") {
+                storage.reopenSprint(project.id, sprintId)
+                storage.projectSettings(project.id)
+            }
+            return
+        }
+
+        _stateFlow.value = _stateFlow.value.copy(
+            pendingSprintCompletion = PendingSprintCompletion(
+                sprintId = sprintId,
+                sprintName = sprint.name,
+                unfinishedCount = sprint.unfinishedCount,
+                // Open sprints only, this one excluded. A finished sprint is not a
+                // destination — work put there could never leave again, which is the
+                // stranding the server refuses outright.
+                destinations = loaded.sprints
+                    .filter { it.id != sprintId && it.completedAt == null }
+                    .map { SprintDestination(it.id, it.name) },
+            ),
+        )
+    }
+
+    fun onSprintCompletionCancelled() {
+        _stateFlow.value = _stateFlow.value.copy(pendingSprintCompletion = null)
+    }
+
+    /** The completion question was answered: roll the unfinished work here, or to the backlog. */
+    fun onSprintCompletionConfirmed(moveUnfinishedTo: Long?) {
+        val project = existing ?: return
+        val pending = _stateFlow.value.pendingSprintCompletion ?: return
+        _stateFlow.value = _stateFlow.value.copy(pendingSprintCompletion = null)
+        write("Could not complete that sprint.") {
+            storage.completeSprint(project.id, pending.sprintId, moveUnfinishedTo)
+            storage.projectSettings(project.id)
+        }
+    }
+
+    // ── Access ───────────────────────────────────────────────────────────────
+
+    /**
+     * Put one person on one rung here, or [roleKey] null for "no access".
+     *
+     * No confirmation, deliberately, and it is the one destructive-looking thing here
+     * that does not get one: a rung is instantly reversible by picking it again, and
+     * nothing is lost when you do. A confirmation on an action that undoes itself
+     * teaches people to click through confirmations.
+     */
+    fun onPersonRungChanged(userId: Long, roleKey: String?) {
+        val project = existing ?: return
+        write("Could not change what that person holds here.") {
+            storage.setProjectRole(project.id, userId, roleKey)
+        }
+    }
+
+    /**
+     * Say at what rung a whole audience arrives here, or [roleKey] null to withdraw the
+     * row.
+     *
+     * No confirmation either, on the same reasoning — with one caveat worth stating:
+     * handing guests a rung publishes the board to the internet, which is not reversible
+     * in the sense that anybody who already read it has read it. The confirmation that
+     * would help there is the instance-wide veto, which is a switch an administrator
+     * sets once rather than a dialog everybody clicks through.
+     */
+    fun onAudienceRungChanged(audienceKey: String, roleKey: String?) {
+        val project = existing ?: return
+        write("Could not change who this project admits.") {
+            storage.setProjectAudience(project.id, audienceKey, roleKey)
+        }
+    }
+
+    /**
+     * Add an address, holding a rung. Nothing is sent; see the server's route.
+     *
+     * The error goes through [write] like every other access change, which is what puts
+     * a refused address ("that does not look like an e-mail address", "only an owner can
+     * hand out Admin") in front of the person who typed it.
+     */
+    fun onPersonAdded(email: String, roleKey: String) {
+        val project = existing ?: return
+        write("Could not add that person.") {
+            storage.addProjectPerson(project.id, email, roleKey)
+        }
+    }
+
+    // ── The people picker (LNL-204) ───────────────────────────────────────────
+
+    /**
+     * Open the picker and fetch the head of the directory.
+     *
+     * The rung defaults to the lowest one this caller may actually hand out, rather than
+     * to Viewer by name: on a board where somebody may grant nothing this list is empty
+     * and the picker opens with no rung, which is the honest state — and the panel's
+     * pick rows are inert without one, so nothing can be granted "at null".
+     */
+    fun onAddPeopleOpened() {
+        val offered = _stateFlow.value.settings?.access?.rungs.orEmpty()
+        _stateFlow.value = _stateFlow.value.copy(
+            peoplePicker = PeoplePicker(
+                roleKey = offered.firstOrNull { it.isSelectable }?.key,
+            ),
+        )
+        searchCandidates(query = "")
+    }
+
+    /** Close the picker and forget everything about this session, undo included. */
+    fun onAddPeopleClosed() {
+        _stateFlow.value = _stateFlow.value.copy(peoplePicker = null)
+    }
+
+    /**
+     * The search field changed.
+     *
+     * The query is stored immediately and the request goes out immediately — no debounce.
+     * That is a deliberate choice rather than an omission: the panel shows seven rows out
+     * of a directory read, so a keystroke is cheap, and a debounce is what makes a picker
+     * feel like it is thinking. Out-of-order answers are handled instead, by sequence; see
+     * [PeoplePicker.searchSequence].
+     */
+    fun onAddPeopleQueryChanged(query: String) {
+        val picker = _stateFlow.value.peoplePicker ?: return
+        _stateFlow.value = _stateFlow.value.copy(peoplePicker = picker.copy(query = query))
+        searchCandidates(query)
+    }
+
+    /** The rung every subsequent pick will grant. */
+    fun onAddPeopleRoleChanged(roleKey: String?) {
+        val picker = _stateFlow.value.peoplePicker ?: return
+        // Refused locally as well as at the route, matching every other rung control here:
+        // a rung this caller may not hand out is in the menu so it can say why, so a click
+        // on one must change nothing rather than arm the next pick with it.
+        val offered = _stateFlow.value.settings?.access?.rungs.orEmpty()
+        if (roleKey != null && offered.none { it.key == roleKey && it.isSelectable }) return
+        _stateFlow.value = _stateFlow.value.copy(peoplePicker = picker.copy(roleKey = roleKey))
+    }
+
+    /**
+     * A row in the list was picked: grant that account the chosen rung, by id.
+     *
+     * **By id, which is the whole point of the picker** — the address is on screen to tell
+     * two people of the same name apart, not to be sent back to the server. This is the
+     * ordinary [onPersonRungChanged] write with the picker's bookkeeping around it.
+     */
+    fun onCandidatePicked(userId: Long) {
+        val project = existing ?: return
+        val picker = _stateFlow.value.peoplePicker ?: return
+        val roleKey = picker.roleKey ?: return
+        // Recorded before the write rather than after it, so a second click on the same row
+        // while the first is still in flight cannot record it twice and offer to undo it
+        // twice. `isBusy` already refuses the overlapping write; this keeps the list honest.
+        if (userId in picker.addedUserIds) return
+        writePicker(
+            fallback = "Could not add that person.",
+            afterSuccess = { picked, _ -> picked.copy(addedUserIds = picked.addedUserIds + userId) },
+        ) {
+            storage.setProjectRole(project.id, userId, roleKey)
+        }
+    }
+
+    /**
+     * The "no account here yet" row was taken: create the account and grant it.
+     *
+     * Guarded on [PeoplePicker.isWholeAddress] as well as by the row only being drawn for
+     * one, because Enter reaches this from the field and the field does not know what is
+     * on screen beneath it.
+     *
+     * The new account's id is read back out of the response, which is the only place it
+     * appears — `addProjectPerson` answers with the whole fresh settings state, and the
+     * person it just created is now an exception on this board and so is in `access.people`.
+     * Matched on the normalised address rather than on "the row that was not there before",
+     * which would be wrong the moment two administrators add somebody at once.
+     */
+    fun onNewAddressAdded() {
+        val project = existing ?: return
+        val picker = _stateFlow.value.peoplePicker ?: return
+        val roleKey = picker.roleKey ?: return
+        if (!picker.isWholeAddress) return
+        val address = picker.query.trim()
+        writePicker(
+            fallback = "Could not add that address.",
+            // The field is cleared on success only — a refused address stays in it, because
+            // the reader's next move is to correct it rather than to retype it.
+            afterSuccess = { current, settings ->
+                val added = settings.access?.people
+                    ?.firstOrNull { it.email.equals(address, ignoreCase = true) }
+                    ?.userId
+                current.copy(
+                    query = "",
+                    addedUserIds = current.addedUserIds + listOfNotNull(added),
+                )
+            },
+        ) {
+            storage.addProjectPerson(project.id, address, roleKey)
+        }
+    }
+
+    /**
+     * Take back every grant this picker session made.
+     *
+     * Sets each of them to no own row, which is what "undo" means here — the grants were
+     * the only thing written, and nobody who already held a row could have been picked (the
+     * server sends those rows inert), so this cannot remove a grant somebody else made.
+     *
+     * The account a new address created is deliberately **left in place**. Undo is for the
+     * grant, not for the row: deleting an account is not this screen's power, the row is
+     * harmless without a rung, and it is the honest record that somebody was added here by
+     * mistake.
+     */
+    fun onAddedPeopleUndone() {
+        val project = existing ?: return
+        val picker = _stateFlow.value.peoplePicker ?: return
+        val ids = picker.addedUserIds
+        if (ids.isEmpty()) return
+        writePicker(
+            fallback = "Could not take those back.",
+            afterSuccess = { undone, _ -> undone.copy(addedUserIds = emptyList()) },
+        ) {
+            // Sequentially, and the last answer is the one kept: these are one write each
+            // and the route returns the whole state, so firing them together would leave
+            // the pane holding whichever response happened to land last while earlier ones
+            // were still in flight.
+            var latest: ProjectSettingsState? = null
+            ids.forEach { id -> latest = storage.setProjectRole(project.id, id, null) }
+            latest ?: storage.projectSettings(project.id)
+        }
+    }
+
+    /**
+     * One picker write: the ordinary [write], plus a fresh candidate search afterwards.
+     *
+     * The re-search is what makes the list agree with what was just done — a row that was
+     * pickable a moment ago now says "Already Contributor" and goes inert, which is the
+     * feedback that the pick landed. Doing it here rather than in each handler is what
+     * stops one of them forgetting.
+     */
+    private fun writePicker(
+        fallback: String,
+        afterSuccess: (PeoplePicker, ProjectSettingsState) -> PeoplePicker,
+        block: suspend () -> ProjectSettingsState,
+    ) {
+        if (_stateFlow.value.isBusy) return
+        _stateFlow.value = _stateFlow.value.copy(isBusy = true, settingsErrorMessage = null)
+        scope.launch {
+            runCatching { block() }.fold(
+                onSuccess = { settings ->
+                    val current = _stateFlow.value
+                    _stateFlow.value = current.copy(
+                        isBusy = false,
+                        settings = settings,
+                        hasWrittenSettings = true,
+                        canConfigure = settings.canMutateProject,
+                        canConfigureIdentity = settings.canMutateProjectIdentity,
+                        // Only if the picker is still open. Closing it mid-write is allowed
+                        // and must not resurrect it holding a stale undo.
+                        //
+                        // Handed the response rather than left to read the flow: at this point
+                        // `_stateFlow.value` is still the state BEFORE this write, so a hook
+                        // that went looking for what the write produced found nothing. That is
+                        // exactly how the new-address path lost the id it had just created, and
+                        // with it the undo.
+                        peoplePicker = current.peoplePicker?.let { afterSuccess(it, settings) },
+                    )
+                    _stateFlow.value.peoplePicker?.let { searchCandidates(it.query) }
+                },
+                onFailure = { t ->
+                    println("EditProject: picker write failed: ${t.message}")
+                    _stateFlow.value = _stateFlow.value.copy(
+                        isBusy = false,
+                        settingsErrorMessage = t.userMessage(fallback),
+                    )
+                },
+            )
+        }
+    }
+
+    /**
+     * Fetch the candidate rows for [query], discarding an answer that has been overtaken.
+     *
+     * A failure leaves the previous rows on screen and says nothing. That is the same
+     * judgement [loadSettings] makes: this is a search box, the reader's recourse is to
+     * type again, and an alert over a panel that is still perfectly usable would be worse
+     * than the empty result they can already see.
+     */
+    private fun searchCandidates(query: String) {
+        val project = existing ?: return
+        val opened = _stateFlow.value.peoplePicker ?: return
+        val sequence = opened.searchSequence + 1
+        _stateFlow.value = _stateFlow.value.copy(
+            peoplePicker = opened.copy(searchSequence = sequence, isSearching = true),
+        )
+        scope.launch {
+            val answer = runCatching { storage.projectPeopleCandidates(project.id, query) }.getOrNull()
+            val current = _stateFlow.value.peoplePicker ?: return@launch
+            // Overtaken, or the picker closed and reopened under us. Either way this answer
+            // describes a question nobody is asking any more.
+            if (current.searchSequence != sequence) return@launch
+            _stateFlow.value = _stateFlow.value.copy(
+                peoplePicker = current.copy(
+                    isSearching = false,
+                    candidates = answer?.candidates ?: current.candidates,
+                    totalMatches = answer?.totalMatches ?: current.totalMatches,
+                ),
+            )
         }
     }
 
@@ -1391,6 +2162,29 @@ class EditProjectBackingViewModel(
      * offer to. Shouting about it would put an alert over a form the user can
      * still legitimately use.
      */
+    /**
+     * Re-fetch the settings, because something outside this project changed what they say.
+     *
+     * ── Why this had to become reachable ─────────────────────────────────────
+     *
+     * The settings are fetched once, when a project is selected in the rail, and every
+     * later *write* returns a fresh state — so anything this pane changes stays current
+     * without help. What it could not see was a change made somewhere else in the same
+     * pane: the instance tabs. Several project answers are computed from instance
+     * configuration — whether a guest row is in effect at all, and whether a new outside
+     * address may be added (LNL-204) — so flipping a switch on Who gets in left the Access
+     * section confidently describing the old policy until the pane was closed and reopened.
+     *
+     * The same shape as LNL-137's display-name gate, which fixed it for the *session* by
+     * re-fetching that. This is the project half of the same hook; see main.kt's
+     * `onSessionAffectingWrite`.
+     *
+     * Silent about failure and about being in flight, like the load it delegates to: the
+     * pane is already showing usable (if slightly stale) answers, and an alert over that is
+     * worse than the delay.
+     */
+    fun reloadSettings() = loadSettings()
+
     private fun loadSettings() {
         val project = existing ?: return
         scope.launch {
@@ -1407,6 +2201,15 @@ class EditProjectBackingViewModel(
                     _stateFlow.value = _stateFlow.value.copy(
                         settings = settings,
                         canConfigureRepository = settings.canConfigureRepository,
+                        // The two seeds handed in at construction are replaced by the
+                        // server's own answers the moment they arrive (LNL-194). The rail
+                        // builds this view model before it knows the caller's rung on this
+                        // project, so it seeds both false — the safe direction, fields dead
+                        // until the response says otherwise — and this is where the truth
+                        // lands. Re-derived on every settings write too, so a right
+                        // withdrawn while the pane is open takes the fields with it.
+                        canConfigure = settings.canMutateProject,
+                        canConfigureIdentity = settings.canMutateProjectIdentity,
                         repositoryUrl = _stateFlow.value.repositoryUrl.ifEmpty { settings.repositoryUrl },
                         githubTokenEnv = _stateFlow.value.githubTokenEnv.ifEmpty { settings.githubTokenEnv },
                         // The mode is not an .ifEmpty field — its "unset" is not a
@@ -1453,6 +2256,11 @@ class EditProjectBackingViewModel(
                         isBusy = false,
                         settings = settings,
                         hasWrittenSettings = true,
+                        // Re-taken from every write's answer, not only from the first load: a
+                        // rung can move while the pane is open, and the response after a write
+                        // is the freshest word on what this caller may still do.
+                        canConfigure = settings.canMutateProject,
+                        canConfigureIdentity = settings.canMutateProjectIdentity,
                     )
                 },
                 onFailure = { t ->

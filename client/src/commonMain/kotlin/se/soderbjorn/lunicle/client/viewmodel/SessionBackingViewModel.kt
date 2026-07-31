@@ -26,7 +26,6 @@ import se.soderbjorn.lunicle.client.StorageRepository
 import se.soderbjorn.lunicle.client.userMessage
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SignedInUser
-import se.soderbjorn.lunicle.clientserver.UserOption
 
 /**
  * Owns the session round-trips and exposes the result as a [StateFlow].
@@ -59,25 +58,32 @@ class SessionBackingViewModel(
      * @property errorMessage a human-readable failure, or null.
      * @property googleClientId the public client id the view needs to open
      *   Google's popup; null when Google isn't configured here.
-     * @property isProfileDialogOpen whether the profile modal is up. Opened by
-     *   clicking the account corner; the menu is a hover away and needs no state
-     *   here, because it is drawn by CSS. See the client's SignInView.
-     * @property isImpersonating whether [user] is somebody other than whoever
-     *   signed in. Straight from the server — the client cannot work this out,
-     *   and must not try.
-     * @property canImpersonate whether the REAL user is an admin. Deliberately
-     *   not `user.isSysAdmin`: while impersonating, the effective user is an
-     *   ordinary one and `user.isSysAdmin` is false, but "Stop impersonating" still
-     *   has to be reachable. That is the whole distinction, and collapsing the
-     *   two would trap the admin as whoever they became.
-     * @property impersonatableUsers the accounts on offer. Empty unless
-     *   [canImpersonate]; the server does not send it otherwise.
+     * @property isImpersonating whether this session was minted by an impersonation
+     *   rather than by somebody proving who they are. Straight from the server — the
+     *   client cannot work this out, and must not try: the account on screen IS the
+     *   account in force, so there is nothing here to compare.
+     * @property isImpersonationArmed whether this signed-out browser holds a live
+     *   grant and may sign itself in as anybody. The state between arming and
+     *   choosing an address, in which [user] is null and [isImpersonating] false —
+     *   everything renders as a stranger sees it, which is part of what is being
+     *   checked. It is what makes the ordinary sign-in button open the impersonation
+     *   dialog instead of Google's popup.
+     * @property canImpersonate whether this caller may arm one: they own the
+     *   instance and the deployment has the feature switched on. Deliberately not
+     *   `user.isSysAdmin`: while probing, the account being worn is an ordinary one
+     *   and its `isSysAdmin` is false, but "Stop impersonating" still has to be
+     *   reachable. Collapsing the two would trap the owner as whoever they became.
+     * @property isImpersonateAddressPromptOpen whether the address dialog is up.
+     * @property impersonateAddress what has been typed into it, or null when it has
+     *   never been opened. Held here rather than in the view for the reason
+     *   [emailSignInAddress] is: a dialog rebuilt per showing cannot be the thing that
+     *   remembers what is in it.
      * @property pendingEmail an address the user has asked to attach and not yet
      *   confirmed, or null. Straight from the server, like [isImpersonating] and
      *   for a stronger version of the same reason: the pending change is a row in
      *   the database, and holding it here instead would lose it the moment the
-     *   profile dialog closed — which LNL-71 explicitly forbids, because closing
-     *   the dialog to go and read the mail is the *expected* thing to do.
+     *   settings pane closed — which LNL-71 explicitly forbids, because closing it
+     *   to go and read the mail is the *expected* thing to do.
      * @property isEmailSignInAvailable whether the server can sign somebody in
      *   with a mailed code. From the server, like [isGoogleAvailable], so a method
      *   the deployment cannot perform is never rendered at all — a dead button
@@ -89,8 +95,8 @@ class SessionBackingViewModel(
      *
      *   Held here and not on the server, unlike [pendingEmail] — the opposite
      *   choice for what looks like the same problem, and the difference is who is
-     *   asking. A pending address change belongs to an account, has to survive a
-     *   dialog closing, and has a row to live in. A signed-out visitor has no
+     *   asking. A pending address change belongs to an account, has to survive the
+     *   pane closing, and has a row to live in. A signed-out visitor has no
      *   account and no session, so there is nowhere to put this; losing it costs
      *   one retyped address, which is the right price for not inventing a
      *   pre-session cookie to hold it in.
@@ -102,26 +108,20 @@ class SessionBackingViewModel(
         val errorMessage: String? = null,
         val isGoogleAvailable: Boolean = false,
         val googleClientId: String? = null,
-        val isProfileDialogOpen: Boolean = false,
         val isImpersonating: Boolean = false,
+        val isImpersonationArmed: Boolean = false,
         val canImpersonate: Boolean = false,
-        val impersonatableUsers: List<UserOption> = emptyList(),
+        val isImpersonateAddressPromptOpen: Boolean = false,
+        val impersonateAddress: String? = null,
         val pendingEmail: String? = null,
         val isEmailSignInAvailable: Boolean = false,
         val isSignInPickerOpen: Boolean = false,
         val emailSignInAddress: String? = null,
         /**
-         * Whether this deployment requires signing in to be used at all (LNL-115).
-         * Straight from the server, like [isEmailSignInAvailable] — the client
-         * cannot know this and must not guess. Drives the shell's landing gate; see
-         * [isSignInGateShown].
-         */
-        val isSignInRequired: Boolean = false,
-        /**
          * Whether this deployment hides the display-name override (LNL-137).
-         * Straight from the server, like [isSignInRequired] — the client cannot know
-         * this and must not guess. When true the profile dialog omits the override
-         * field; see ProfileDialog.render.
+         * Straight from the server, like [isEmailSignInAvailable] — the client
+         * cannot know this and must not guess. When true the settings pane's You tab
+         * omits the override field; see SettingsPane.
          */
         val isDisplayNameHidden: Boolean = false,
     ) {
@@ -134,20 +134,6 @@ class SessionBackingViewModel(
          * Google credentials.
          */
         val isSignInAvailable: Boolean get() = isGoogleAvailable || isEmailSignInAvailable
-
-        /**
-         * Whether to raise the full-screen landing gate (LNL-115).
-         *
-         * Only once the session is actually known ([isLoaded]): before that, the
-         * shell shows neither the gate nor a signed-in board, for the same reason
-         * the top-bar corner stays blank — flashing a "you must sign in" wall at
-         * someone who turns out to be signed in is worse than a moment of nothing.
-         * Shown when the deployment requires sign-in and nobody is signed in. An
-         * admin previewing the signed-out view (impersonating nobody) sees it too,
-         * which is correct: that is what a signed-out visitor gets, and previewing
-         * it is the point.
-         */
-        val isSignInGateShown: Boolean get() = isLoaded && isSignInRequired && user == null
 
         /**
          * Whether the picker is worth showing at all, rather than going straight
@@ -241,6 +227,46 @@ class SessionBackingViewModel(
          * cannot tell you, since an override may match the provider's exactly.
          */
         val hasDisplayNameOverride: Boolean get() = user?.hasDisplayNameOverride == true
+
+        /**
+         * Which rung of the instance this account stands on, as a sentence, or
+         * null when nobody is signed in.
+         *
+         * The first of the two facts the settings pane's You tab states and that
+         * nobody can change about themselves (LNL-193). Derived from the address
+         * at sign-in and never chosen — see the server's `UserKind.forEmail` — so
+         * it is stated rather than offered, and stated *because* everything else
+         * on that tab is editable: a screen of switches with no fixed point on it
+         * leaves "why can I not do X?" unanswerable.
+         */
+        val standingLine: String? get() = user?.let {
+            if (it.isStaff) "Staff on this instance." else "A member of this instance."
+        }
+
+        /**
+         * Whether this account administers the instance, as a sentence, or null
+         * when nobody is signed in. [standingLine]'s other half.
+         *
+         * Both answers are written out. "Nothing here says I am an administrator"
+         * and "this says I am not one" are the same screen only to somebody who
+         * already knows which tabs an administrator has.
+         */
+        val administrationLine: String? get() = user?.let {
+            if (it.isSysAdmin) "You administer this instance." else "You do not administer this instance."
+        }
+
+        /**
+         * Why the agent-access switch is dead, when it is (LNL-192, LNL-193).
+         *
+         * Agent access is permitted per **tier** now, so a refusal is only
+         * actionable if it names which tier was refused: this sentence says which
+         * of the two switches on the Instance tab an administrator would have to
+         * flip. The switch is greyed and this sits beside it rather than the whole
+         * section vanishing — a missing control reads as a bug, and a greyed one
+         * with a reason tells you who to ask.
+         */
+        val agentsNotPermittedReason: String
+            get() = "Not permitted for ${if (user?.isStaff == true) "staff" else "members"} on this instance."
     }
 
     /**
@@ -259,8 +285,9 @@ class SessionBackingViewModel(
      * Re-fetch the session because something server-side changed what it reports
      * for the account already signed in — not a sign-in or sign-out, which have
      * their own paths, but an admin flipping an instance switch that rides on
-     * [SessionState]: the display-name gate (LNL-137) or the sign-in gate
-     * (LNL-115). Without this the running client keeps the snapshot it took at
+     * [SessionState]: the display-name gate (LNL-137) is the one left, the
+     * require-sign-in blanket having gone with LNL-192. Without this the running
+     * client keeps the snapshot it took at
      * [start] and the change only lands on the next page load. Unlike [start] this
      * is not one-shot — it is meant to be called again whenever such a switch is
      * written.
@@ -414,17 +441,12 @@ class SessionBackingViewModel(
         _stateFlow.value = _stateFlow.value.copy(isBusy = false, errorMessage = null)
     }
 
-    /** The account corner was clicked. Put the profile modal up. */
-    fun onAccountTapped() {
-        val state = _stateFlow.value
-        if (state.user == null) return
-        _stateFlow.value = state.copy(isProfileDialogOpen = true)
-    }
-
-    /** The profile modal was dismissed. */
-    fun onProfileDialogDismissed() {
-        _stateFlow.value = _stateFlow.value.copy(isProfileDialogOpen = false)
-    }
+    // The account corner used to open a profile MODAL, and this view model held a
+    // flag saying whether it was up. It opens the settings pane at its You tab now
+    // (LNL-193), which is a pane in the workspace rather than a dialog over the
+    // board — so "is it open" is the workspace's answer and not a second copy kept
+    // here. The corner reports the press straight to the shell; see SignInView's
+    // onOpenProfile.
 
     /**
      * The User tab's display-name field was committed (blur or Enter).
@@ -550,62 +572,103 @@ class SessionBackingViewModel(
     }
 
     /**
-     * Act as somebody else.
+     * Arm an impersonation. **Signs this browser out.**
      *
-     * The server decides whether this is allowed and what it means; this only
-     * asks. Nothing is assumed about the outcome — the state that comes back is
-     * the state, including the case where the server refused and we are still
-     * ourselves.
+     * The server destroys the owner's session and hands the browser a grant, so what
+     * comes back is a signed-out state with [State.isImpersonationArmed] set. That
+     * is not a failure to handle — it is the state the whole flow runs from, and the
+     * app rendering as a stranger sees it is part of what the owner came to look at.
      */
-    fun onImpersonateTapped(userId: Long) {
+    fun onArmImpersonationTapped() {
         val state = _stateFlow.value
         if (state.isBusy || !state.canImpersonate) return
-        println("Session: asking to impersonate user $userId")
+        println("Session: arming an impersonation")
         _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
         scope.launch {
-            val result = runCatching { storage.impersonate(userId) }
+            val result = runCatching { storage.armImpersonation() }
             _stateFlow.value = result.fold(
                 onSuccess = { it.applyTo(_stateFlow.value).copy(isBusy = false) },
                 onFailure = { t ->
-                    println("Session: impersonate failed: ${t.message}")
-                    _stateFlow.value.copy(isBusy = false, errorMessage = t.userMessage("Could not impersonate that user."))
-                },
-            )
-        }
-    }
-
-    /**
-     * Act as a signed-out visitor — preview the app with no account at all (LNL-103).
-     *
-     * The signed-out counterpart of [onImpersonateTapped], and asked of the server
-     * the same way: it decides what this means and hands back the state, which here
-     * is one whose effective user is null while `isImpersonating` stays true, so the
-     * way back out is still on the menu.
-     */
-    fun onImpersonateSignedOutTapped() {
-        val state = _stateFlow.value
-        if (state.isBusy || !state.canImpersonate) return
-        println("Session: asking to impersonate a signed-out visitor")
-        _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
-        scope.launch {
-            val result = runCatching { storage.impersonateSignedOut() }
-            _stateFlow.value = result.fold(
-                onSuccess = { it.applyTo(_stateFlow.value).copy(isBusy = false) },
-                onFailure = { t ->
-                    println("Session: impersonate signed-out failed: ${t.message}")
+                    println("Session: arming failed: ${t.message}")
                     _stateFlow.value.copy(
                         isBusy = false,
-                        errorMessage = t.userMessage("Could not preview the signed-out view."),
+                        errorMessage = t.userMessage("Could not arm an impersonation."),
                     )
                 },
             )
         }
     }
 
-    /** Stop impersonating and go back to being yourself. */
+    /**
+     * Sign in as an address, on the armed grant's authority.
+     *
+     * Gated on [State.isImpersonationArmed] rather than on `canImpersonate`, and the
+     * difference matters: the caller is **signed out** by the time this is reachable,
+     * so they own nothing and `canImpersonate` is false. What authorises it is the
+     * probe cookie, which this code cannot see and does not need to — the server
+     * refuses without one.
+     *
+     * A refusal is left on screen with the dialog still up, because the two things
+     * that produce one are a mistyped address and a deployment that will not admit
+     * it — and the second is a thing the owner came here to find out.
+     */
+    fun onImpersonateTapped(email: String) {
+        val state = _stateFlow.value
+        if (state.isBusy || !(state.isImpersonationArmed || state.isImpersonating)) return
+        println("Session: asking to sign in as <$email>")
+        _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
+        scope.launch {
+            val result = runCatching { storage.impersonate(email) }
+            _stateFlow.value = result.fold(
+                onSuccess = { it.applyTo(_stateFlow.value).copy(isBusy = false) },
+                onFailure = { t ->
+                    println("Session: impersonate failed: ${t.message}")
+                    _stateFlow.value.copy(
+                        isBusy = false,
+                        errorMessage = t.userMessage("Could not sign in as that address."),
+                    )
+                },
+            )
+        }
+    }
+
+    /** Open the address dialog, empty. */
+    fun onImpersonateAddressPromptOpened() {
+        val state = _stateFlow.value
+        if (!(state.isImpersonationArmed || state.isImpersonating)) return
+        _stateFlow.value = state.copy(
+            isImpersonateAddressPromptOpen = true,
+            impersonateAddress = "",
+            errorMessage = null,
+        )
+    }
+
+    /** Close it, keeping nothing. */
+    fun onImpersonateAddressPromptDismissed() {
+        _stateFlow.value = _stateFlow.value.copy(
+            isImpersonateAddressPromptOpen = false,
+            impersonateAddress = null,
+        )
+    }
+
+    /** The typed address changed. */
+    fun onImpersonateAddressChanged(email: String) {
+        val state = _stateFlow.value
+        if (!state.isImpersonateAddressPromptOpen) return
+        _stateFlow.value = state.copy(impersonateAddress = email)
+    }
+
+    /**
+     * Stop impersonating and go back to being the owner.
+     *
+     * Gated on [State.isImpersonating], not on `canImpersonate`: the account being
+     * worn is an ordinary one that owns nothing, so an entitlement check here would
+     * refuse the very person entitled to call it. The grant is what authorises it,
+     * server-side.
+     */
     fun onStopImpersonatingTapped() {
         val state = _stateFlow.value
-        if (state.isBusy || !state.canImpersonate) return
+        if (state.isBusy || !(state.isImpersonating || state.isImpersonationArmed)) return
         println("Session: stopping impersonation")
         _stateFlow.value = state.copy(isBusy = true, errorMessage = null)
         scope.launch {
@@ -685,13 +748,21 @@ class SessionBackingViewModel(
         isGoogleAvailable = isGoogleAvailable,
         googleClientId = googleClientId,
         isImpersonating = isImpersonating,
+        isImpersonationArmed = isImpersonationArmed,
         canImpersonate = canImpersonate,
-        impersonatableUsers = impersonatableUsers,
         pendingEmail = pendingEmail,
         isEmailSignInAvailable = isEmailSignInAvailable,
-        isSignInRequired = isSignInRequired,
         isDisplayNameHidden = isDisplayNameHidden,
         isSignInPickerOpen = if (user != null) false else previous.isSignInPickerOpen,
         emailSignInAddress = if (user != null) null else previous.emailSignInAddress,
+        // Every session response converges here, so this is the one place the address
+        // dialog can be closed once and for all: a completed impersonation, a stop, a
+        // sign-out. Its typed address goes with it, so reopening never shows the last
+        // visit's. A *refused* impersonation never reaches here — the failure branch
+        // keeps the dialog up with the refusal beside it, which is where somebody who
+        // mistyped an address, or who just learned this deployment will not admit
+        // one, wants to be.
+        isImpersonateAddressPromptOpen = false,
+        impersonateAddress = null,
     )
 }

@@ -278,7 +278,7 @@ class ForeignKeyTest {
             File(file.parentFile, "attachments-${file.name}"),
         )
         val projects = ProjectRepository(database, ProjectStore(database), attachmentRepository, AttachmentStore(database))
-        val project = projects.create(name, prefix, isPublic = false)
+        val project = projects.create(name, prefix)
         val issueRepository = IssueRepository(
             IssueStore(database),
             CommentStore(database),

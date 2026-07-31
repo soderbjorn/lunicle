@@ -24,18 +24,15 @@ interface ProjectStore {
     /**
      * Insert a project row (no vocabulary seeding — that is the repository's job).
      *
-     * [visibleToAllSignedIn] defaults false, the tier a project has until its owner
-     * opts in (LNL-138) — so callers that predate the middle read tier need not
-     * mention it, exactly as the row's own DEFAULT lets the SQL omit it.
+     *
+     * Visibility is not a parameter, and not a column: who may see a project is its
+     * audience rows in `project_audience_roles` (LNL-191). A newly created project
+     * has none — it admits nobody but its owner until somebody says otherwise, which
+     * is the safe default and the one a fresh row has always had.
      */
-    suspend fun insert(
-        name: String,
-        namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean = false,
-    ): ProjectRecord
+    suspend fun insert(name: String, namePrefix: String): ProjectRecord
 
-    suspend fun update(id: Long, name: String, namePrefix: String, isPublic: Boolean, visibleToAllSignedIn: Boolean)
+    suspend fun update(id: Long, name: String, namePrefix: String)
 
     /** Toggle the discussion-forum and private-message features. */
     suspend fun setFeatures(id: Long, discussionsEnabled: Boolean, messagesEnabled: Boolean)
@@ -52,10 +49,31 @@ interface ProjectStore {
     )
 
     /**
-     * Toggle whether the board shows each card's author on a muted footer line
-     * (LNL-157) — a per-project display setting, not a requirement.
+     * Set both board-display settings: whether the board shows each card's author on
+     * a muted footer line (LNL-157), and whether it hides the issue number (LNL-194).
+     *
+     * Per-project display settings, not requirements — how a shared board reads,
+     * which is a decision about the project rather than about the person looking. The
+     * second was a per-user preference until LNL-194.
+     *
+     * The pair together, never one at a time: the Board display group sends both.
+     * Writing [hideIssueNumbers] is also what settles a project whose column is still
+     * null — see [se.soderbjorn.lunicle.ProjectRecord.hideIssueNumbersStored].
      */
-    suspend fun setShowIssueAuthor(id: Long, showIssueAuthor: Boolean)
+    suspend fun setBoardDisplay(id: Long, showIssueAuthor: Boolean, hideIssueNumbers: Boolean)
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * Its own write rather than a third parameter on [setBoardDisplay], for that
+     * method's own reason turned one notch: those two decide how a board *reads*, and
+     * this decides what the issue editor *offers*. Three kinds of switch, three
+     * writes, so a stale client sending one cannot reset another in passing.
+     *
+     * It never touches any issue's stored unit, which is what makes flipping it
+     * reinterpret nothing already estimated. See Issues.sq's estimate_unit.
+     */
+    suspend fun setEstimateMode(id: Long, mode: se.soderbjorn.lunicle.clientserver.EstimateMode)
 
     suspend fun delete(id: Long)
 

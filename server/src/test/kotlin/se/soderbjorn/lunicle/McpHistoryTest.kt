@@ -57,6 +57,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class McpHistoryTest {
     private val file: File = Files.createTempFile("lunicle-mcp-history", ".db").toFile().also { it.delete() }
@@ -87,8 +88,14 @@ class McpHistoryTest {
     )
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -311,7 +318,7 @@ class McpHistoryTest {
     fun `an edit is recorded under the caller, not the issue's author`(): Unit = runBlocking {
         val fixture = seed()
         val reporter = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-otto", "Otto", "otto@example.com"))
-        roles.grant(reporter.id, fixture.projectId, Role.CREATE_ISSUE)
+        roles.setRole(reporter.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         val reporterToken = tokenFor(reporter.id)
         val adminToken = tokenFor(fixture.adminId)
         val target = statuses.forProject(fixture.projectId)[1]
@@ -435,7 +442,7 @@ class McpHistoryTest {
         }
     }
 
-    // ── Correcting attribution, admin-only ───────────────────────────────────
+    // ── Correcting attribution, the instance owner's ─────────────────────────
 
     /**
      * The job update_history_event exists for: an imported entry gets reattached
@@ -506,8 +513,8 @@ class McpHistoryTest {
         val fixture = seed()
         val adminToken = tokenFor(fixture.adminId)
         val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"))
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        roles.grant(ordinary.id, fixture.projectId, Role.CREATE_ISSUE)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        roles.setRole(ordinary.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         val ordinaryToken = tokenFor(ordinary.id)
 
         withMcp { client ->
@@ -523,7 +530,7 @@ class McpHistoryTest {
             )
             assertTrue(refused.isError, "A non-admin was allowed to edit history: ${refused.text}")
             assertTrue(
-                refused.text.contains("system administrator"),
+                refused.text.contains("instance owner"),
                 "The refusal did not say who may do this. Got: ${refused.text}",
             )
 
@@ -632,7 +639,7 @@ class McpHistoryTest {
     fun `an ordinary user watches only themselves`(): Unit = runBlocking {
         val fixture = seed()
         val ordinary = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-ord", "Ordinary", "ordinary@example.com"))
-        roles.grant(ordinary.id, fixture.projectId, Role.CREATE_ISSUE)
+        roles.setRole(ordinary.id, fixture.projectId, ProjectRole.CONTRIBUTOR)
         val otto = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-otto", "Otto", "otto@example.com"))
         val adminToken = tokenFor(fixture.adminId)
         val ordinaryToken = tokenFor(ordinary.id)
@@ -648,7 +655,7 @@ class McpHistoryTest {
             val theirs = client.callTool(ordinaryToken, "watch_issue", """{"issue_id":$issueId,"user":"otto@example.com"}""")
             assertTrue(theirs.isError, "An ordinary user changed somebody else's watch.")
             assertTrue(
-                theirs.text.contains("system administrator"),
+                theirs.text.contains("instance owner"),
                 "The refusal did not say who may do this. Got: ${theirs.text}",
             )
             assertTrue(!subscriptions.isSubscribedToIssueUpdates(otto.id, issueId), "A refused watch still subscribed the other user.")
@@ -661,9 +668,14 @@ class McpHistoryTest {
 
     /** The instance admin — who can do everything a history test needs — and a project. */
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
+        val project = projectRepository.create("Lunamux", "LMX")
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -678,7 +690,6 @@ class McpHistoryTest {
 
     /** A real access token for [userId], with MCP enabled — see McpAgentNameTest.tokenFor. */
     private suspend fun tokenFor(userId: Long): String {
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client = clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
         return tokens.issueTokens(userId, client.clientId, "mcp", "http://localhost/mcp").accessToken
@@ -722,8 +733,8 @@ class McpHistoryTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies() = BoardDependencies(
@@ -736,7 +747,7 @@ class McpHistoryTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -758,7 +769,6 @@ class McpHistoryTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = subscriptions,
         reads = ReadStore(database),
         history = history,

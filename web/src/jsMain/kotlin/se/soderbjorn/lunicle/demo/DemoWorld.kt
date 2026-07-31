@@ -13,11 +13,27 @@
  * loads and lives only in memory, so a reload starts over from the seed — which is
  * the whole point of a demo you can poke at without consequence.
  *
- * The demo user (Captain Janeway) is the instance's system administrator and the
- * project's owner, so every affordance flag this file projects is simply `true`:
- * that is what surfaces the admin surfaces, the drag handles and the edit controls
- * a visitor is meant to explore. The real server would re-derive each of those from
- * the session; here there is one fixed session and it may do everything.
+ * The demo user (Captain Janeway) is the **instance owner** — the top of both ladders —
+ * so nearly every affordance flag this file projects is simply `true`: that is what
+ * surfaces the settings pane, the drag handles and the edit controls a visitor is meant
+ * to explore. The real server would re-derive each of those from the session; here there
+ * is one fixed session and it may do everything.
+ *
+ * ── What is derived rather than asserted, and why it matters (LNL-199) ───────
+ *
+ * "The visitor may do everything" is true and is not a licence to hard-code every answer.
+ * Where a screen's whole point is to *show the rule*, the projection re-implements the
+ * rule instead: [tierOf] and [permitsAgents] for the instance ladder, [audienceFloor] and
+ * [higherRung] for a project's `max(audience row, own row)`. Two things fell out of
+ * getting that wrong. The People tab reported every account with no own row as having no
+ * access, on a board whose members row admits them; and the guest audience row could be
+ * set while the switch that governs public projects read off. Both were a literal
+ * standing in for a rule, and both looked fine until you read the screen beside the one
+ * it contradicted.
+ *
+ * This deployment also names a staff domain ([DEMO_STAFF_DOMAIN]), which is what gives
+ * the demo a Staff audience row, a Staff tier card and somebody eligible to be handed the
+ * instance.
  *
  * @see DemoLunicleApi
  * @see se.soderbjorn.lunicle.clientserver.LunicleApi
@@ -26,24 +42,41 @@ package se.soderbjorn.lunicle.demo
 
 import kotlin.js.Date
 import se.soderbjorn.lunicle.clientserver.AdminProjectRights
+import se.soderbjorn.lunicle.clientserver.AdmissionOption
+import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
+import se.soderbjorn.lunicle.clientserver.AdmissionState
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
 import se.soderbjorn.lunicle.clientserver.AdminUser
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.AudienceRow
 import se.soderbjorn.lunicle.clientserver.BoardState
+import se.soderbjorn.lunicle.clientserver.DeploymentFacts
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.InstanceOwnership
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.CommentView
 import se.soderbjorn.lunicle.clientserver.IssueDetail
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
 import se.soderbjorn.lunicle.clientserver.IssueEventView
 import se.soderbjorn.lunicle.clientserver.IssueRef
+import se.soderbjorn.lunicle.clientserver.IssueRelationKindItem
+import se.soderbjorn.lunicle.clientserver.IssueRelationView
 import se.soderbjorn.lunicle.clientserver.IssueSummary
 import se.soderbjorn.lunicle.clientserver.NotificationKind
 import se.soderbjorn.lunicle.clientserver.NotificationListState
 import se.soderbjorn.lunicle.clientserver.NotificationSummary
-import se.soderbjorn.lunicle.clientserver.ProjectMember
+import se.soderbjorn.lunicle.clientserver.OwnerCandidate
 import se.soderbjorn.lunicle.clientserver.ProjectPermissionsView
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.ProjectSummary
-import se.soderbjorn.lunicle.clientserver.RoleDescription
+import se.soderbjorn.lunicle.clientserver.PersonCandidate
+import se.soderbjorn.lunicle.clientserver.PersonCandidates
+import se.soderbjorn.lunicle.clientserver.PersonRow
+import se.soderbjorn.lunicle.clientserver.ProjectAccessState
+import se.soderbjorn.lunicle.clientserver.ProjectSection
+import se.soderbjorn.lunicle.clientserver.ProjectSectionKeys
+import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunicle.clientserver.SessionState
 import se.soderbjorn.lunicle.clientserver.SignedInUser
 import se.soderbjorn.lunicle.clientserver.SprintItem
@@ -51,56 +84,344 @@ import se.soderbjorn.lunicle.clientserver.StatisticWindow
 import se.soderbjorn.lunicle.clientserver.StatisticsState
 import se.soderbjorn.lunicle.clientserver.ProjectStatistics
 import se.soderbjorn.lunicle.clientserver.StatusItem
+import se.soderbjorn.lunicle.clientserver.TierCard
 import se.soderbjorn.lunicle.clientserver.TokenModes
 import se.soderbjorn.lunicle.clientserver.UserOption
 import se.soderbjorn.lunicle.clientserver.VocabularyEntry
 import se.soderbjorn.lunicle.clientserver.VocabularyItem
 import se.soderbjorn.lunicle.clientserver.VocabularyKind
 
-// ── Role vocabulary ─────────────────────────────────────────────────────────
+// ── Rung vocabulary ─────────────────────────────────────────────────────────
 //
-// The server's `Role` enum lives in the JVM-only `:server` module, so the demo
-// carries its own copy of the keys and descriptions the settings dialog renders.
-// These strings are wire format on the real server; here they are just what the
-// privileges table shows. Kept in declaration order, weakest grant first, the way
-// the real dialog draws them.
+// The server's `ProjectRole` enum lives in the JVM-only `:server` module, so the demo
+// carries its own copy of the five rungs the Access section renders. These strings are
+// wire format on the real server; here they are just what the pickers show. Declaration
+// order is the ladder, weakest first — the same order the real rung menu draws.
+//
+// This replaced a set of seven privilege keys (LNL-194 following LNL-191): a person
+// holds one rung per project now, not a subset of grants, so the demo's own model is a
+// key per person per project rather than a set of them.
 
-internal object DemoRoleKeys {
-    const val VIEW_PROJECT = "view_project"
-    const val CREATE_ISSUE = "create_issue"
-    const val COMMENT_ON_ISSUE = "comment_on_issue"
-    const val CHANGE_UNOWNED_ISSUES = "change_unowned_issues"
-    const val BE_ASSIGNED_ISSUE = "be_assigned_issue"
-    const val PROJECT_ADMIN = "project_admin"
-    const val PROJECT_OWNER = "project_owner"
+internal object DemoRungKeys {
+    const val VIEWER = "viewer"
+    const val CONTRIBUTOR = "contributor"
+    const val MAINTAINER = "maintainer"
+    const val ADMIN = "admin"
+    const val OWNER = "owner"
 }
 
-internal val DEMO_ROLE_DESCRIPTIONS: List<RoleDescription> = listOf(
-    RoleDescription(DemoRoleKeys.VIEW_PROJECT, "See this project, without being able to change anything in it."),
-    RoleDescription(DemoRoleKeys.CREATE_ISSUE, "Create issues in this project."),
-    RoleDescription(DemoRoleKeys.COMMENT_ON_ISSUE, "Post comments on this project's issues."),
-    RoleDescription(DemoRoleKeys.CHANGE_UNOWNED_ISSUES, "Edit issues they did not create."),
-    RoleDescription(DemoRoleKeys.BE_ASSIGNED_ISSUE, "Be assigned this project's issues."),
-    RoleDescription(
-        DemoRoleKeys.PROJECT_ADMIN,
-        "Administer this project: its sprints, its vocabulary and its privileges.",
+/**
+ * The rungs as the demo's pickers offer them — all selectable, because the demo visitor
+ * owns every board and there is nobody senior to refuse them anything.
+ */
+internal val DEMO_RUNGS: List<RungOption> = listOf(
+    RungOption(DemoRungKeys.VIEWER, "Viewer", "Read this project, without being able to change anything in it."),
+    RungOption(DemoRungKeys.CONTRIBUTOR, "Contributor", "File issues, comment on them, and be assigned them."),
+    RungOption(
+        DemoRungKeys.MAINTAINER,
+        "Maintainer",
+        "Edit anyone's issue here, and manage the sprints and versions.",
     ),
-    RoleDescription(
-        DemoRoleKeys.PROJECT_OWNER,
-        "Own this project: everything an administrator can do, plus its name, its repository, and deleting it.",
+    RungOption(
+        DemoRungKeys.ADMIN,
+        "Admin",
+        "Administer this project: its vocabulary, its settings, deleting issues, and granting " +
+            "roles up to maintainer.",
+    ),
+    RungOption(
+        DemoRungKeys.OWNER,
+        "Owner",
+        "Own this project: everything an administrator can do, plus its name, its prefix, its " +
+            "repository, its visibility, its deletion, and promoting administrators and owners.",
     ),
 )
 
+/** The rung label for a key, for the rows the demo renders. */
+internal fun demoRungLabel(key: String): String =
+    DEMO_RUNGS.firstOrNull { it.key == key }?.label ?: key
+
+/**
+ * How many candidate rows the demo's people picker returns — the server's
+ * `CANDIDATE_LIMIT`, mirrored so the demo shows the same "N more match" footer at the same
+ * point rather than a list that never truncates.
+ */
+internal const val DEMO_CANDIDATE_LIMIT: Int = 7
+
+/** Where a rung sits on the ladder, so the demo can take the same max the server takes. */
+internal fun demoRungRank(key: String?): Int =
+    if (key == null) -1 else DEMO_RUNGS.indexOfFirst { it.key == key }
+
+/** The senior of two rungs, either of which may be absent. */
+internal fun higherRung(a: String?, b: String?): String? =
+    if (demoRungRank(a) >= demoRungRank(b)) a else b
+
+// ── The instance ladder ─────────────────────────────────────────────────────
+//
+// The demo's copy of `InstanceRole`, for the same reason it carries its own rungs: the
+// server's enum is JVM-only. Only the four an account can be are here — guest is the
+// absence of an account, and there is nothing in this world without one.
+
+internal object DemoTierKeys {
+    const val MEMBER = "member"
+    const val STAFF = "staff"
+    const val ADMIN = "admin"
+    const val OWNER = "owner"
+}
+
+/** What the People tab calls a tier. One word where one will do, as the server does. */
+internal fun demoTierLabel(key: String): String = when (key) {
+    DemoTierKeys.MEMBER -> "Member"
+    DemoTierKeys.STAFF -> "Staff"
+    DemoTierKeys.ADMIN -> "Instance admin"
+    DemoTierKeys.OWNER -> "Instance owner"
+    else -> key
+}
+
+/** Ascending, so "does this account reach that audience" is one comparison. */
+private val DEMO_TIER_ORDER: List<String> = listOf(
+    DemoAudienceKeys.GUEST,
+    DemoTierKeys.MEMBER,
+    DemoTierKeys.STAFF,
+    DemoTierKeys.ADMIN,
+    DemoTierKeys.OWNER,
+)
+
+/** Does an account on [tier] reach an audience row written for [audience]? */
+internal fun tierReaches(tier: String, audience: String): Boolean =
+    DEMO_TIER_ORDER.indexOf(tier) >= DEMO_TIER_ORDER.indexOf(audience)
+
+// ── Audiences, and the domain that makes the middle one real ────────────────
+
+internal object DemoAudienceKeys {
+    const val GUEST = "guest"
+    const val MEMBER = "member"
+    const val STAFF = "staff"
+}
+
+/**
+ * The highest rung an audience may hold — the demo's copy of `Audience.ceiling`
+ * (LNL-202).
+ *
+ * Guests stop at Viewer: a guest has not signed in, so there is nobody to attribute a
+ * write to, and every rung above Viewer describes writing. The other two audiences have
+ * accounts behind them, so nothing narrows theirs.
+ *
+ * Carried here for the reason the demo carries its own rungs and tiers at all — the
+ * server's enum is JVM-only — and honoured in both directions: in the pickers this world
+ * builds, and in [DemoLunicleApi]'s two audience writes. A demo that offered Contributor
+ * on the Guests row would be teaching a rule the product does not have.
+ */
+internal fun demoAudienceCeiling(audienceKey: String): String = when (audienceKey) {
+    DemoAudienceKeys.GUEST -> DemoRungKeys.VIEWER
+    else -> DemoRungKeys.OWNER
+}
+
+/**
+ * What the Guests row says about itself, on both screens that draw one.
+ *
+ * The ceiling stated **once, on the row** rather than inside the menu (LNL-202): a rung
+ * picker puts its reason in each rung's label, so advice repeated across four greyed rungs
+ * is a paragraph shown four times. Mirrors the server's `Audience.subtitle`.
+ */
+internal const val DEMO_GUEST_SUBTITLE: String =
+    "Anybody at all, without signing in. A guest can only ever read: there is nobody to " +
+        "attribute a write to. To let people file issues, give Members Contributor."
+
+/** May this audience be handed [rungKey]? See [demoAudienceCeiling]. */
+internal fun demoAudiencePermits(audienceKey: String, rungKey: String): Boolean =
+    demoRungRank(demoAudienceCeiling(audienceKey)) >= demoRungRank(rungKey)
+
+/** [rungKey], or the audience's ceiling where it sits above it — the read-side half. */
+internal fun demoAudienceCap(audienceKey: String, rungKey: String): String =
+    if (demoAudiencePermits(audienceKey, rungKey)) rungKey else demoAudienceCeiling(audienceKey)
+
+/**
+ * The rung menu for one audience row: every rung, with the ones above that audience's
+ * ceiling dead and the reason on them.
+ *
+ * Greyed and captioned rather than removed, which is the rule every refusal in these
+ * dialogs follows — a control that vanishes reads as a bug, where a dead one with a
+ * sentence says why. The wording mirrors `Audience.refusalFor` on the server, which is
+ * where the real one lives.
+ */
+internal fun demoAudienceRungs(
+    audienceKey: String,
+    vetoed: Boolean = false,
+    floor: Pair<String, String>? = null,
+): List<RungOption> =
+    DEMO_RUNGS.map { rung ->
+        // The ceiling first where both apply: it is the refusal that would still stand if
+        // the switch were flipped. Mirrors the server's rungOptions.
+        val refusal = when {
+            !demoAudiencePermits(audienceKey, rung.key) ->
+                // One clause, because a rung picker puts the reason in the rung's label — the
+                // explanation lives on the row's subtitle instead, said once. Mirrors
+                // `Audience.refusalFor`.
+                "Guests have no account, so there is nobody to attribute a write to."
+            vetoed -> DEMO_PUBLIC_VETO_RUNG_REASON
+            // Last of the three, being the one another row can lift (LNL-209).
+            else -> demoFloorRefusal(floor, rung.key)
+        }
+        if (refusal == null) rung else rung.copy(isSelectable = false, unavailableReason = refusal)
+    }
+
+/**
+ * What a **wider** audience row already gives [audienceKey] — the demo's copy of
+ * `Map<Audience, ProjectRole>.floorFor` (LNL-209).
+ *
+ * The audiences nest, here as on the server: a member matches the guest row too, and the
+ * fold takes the best. So a members row cannot come to less than the guests row, and the
+ * demo has to say so — a demo that offered "No access" beside a public board would be
+ * teaching the exact reading the ticket was filed about.
+ *
+ * @param rowsInEffect audience rows already capped and already stripped of a vetoed guest
+ *   row, since a row granting nothing floors nothing.
+ */
+internal fun demoAudienceFloor(
+    rowsInEffect: Map<String, String>,
+    audienceKey: String,
+): Pair<String, String>? = rowsInEffect.entries
+    .filter { it.key != audienceKey && tierReaches(audienceKey, it.key) }
+    .map { it.key to it.value }
+    .maxByOrNull { demoRungRank(it.second) }
+
+/**
+ * Why [offeredKey] — null for the picker's "No access" entry — is less than [floor]
+ * already gives. Mirrors the server's `floorRefusal`, one clause for its reason.
+ */
+internal fun demoFloorRefusal(floor: Pair<String, String>?, offeredKey: String?): String? {
+    if (floor == null) return null
+    if (offeredKey != null && demoRungRank(offeredKey) >= demoRungRank(floor.second)) return null
+    val rung = DEMO_RUNGS.firstOrNull { it.key == floor.second }?.label ?: floor.second
+    return "The ${demoAudienceTitle(floor.first).lowercase()} row already gives $rung, " +
+        "and this audience is inside it."
+}
+
+/** What to call an audience on screen. The demo's copy of `Audience.title`. */
+internal fun demoAudienceTitle(key: String): String = when (key) {
+    DemoAudienceKeys.GUEST -> "Guests"
+    DemoAudienceKeys.MEMBER -> "Members"
+    DemoAudienceKeys.STAFF -> "Staff"
+    else -> key
+}
+
+/**
+ * Where a row's rung comes from when a wider row is giving it — the line beneath the
+ * subtitle. Mirrors the sentence `ProjectSettingsRoutes` and `AdminRoutes` both build.
+ */
+internal fun demoEffectiveLine(floor: Pair<String, String>?, audienceKey: String, stored: String?): String? {
+    if (floor == null) return null
+    if (demoRungRank(floor.second) < demoRungRank(stored)) return null
+    val rung = DEMO_RUNGS.firstOrNull { it.key == floor.second }?.label ?: floor.second
+    return "The ${demoAudienceTitle(floor.first).lowercase()} row above already gives $rung, " +
+        "and ${demoAudienceTitle(audienceKey).lowercase()} are inside it."
+}
+
+/**
+ * Why a guest rung is refused while the demo's publish switch is off (LNL-203).
+ *
+ * Mirrors the server's `PUBLIC_PROJECTS_VETO_RUNG_REASON`, and for the same reason it is
+ * one clause: it rides inside a rung's label.
+ */
+internal const val DEMO_PUBLIC_VETO_RUNG_REASON: String =
+    "This deployment does not allow a project to be made public."
+
+/**
+ * The domain this demo deployment calls its own — which is what gives it a **staff**
+ * tier at all (LNL-199).
+ *
+ * ── Why the demo names one, having not before ────────────────────────────────
+ *
+ * A deployment's staff domain is deploy-time configuration, read from `brand.json`, and
+ * the demo is a bundle with no server to read one. So the demo world simply declares
+ * what a `brand.json` would have said, and derives every account's tier from its address
+ * exactly as `UserKind.forEmail` does.
+ *
+ * The alternative — leaving it unset, which is what LNL-198 found — is a coherent
+ * deployment and a poor demo. With no domain there is no staff audience row, no staff
+ * tier card and therefore nowhere to see the two per-tier switches, no "Staff domain"
+ * fact on the Instance tab, no domain note in the add-a-person dialog, and nobody who
+ * may be handed the deployment — so Hand over… opens on a sentence explaining why it
+ * cannot be used. That is five screens a visitor cannot see, and all five are the half
+ * of the model that distinguishes an instance's own people from everybody else.
+ *
+ * `voyager.starfleet` because it is already the crew's address (see DemoFixtures), so
+ * the split the staff tier draws lands where the story already has a seam: the ship's
+ * crew are staff, and the two later projects' people — `kilobyteklinik.se`,
+ * `meridian.dev` and the outside contributors on `example.com` — are members. A domain
+ * matching nobody would have been a card over an empty set, which is the thing the
+ * server refuses to draw.
+ */
+internal const val DEMO_STAFF_DOMAIN: String = "voyager.starfleet"
+
+// The demo declares no look of its own. It briefly did — the Classic Lunamux pair,
+// dark side up — back when Lunicle's own default was GitHub Light and only the demo
+// wanted otherwise. That pair is now the app's default for everybody
+// (LUNICLE_DEFAULT_* in ThemePersister.kt), so `?demo=1` inherits it like any other
+// load, and a second declaration here could only ever drift from the first.
+
 // ── Entities ────────────────────────────────────────────────────────────────
 
-/** An account. The demo user is [isSysAdmin]; the rest of the crew never sign in. */
+/**
+ * An account.
+ *
+ * @property isSysAdmin whether this account holds the instance-**administrator** rung.
+ *   Never the owner rung: ownership is [DemoWorld.ownerUserId], a seat rather than a flag,
+ *   for the reason the real `users.instance_role` cannot hold it either. Ask
+ *   [DemoWorld.tierOf] for the whole answer.
+ * @property hasSignedIn whether anybody has ever signed into it (LNL-194). False is a
+ *   **placeholder**: a row an administrator created by typing an address, holding a rung
+ *   that nobody has collected yet. The Access list badges those NOT SIGNED IN, and the
+ *   demo keeps a couple so the badge means something — it read as the default when every
+ *   account but the visitor's carried it.
+ */
 internal class DemoUser(
     val id: Long,
     var name: String,
     val email: String?,
     val provider: AuthProvider,
     val isSysAdmin: Boolean = false,
-)
+    val hasSignedIn: Boolean = true,
+) {
+    /**
+     * Where this account stands on the instance ladder, ownership aside.
+     *
+     * The demo's copy of the server's `storedInstanceRole`, and it stops short of Owner
+     * for the same reason that one does — no account carries ownership, so nothing derived
+     * from an account alone can report it.
+     *
+     * ── Which kind of caller this is for (LNL-201) ───────────────────────────────
+     *
+     * The same split the server's `storedInstanceRole` now spells out, because the demo
+     * teaches the model as much as the code states it: this is the **tier** — "is this
+     * account staff, or a member?" — and ownership is orthogonal to that answer, since the
+     * owner is also one or the other. Every question of the form "is this account senior
+     * enough to do X" must go through [DemoWorld.tierOf] instead, which folds ownership in.
+     * Reading this one for an authority question is how the real server came to have one
+     * gate the owner could not clear while an ordinary administrator could.
+     *
+     * The staff/member half is derived from the address against [DEMO_STAFF_DOMAIN] rather
+     * than stored per fixture, which is the rule the real server applies: `users.kind` is
+     * re-derived from one function on every boot and is never written by hand, so storing
+     * it here would be the one place the demo and the rule could disagree.
+     */
+    val tier: String
+        get() = when {
+            isSysAdmin -> DemoTierKeys.ADMIN
+            isStaff -> DemoTierKeys.STAFF
+            else -> DemoTierKeys.MEMBER
+        }
+
+    /**
+     * Whether this account is on the deployment's own domain.
+     *
+     * Purely a fact about the address, and deliberately **independent of [tier]** — the
+     * server's `users.kind` is too. An owner from outside the domain is a member who runs
+     * the place, and the You tab says both things separately for exactly that reason.
+     */
+    val isStaff: Boolean
+        get() = email?.substringAfterLast('@')?.lowercase() == DEMO_STAFF_DOMAIN
+}
 
 /**
  * A status, priority or resolution — all three are an id, a name and an order, so
@@ -130,6 +451,69 @@ internal class DemoSprint(
     var completedAt: Long? = null,
 )
 
+/**
+ * One of a project's ways for two issues to be related — "Blocked by" / "Blocks"
+ * (LNL-215).
+ *
+ * Its own entity rather than a fourth reuse of [DemoNamed], which labels, components
+ * and versions all ride on. Those three really are an id, a name and an order; this
+ * carries a *second* name and a flag, and folding it in would put two fields on every
+ * label that could only ever be null and false. The wire draws the same line — see
+ * [IssueRelationKindItem], which is not [VocabularyItem] either.
+ *
+ * @property inverseName the to-side label, or null because the kind reads the same in
+ *   both directions. **Null is the whole encoding of symmetry**, exactly as it is on
+ *   the server — there is no `isSymmetric` flag beside it that could disagree with a
+ *   stale second name. Nothing reads this field directly; [labelFor] spells the `?:`
+ *   once, on the server's reasoning in IssueRelationKinds.sq.
+ * @property marksBlocked whether an issue on the *from* side of one of these counts as
+ *   blocked on the board. A flag rather than `name == "Blocked by"`, for the reason a
+ *   closing column is a flag rather than a name: the seed names the row and an
+ *   administrator may rename it the moment the demo opens.
+ */
+internal class DemoRelationKind(
+    val id: Long,
+    var name: String,
+    var inverseName: String? = null,
+    var marksBlocked: Boolean = false,
+    var position: Int = 0,
+) {
+    /**
+     * What to call this link, read from one end or the other.
+     *
+     * The one place the `inverseName ?: name` fallback is spelled, so no projection
+     * has to remember that a symmetric kind reads the same word twice. Mirrors
+     * `IssueRelationKindRecord.labelFor`.
+     */
+    fun labelFor(isFromSide: Boolean): String = if (isFromSide) name else (inverseName ?: name)
+}
+
+/**
+ * One link between two issues (LNL-215).
+ *
+ * **Stored once, from → to, and rendered in both directions.** The demo could trivially
+ * have written two rows — one per direction — and made every read a simple lookup; it
+ * deliberately does not, because that is the trap IssueRelations.sq spells out and a
+ * demo that took the shortcut would be teaching a data model the product does not have.
+ * Two rows are two sources of truth for one fact, and they drift the first time one is
+ * removed and the other is not. The side a reader is on is decided once, at projection
+ * time, by comparing against [fromIssueId] — see [DemoWorld.issueDetail].
+ *
+ * Scoped to a project by construction rather than by a column: a relation only ever
+ * lives in the [DemoProject] whose two issues it joins, which is the same containment
+ * every other list on that class has. The server carries a `project_id` because its
+ * rows live in one flat table; here the list *is* the scope.
+ */
+internal class DemoRelation(
+    val id: Long,
+    val fromIssueId: Long,
+    val toIssueId: Long,
+    val kindId: Long,
+) {
+    /** The issue at the other end, seen from [issueId]. Mirrors `IssueRelationRecord.otherThan`. */
+    fun otherThan(issueId: Long): Long = if (fromIssueId == issueId) toIssueId else fromIssueId
+}
+
 /** One issue. Mutable, because the demo edits it in place. */
 internal class DemoIssue(
     val id: Long,
@@ -144,6 +528,27 @@ internal class DemoIssue(
     var authorId: Long? = null,
     var agentName: String? = null,
     var assigneeId: Long? = null,
+    /**
+     * Whether the work goes to [assigneeId]'s *agent* rather than to them in person
+     * (LNL-215).
+     *
+     * Only ever meaningful beside an assignee, and the demo keeps that invariant where
+     * the server keeps it — in the write, not in the projection. See
+     * [DemoLunicleApi.saveIssue], which mirrors the three-rule lifecycle
+     * `IssueRepository.save` documents: nobody assigned means false, changing the
+     * assignee clears it, and closing keeps it.
+     */
+    var assigneeIsAgent: Boolean = false,
+    /**
+     * How much work this is, or null because nobody has said (LNL-215).
+     *
+     * The wire's [Estimate] stored verbatim rather than an amount and a unit held
+     * apart, and that is not laziness: the unit is stamped on the ISSUE and not derived
+     * from its project, so an amount without its unit is not a state this world can
+     * render. Storing the pair is what makes flipping a project's estimate mode leave
+     * every existing estimate saying what it meant — see the wire's `EstimateUnit`.
+     */
+    var estimate: Estimate? = null,
     var sprintId: Long? = null,
     var parentId: Long? = null,
     var plannedVersionId: Long? = null,
@@ -178,6 +583,17 @@ internal class DemoEvent(
     val authorId: Long? = null,
     val agentName: String? = null,
     val createdAt: Long = 0,
+    /**
+     * The relation kind's label for THIS issue's side of the link, on a
+     * `RELATION_ADDED` or `RELATION_REMOVED` event; null on every other kind (LNL-215).
+     *
+     * A snapshot, frozen when the event is written, for the reason every other value on
+     * this class is one: relation kinds are vocabulary an administrator can rename, and
+     * a rename must not reach backwards and alter what the history says happened. Its
+     * own field rather than a second entry in [values] because that list is documented
+     * as carrying *the whole set* a kind refers to — see [IssueEventView.relationKind].
+     */
+    val relationKind: String? = null,
 )
 
 /** One stored notification, for the bell and its panel. */
@@ -199,21 +615,53 @@ internal class DemoProject(
     val id: Long,
     var name: String,
     var prefix: String,
-    var isPublic: Boolean = true,
-    var visibleToAllSignedIn: Boolean = false,
+    // isPublic / visibleToAllSignedIn were here and are gone (LNL-194) — visibility is
+    // audience rows now, and the demo grants the visitor Owner on everything anyway.
     var discussionsEnabled: Boolean = false,
     var messagesEnabled: Boolean = false,
     var requireLabel: Boolean = false,
     var requireComponent: Boolean = false,
     var requireFixedVersionOnResolve: Boolean = false,
     var showIssueAuthor: Boolean = false,
+    var hideIssueNumbers: Boolean = false,
     var notifyOnNewIssue: Boolean = false,
+    /**
+     * Whether this project estimates, and in what unit (LNL-215).
+     *
+     * The **enum** rather than the key string the wire carries, so that the fold of an
+     * unrecognised value happens once, at the write, exactly where the server does it —
+     * `setProjectEstimateMode` takes a `String` and the route runs it through
+     * [EstimateMode.fromKey] before storing. Keeping a raw string here would push that
+     * fold into every reader and give the demo a fourth mode nobody can render.
+     *
+     * [EstimateMode.NONE] by default, which must leave a board visually identical to
+     * one from before the feature existed. One of the three seeded projects stays here
+     * forever on purpose; see DemoFixturesKlinik.
+     */
+    var estimateMode: EstimateMode = EstimateMode.NONE,
     val statuses: MutableList<DemoStatus> = mutableListOf(),
     val priorities: MutableList<DemoStatus> = mutableListOf(),
     val resolutions: MutableList<DemoStatus> = mutableListOf(),
     val labels: MutableList<DemoNamed> = mutableListOf(),
     val components: MutableList<DemoNamed> = mutableListOf(),
     val versions: MutableList<DemoNamed> = mutableListOf(),
+    /**
+     * The ways two issues here can be said to be related, in the order an administrator
+     * arranged (LNL-215).
+     *
+     * Every project in this world is seeded with the same three the real
+     * `ProjectRepository` seeds — see [seedDefaultRelationKinds] — because a demo whose
+     * relation picker was empty on two boards out of three would read as a feature that
+     * does not work rather than as one nobody has configured. **Emptiness is still the
+     * contract**, though: delete all three from the settings dialog and the picker goes
+     * away, exactly as it does on a real board.
+     */
+    val relationKinds: MutableList<DemoRelationKind> = mutableListOf(),
+    /**
+     * The links between this project's issues — **one row per link**, never two. See
+     * [DemoRelation], which is where that rule and its reason live.
+     */
+    val relations: MutableList<DemoRelation> = mutableListOf(),
     val sprints: MutableList<DemoSprint> = mutableListOf(),
     var activeSprintId: Long? = null,
     val issues: MutableList<DemoIssue> = mutableListOf(),
@@ -221,7 +669,22 @@ internal class DemoProject(
     val events: MutableList<DemoEvent> = mutableListOf(),
     var nextNumber: Long = 1,
     // userId -> the role keys they hold here.
-    val members: MutableMap<Long, MutableSet<String>> = mutableMapOf(),
+    /**
+     * Who holds what here: one rung per person, by key (LNL-194).
+     *
+     * A map to a single key rather than to a set of privilege keys, because that is what
+     * the real model is now — see [DemoRungKeys].
+     */
+    val members: MutableMap<Long, String> = mutableMapOf(),
+    /**
+     * What each audience arrives as, by audience key, or absent for "no access"
+     * (LNL-194). Seeded to admit members as viewers, so the demo's Access section opens
+     * with something to look at rather than an empty board nobody can see.
+     *
+     * A board created *in* the demo takes the instance's own new-project list instead —
+     * see [provisionProject], which passes it explicitly rather than inheriting this.
+     */
+    val audiences: MutableMap<String, String> = mutableMapOf(DemoAudienceKeys.MEMBER to DemoRungKeys.VIEWER),
 )
 
 // ── The world ───────────────────────────────────────────────────────────────
@@ -244,11 +707,96 @@ internal class DemoWorld {
     /** Toolkit theme blobs, stored in-session so a theme change sticks until reload. */
     val uiSettings: MutableMap<String, String> = mutableMapOf()
 
-    var requireSignIn: Boolean = false
-    var anyoneCanCreateProject: Boolean = false
+    var allowPublicProjects: Boolean = false
+    var staffMayCreateProjects: Boolean = false
+    var memberMayCreateProjects: Boolean = false
+    var staffMayUseAgents: Boolean = false
+    var memberMayUseAgents: Boolean = false
+    var admission: AdmissionPolicy = AdmissionPolicy.ANYONE
     var hideDisplayName: Boolean = false
 
+    /**
+     * Whether the visitor has switched agent access on for their own account (LNL-199).
+     *
+     * The person's own answer, and only half of it: [permitsAgents] is the other, and both
+     * have to be true for an agent to connect. Kept in the world rather than returned
+     * fixed, so the switch on the You tab actually moves and the People tab's MCP column
+     * follows it.
+     *
+     * Starts off. Somebody who has never asked for agent access has not got it, and the
+     * interesting thing to show is the switch working rather than a connection already
+     * there.
+     */
+    var mcpEnabled: Boolean = false
+
+    /**
+     * What a new project starts out admitting, by audience key (LNL-195).
+     *
+     * Empty, like a real fresh instance: out of the box a new project admits nobody. The
+     * demo never creates one, so this is only ever the setting being looked at and moved.
+     */
+    val newProjectAudiences: MutableMap<String, String> = mutableMapOf()
+
     var demoUserId: Long = 0
+
+    /**
+     * Which account owns the deployment (LNL-199).
+     *
+     * A field of its own rather than a flag on the account, because that is the shape the
+     * real model has: ownership is one setting naming one id, so that "exactly one owner"
+     * needs no constraint to enforce. It also makes handing the instance over a single
+     * assignment here — see [DemoLunicleApi.handOverInstance], which could do nothing at
+     * all while ownership was a `val` on [DemoUser].
+     *
+     * Seeded to the visitor. A hand-over moves it, and the visitor keeps the account they
+     * signed in as — so the demo can show what the screen looks like from the other side
+     * of a transfer, which is the one thing that screen is for.
+     */
+    var ownerUserId: Long = 0
+
+    /** Is [user] the one account that owns this deployment? */
+    fun owns(user: DemoUser): Boolean = user.id == ownerUserId
+
+    /**
+     * Where [user] stands, ownership included — the demo's `AccessControl.instanceRole`.
+     *
+     * [DemoUser.tier] cannot answer this on its own for the same reason the server's
+     * `storedInstanceRole` cannot: ownership is a setting, so no account carries it.
+     *
+     * **Every authority question in this file asks this one**, and the two per-tier
+     * questions — which card an account is counted on, and whether their tier permits
+     * agents — ask [DemoUser.tier]. That is the split LNL-201 made explicit on the server
+     * after finding a gate that had picked the wrong side of it; the demo has to state it
+     * too, or it teaches a model with the inversion still in it.
+     */
+    fun tierOf(user: DemoUser): String =
+        if (owns(user)) DemoTierKeys.OWNER else user.tier
+
+    /**
+     * May an account on this tier hold agent access at all?
+     *
+     * The per-tier rule LNL-192 introduced, mirroring `InstanceSettings.permitsAgents`:
+     * administrators and the owner always, staff and members only where the tier card's
+     * switch is on. This is what the You tab's greyed switch and the People tab's
+     * read-only "MCP allowed" column both report, and having one function answer both is
+     * what keeps them from disagreeing.
+     */
+    fun permitsAgents(tier: String): Boolean = when (tier) {
+        DemoTierKeys.OWNER, DemoTierKeys.ADMIN -> true
+        DemoTierKeys.STAFF -> staffMayUseAgents
+        else -> memberMayUseAgents
+    }
+
+    /**
+     * May somebody be handed this deployment?
+     *
+     * The server's `mayBeHandedTheInstance`: staff, who have actually signed in, and not
+     * whoever is asking. The signed-in half is the interesting one — an address typed into
+     * an Access list and never claimed cannot be handed a deployment, so the demo's
+     * placeholder accounts are legitimately absent from the picker.
+     */
+    fun mayBeHandedTheInstance(user: DemoUser): Boolean =
+        user.id != ownerUserId && user.isStaff && user.hasSignedIn
 
     private var nextId: Long = 1
 
@@ -292,23 +840,37 @@ internal class DemoWorld {
                 id = u.id,
                 displayName = u.name,
                 provider = u.provider,
-                isSysAdmin = u.isSysAdmin,
+                // "Runs this instance", which is the administrator rung OR the owner seat
+                // above it — one flag on the wire for both, so it is asked of the ladder
+                // rather than of the account. That is what keeps the instance tabs where
+                // they should be after a hand-over: the outgoing owner is left an
+                // administrator, exactly as the server's route leaves them, so the tabs
+                // stay and only the owner-only controls go.
+                isSysAdmin = tierReaches(tierOf(u), DemoTierKeys.ADMIN),
                 hasDisplayNameOverride = false,
                 email = u.email,
                 isEmailVerified = true,
+                // Their address is on the deployment's own domain (LNL-199), so the You
+                // tab reads "Staff on this instance." beside "You administer this
+                // instance." Two separate sentences about two separate things — the
+                // account's tier and whether it runs the place — and the demo can now
+                // show both being true at once, which is the ordinary case for the person
+                // who set a deployment up.
+                isStaff = u.isStaff,
             ),
             // No provider is configured in the demo, and none needs to be: the
             // session is already signed in, so the sign-in affordances never show.
             isGoogleAvailable = false,
             googleClientId = null,
             isImpersonating = false,
-            // Fixed-account rule (LNL-146): impersonation stays off so the menu is
-            // hidden, even though the demo user is an administrator.
+            isImpersonationArmed = false,
+            // Fixed-account rule (LNL-146): impersonation stays off so the menu item
+            // is hidden, even though the demo user is an administrator. It would be
+            // off anyway — the facility is a deploy-time server switch, and this
+            // world has no server.
             canImpersonate = false,
-            impersonatableUsers = emptyList(),
             pendingEmail = null,
             isEmailSignInAvailable = false,
-            isSignInRequired = requireSignIn,
             isDisplayNameHidden = hideDisplayName,
         )
     }
@@ -319,15 +881,39 @@ internal class DemoWorld {
         id = p.id,
         name = p.name,
         namePrefix = p.prefix,
-        isPublic = p.isPublic,
-        visibleToAllSignedIn = p.visibleToAllSignedIn,
+        // The visitor's own rung on this board. Asked rather than asserted, so that the
+        // sidebar and the Access section cannot drift apart — and so that a hand-over
+        // shows up here too: an administrator still reaches Owner everywhere, but the
+        // answer now comes from the ladder rather than from a literal.
+        roleKey = visitorRung(p),
+        roleLabel = demoRungLabel(visitorRung(p)),
         discussionsEnabled = p.discussionsEnabled,
         messagesEnabled = p.messagesEnabled,
         requireLabel = p.requireLabel,
         requireComponent = p.requireComponent,
         requireFixedVersionOnResolve = p.requireFixedVersionOnResolve,
         showIssueAuthor = p.showIssueAuthor,
+        hideIssueNumbers = p.hideIssueNumbers,
+        // The key, not the enum: the wire carries a string so a mode from a newer build
+        // decodes rather than failing a whole board. See ProjectSummary.estimateMode.
+        estimateMode = p.estimateMode.key,
     )
+
+    /**
+     * What the visitor effectively holds on [p].
+     *
+     * The whole rule in one line, and it is the server's: an instance administrator or the
+     * owner reaches Owner on every board without a row, and anybody else gets the max of
+     * their audience and their own row. The visitor is at the top of the instance ladder,
+     * so this answers Owner — but it answers it by asking, which is what makes the answer
+     * still correct if the demo ever seats somebody else.
+     */
+    private fun visitorRung(p: DemoProject): String {
+        val me = demoUser
+        if (tierReaches(tierOf(me), DemoTierKeys.ADMIN)) return DemoRungKeys.OWNER
+        return higherRung(p.members[me.id], audienceFloor(p, tierOf(me))?.second)
+            ?: DemoRungKeys.VIEWER
+    }
 
     private fun statusItem(s: DemoStatus): StatusItem =
         StatusItem(s.id, s.name, s.position, s.requiresResolution, s.isDone)
@@ -349,7 +935,15 @@ internal class DemoWorld {
         )
     }
 
-    fun issueSummary(issue: DemoIssue): IssueSummary = IssueSummary(
+    /**
+     * One card, with the numbers of whatever is blocking it (LNL-215).
+     *
+     * [blockedBy] is handed in rather than computed here, and that is the same division
+     * of labour `BoardRoutes.buildBoard` makes: the answer is a fact about the project's
+     * whole relation set, so working it out per card would re-scan every link for every
+     * card on the board. [blockersByIssue] computes it once for the whole board.
+     */
+    fun issueSummary(issue: DemoIssue, blockedBy: List<Long> = emptyList()): IssueSummary = IssueSummary(
         id = issue.id,
         number = issue.number,
         title = issue.title,
@@ -365,29 +959,85 @@ internal class DemoWorld {
         canEdit = true,
         sprintId = issue.sprintId,
         parentId = issue.parentId,
+        assigneeId = issue.assigneeId,
+        assigneeName = userName(issue.assigneeId),
+        // Only ever true beside an assignee, which the writes guarantee rather than this
+        // projection — see DemoIssue.assigneeIsAgent. So the card never draws a robot
+        // badge with no avatar to badge it onto.
+        assigneeIsAgent = issue.assigneeIsAgent,
+        isBlocked = blockedBy.isNotEmpty(),
+        blockedByNumbers = blockedBy,
     )
 
-    fun boardState(p: DemoProject): BoardState = BoardState(
-        project = projectSummary(p),
-        statuses = p.statuses.sortedBy { it.position }.map(::statusItem),
-        priorities = p.priorities.sortedBy { it.position }.map(::statusItem),
-        resolutions = p.resolutions.sortedBy { it.position }.map(::statusItem),
-        labels = p.labels.sortedBy { it.position }.map(::vocabItem),
-        components = p.components.sortedBy { it.position }.map(::vocabItem),
-        sprints = p.sprints.sortedBy { it.position }.map(::sprintItem),
-        activeSprintId = p.activeSprintId,
-        versions = p.versions.sortedBy { it.position }.map(::vocabItem),
-        issues = orderedIssues(p).map(::issueSummary),
-        // Owner + sysadmin: every affordance is offered. See the file preamble.
-        permissions = ProjectPermissionsView(
-            canCreateIssue = true,
-            canComment = true,
-            canChangeUnownedIssues = true,
-            canMutateProject = true,
-            canMutateProjectIdentity = true,
-            canBeAssigned = true,
-        ),
-    )
+    /**
+     * Issue id → the numbers of the still-open issues blocking it (LNL-215).
+     *
+     * The board's whole blocked projection, computed once per board for
+     * [issueSummary]'s reason. It mirrors `BoardRoutes.buildBoard` clause for clause,
+     * and two of those clauses are worth restating because both are easy to get subtly
+     * wrong and neither shows up as an error:
+     *
+     *  - **Only the *from* side is blocked.** The stored row says "A blocked by B", so A
+     *    is the card that dims; B, which reads "Blocks A" from its own side, is working
+     *    normally. A demo that dimmed both ends would make the whole one-row design look
+     *    like a bug.
+     *  - **"Open" is read off the blocker's STATUS**, via `requiresResolution`, and NOT
+     *    off a resolution's `isDone`. Any closure stops the blocking, "Will not fix" and
+     *    "Duplicate" included: a blocker nobody will ever do is not blocking anything.
+     *    The invitation to the mistake is that [DemoStatus] is one class shared by
+     *    statuses, priorities and resolutions, and its `isDone` is only ever populated
+     *    for resolutions — so reading it off a status silently answers false forever.
+     *
+     * Empty for every project that has never made a blocking link, which is two of the
+     * three seeded here and every board a visitor creates.
+     */
+    private fun blockersByIssue(p: DemoProject): Map<Long, List<Long>> {
+        val blockingKindIds = p.relationKinds.filter { it.marksBlocked }.map { it.id }.toSet()
+        if (blockingKindIds.isEmpty()) return emptyMap()
+        val closingStatusIds = p.statuses.filter { it.requiresResolution }.map { it.id }.toSet()
+        val published = p.issues.filter { !it.isDraft }
+        val numberById = published.associate { it.id to it.number }
+        val openById = published.associate { it.id to (it.statusId !in closingStatusIds) }
+        return p.relations
+            .filter { it.kindId in blockingKindIds && openById[it.toIssueId] == true }
+            .groupBy({ it.fromIssueId }, { numberById[it.toIssueId] })
+            .mapValues { (_, numbers) -> numbers.filterNotNull().sorted() }
+            .filterValues { it.isNotEmpty() }
+    }
+
+    /** A relation kind, as the picker and the settings row need it. */
+    private fun relationKindItem(k: DemoRelationKind): IssueRelationKindItem =
+        IssueRelationKindItem(k.id, k.name, k.inverseName, k.marksBlocked, k.position)
+
+    fun boardState(p: DemoProject): BoardState {
+        val blockers = blockersByIssue(p)
+        return BoardState(
+            project = projectSummary(p),
+            statuses = p.statuses.sortedBy { it.position }.map(::statusItem),
+            priorities = p.priorities.sortedBy { it.position }.map(::statusItem),
+            resolutions = p.resolutions.sortedBy { it.position }.map(::statusItem),
+            labels = p.labels.sortedBy { it.position }.map(::vocabItem),
+            components = p.components.sortedBy { it.position }.map(::vocabItem),
+            sprints = p.sprints.sortedBy { it.position }.map(::sprintItem),
+            activeSprintId = p.activeSprintId,
+            versions = p.versions.sortedBy { it.position }.map(::vocabItem),
+            issues = orderedIssues(p).map { issueSummary(it, blockers[it.id].orEmpty()) },
+            // Owner + sysadmin: every affordance is offered. See the file preamble.
+            permissions = ProjectPermissionsView(
+                canCreateIssue = true,
+                canComment = true,
+                canChangeUnownedIssues = true,
+                canMutateProject = true,
+                canMutateProjectIdentity = true,
+                canBeAssigned = true,
+            ),
+            // The board carries the vocabulary but NOT the links themselves: a card shows
+            // whether it is blocked and nothing else, so shipping every relation of every
+            // card would be paying for something nothing renders. The links arrive when an
+            // issue is opened — see IssueDetail.relations.
+            relationKinds = p.relationKinds.sortedBy { it.position }.map(::relationKindItem),
+        )
+    }
 
     // ── Issue detail ──────────────────────────────────────────────────────────
 
@@ -417,6 +1067,7 @@ internal class DemoWorld {
         authorName = userName(e.authorId),
         agentName = e.agentName,
         createdAt = e.createdAt,
+        relationKind = e.relationKind,
     )
 
     /** Everyone who may be assigned or @mentioned — the whole crew. */
@@ -434,6 +1085,35 @@ internal class DemoWorld {
             .filter { it.completedAt == null || it.id == issue.sprintId }
             .sortedBy { it.position }
             .map(::sprintItem)
+        // ── This issue's links, resolved to THIS issue's side (LNL-215) ─────────
+        //
+        // One stored row read in both directions and turned into a sentence about the
+        // issue whose window this is: the same row becomes "Blocked by AST-11" here and
+        // "Blocks AST-46" over there. Which end the reader is on is decided once, here,
+        // by comparing against `fromIssueId` — so nothing downstream re-derives it and
+        // no two screens can disagree about which way a link points.
+        //
+        // A row whose kind or far issue cannot be resolved is dropped rather than
+        // rendered half-built, mirroring the route: a link with no word for what it is,
+        // or no issue at the other end, is a row that says nothing. It should be
+        // unreachable in this world — deleting either takes the relations with it — and
+        // dropping it is the cheap insurance rather than the expected path.
+        val relations = p.relations
+            .filter { it.fromIssueId == issue.id || it.toIssueId == issue.id }
+            .mapNotNull { relation ->
+                val kind = p.relationKinds.firstOrNull { it.id == relation.kindId } ?: return@mapNotNull null
+                val other = p.issues.firstOrNull { it.id == relation.otherThan(issue.id) } ?: return@mapNotNull null
+                IssueRelationView(
+                    id = relation.id,
+                    kindId = kind.id,
+                    label = kind.labelFor(isFromSide = relation.fromIssueId == issue.id),
+                    other = issueRef(other),
+                    // The right to unlink is the right to edit THIS issue, never the far
+                    // one — an issue does not own who points at it, and so does not own
+                    // who stops. The demo visitor may edit everything, so this is true.
+                    canRemove = true,
+                )
+            }
         return IssueDetail(
             id = issue.id,
             projectId = p.id,
@@ -479,6 +1159,17 @@ internal class DemoWorld {
             parent = parent?.let(::issueRef),
             children = children.map(::issueRef),
             linkableIssues = linkable.map(::issueRef),
+            assigneeIsAgent = issue.assigneeIsAgent,
+            estimate = issue.estimate,
+            relations = relations,
+            // The picker's vocabulary, sent with the issue rather than read off the board
+            // because an issue window opens from a deep link with no board loaded — the
+            // same reason `sprints` and `versions` ride here. Note the rendered
+            // `relations` above are NOT narrowed the way the real route narrows this
+            // list: the links are part of the issue every reader can see, and only the
+            // vocabulary you would pick *from* is an editor's. The demo visitor can edit
+            // everything, so both are populated here regardless.
+            relationKinds = p.relationKinds.sortedBy { it.position }.map(::relationKindItem),
         )
     }
 
@@ -497,6 +1188,21 @@ internal class DemoWorld {
     private fun usageOfVersion(p: DemoProject, id: Long) =
         p.published.count { it.plannedVersionId == id || it.fixedVersionId == id }
 
+    /**
+     * How many links use this relation kind (LNL-215).
+     *
+     * Counted over the *relations*, not over the issues, which is the one usage count
+     * here that is not a count of cards — and it is why the settings row's sentence
+     * about deleting one reads differently from a label's. Deleting a kind takes its
+     * links with it (they cascade; see [deleteVocabularyRow]), so the number in front of
+     * an administrator is how many statements about this project are about to stop
+     * existing.
+     *
+     * No draft filter, unlike every count above it: a relation cannot touch a draft at
+     * all — the write refuses one — so there is nothing here to leave out.
+     */
+    private fun usageOfRelationKind(p: DemoProject, id: Long) = p.relations.count { it.kindId == id }
+
     private val DemoProject.published: List<DemoIssue> get() = issues.filter { !it.isDraft }
 
     private fun statusEntry(p: DemoProject, s: DemoStatus, usage: Int) =
@@ -505,18 +1211,335 @@ internal class DemoWorld {
     private fun namedEntry(v: DemoNamed, usage: Int) =
         VocabularyEntry(v.id, v.name, v.position, usageCount = usage)
 
-    private fun sprintEntry(s: DemoSprint, usage: Int) =
-        VocabularyEntry(s.id, s.name, s.position, usageCount = usage)
+    /**
+     * A relation-kind row, with the two fields only a relation kind carries (LNL-215) —
+     * the richest row of any vocabulary here, where a label is just a name.
+     *
+     * [DemoRelationKind.inverseName] travels **as stored**, null and all, rather than
+     * through `labelFor`: null is what tells the Structure section's row to tick "same
+     * in both directions" and grey the second field, so resolving the fallback on the
+     * way out would present every symmetric kind as one that merely happens to repeat
+     * itself.
+     */
+    private fun relationKindEntry(k: DemoRelationKind, usage: Int) = VocabularyEntry(
+        k.id,
+        k.name,
+        k.position,
+        usageCount = usage,
+        inverseName = k.inverseName,
+        marksBlocked = k.marksBlocked,
+    )
 
-    fun projectMembers(p: DemoProject): List<ProjectMember> = users.map { u ->
-        ProjectMember(
-            userId = u.id,
-            name = u.name,
-            isSysAdmin = u.isSysAdmin,
-            isSelf = u.id == demoUserId,
-            roleKeys = p.members[u.id]?.toList() ?: emptyList(),
+    /**
+     * A sprint row, with the two fields only a sprint carries (LNL-196): when it was
+     * completed, and how many of its issues are not in a closing column — which is what
+     * the Sprints section shows beside each row and what its completion confirmation
+     * counts.
+     */
+    private fun sprintEntry(p: DemoProject, s: DemoSprint, usage: Int): VocabularyEntry {
+        val closing = p.statuses.filter { it.requiresResolution }.map { it.id }.toSet()
+        return VocabularyEntry(
+            s.id,
+            s.name,
+            s.position,
+            usageCount = usage,
+            completedAt = s.completedAt,
+            unfinishedCount = p.published.count { it.sprintId == s.id && it.statusId !in closing },
         )
     }
+
+    /**
+     * One audience row that sits **inside** a wider one — Members, or Staff (LNL-209).
+     *
+     * Its rung is what that audience *arrives at*, never below the floor: a member matches
+     * the guests row too, so a members row reading "No access" beside a public board says
+     * the opposite of what the board does. What the row stores underneath is untouched and
+     * returns the moment the wider row drops, which is the server's arrangement exactly —
+     * see `Map<Audience, ProjectRole>.floorFor`.
+     */
+    private fun flooredAudienceRow(p: DemoProject, audienceKey: String, subtitle: String): AudienceRow {
+        val floor = audienceFloorFor(p, audienceKey)
+        val stored = p.audiences[audienceKey]?.let { demoAudienceCap(audienceKey, it) }
+        return AudienceRow(
+            key = audienceKey,
+            title = demoAudienceTitle(audienceKey),
+            subtitle = subtitle,
+            roleKey = higherRung(stored, floor?.second),
+            rungs = demoAudienceRungs(audienceKey, floor = floor),
+            floorKey = floor?.second,
+            withdrawRefusal = demoFloorRefusal(floor, offeredKey = null),
+            effectiveLine = demoEffectiveLine(floor, audienceKey, stored),
+        )
+    }
+
+    /**
+     * What a wider row gives [audienceKey] on this board, or on a board yet to exist
+     * (LNL-209) — the two floors, each read by the row that draws it *and* by the write
+     * that refuses below it. One definition per surface rather than two, which is the whole
+     * of why they are here: a picker striking a rung the write then accepted would be worse
+     * than either behaviour alone.
+     */
+    fun audienceFloorFor(p: DemoProject, audienceKey: String): Pair<String, String>? =
+        demoAudienceFloor(rowsInEffect(p), audienceKey)
+
+    /** @see audienceFloorFor */
+    fun newProjectAudienceFloorFor(audienceKey: String): Pair<String, String>? = demoAudienceFloor(
+        newProjectAudiences
+            .filterKeys { allowPublicProjects || it != DemoAudienceKeys.GUEST }
+            .mapValues { demoAudienceCap(it.key, it.value) },
+        audienceKey,
+    )
+
+    /** [flooredAudienceRow], for the defaults a new project is created with (LNL-209). */
+    private fun flooredNewProjectRow(audienceKey: String, subtitle: String): AudienceRow {
+        val floor = newProjectAudienceFloorFor(audienceKey)
+        val stored = newProjectAudiences[audienceKey]?.let { demoAudienceCap(audienceKey, it) }
+        return AudienceRow(
+            key = audienceKey,
+            title = demoAudienceTitle(audienceKey),
+            subtitle = subtitle,
+            roleKey = higherRung(stored, floor?.second),
+            rungs = demoAudienceRungs(audienceKey, floor = floor),
+            floorKey = floor?.second,
+            withdrawRefusal = demoFloorRefusal(floor, offeredKey = null),
+            effectiveLine = demoEffectiveLine(floor, audienceKey, stored),
+        )
+    }
+
+    /**
+     * Who this project admits, as the demo's Access section (LNL-194).
+     *
+     * Audience rows come from [DemoProject.audiences]; person rows are the exceptions —
+     * exactly the accounts with a rung in [DemoProject.members], which is what the real
+     * server sends. The visitor may grant anything, being the owner of every demo board.
+     */
+    fun projectAccessState(p: DemoProject): ProjectAccessState = ProjectAccessState(
+        // All three rows, because this deployment names a domain (LNL-199) and so has a
+        // staff tier for the middle one to mean something. The server drops the staff row
+        // where there is no domain — a control that cannot do anything is worse than one
+        // row fewer — and the demo used to be that case.
+        audiences = listOf(
+            AudienceRow(
+                DemoAudienceKeys.GUEST,
+                "Guests",
+                DEMO_GUEST_SUBTITLE,
+                // Capped on the way out (LNL-202), so a row above the ceiling would show as
+                // the Viewer it effectively is rather than as a rung nothing honours.
+                p.audiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
+                // The row stays live under the publish veto (LNL-203) — the veto kills the
+                // rungs, not the row, so "No access" remains reachable and an owner whose
+                // board was published before the switch went off can still close it. A dead
+                // row here was the demo teaching the very bug LNL-203 fixed.
+                isSelectable = true,
+                unavailableReason = when {
+                    allowPublicProjects -> null
+                    // Stored and silenced: the demo says so out loud, exactly as the server
+                    // does, because a picker reading "Viewer" beside a board strangers cannot
+                    // read is the thing the ticket was filed about.
+                    p.audiences.containsKey(DemoAudienceKeys.GUEST) ->
+                        "Stored, but not in effect: this deployment does not allow a project to " +
+                            "be made public, so guests can read nothing here. The row is kept as " +
+                            "it is — an instance administrator turning public projects back on " +
+                            "would make this board public again."
+                    else ->
+                        "This deployment does not allow a project to be made public. An " +
+                            "instance administrator decides that, in the instance settings."
+                },
+                // Viewer only, with the rest greyed and the reason on them — the ceiling
+                // (LNL-202), which no switch lifts; and every rung dead while the veto is on
+                // (LNL-203), which one does.
+                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST, vetoed = !allowPublicProjects),
+                // No floor, ever: guests are the widest audience, so there is nothing above
+                // this row to be inside of. Which is also why withdrawing it — the one
+                // withdrawal LNL-203 is about — is untouched by the floor rule (LNL-209).
+            ),
+            // The two rows that are inside a wider one, and so have a floor (LNL-209). The
+            // staff row's is the better of the guests and members rows, which is why it is
+            // computed rather than named.
+            flooredAudienceRow(
+                p = p,
+                audienceKey = DemoAudienceKeys.MEMBER,
+                subtitle = "Everybody with an account on this deployment.",
+            ),
+            flooredAudienceRow(
+                p = p,
+                audienceKey = DemoAudienceKeys.STAFF,
+                subtitle = "Accounts on $DEMO_STAFF_DOMAIN.",
+            ),
+        ),
+        // The exceptions: everybody holding something other than what their audience gives
+        // them, plus whoever runs the instance — who reaches Owner everywhere without a row
+        // and is listed so the audit is not silently missing them.
+        people = users.filter { it.id in p.members.keys || it.id == ownerUserId }.map { u ->
+            val own = p.members[u.id]
+            val floor = audienceFloor(p, tierOf(u))
+            val runsInstance = owns(u)
+            val effective = if (runsInstance) DemoRungKeys.OWNER else higherRung(own, floor?.second)
+            PersonRow(
+                userId = u.id,
+                name = u.name,
+                email = u.email.orEmpty(),
+                roleKey = own,
+                // Only where the audience is actually carrying some of the weight.
+                // Somebody whose own row already outranks their audience is effectively
+                // their own row, and saying so restates the picker beside it.
+                effectiveLine = when {
+                    runsInstance -> null
+                    floor == null -> null
+                    demoRungRank(floor.second) < demoRungRank(own) -> null
+                    else -> "The ${demoAudienceTitle(floor.first).lowercase()} row here already gives " +
+                        "${demoRungLabel(floor.second)}, so this person is effectively " +
+                        "${demoRungLabel(effective ?: floor.second)}."
+                },
+                hasSignedIn = u.hasSignedIn,
+                isSelf = u.id == demoUserId,
+                // An instance owner's rung here is not stored and cannot be lowered from
+                // this screen.
+                isEditable = !runsInstance,
+                note = "Owns this instance, so holds Owner on every project here."
+                    .takeIf { runsInstance },
+            )
+        },
+        rungs = DEMO_RUNGS,
+        canGrant = true,
+        // What those rows come to, from the ones in effect — so the demo cannot claim a
+        // board is public while its guest row is silenced (LNL-203). Mirrors the server's
+        // visibilityLine, widest audience only.
+        visibilityLine = when {
+            rowsInEffect(p).containsKey(DemoAudienceKeys.GUEST) ->
+                "Visible to anybody at all, signed in or not, and to the people listed below."
+            rowsInEffect(p).containsKey(DemoAudienceKeys.MEMBER) ->
+                "Visible to everybody with an account on this deployment, and to the people listed below."
+            rowsInEffect(p).containsKey(DemoAudienceKeys.STAFF) ->
+                "Visible to everybody with a $DEMO_STAFF_DOMAIN account, and to the people listed below."
+            else -> "Visible to the people listed below, and to nobody else."
+        },
+        addressAdvice = "Nothing is sent. The address gets an account that can hold a role straight " +
+            "away, and whoever owns it picks the role up the first time they sign in.",
+        // What the add-a-person dialog notes beside an address from somewhere else, so
+        // that adding an outsider is a visible decision rather than a typo.
+        staffDomain = DEMO_STAFF_DOMAIN,
+        // Whether a **new** outside address may be invented here, which is the admission
+        // policy's answer and not the domain's (LNL-204). The demo names a domain and still
+        // defaults to ANYONE, so this is null until somebody switches admission on the Who
+        // gets in tab — which is exactly the pair of states worth being able to walk
+        // through: the same typed address offered on one setting and refused on the next.
+        newAddressRefusal = demoNewAddressRefusal(),
+    )
+
+    /**
+     * The demo's copy of the server's `newAddressRefusal`.
+     *
+     * Kept as its own function beside [projectAccessState] rather than inlined, because the
+     * rule it mirrors is the one this feature is most likely to be got wrong twice: a
+     * pinned or configured domain restricts **nothing** by itself, and only the admission
+     * policy decides whether an address with no account can be added. A demo that greyed
+     * the row merely because a domain exists would be teaching the bug.
+     */
+    /**
+     * The accounts the people picker offers for [p], matched against [query] (LNL-204).
+     *
+     * The demo's copy of the candidates route, ordering included — people not yet on this
+     * project first, then staff before member, then whatever order [users] is in. The
+     * ordering is mirrored rather than left to chance because it is the thing a reader of
+     * the demo is most likely to take as the design: the top of the list should be who you
+     * are reaching for.
+     *
+     * Everybody who cannot be picked comes back anyway, dimmed and explained — see
+     * [PersonCandidate.inertReason]. A demo that filtered them out would be demonstrating
+     * the "silence reads as a broken search" failure the real route avoids.
+     */
+    internal fun projectCandidates(p: DemoProject, query: String): PersonCandidates {
+        val needle = query.trim()
+        val matching = users.filter { u ->
+            needle.isEmpty() ||
+                u.name.contains(needle, ignoreCase = true) ||
+                u.email.orEmpty().contains(needle, ignoreCase = true)
+        }
+        val ordered = matching.sortedWith(
+            compareBy(
+                { u -> if (u.id in p.members.keys) 1 else 0 },
+                { u -> if (u.isStaff) 0 else 1 },
+            ),
+        )
+        return PersonCandidates(
+            candidates = ordered.take(DEMO_CANDIDATE_LIMIT).map { u ->
+                val own = p.members[u.id]
+                val runsInstance = owns(u) || u.isSysAdmin
+                PersonCandidate(
+                    userId = u.id,
+                    name = u.name,
+                    email = u.email.orEmpty(),
+                    badge = if (runsInstance) "ADMIN" else if (u.isStaff) "STAFF" else "MEMBER",
+                    hasSignedIn = u.hasSignedIn,
+                    heldRoleLabel = when {
+                        runsInstance -> demoRungLabel(DemoRungKeys.OWNER)
+                        else -> own?.let { demoRungLabel(it) }
+                    },
+                    inertReason = when {
+                        runsInstance -> "${demoRungLabel(DemoRungKeys.OWNER)} on every board"
+                        own != null -> "Already ${demoRungLabel(own)}"
+                        else -> null
+                    },
+                )
+            },
+            totalMatches = matching.size,
+        )
+    }
+
+    /**
+     * May a **new** account be created for [email] here? The demo's `admitsNewAccount`.
+     *
+     * Asked by the add route rather than only by the screen, so the demo defends the rule
+     * at the write like the server does. [demoNewAddressRefusal] is the same rule turned
+     * into a sentence; these two must agree, and both are keyed on [admission] alone.
+     */
+    internal fun demoAdmitsNewAddress(email: String): Boolean {
+        val isStaff = email.trim().lowercase().endsWith("@$DEMO_STAFF_DOMAIN")
+        return when (admission) {
+            AdmissionPolicy.ANYONE -> true
+            // Neither policy admits a new outside address: the "plus added" half is about an
+            // address somebody already put here, which by definition has an account and so
+            // never reaches this function.
+            AdmissionPolicy.STAFF_DOMAIN_ONLY, AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED -> isStaff
+        }
+    }
+
+    private fun demoNewAddressRefusal(): String? = when (admission) {
+        AdmissionPolicy.ANYONE -> null
+        AdmissionPolicy.STAFF_DOMAIN_ONLY ->
+            "This instance admits $DEMO_STAFF_DOMAIN addresses only, so there is no account " +
+                "for it to hold."
+        AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED ->
+            "Outside $DEMO_STAFF_DOMAIN, only addresses that already have an account here " +
+                "can be added."
+    }
+
+    /**
+     * [p]'s audience rows as they actually stand — capped, and with a vetoed guest row
+     * dropped (LNL-203).
+     *
+     * The demo's `admitting`. It exists because the veto is a term in who reads what and
+     * not a guard on the editor, so the demo has to drop the row in every place that reads
+     * one or it is teaching a rule the server does not have.
+     */
+    private fun rowsInEffect(p: DemoProject): Map<String, String> = p.audiences
+        .filterKeys { allowPublicProjects || it != DemoAudienceKeys.GUEST }
+        .mapValues { demoAudienceCap(it.key, it.value) }
+
+    /**
+     * The best rung [tier] gets from [p]'s audience rows, with the audience it came from.
+     *
+     * One comparison per row, by the rule `AccessControl.effectiveRole` uses: the instance
+     * ladder ascends, so "matches this audience" is "their tier reaches it". Over
+     * [rowsInEffect] rather than the stored map, so a vetoed guest row gives nothing here
+     * either (LNL-203) — and a row above its ceiling gives what it is capped to (LNL-202).
+     */
+    private fun audienceFloor(p: DemoProject, tier: String): Pair<String, String>? =
+        rowsInEffect(p).entries
+            .filter { tierReaches(tier, it.key) }
+            .map { it.key to it.value }
+            .maxByOrNull { demoRungRank(it.second) }
 
     fun projectSettingsState(p: DemoProject): ProjectSettingsState = ProjectSettingsState(
         labels = p.labels.sortedBy { it.position }.map { namedEntry(it, usageOfLabel(p, it.id)) },
@@ -524,12 +1547,40 @@ internal class DemoWorld {
         statuses = p.statuses.sortedBy { it.position }.map { statusEntry(p, it, usageOfStatus(p, it.id)) },
         priorities = p.priorities.sortedBy { it.position }.map { statusEntry(p, it, usageOfPriority(p, it.id)) },
         resolutions = p.resolutions.sortedBy { it.position }.map { statusEntry(p, it, usageOfResolution(p, it.id)) },
-        sprints = p.sprints.sortedBy { it.position }.map { sprintEntry(it, usageOfSprint(p, it.id)) },
+        sprints = p.sprints.sortedBy { it.position }.map { sprintEntry(p, it, usageOfSprint(p, it.id)) },
         versions = p.versions.sortedBy { it.position }.map { namedEntry(it, usageOfVersion(p, it.id)) },
-        roles = DEMO_ROLE_DESCRIPTIONS,
-        members = projectMembers(p),
+        // Rendered in the Structure section beside the statuses and the labels, because
+        // it is vocabulary about what an issue *is* rather than about when work happens
+        // (LNL-215). See ProjectSettingsState.relationKinds.
+        relationKinds = p.relationKinds.sortedBy { it.position }
+            .map { relationKindEntry(it, usageOfRelationKind(p, it.id)) },
+        // The key, for ProjectSummary.estimateMode's reason. Sent to everybody who
+        // reaches this state — the issue window reads it to decide what the estimate
+        // control offers — and editable only in the admin half, which the demo visitor
+        // has anyway.
+        estimateMode = p.estimateMode.key,
         canMutateProject = true,
-        canGrantSeniorRoles = true,
+        // Maintainer and above, which an owner is. The demo has no caller below it, so the
+        // read-only halves of Sprints and Versions never show here — see the server's
+        // buildSettings (LNL-196).
+        canMutateProjectPlanning = true,
+        // Every section, because the demo visitor owns every board — the same list the
+        // server builds for an owner. See ProjectSectionKeys.
+        sections = listOf(
+            ProjectSection(ProjectSectionKeys.GENERAL, "General"),
+            ProjectSection(ProjectSectionKeys.GITHUB, "Github"),
+            ProjectSection(ProjectSectionKeys.STRUCTURE, "Structure"),
+            ProjectSection(ProjectSectionKeys.SPRINTS, "Sprints"),
+            ProjectSection(ProjectSectionKeys.VERSIONS, "Versions"),
+            ProjectSection(ProjectSectionKeys.ACCESS, "Access"),
+        ),
+        access = projectAccessState(p),
+        yourAccessLine = visitorRung(p).let { key ->
+            val rung = DEMO_RUNGS.first { it.key == key }
+            "You are ${if (key == DemoRungKeys.ADMIN || key == DemoRungKeys.OWNER) "an" else "a"} " +
+                "${rung.label} here. ${rung.description}"
+        },
+        canDeleteProject = true,
         notifyOnNewIssue = p.notifyOnNewIssue,
         canReceiveEmailNotifications = true,
         discussionsEnabled = p.discussionsEnabled,
@@ -538,6 +1589,7 @@ internal class DemoWorld {
         requireComponent = p.requireComponent,
         requireFixedVersionOnResolve = p.requireFixedVersionOnResolve,
         showIssueAuthor = p.showIssueAuthor,
+        hideIssueNumbers = p.hideIssueNumbers,
         // No repository in the demo — the fields are offered (owner) but empty.
         repositoryUrl = "",
         canConfigureRepository = true,
@@ -548,31 +1600,181 @@ internal class DemoWorld {
     // ── Instance administration ───────────────────────────────────────────────
 
     fun adminSettingsState(): AdminSettingsState = AdminSettingsState(
-        roles = DEMO_ROLE_DESCRIPTIONS,
-        users = users.map { u ->
+        rungs = DEMO_RUNGS,
+        // Administrators first, then in the order they were seeded, matching the server's
+        // sort. It hoists the row a visitor is looking for to the top of a directory of
+        // thirty-odd accounts.
+        users = users.sortedByDescending { tierReaches(tierOf(it), DemoTierKeys.ADMIN) }.map { u ->
+            val tier = tierOf(u)
             AdminUser(
                 userId = u.id,
                 name = u.name,
                 email = u.email,
-                isSysAdmin = u.isSysAdmin,
+                tierLabel = demoTierLabel(tier),
+                isSysAdmin = tierReaches(tier, DemoTierKeys.ADMIN),
                 isSelf = u.id == demoUserId,
-                isMcpAllowed = false,
-                isMcpEnabled = false,
+                // A grant nobody has claimed looks exactly like one that has, which is what
+                // the NOT SIGNED IN badge is for. A handful of accounts here are genuinely
+                // placeholders; the rest of the crew have arrived.
+                hasSignedIn = u.hasSignedIn,
+                // Read-only, and derived: the permission is per tier, so this reports which
+                // side of the tier cards an account falls on rather than a box somebody
+                // ticks for them. Toggling a card's agent switch moves this column.
+                isMcpAllowed = permitsAgents(tier),
+                isMcpEnabled = u.id == demoUserId && mcpEnabled,
                 projects = projects.map { p ->
+                    val own = p.members[u.id]
+                    val floor = audienceFloor(p, tier)
+                    // The same max the server takes, so the People tab and a project's own
+                    // Access list cannot disagree about what somebody effectively holds.
+                    // This used to report the own row alone, on the belief that the demo
+                    // had no audience rows — it has had a members row on every project
+                    // since LNL-194, so every account with no own row read as "no access"
+                    // on a board that in fact admits them.
+                    val effective = if (tierReaches(tier, DemoTierKeys.ADMIN)) {
+                        DemoRungKeys.OWNER
+                    } else {
+                        higherRung(own, floor?.second)
+                    }
                     AdminProjectRights(
                         projectId = p.id,
                         projectName = p.name,
-                        heldRoleKeys = p.members[u.id]?.toList() ?: emptyList(),
-                        canSeeProject = true,
+                        roleKey = own,
+                        effectiveRoleKey = effective,
+                        viaAudience = floor
+                            ?.takeIf {
+                                !tierReaches(tier, DemoTierKeys.ADMIN) &&
+                                    demoRungRank(it.second) >= demoRungRank(own)
+                            }
+                            ?.let { "the ${demoAudienceTitle(it.first).lowercase()} row" },
                     )
                 },
             )
         },
         projects = projects.map(::projectSummary),
-        requireSignIn = requireSignIn,
-        anyoneCanCreateProject = anyoneCanCreateProject,
+        // The facts the greying above is computed from, so a visitor can see why a choice
+        // is dead rather than guessing at a file they cannot read. The staff domain is the
+        // demo's own (LNL-199); no Google pin, because the demo configures no provider.
+        deployment = DeploymentFacts(
+            staffDomain = DEMO_STAFF_DOMAIN,
+            waysIn = listOf("Google", "mailed code"),
+        ),
+        // One card per tier that exists here, in the server's order. Guests never get one:
+        // a guest has no account to permit. Both cards' switches start off, which is a real
+        // fresh instance and is what makes them worth clicking — the People tab's MCP
+        // column and the You tab's agent switch both move when they do.
+        tiers = listOf(
+            TierCard(
+                key = DemoTierKeys.STAFF,
+                title = "Staff",
+                subtitle = "Accounts on $DEMO_STAFF_DOMAIN.",
+                accountCount = users.count { tierOf(it) == DemoTierKeys.STAFF },
+                mayCreateProjects = staffMayCreateProjects,
+                mayUseAgents = staffMayUseAgents,
+                createKey = InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS,
+                agentsKey = InstanceSettingKey.STAFF_MAY_USE_AGENTS,
+            ),
+            TierCard(
+                key = DemoTierKeys.MEMBER,
+                title = "Members",
+                subtitle = "Every other account — people from outside $DEMO_STAFF_DOMAIN.",
+                accountCount = users.count { tierOf(it) == DemoTierKeys.MEMBER },
+                mayCreateProjects = memberMayCreateProjects,
+                mayUseAgents = memberMayUseAgents,
+                createKey = InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
+                agentsKey = InstanceSettingKey.MEMBER_MAY_USE_AGENTS,
+            ),
+        ),
+        newProjectAudiences = listOf(
+            AudienceRow(
+                DemoAudienceKeys.GUEST,
+                "Guests",
+                DEMO_GUEST_SUBTITLE,
+                newProjectAudiences[DemoAudienceKeys.GUEST]?.let { demoAudienceCap(DemoAudienceKeys.GUEST, it) },
+                // Live, so a stored default can still be cleared while the veto is on
+                // (LNL-203) — the veto kills the rungs, not the row.
+                isSelectable = true,
+                unavailableReason = if (allowPublicProjects) {
+                    null
+                } else {
+                    "This deployment does not allow a project to be made public, so a new " +
+                        "one cannot start out admitting guests. The Policy switch on the " +
+                        "Instance tab is what changes that."
+                },
+                rungs = demoAudienceRungs(DemoAudienceKeys.GUEST, vetoed = !allowPublicProjects),
+            ),
+            // Floored, like a project's own rows and by the same helper (LNL-209) — these
+            // rows *become* a project's rows, so a pair of defaults the board could not be
+            // set to by hand would arrive on every new board unreadable.
+            flooredNewProjectRow(
+                audienceKey = DemoAudienceKeys.MEMBER,
+                subtitle = "Everybody with an account on this deployment.",
+            ),
+            flooredNewProjectRow(
+                audienceKey = DemoAudienceKeys.STAFF,
+                subtitle = "Accounts on $DEMO_STAFF_DOMAIN.",
+            ),
+        ),
+        // The demo visitor owns the instance, so the order and the delete are theirs.
+        canReorderProjects = true,
+        ownership = ownershipState(),
+        admission = AdmissionState(
+            selected = admission,
+            options = AdmissionPolicy.entries.map { AdmissionOption(it) },
+        ),
+        allowPublicProjects = allowPublicProjects,
         hideDisplayName = hideDisplayName,
     )
+
+    /**
+     * Who owns this deployment, who administers it alongside them, and who it could go to.
+     *
+     * The picker is populated now, and that is the change LNL-199 makes here. It was empty
+     * on purpose while the demo named no staff domain: nobody was eligible, so the dialog
+     * showed the reason instead of a list, and [DemoLunicleApi.handOverInstance] could be
+     * an honest no-op because nothing could ever call it. Naming a domain removes that
+     * premise rather than papering over it — the crew who have signed in are genuinely
+     * staff, so the picker lists them and Confirm genuinely moves [ownerUserId].
+     *
+     * The empty-list wording is kept for the case it now covers: a deployment that has a
+     * domain and nobody on it who has arrived. Only the demo's placeholder accounts are in
+     * that state today, but the sentence is the one the server would send and the dialog
+     * should read the same in both.
+     */
+    private fun ownershipState(): InstanceOwnership {
+        val owner = users.firstOrNull { it.id == ownerUserId }
+        val isSelf = owner != null && owner.id == demoUserId
+        val candidates = if (isSelf) {
+            users.filter { mayBeHandedTheInstance(it) }
+                .map { OwnerCandidate(userId = it.id, name = it.name, email = it.email) }
+        } else {
+            emptyList()
+        }
+        return InstanceOwnership(
+            ownerName = owner?.name,
+            ownerEmail = owner?.email,
+            isOwnerSelf = isSelf,
+            // Everybody else who runs the place. Empty until somebody hands the instance
+            // over, and then not: the outgoing owner keeps the administrator rung, so this
+            // is where they reappear. Hardcoding it empty left the screen saying "no other
+            // account administers this instance" directly underneath the name of the person
+            // who had just handed it to somebody else.
+            //
+            // The owner is named on their own row above, so listing them here as well would
+            // read as two people.
+            adminNames = users.filter { it.isSysAdmin && it.id != ownerUserId }.map { it.name },
+            canHandOver = isSelf,
+            handOverBlockedReason = "Only the instance owner can hand it over.".takeIf { !isSelf },
+            handOverCandidates = candidates,
+            handOverEmptyReason = if (isSelf && candidates.isEmpty()) {
+                "There is nobody to hand this instance to. Only an account on " +
+                    "$DEMO_STAFF_DOMAIN that somebody has actually signed in to can own it — " +
+                    "an address added ahead of time and never claimed cannot."
+            } else {
+                null
+            },
+        )
+    }
 
     // ── Notifications ─────────────────────────────────────────────────────────
 

@@ -42,6 +42,8 @@ import se.soderbjorn.lunicle.store.ForumPostStore
 import se.soderbjorn.lunicle.store.ForumStore
 import se.soderbjorn.lunicle.store.InstanceSettingsStore
 import se.soderbjorn.lunicle.store.IssueEventStore
+import se.soderbjorn.lunicle.store.IssueRelationKindStore
+import se.soderbjorn.lunicle.store.IssueRelationStore
 import se.soderbjorn.lunicle.store.IssueStore
 import se.soderbjorn.lunicle.store.LabelStore
 import se.soderbjorn.lunicle.store.MessageStore
@@ -83,6 +85,9 @@ internal class StoreGraph(
     val issues: IssueStore,
     val comments: CommentStore,
     val issueEvents: IssueEventStore,
+    /** The links between issues, and the per-project vocabulary that names them (LNL-215). */
+    val issueRelations: IssueRelationStore,
+    val issueRelationKinds: IssueRelationKindStore,
     val attachments: AttachmentStore,
     val subscriptions: SubscriptionStore,
     val reads: ReadStore,
@@ -137,6 +142,10 @@ internal fun sqliteStoreGraph(
     val issues = IssueStore(database)
     val comments = CommentStore(database)
     val issueEvents = IssueEventStore(database)
+    // The kind store takes the relation store so its `delete` can sweep the links by
+    // name on both backends rather than leaning on a cascade only one of them has.
+    val issueRelations = IssueRelationStore(database)
+    val issueRelationKinds = IssueRelationKindStore(database, issueRelations)
     val attachments = AttachmentStore(database)
     val subscriptions = SubscriptionStore(database)
     val reads = ReadStore(database)
@@ -146,7 +155,13 @@ internal fun sqliteStoreGraph(
     val oauthClients = OAuthClientStore(database)
     val oauthLoginStates = OAuthLoginStateStore(database)
     val oauthCodes = OAuthCodeStore(database)
-    val oauthTokens = OAuthTokenStore(database)
+    // The token store's MCP gate: the same `canUseMcp` every other gate reads.
+    // A seam rather than a read of the user row, because the permission is a
+    // per-tier instance setting now (LNL-192) and no longer lives on that row.
+    val oauthTokens = OAuthTokenStore(
+        database,
+        canUseMcp = { userId -> instanceSettings.canUseMcp(users.findById(userId)) },
+    )
     val forums = ForumStore(database)
     val forumPosts = ForumPostStore(database)
     val forumComments = ForumCommentStore(database)
@@ -157,7 +172,8 @@ internal fun sqliteStoreGraph(
     val projectRepository = ProjectRepository(database, projects, attachmentRepository, attachments)
     val vocabularies =
         VocabularyRepository(
-            database, labels, components, statuses, priorities, resolutions, sprintGateway, versions, issues,
+            database, labels, components, statuses, priorities, resolutions, sprintGateway, versions,
+            issueRelations, issueRelationKinds, issues,
         )
     val sprints = SprintRepository(database, sprintGateway, projects, issues, statuses)
     val statistics = StatisticsRepository(
@@ -181,6 +197,8 @@ internal fun sqliteStoreGraph(
         issues = issues,
         comments = comments,
         issueEvents = issueEvents,
+        issueRelations = issueRelations,
+        issueRelationKinds = issueRelationKinds,
         attachments = attachments,
         subscriptions = subscriptions,
         reads = reads,
@@ -263,6 +281,10 @@ internal fun firestoreStoreGraph(
     val issues = FirestoreIssueStore(firestore)
     val comments = FirestoreCommentStore(firestore)
     val issueEvents = FirestoreIssueEventStore(firestore)
+    // Same two-store shape as SQLite: the kind store sweeps its links by name, which
+    // on this backend is not redundant at all — Firestore has no cascade.
+    val issueRelations = FirestoreIssueRelationStore(firestore)
+    val issueRelationKinds = FirestoreIssueRelationKindStore(firestore, issueRelations)
     val forums = FirestoreForumStore(firestore)
     val forumPosts = FirestoreForumPostStore(firestore)
     val forumComments = FirestoreForumCommentStore(firestore)
@@ -312,10 +334,12 @@ internal fun firestoreStoreGraph(
         },
     )
 
-    // ── Seam 4: OAuth-token MCP gate → the user's canUseMcp ────────────────────
+    // ── Seam 4: OAuth-token MCP gate → canUseMcp ───────────────────────────────
+    // The account's own switch AND its tier's permission (LNL-192), which is an
+    // instance setting rather than a column on the user row.
     val oauthTokens = FirestoreOAuthTokenStore(
         firestore,
-        canUseMcp = { userId -> users.findById(userId)?.canUseMcp == true },
+        canUseMcp = { userId -> instanceSettings.canUseMcp(users.findById(userId)) },
     )
 
     // ── Seam 5: attachment scope resolver → ancestry across sibling stores ─────
@@ -367,7 +391,7 @@ internal fun firestoreStoreGraph(
     // `requiresResolution` on status rows — so a column added or renamed in settings
     // is read back unchanged by the board, and vice versa. That editor↔board interop
     // is pinned by FirestoreVocabularyInteropTest (LNL-132).
-    val vocabularies = FirestoreVocabularyStore(firestore, issues)
+    val vocabularies = FirestoreVocabularyStore(firestore, issues, issueRelations)
     val sprints = FirestoreSprintStore(firestore, projects, issues)
     // versions is a leaf vocabulary store like labels; its rows live in the same
     // `vocabulary` collection the board reads, so the editor↔board interop holds.
@@ -394,6 +418,8 @@ internal fun firestoreStoreGraph(
         issues = issues,
         comments = comments,
         issueEvents = issueEvents,
+        issueRelations = issueRelations,
+        issueRelationKinds = issueRelationKinds,
         attachments = attachments,
         subscriptions = subscriptions,
         reads = reads,

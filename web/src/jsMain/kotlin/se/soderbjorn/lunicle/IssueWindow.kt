@@ -31,9 +31,9 @@ import se.soderbjorn.lunicle.client.TicketTitleLookup
 import se.soderbjorn.lunicle.client.renderInlineLinks
 import se.soderbjorn.lunicle.client.renderMarkdown
 import se.soderbjorn.lunicle.client.viewmodel.CommentBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.HistoryBlock
 import se.soderbjorn.lunicle.client.viewmodel.IssueBackingViewModel
 import se.soderbjorn.lunicle.clientserver.CommentView
-import se.soderbjorn.lunicle.clientserver.IssueEventView
 import se.soderbjorn.lunicle.clientserver.VocabularyItem
 
 /**
@@ -74,6 +74,15 @@ class IssueWindow(
     private lateinit var resolutionCell: HTMLElement
     private lateinit var assigneeSelect: Dropdown
     private lateinit var assigneeCell: HTMLElement
+    // "Assign to their agent" (LNL-215): a toggle under the assignee dropdown, in the
+    // editor only, and only once somebody has been named — see renderAssignee.
+    private lateinit var agentAssigneeToggle: Toggle
+    private lateinit var agentAssigneeRow: HTMLElement
+    // The estimate (LNL-215). Absent entirely on a project that does not estimate;
+    // see renderEstimate, which is the whole of the `none` promise on this screen.
+    private lateinit var estimateSelect: EstimateDropdown
+    private lateinit var estimateRead: HTMLElement
+    private lateinit var estimateCell: HTMLElement
     private lateinit var sprintSelect: Dropdown
     private lateinit var sprintRead: HTMLElement
     private lateinit var sprintCell: HTMLElement
@@ -114,6 +123,15 @@ class IssueWindow(
     private lateinit var childrenHeading: HTMLElement
     private lateinit var childrenList: HTMLElement
     private lateinit var childPicker: IssuePicker
+    // This issue's links to other issues (LNL-215): the grouped, clickable list in both
+    // faces, plus — in edit mode — a kind picker and an issue picker to add one. The
+    // whole band folds away for an issue with no links and a reader who cannot add any.
+    private lateinit var relationsSection: HTMLElement
+    private lateinit var relationsHeading: HTMLElement
+    private lateinit var relationsList: HTMLElement
+    private lateinit var relationKindSelect: Dropdown
+    private lateinit var relationPicker: IssuePicker
+    private lateinit var relationAddRow: HTMLElement
     private lateinit var descriptionRead: HTMLElement
     private lateinit var editorHost: HTMLElement
     private lateinit var commentsElement: HTMLElement
@@ -143,6 +161,7 @@ class IssueWindow(
     private var commentConfirm: ConfirmDialog? = null
     private var parentConfirm: ConfirmDialog? = null
     private var childConfirm: ConfirmDialog? = null
+    private var relationConfirm: ConfirmDialog? = null
 
     /**
      * Whether the Save/Discard/Keep-editing dialog is currently on screen.
@@ -175,6 +194,17 @@ class IssueWindow(
         resolutionRead = element("span", "tag tag-resolution")
 
         assigneeSelect = Dropdown(isField = true) { viewModel.onAssigneeChanged(it) }
+        // The lunula boolean — the same On/Off pair every switch in project settings
+        // uses — rather than a bare checkbox, so a boolean looks like a boolean
+        // wherever it appears in this app. See Dom.kt's Toggle.
+        agentAssigneeToggle = Toggle { viewModel.onAssigneeIsAgentChanged(it) }
+        agentAssigneeRow = toggleRow(agentAssigneeToggle, "Assign to their agent", "issue-agent-toggle")
+
+        estimateSelect = EstimateDropdown(isField = true) { viewModel.onEstimateChanged(it) }
+        // A chip, like the sprint and the versions: an estimate is one of the project's
+        // own measured facts about the issue, which is what the tag styling means here.
+        // Its own hue is deliberately NOT introduced — see `.tag-estimate`.
+        estimateRead = element("span", "tag tag-estimate")
 
         sprintSelect = Dropdown(isField = true) { viewModel.onSprintChanged(it) }
         // A chip like status and priority rather than a sentence like the
@@ -263,6 +293,29 @@ class IssueWindow(
         childrenSection = element("div", "issue-children-section")
         childrenSection.children(childrenHeading, childrenList, childPicker.element)
 
+        // Links to other issues (LNL-215). The add control is two halves on one row —
+        // WHICH KIND of link, then TO WHICH ISSUE — and they are side by side rather
+        // than stacked because they are one sentence: "Blocked by | LMX-…". Stacking
+        // them would read as two independent settings and would leave the kind picker
+        // looking like a filter over the list above it.
+        //
+        // The kind picker is a plain [Dropdown] and not a [VersionDropdown]: there is no
+        // inline "add a kind here", deliberately. Relation kinds are a project's
+        // grammar, not its data — you invent a version mid-issue because the release you
+        // want does not exist yet, but inventing a way for two issues to be related is a
+        // decision about the whole board and belongs in project settings, where it can
+        // be named in both directions and flagged as blocking.
+        relationsHeading = element("h4", "comments-heading", "Links")
+        relationsList = element("div", "issue-relations")
+        relationKindSelect = Dropdown(isField = true, className = "issue-relation-kind") {
+            viewModel.onRelationKindChosen(it)
+        }
+        relationPicker = IssuePicker("Link to an issue…") { viewModel.onRelationAdded(it) }
+        relationAddRow = element("div", "issue-relation-add")
+        relationAddRow.children(relationKindSelect.element, relationPicker.element)
+        relationsSection = element("div", "issue-relations-section")
+        relationsSection.children(relationsHeading, relationsList, relationAddRow)
+
         commentsElement = element("div", "comments")
         commentsHeading = element("h4", "comments-heading", "Comments")
         addCommentButton = button("Add comment", "btn btn-quiet") { openComment(null) }
@@ -307,6 +360,13 @@ class IssueWindow(
         assigneeCell.children(
             element("label", "field-label field-label-edit", "Assignee"),
             assigneeSelect.element,
+            // Under the dropdown, inside the same cell, because it is a qualification of
+            // the answer above it and not a seventh field: "who does this" is one
+            // question, and "…or their agent" is a footnote to it. A cell of its own in
+            // the grid would put the two on opposite sides of a 14px gutter and invite
+            // the reading that the flag stands alone — which it does not, and which the
+            // server refuses (see IssueUpdate.assigneeIsAgent).
+            agentAssigneeRow,
         )
 
         // Last in the row, after the assignee, and absent entirely on a project
@@ -338,6 +398,18 @@ class IssueWindow(
             fixedVersionRead,
         )
 
+        // Last in the row, after the two versions, and absent entirely on a project that
+        // does not estimate — see renderEstimate. Last because it is the newest of the
+        // optional fields and the one fewest projects will ever turn on, so the
+        // positions readers already know for the other six do not move.
+        estimateCell = element("div", "field-cell")
+        estimateCell.children(
+            element("label", "field-label field-label-edit", "Estimate"),
+            estimateSelect.element,
+            element("span", "tag-caption", "Estimate"),
+            estimateRead,
+        )
+
         // The read-mode label/component chips (tagsRead) ride at the end of this
         // same row (LNL-14 proposal 3), so status, priority and the tags read as one
         // wrapping chip line rather than the tags claiming a band of their own below.
@@ -347,7 +419,7 @@ class IssueWindow(
         val statusPriorityRow = element("div", "field-row")
         statusPriorityRow.children(
             statusCell, priorityCell, resolutionCell, assigneeCell, sprintCell,
-            plannedVersionCell, fixedVersionCell, tagsRead,
+            plannedVersionCell, fixedVersionCell, estimateCell, tagsRead,
         )
 
         // Same three bands as the old dialog, for the same scrolling reasons:
@@ -407,6 +479,11 @@ class IssueWindow(
             // Above the description: an epic's children are the shape of the work,
             // and someone opening it is here for that as much as the prose.
             childrenSection,
+            // And directly under them, for the same reason and one step out: the
+            // children say what this work is made of, the links say what it waits on
+            // and what waits on it. Both answer "can I start this?", which is the
+            // question the description cannot.
+            relationsSection,
             descriptionRead,
             commentsHeading,
             commentsElement,
@@ -571,8 +648,10 @@ class IssueWindow(
         renderAssignee(state)
         renderSprint(state)
         renderVersions(state)
+        renderEstimate(state)
         renderParent(state)
         renderChildren(state)
+        renderRelations(state)
 
         renderChips(labelLabel, labelBox, state.labels, state.labelIds, state.isEditing, withDot = true) {
             viewModel.onLabelToggled(it)
@@ -631,7 +710,126 @@ class IssueWindow(
         renderDeleteCommentConfirm(state)
         renderParentConfirm(state)
         renderChildConfirm(state)
+        renderRelationConfirm(state)
         renderCloseConfirm(state)
+    }
+
+    /**
+     * This issue's links to other issues, in both faces (LNL-215).
+     *
+     * Read face: one heading per direction of per kind, with a clickable
+     * `PREFIX-N: Title` per row — the same `.ticket-ref` anchor the parent chip and the
+     * children use, so the app-wide click handler in main.kt opens them for free and
+     * this needs no wiring of its own. Rendered for **every** reader: the links are part
+     * of the issue, and only the ability to *change* them is narrowed.
+     *
+     * Edit face: each row gains a Remove, gated on the row's own `canRemove` — which is
+     * `canEditIssue` on THIS issue, not on the far end, because an issue does not own
+     * who points at it. The add control appears when this caller may edit and the
+     * project has kinds to link under.
+     *
+     * The whole band folds away for an issue with no links and no add control, which is
+     * the overwhelming majority of issues on the overwhelming majority of boards —
+     * [renderChildren]'s rule, applied to a list that will be empty even more often.
+     */
+    private fun renderRelations(state: IssueBackingViewModel.State) {
+        val groups = state.relationGroups
+        val editing = state.isEditing && state.showsRelationControls
+
+        relationsList.clear()
+        groups.forEach { group ->
+            val block = element("div", "issue-relation-group")
+            block.appendChild(element("div", "issue-relation-label", group.label))
+            group.relations.forEach { relation ->
+                val row = element("div", "issue-relation-row")
+                val ticket = "${state.prefix}-${relation.other.number}"
+                val link = element("a", "ticket-ref issue-relation-link")
+                link.setTextIfChanged("$ticket: ${relation.other.title}")
+                link.setAttribute("data-ticket", ticket)
+                link.setAttribute("href", "?issue=$ticket")
+                row.appendChild(link)
+                if (editing) {
+                    // The child list's gesture, verbatim: a quiet small Remove at the
+                    // trailing edge, which asks before it acts. Unlinking is cheap to
+                    // undo — the picker is right there — but it is destructive to
+                    // somebody ELSE'S issue window, which is exactly the case the
+                    // children's confirmation exists for.
+                    val remove = button("Remove", "btn btn-quiet btn-small") {
+                        viewModel.onRemoveRelationRequested(relation.id)
+                    }
+                    remove.disabled = state.isBusy || !relation.canRemove
+                    row.appendChild(remove)
+                }
+                block.appendChild(row)
+            }
+            relationsList.appendChild(block)
+        }
+
+        relationKindSelect.render(
+            items = state.relationKinds.map { DropdownItem(it.id, it.name) },
+            selectedId = state.relationKindSelectedId ?: 0L,
+        )
+        relationKindSelect.element.visible(editing, displayValue = "flex")
+        relationPicker.setItems(
+            state.relationCandidates.map { IssuePickerItem(it.id, "${state.prefix}-${it.number}", it.title) },
+        )
+        relationPicker.setEnabled(!state.isBusy)
+        relationAddRow.visible(editing, displayValue = "flex")
+
+        val show = groups.isNotEmpty() || editing
+        relationsSection.visible(show)
+        relationsHeading.visible(show)
+    }
+
+    private fun renderRelationConfirm(state: IssueBackingViewModel.State) {
+        if (state.confirmingRemoveRelationId != null && relationConfirm == null) {
+            relationConfirm = ConfirmDialog(
+                title = "Remove link",
+                message = state.confirmRemoveRelationMessage,
+                destructiveLabel = "Remove",
+                onConfirm = { viewModel.onRemoveRelationConfirmed() },
+                onCancel = { viewModel.onRemoveRelationCancelled() },
+            ).also { it.mount(dialogHost) }
+        } else if (state.confirmingRemoveRelationId == null && relationConfirm != null) {
+            relationConfirm?.dismiss()
+            relationConfirm = null
+        }
+    }
+
+    /**
+     * The estimate, in both faces — or, on a project that does not estimate, in
+     * neither and with no trace (LNL-215).
+     *
+     * The whole cell disappears when the project's estimate mode is `none`, which is the whole of
+     * what this feature costs a project that never configures it: no popover, no greyed
+     * control, no "Estimate —" caption to explain away. That is [renderSprint]'s
+     * emptiness-is-the-flag contract, held to the letter — a project that has not turned
+     * estimates on has an issue window byte-for-byte identical to the one it had before
+     * this ticket landed.
+     *
+     * Read face: shown only when there IS an estimate, unlike the sprint's "Backlog" and
+     * like the versions' silence. An unestimated issue is the ordinary case, and a row
+     * appearing on every one of them to say "—" would be noise on the majority to serve
+     * the minority. See [renderVersions], which decided the same thing for the same
+     * reason.
+     */
+    private fun renderEstimate(state: IssueBackingViewModel.State) {
+        if (!state.showsEstimate) {
+            estimateCell.visible(false)
+            return
+        }
+        estimateSelect.render(state.estimateMode, state.estimate)
+        val label = formatEstimate(state.estimate)
+        if (state.isEditing) {
+            estimateCell.visible(true)
+            estimateSelect.element.visible(true, displayValue = "flex")
+            estimateRead.visible(false)
+        } else {
+            estimateCell.visible(label != null)
+            estimateSelect.element.visible(false)
+            estimateRead.setTextIfChanged(label ?: "")
+            estimateRead.visible(label != null, displayValue = "inline-block")
+        }
     }
 
     /**
@@ -815,6 +1013,18 @@ class IssueWindow(
         val canChoose = state.assignableUsers.isNotEmpty()
         assigneeCell.visible(state.isEditing && canChoose)
         assigneeSelect.element.visible(state.isEditing && canChoose, displayValue = "flex")
+
+        // "…or their agent" (LNL-215), shown only once somebody is actually named.
+        //
+        // Absent rather than greyed while the field reads "Nobody", and that is the
+        // rule the whole feature keeps: a flag about nobody is not a state — the server
+        // forces it false — so a dead switch there would be an invitation to a write
+        // that does not exist. It appears the moment an assignee is picked, which is
+        // also the moment the question becomes askable.
+        val showsAgent = state.isEditing && canChoose && state.assigneeId != null
+        agentAssigneeRow.visible(showsAgent, displayValue = "flex")
+        agentAssigneeToggle.checked = state.assigneeIsAgent
+        agentAssigneeToggle.disabled = state.isBusy
 
         val buttonLabel = state.assignButtonLabel
         buttonLabel?.let { assignButton.setTextIfChanged(it) }
@@ -1004,13 +1214,14 @@ class IssueWindow(
             historyElement.appendChild(element("p", "comments-empty", "No history yet."))
             return
         }
-        // Newest first (LNL-186) — the order is the view model's decision, not
-        // this loop's. See State.historyNewestFirst.
-        state.historyNewestFirst.forEach { event -> historyElement.appendChild(renderHistoryEvent(state, event)) }
+        // Newest block first (LNL-186) — the order is the view model's decision, not
+        // this loop's. See State.historyBlocksNewestFirst.
+        state.historyBlocksNewestFirst.forEach { block -> historyElement.appendChild(renderHistoryEvent(state, block)) }
     }
 
     /**
-     * One history row: what happened, then who and when.
+     * One history block: what happened — possibly several things — then who and when,
+     * **once**.
      *
      * Deliberately lighter than [renderComment] — a `div` rather than an
      * `article`, no border, no markdown. A comment is something a person wrote
@@ -1021,20 +1232,39 @@ class IssueWindow(
      * to a comment. A comment's author is the point — you read who is speaking
      * before you read what they said — whereas a history is scanned for *what
      * changed*, with the attribution as the follow-up.
+     *
+     * ── Why the fold, and why the byline stays at the bottom ─────────────────
+     *
+     * A single save that changes four fields writes four events, and this function used
+     * to give each of them its own byline — the same name and the same timestamp,
+     * repeated four times down a column, drowning the four sentences that were the
+     * point. It now takes a [HistoryBlock]: a run of events that agree about the author,
+     * the agent and the instant (see that type for why the comparison is exact), whose
+     * sentences stack and whose attribution is stated once.
+     *
+     * The byline stays at the **bottom** of the block rather than moving to the top,
+     * which is what a grouped list would ordinarily do. The paragraph above is the
+     * reason: this function's whole ordering argument is that a history is scanned for
+     * what changed, with attribution as the follow-up. Hoisting the byline to head each
+     * block would invert exactly what that argument asks for and turn the history back
+     * into a list of people.
      */
     private fun renderHistoryEvent(
         state: IssueBackingViewModel.State,
-        event: IssueEventView,
+        block: HistoryBlock,
     ): HTMLElement {
         val el = element("div", "history-event")
         // Plain text, never innerHTML: the description is composed from an enum
-        // but interpolates values a user typed — a title, a label's name — and
-        // there is no markdown here to justify the risk. element() sets
+        // but interpolates values a user typed — a title, a label's name, a relation
+        // kind's — and there is no markdown here to justify the risk. element() sets
         // textContent, so this is safe by construction rather than by review.
-        el.appendChild(element("p", "history-what", state.historyDescription(event)))
+        block.events.forEach { event ->
+            el.appendChild(element("p", "history-what", state.historyDescription(event)))
+        }
+        val attribution = block.attribution
         val meta = element("div", "history-meta")
-        meta.appendChild(element("span", "history-who", state.historyByline(event)))
-        state.historyAgentBadge(event)?.let { badgeText ->
+        meta.appendChild(element("span", "history-who", state.historyByline(attribution)))
+        state.historyAgentBadge(attribution)?.let { badgeText ->
             val badge = element("span", "agent-badge")
             badge.children(agentIcon(), element("span", "agent-badge-label", badgeText))
             meta.appendChild(badge)
@@ -1116,5 +1346,12 @@ class IssueWindow(
         parentConfirm = null
         childConfirm?.dismiss()
         childConfirm = null
+        relationConfirm?.dismiss()
+        relationConfirm = null
+        // The estimate popover mounts on the BODY, outside this window's pane, so
+        // nothing this view re-renders will ever take it down. Closed by hand here for
+        // the reason VersionDropdown.confirmDelete gives about its own confirmation
+        // (LNL-155): a layer that outlives its opener is a layer left on screen.
+        estimateSelect.close()
     }
 }

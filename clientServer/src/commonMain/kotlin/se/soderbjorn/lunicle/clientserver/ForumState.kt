@@ -121,10 +121,12 @@ data class ForumOrder(
  *   when somebody replies to it. That is the high-water mark's shape rather than
  *   an oversight, and following replies is what LNL-63's Watch pill is for. See
  *   `ForumReads`' note in Reads.sq.
- * @property canDelete whether this caller may remove it — author, project
- *   administrator, or system administrator. An affordance: the route re-derives
- *   it. See `AccessControl.canDeleteForumContent`, which explains why the
- *   administrator is in this rule and not in the editing one.
+ * @property canDelete whether this caller may remove it. **False for everybody**
+ *   since LNL-190 retired discussions: `AccessControl.canDeleteForumContent` answers
+ *   no to every caller, the instance owner included. It was the author, a project
+ *   administrator, or whoever ran the instance — and why the project administrator
+ *   was in this rule and not in the editing one is a decision to re-make rather than
+ *   a rung to restore. An affordance either way: the route re-derives it.
  */
 @Serializable
 data class ForumPostSummary(

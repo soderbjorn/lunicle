@@ -273,7 +273,7 @@ class UiSettingsTest {
     private fun withRoutes(block: suspend (io.ktor.client.HttpClient) -> Unit) = testApplication {
         application {
             install(ServerContentNegotiation) { json() }
-            routing { uiSettingsRoutes(sessions, users, Impersonations(), uiSettings) }
+            routing { uiSettingsRoutes(sessions, OwnerImpersonation(), uiSettings) }
         }
         val client = createClient {
             install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) { json() }

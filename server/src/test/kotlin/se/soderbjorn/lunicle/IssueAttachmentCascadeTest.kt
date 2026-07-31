@@ -246,7 +246,7 @@ class IssueAttachmentCascadeTest {
             ),
         )
         val projectRepository = ProjectRepository(database, projects, attachments, attachmentStore)
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
+        val project = projectRepository.create("Lunamux", "LMX")
         val repository = IssueRepository(
             issues, commentStore, statuses, priorities, attachments, attachmentStore,
             subscriptions = subscriptions,

@@ -45,6 +45,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.InstanceSettingKey
 import se.soderbjorn.lunicle.clientserver.ProjectSettingsState
 import se.soderbjorn.lunicle.clientserver.StatisticsState
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
@@ -73,12 +74,13 @@ class StatisticsTest {
     private val issueRepository =
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
     private val events = IssueEventStore(database)
     private val history = IssueHistory(events, statuses, labels, components, users)
     private val snapshots = ProjectStatisticsStore(database)
     private val issueCounts = IssueStatisticsStore(database)
-    private val access = AccessControl(roles)
+    private val instanceSettings = InMemoryInstanceSettingsStore()
+    private val access = AccessControl(roles, instanceSettings)
 
     /** Moves under the test's control, so a window can age without anybody sleeping. */
     private var clock = 1_000_000_000_000L
@@ -405,9 +407,9 @@ class StatisticsTest {
      * A project administrator does not receive the repository fields.
      *
      * The gate LNL-37 made subtle. Everything else in the settings response opened
-     * up to project administrators when that role arrived; these two did not,
+     * up to project administrators when that rung arrived; these two did not,
      * because the token field names an environment variable on the deployment and
-     * the route that writes it is still system-administrator-only. Narrowing the
+     * the route that writes it is the project owner's alone. Narrowing the
      * read on `canAdministerProject` — the obvious thing, and what the section
      * around it does — would send a project administrator a field they can see,
      * cannot change, and would be shown as editable until the save 403'd.
@@ -423,8 +425,7 @@ class StatisticsTest {
             RepositoryConfig(RepositoryRef("soderbjorn", "lunicle"), TokenSource.Env("LUNICLE_GITHUB_TOKEN_TEST")),
         )
         val projectAdmin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-padmin", "Pat", null))
-        roles.seed()
-        roles.grant(projectAdmin.id, f.projectId, Role.PROJECT_ADMIN)
+        roles.setRole(projectAdmin.id, f.projectId, ProjectRole.ADMIN)
         val cookie = sessions.create(projectAdmin.id)
 
         withRoutes { client ->
@@ -442,7 +443,7 @@ class StatisticsTest {
         }
     }
 
-    /** A system administrator does receive them. The other half of the gate. */
+    /** An instance administrator does, reaching Owner here. The other half of the gate. */
     @Test
     fun `a system administrator is sent the repository configuration`(): Unit = runBlocking {
         val f = seed()
@@ -514,7 +515,21 @@ class StatisticsTest {
 
     private suspend fun seed(prefix: String = "LMX", isPublic: Boolean = false): Fixture {
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin-$prefix", "Admin", null))
-        val project = projectRepository.create("Lunamux", prefix, isPublic = isPublic)
+        // Two facts since LNL-203, not one: a `guest → viewer` row grants nothing on a
+        // deployment that forbids public projects, and forbidding them is the default. See
+        // createOpenToAll, which is the same translation for the fixtures that take a name.
+        val project = projectRepository.create("Lunamux", prefix).also {
+            if (isPublic) {
+                instanceSettings.set(InstanceSettingKey.ALLOW_PUBLIC_PROJECTS, true)
+                roles.setAudienceRole(it.id, Audience.GUEST, ProjectRole.VIEWER)
+            }
+        }
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, project.id)
     }
 
@@ -595,7 +610,7 @@ class StatisticsTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -617,7 +632,6 @@ class StatisticsTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
         statistics = statistics,

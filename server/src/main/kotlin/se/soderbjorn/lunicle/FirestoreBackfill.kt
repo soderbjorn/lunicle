@@ -33,6 +33,19 @@
  * sentinel value per migration. A caller with a genuinely huge collection can move
  * the pass out-of-band later; the framework's job is to be correct at current scale.
  *
+ * ── When a migration cannot use this ────────────────────────────────────────
+ *
+ * This sweeps *one* collection and merges fields onto the documents it finds. A step
+ * that has to **create** documents in another collection — the relation-kind seed
+ * LNL-215 needs, which reads `projects` and writes `vocabulary` — cannot express
+ * itself as a [transform]: that function returns fields for the document it was
+ * handed, and it is not `suspend`, so it cannot even perform the read that decides
+ * whether anything is needed. Such a step borrows the two properties above by hand
+ * instead — the same `FieldPath.documentId()` cursor for resumability, and its own
+ * guard plus this class's [SCHEMA_VERSION_MARKER] for idempotence — rather than
+ * bending the helper into a shape it cannot hold. See [FirestoreRelationKindBackfill],
+ * which is written out as exactly that borrowing, and says so.
+ *
  * @see FirestoreMigration.apply the method that calls this.
  */
 package se.soderbjorn.lunicle

@@ -58,7 +58,15 @@ enum class AuthProvider {
  *   every client renders the same name by the same rule.
  * @property provider which provider authenticated them, so the sidebar can say
  *   "Signed in via GitHub as …".
- * @property isSysAdmin whether this is the instance admin.
+ * @property isSysAdmin whether this account **runs the instance** — an instance
+ *   administrator, or the owner above them.
+ *
+ *   Both, and it has to be both: `users.instance_role` cannot see ownership (that is
+ *   `instance_settings.owner_user_id`, and 33.sqm deliberately leaves the owner's row
+ *   null rather than stating one authority twice), so a flag taken off the record alone
+ *   says "no" about the person who owns the deployment — and the settings pane gates all
+ *   three instance tabs on this. The server folds the two together where the state is
+ *   built; see AuthRoutes' `sessionStateFor` (LNL-198).
  *
  *   **An affordance, not a grant.** It exists so the UI does not offer "New
  *   project…" to someone the server will refuse. Setting it to `true` in a
@@ -74,12 +82,14 @@ enum class AuthProvider {
  *   This is the one place an email crosses the wire, and it is deliberately
  *   narrow: [SignedInUser] is only ever the *effective* caller's own record — the
  *   person looking at the screen (or, under impersonation, the account an admin is
- *   deliberately wearing). It is never a directory. The profile dialog renders it
- *   in the User tab and lets its owner edit it, and the notification toggles are
+ *   deliberately wearing). It is never a directory. The settings pane's You tab
+ *   renders it and lets its owner edit it, and the notification toggles are
  *   hidden without it — a toggle that promises an e-mail we have no address to
- *   send is a lie. Other people's addresses still never cross: [UserOption] and
- *   `ProjectMember` remain a name and an id, and the board's author fields remain
- *   a name. See the server's `UserRecord.toSignedInUser`.
+ *   send is a lie. Other people's addresses still never cross as part of the
+ *   ordinary app: [UserOption] and `ProjectMember` remain a name and an id, and the
+ *   board's author fields remain a name. See the server's
+ *   `UserRecord.toSignedInUser`.
+ *
  * @property id who this is, as an identity the client can COMPARE — never one it
  *   can act on.
  *
@@ -92,15 +102,27 @@ enum class AuthProvider {
  *   Sending it costs nothing. A user id is not a capability here: every route
  *   takes who is asking from the session cookie and never from the body, so
  *   knowing an id — your own or anyone's — grants exactly nothing. See the
- *   server's Impersonations, whose whole subject this is.
+ *   server's ProbeGrants, whose whole subject this is.
  *
  *   The email is the caller's own; see the property doc for why that one address
  *   crossing is not the directory leak this comment used to forbid.
  * @property isEmailVerified whether [email] was ever proved, rather than merely
  *   typed. An affordance like every other flag here — the server decides what an
- *   unverified address may be used for — and it exists so the profile dialog can
- *   say which of the two it is showing. Before LNL-71 there was no difference to
- *   report, because nothing was ever checked.
+ *   unverified address may be used for — and it exists so the settings pane's You
+ *   tab can say which of the two it is showing. Before LNL-71 there was no
+ *   difference to report, because nothing was ever checked.
+ * @property isStaff whether this account belongs to the deployment's own domain —
+ *   the upper of the two signed-in rungs on the instance ladder (LNL-192's
+ *   `UserKind`). It crosses the wire since LNL-193 for the settings pane's You
+ *   tab, which states the two facts a person cannot change about themselves:
+ *   which tier they stand on, and whether they administer the instance
+ *   ([isSysAdmin]).
+ *
+ *   It is also what words the greyed agent-access switch. Agent access is per
+ *   tier now, so "you may not connect an agent" is only actionable when it says
+ *   *which* tier was refused — "Not permitted for members on this instance" names
+ *   the switch an admin would have to flip. Derived server-side and never chosen;
+ *   see the server's `UserKind.forEmail`.
  */
 @Serializable
 data class SignedInUser(
@@ -111,6 +133,7 @@ data class SignedInUser(
     val hasDisplayNameOverride: Boolean = false,
     val email: String? = null,
     val isEmailVerified: Boolean = false,
+    val isStaff: Boolean = false,
 )
 
 /**
@@ -127,23 +150,34 @@ data class SignedInUser(
  *   open the popup, and `null` when Google isn't configured. Public by design —
  *   it ships in every Google sign-in page on the web. The *secret* never leaves
  *   the server.
- * @property user the **effective** user — the impersonated one while an admin is
- *   impersonating. That is what the profile button shows, and it is not a display
- *   convenience: it is the same user every permission on the server is being
- *   gated on, so the name on screen and the rights in force can never disagree.
- *   Its `isSysAdmin` is the *impersonated* user's, which is why an impersonating
- *   admin loses the admin affordances — see the server's Impersonations.
- * @property isImpersonating whether [user] is somebody other than whoever signed
- *   in. Drives "Stop impersonating" replacing "Impersonate".
- * @property canImpersonate whether the **real** signed-in user is an admin, and
- *   so may start or stop impersonating. Separate from `user.isSysAdmin` on purpose:
- *   while impersonating, `user.isSysAdmin` is false and this is still true — that is
- *   precisely the state in which "Stop impersonating" has to remain reachable. An
- *   affordance like every other flag here; the routes re-derive it from the
- *   session.
- * @property impersonatableUsers everyone this admin could act as. Empty unless
- *   [canImpersonate] — the server does not send the user list to people who
- *   cannot use it, rather than sending it and trusting the menu to stay hidden.
+ * @property user whoever this session belongs to. Under an impersonation that is
+ *   the person being worn, with no second identity behind them: the owner was
+ *   signed out and then signed in for real as this account, so the name on screen
+ *   and the rights in force are the same fact rather than two that have to be kept
+ *   in step. Its `isSysAdmin` is theirs, which is why a probing owner loses the
+ *   admin affordances.
+ * @property isImpersonating whether this session was minted by an impersonation
+ *   rather than by somebody proving who they are.
+ *
+ *   **Not a comparison.** It used to mean "the effective user differs from the real
+ *   one", which under the current design would read false for every impersonation
+ *   there is — the two are the same account. It is now fed straight from the server's
+ *   `Caller.isProbe`, which reads the session row's own label. Drives the marker in
+ *   the corner, the tinted frame, and "Stop impersonating" replacing "Impersonate".
+ * @property isImpersonationArmed whether this **signed-out** browser holds a live
+ *   grant, and so may sign itself in as anybody.
+ *
+ *   The state between arming and choosing an address, and the reason there is a
+ *   third impersonation flag rather than two. The owner is genuinely signed out
+ *   here, so [user] is null and [isImpersonating] is false — everything renders as
+ *   it would for a stranger, which is itself part of what is being checked — and
+ *   this is the one thing on screen that says otherwise. The ordinary sign-in
+ *   button opens the impersonation dialog instead of Google's popup while it is set.
+ * @property canImpersonate whether this caller may arm one: they own the instance
+ *   **and** the deployment has the feature switched on (`LUNICLE_ENABLE_OWNER_IMPERSONATION`).
+ *   Both terms in one flag, so no menu can offer the item on an instance where the
+ *   routes would refuse it. An affordance like every other flag here; the routes
+ *   re-derive it from the session.
  * @property pendingEmail an address the caller has asked to attach and not yet
  *   confirmed, or null.
  *
@@ -161,21 +195,12 @@ data class SignedInUser(
  *   server for [isGoogleAvailable]'s reason: only the server knows which variables
  *   it was given, and a surface must never render a method the server cannot
  *   perform. There is no client id beside it because there is no third party.
- * @property isSignInRequired whether this deployment refuses to be used signed out
- *   (LNL-115). An instance-wide switch, the same for everyone who asks, and it
- *   rides here — rather than only on the admin-only [AdminSettingsState] — because
- *   the client it is drawn for is precisely the signed-out one, which has no other
- *   state to read it from. When true and [user] is null, the shell raises a
- *   landing gate. An affordance, not a wall: a genuinely private board is still
- *   guarded per-request by `AccessControl.canReadProject`, so this is the UX that
- *   stops a signed-out visitor being dropped onto an empty-looking app rather than
- *   the thing that keeps private data private. See [InstanceSettingKey].
  * @property isDisplayNameHidden whether this deployment hides the display-name
- *   override in the profile dialog (LNL-137). An instance-wide switch, the same for
- *   everyone who asks, and it rides here — rather than only on the admin-only
- *   [AdminSettingsState] — because the field it hides is one every signed-in user
- *   has, so every client must know whether to draw it. When true the profile
- *   dialog omits the override entirely and each user's name is the one their
+ *   override in the settings pane's You tab (LNL-137). An instance-wide switch, the
+ *   same for everyone who asks, and it rides here — rather than only on the
+ *   admin-only [AdminSettingsState] — because the field it hides is one every
+ *   signed-in user has, so every client must know whether to draw it. When true the
+ *   You tab omits the override entirely and each user's name is the one their
  *   sign-in provider gives. See [InstanceSettingKey.HIDE_DISPLAY_NAME].
  */
 @Serializable
@@ -184,11 +209,10 @@ data class SessionState(
     val isGoogleAvailable: Boolean = false,
     val googleClientId: String? = null,
     val isImpersonating: Boolean = false,
+    val isImpersonationArmed: Boolean = false,
     val canImpersonate: Boolean = false,
-    val impersonatableUsers: List<UserOption> = emptyList(),
     val pendingEmail: String? = null,
     val isEmailSignInAvailable: Boolean = false,
-    val isSignInRequired: Boolean = false,
     val isDisplayNameHidden: Boolean = false,
 ) {
     /**
@@ -203,16 +227,15 @@ data class SessionState(
 }
 
 /**
- * One entry in the impersonation menu.
+ * One person, as a name and an id: an assignee, a mention candidate, a recipient.
  *
- * A name and an id, and nothing else — no email, no provider, no admin flag. The
- * menu renders a name; anything more would be a directory of everyone's accounts
- * shipped to the browser for no reason. The id is unavoidable: it is what "act as
- * this one" has to name.
+ * A name and an id, and nothing else — no email, no provider, no admin flag. Every
+ * surface that uses one renders the name; anything more would be a directory of
+ * everyone's accounts shipped to the browser for no reason. The id is unavoidable:
+ * it is what "assign this one" has to name.
  *
- * @property isSelf whether this is the admin's own account. The menu shows it so
- *   the list matches the user table someone is looking at, but it is not worth
- *   picking — see the client's SignInView.
+ * @property isSelf whether this is the caller's own account. Surfaces that need to
+ *   mark or exclude "you" read this rather than comparing ids themselves.
  */
 @Serializable
 data class UserOption(
@@ -234,22 +257,28 @@ data class GoogleCodeRequest(
 )
 
 /**
- * "Let me act as this user."
+ * "Sign me in as this address."
  *
- * The only thing a client is permitted to say about identity, and note what it
- * does *not* say: it names who to become, never who is asking. Who is asking
- * comes from the session cookie, server-side, on every request — see the server's
- * Impersonations. A field here for the *acting* user would be the authorization
- * system asking the caller to authorize themselves.
+ * The only thing a client is permitted to say about identity, and note what it does
+ * *not* say: it names who to become, never who is asking. Who is asking comes from
+ * the probe cookie, server-side, and the request is refused unless that cookie
+ * carries a live grant whose owner still owns the instance — see the server's
+ * ProbeGrants. A field here for the *acting* user would be the authorization system
+ * asking the caller to authorize themselves.
  *
- * @property userId the account to act as, or null to act as a signed-out visitor —
- *   no account at all (LNL-103). Refused either way unless the calling session's
- *   real user is an admin. Null is a deliberate choice, not an omission: it is the
- *   only way to name "become nobody", which is a real thing to preview.
+ * So this is a **petition to become**, not an assertion of being. The distinction is
+ * the whole security model: an address in a body grants nothing on its own, and
+ * there is no header, field or parameter anywhere that asserts an identity.
+ *
+ * @property email the address to sign in as. Run through the genuine sign-in
+ *   pipeline, admission gate included — an address this deployment refuses is
+ *   refused here too, with the real refusal, which is one of the behaviours the
+ *   facility exists to check. An address with no account gets one, exactly as a
+ *   first sign-in would.
  */
 @Serializable
 data class ImpersonateRequest(
-    val userId: Long? = null,
+    val email: String,
 )
 
 /**

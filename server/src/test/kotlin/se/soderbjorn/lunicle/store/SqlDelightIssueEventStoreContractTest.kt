@@ -45,7 +45,7 @@ class SqlDelightIssueEventStoreContractTest : IssueEventStoreContract() {
     override val store: IssueEventStore = events
 
     override suspend fun newIssue(): Long {
-        val projectId = projectRepository.create("Project $seq", "EV${seq++}", isPublic = false).id
+        val projectId = projectRepository.create("Project $seq", "EV${seq++}").id
         val (id, _) = issueRepository.createDraft(projectId, Author.Nobody)
         val issue = issues.findById(id)!!
         issueRepository.save(

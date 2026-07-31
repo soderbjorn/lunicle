@@ -3,16 +3,25 @@
  *
  * Creating, renaming, reordering and deleting a sprint go through
  * `/api/projects/{id}/vocabulary/sprint` with every other kind — see
- * [VocabularyKind]. What is here is the residue: the three verbs a label has no
+ * [VocabularyKind]. What is here is the residue: the four verbs a label has no
  * meaning for, plus the per-issue write that schedules one card.
  *
  * ── Two gates, drawn where the rest of the API draws them ───────────────────
  *
- * **Shaping the sprint axis is admin.** Creating a sprint is already admin, because
- * it is a vocabulary write; activating and completing one are the same kind of act
- * on the same objects, and splitting them would produce the odd result that a
- * non-admin could end a sprint but not make the next one. So [Route.sprintRoutes]'s
- * first two handlers ask `canMutateProjects`, exactly as ProjectSettingsRoutes does.
+ * **Shaping the sprint axis is a maintainer's.** Creating a sprint is already a
+ * maintainer's, because it is a vocabulary write and sprints are one of the two
+ * vocabularies that sit on [ProjectRole.MAINTAINER]; activating, completing and
+ * reopening one are the same kind of act on the same objects, and splitting them
+ * would produce the odd result that somebody could end a sprint but not make the
+ * next one. So [Route.sprintRoutes]'s first three handlers ask `canEditVocabulary`
+ * for [VocabularyKind.SPRINT], exactly as the vocabulary routes do for the sprint
+ * rows themselves.
+ *
+ * This paragraph used to say those handlers ask `canMutateProjects`, "exactly as
+ * ProjectSettingsRoutes does", and called the gate admin. It was never that, and
+ * `canMutateProjects` has since become the *instance owner* — so the claim was off
+ * by four rungs rather than one. Nothing about planning a fortnight on one board
+ * belongs with the person answerable for the whole deployment.
  *
  * **Scheduling work into it is `canEditIssue`.** Which sprint an issue is in is a
  * column on that issue, and every other column on it — status, priority, assignee
@@ -20,8 +29,9 @@
  * a way to move somebody's work without the right to edit it; a heavier one would
  * mean the person doing the planning is the one person who cannot.
  *
- * That line falls in a useful place: an admin decides *that* there is a sprint,
- * and anybody who can edit the issues decides what goes in it.
+ * That line falls in a useful place: a maintainer decides *that* there is a sprint,
+ * and anybody who can edit the issues — a contributor on their own issue included —
+ * decides what goes in it.
  *
  * @see SprintRepository
  * @see ProjectSettingsRoutes
@@ -34,6 +44,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import se.soderbjorn.lunicle.clientserver.ApiRoutes
+import se.soderbjorn.lunicle.clientserver.VocabularyKind
 import se.soderbjorn.lunicle.clientserver.IssueSprintUpdate
 import se.soderbjorn.lunicle.clientserver.SprintActivation
 import se.soderbjorn.lunicle.clientserver.SprintCompletion
@@ -52,7 +63,7 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
      * collection endpoint meaning something other than delete.
      */
     post("${ApiRoutes.PROJECTS}/{id}/sprints/active") {
-        val (project, _) = call.adminSprintScope(deps) ?: return@post
+        val (project, _) = call.sprintScope(deps) ?: return@post
         val body = call.receiveOrNull<SprintActivation>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed activation.")
             return@post
@@ -65,13 +76,51 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
 
     /** Finish a sprint and roll its unfinished work forward. See SprintRepository.complete. */
     post("${ApiRoutes.PROJECTS}/{id}/sprints/{sid}/complete") {
-        val (project, sprintId) = call.adminSprintScope(deps, needsSprintId = true) ?: return@post
+        val (project, sprintId) = call.sprintScope(deps, needsSprintId = true) ?: return@post
         val body = call.receiveOrNull<SprintCompletion>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed completion.")
             return@post
         }
+        // Read BEFORE the write, and this one has to be: `complete` moves the
+        // unfinished work in a statement whose WHERE names the sprint being emptied, so
+        // afterwards there is no way to tell which issues it moved from which were
+        // never in it. Same reason recordSaved takes the labels as they stood.
+        //
+        // "Unfinished" is the server's answer, read off each status's requires_resolution
+        // rather than off a column named "Closed" — the rule Issues.sq's moveUnfinished
+        // states, restated here so the events describe exactly the rows the write moved.
+        val closingStatuses = deps.statuses.forProject(project.id)
+            .filter { it.requiresResolution }.map { it.id }.toSet()
+        val rolling = deps.issues.forProject(project.id)
+            .filter { it.sprintId == sprintId && it.statusId !in closingStatuses }
         deps.runSprintWrite(call) {
             deps.sprintRepository.complete(project.id, sprintId!!, body.moveUnfinishedTo)
+            // One event per issue that actually moved, for the reason the membership
+            // route above states at length: history is a log nobody is interrupted by,
+            // and completing a sprint is one of the two ways an issue's sprint changes
+            // in bulk. The finished work is deliberately untouched — it stays in the
+            // sprint it was done in, so nothing happened to it to record.
+            val actor = call.caller(deps).asAuthor()
+            rolling.forEach {
+                deps.history?.recordSprintChanged(it, body.moveUnfinishedTo, actor, agentName = null)
+            }
+            call.respond(deps.buildBoard(project, call.caller(deps)))
+        }
+    }
+
+    /**
+     * Un-finish a sprint. See SprintRepository.reopen for what it deliberately leaves
+     * alone.
+     *
+     * No body, so nothing to malform: the sprint is in the path and there is exactly
+     * one thing to do to it. The same maintainer gate as completing one — the two are
+     * the same act on the same object, and a rung that could end a sprint but not
+     * un-end it would be a rung that can only make the mistake.
+     */
+    post("${ApiRoutes.PROJECTS}/{id}/sprints/{sid}/reopen") {
+        val (project, sprintId) = call.sprintScope(deps, needsSprintId = true) ?: return@post
+        deps.runSprintWrite(call) {
+            deps.sprintRepository.reopen(project.id, sprintId!!)
             call.respond(deps.buildBoard(project, call.caller(deps)))
         }
     }
@@ -79,10 +128,11 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
     /**
      * Set exactly which issues are in a sprint — the planning dialog's save.
      *
-     * `canEditIssue` rather than admin, and checked against *every* issue in the
-     * request rather than against the project: editing is per issue in this
-     * codebase (authorship is one of the three ways to yes), so a caller who may
-     * edit four of five named issues must be refused rather than partly obeyed.
+     * `canEditIssue` rather than the project-wide rung the handlers above ask for,
+     * and checked against *every* issue in the request rather than against the
+     * project: editing is per issue in this codebase (authorship is one of the two
+     * ways to yes), so a caller who may edit four of five named issues must be
+     * refused rather than partly obeyed.
      *
      * Checked before anything is written, not per issue as the write goes, so a
      * refusal leaves the sprint exactly as it was. A half-applied plan is worse
@@ -119,6 +169,33 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
 
         deps.runSprintWrite(call) {
             deps.sprintRepository.setMembership(project.id, sprintId, body.issueIds)
+            // ── Bulk sprint writes DO record history, unlike bulk mail ──────────
+            //
+            // This is the deliberate opposite of the notification decision documented
+            // in SprintRepository's preamble, and the distinction is the point: a wall
+            // of near-identical *e-mails* makes people mute their notifications,
+            // whereas a history is a log nobody is interrupted by — and "how did this
+            // issue end up in Sprint 4" is exactly the question it exists to answer.
+            // Planning is where most issues get their sprint, so a history that skipped
+            // it would be silent about the common case and loud about the rare one.
+            //
+            // Recorded HERE rather than inside the repository, which is the split
+            // IssueHistory's own preamble describes: the write does not pass through
+            // `IssueRepository`, this call site has the actor, and doing it at the route
+            // means one implementation serves both backends rather than one per
+            // orchestrator. `current` and `incoming` above are the before-state, read
+            // before the write for exactly the reason recordSaved's labels are.
+            //
+            // Each recordSprintChanged is guarded on the sprint actually changing, so
+            // an unchanged member of a re-saved plan records nothing.
+            val actor = user.asAuthor()
+            val wanted = body.issueIds.distinct().toSet()
+            current.filter { it.id !in wanted }.forEach {
+                deps.history?.recordSprintChanged(it, null, actor, agentName = null)
+            }
+            incoming.forEach {
+                deps.history?.recordSprintChanged(it, sprintId, actor, agentName = null)
+            }
             call.respond(deps.buildBoard(project, call.caller(deps)))
         }
     }
@@ -149,6 +226,12 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
             // fired here, exactly as the drag and assign routes do. See
             // BoardDependencies.notifications.
             user?.let { deps.notifications.issueUpdated(issue, it.id, "scheduled") }
+            // And a history line, which scheduling left none of until LNL-215 — "how
+            // did this issue end up in Sprint 4" is exactly the question a history
+            // exists to answer. `issue` is the record as it stood BEFORE the write, so
+            // the guard inside recordSprintChanged can tell a real move from a menu
+            // click that chose the sprint the issue is already in.
+            deps.history?.recordSprintChanged(issue, body.sprintId, user.asAuthor(), agentName = null)
             val saved = deps.issues.findById(issue.id) ?: run {
                 call.respond(HttpStatusCode.NotFound, "That issue no longer exists.")
                 return@runSprintWrite
@@ -159,14 +242,14 @@ fun Route.sprintRoutes(deps: BoardDependencies) {
 }
 
 /**
- * Resolve the project — and optionally the sprint id — for an admin-only sprint
- * write, or respond and return null.
+ * Resolve the project — and optionally the sprint id — for a sprint write only a
+ * maintainer may make, or respond and return null.
  *
- * Readability first and admin second, so an id the caller may not see answers 404
+ * Readability first and the rung second, so an id the caller may not see answers 404
  * rather than 403: a 403 here would confirm a private project by that id exists,
  * which is the thing [readableProject] withholds.
  */
-private suspend fun ApplicationCall.adminSprintScope(
+private suspend fun ApplicationCall.sprintScope(
     deps: BoardDependencies,
     needsSprintId: Boolean = false,
 ): Pair<ProjectRecord, Long?>? {
@@ -176,7 +259,11 @@ private suspend fun ApplicationCall.adminSprintScope(
         return null
     }
     val project = readableProject(deps, user, projectId) ?: return null
-    if (!deps.access.canAdministerProject(user, project.id)) {
+    // A maintainer's, not an administrator's, since LNL-191: planning the next two
+    // weeks is work on a board somebody already edits every issue on. See
+    // ProjectRole.MAINTAINER and AccessControl.canEditVocabulary, which draws the
+    // same line for the sprint rows themselves.
+    if (!deps.access.canEditVocabulary(user, project.id, VocabularyKind.SPRINT)) {
         respond(HttpStatusCode.Forbidden, "You cannot configure this project's sprints.")
         return null
     }

@@ -177,37 +177,30 @@ class HttpLunicleApi(
         httpClient.post(baseUrl + ApiRoutes.SIGN_OUT).requireSuccess()
 
     /**
-     * Start acting as another user. Admin only, enforced server-side.
+     * Arm an impersonation: be signed **out**, and handed a short-lived grant.
      *
-     * The returned [SessionState] is the whole result: its `user` is now the
-     * impersonated one, and everything the caller may do has changed with it. The
-     * caller does not get to hold "I am now user 7" locally — it asks and is told,
-     * like every other question here.
-     *
-     * @param userId the account to act as. The server refuses unless this
-     *   session's real user is an admin; nothing in this call says who is asking,
-     *   because the cookie already does.
+     * What comes back is a signed-out state with `isImpersonationArmed` set — so
+     * everything renders as it would for a stranger, which is part of what is being
+     * checked. The grant itself never reaches this code: it is an HttpOnly cookie
+     * the browser carries and the server reads. See [ApiRoutes.IMPERSONATE_ARM].
      */
-    override suspend fun impersonate(userId: Long): SessionState =
-        httpClient.post(baseUrl + ApiRoutes.IMPERSONATE) {
-            contentType(ContentType.Application.Json)
-            setBody(ImpersonateRequest(userId))
-        }.requireSuccess()
+    override suspend fun armImpersonation(): SessionState =
+        httpClient.post(baseUrl + ApiRoutes.IMPERSONATE_ARM).requireSuccess()
 
     /**
-     * Act as a signed-out visitor — no account at all (LNL-103).
+     * Sign in as [email], on the armed grant's authority.
      *
-     * The same route as [impersonate] with a null id, since "become nobody" and
-     * "become that account" are one decision the server makes the same way. Refused
-     * unless this session's real user is an admin.
+     * A **real** sign-in through the deployment's real pipeline: an address the
+     * admission policy refuses is refused here with that refusal, and an address
+     * with no account gets one. Nothing is a preview. See [ApiRoutes.IMPERSONATE].
      */
-    override suspend fun impersonateSignedOut(): SessionState =
+    override suspend fun impersonate(email: String): SessionState =
         httpClient.post(baseUrl + ApiRoutes.IMPERSONATE) {
             contentType(ContentType.Application.Json)
-            setBody(ImpersonateRequest(userId = null))
+            setBody(ImpersonateRequest(email))
         }.requireSuccess()
 
-    /** Stop impersonating and go back to the account that signed in. */
+    /** Stop impersonating and go back to the owner who armed the grant. */
     override suspend fun stopImpersonating(): SessionState =
         httpClient.post(baseUrl + ApiRoutes.STOP_IMPERSONATING).requireSuccess()
 
@@ -354,33 +347,13 @@ class HttpLunicleApi(
         httpClient.get(baseUrl + ApiRoutes.ADMIN_SETTINGS).requireSuccess()
 
     /**
-     * Permit one user to have agent access, or withdraw it.
-     *
-     * A different flag from [setMcpEnabled], not merely a different caller:
-     * that one is the user turning their own switch on, this one is an admin
-     * deciding whether they have a switch. See [ApiRoutes.ADMIN_USER_MCP].
-     *
-     * @param isAllowed the state to move to, not "toggle". See [UserMcpAccess].
-     * @return the whole new [AdminSettingsState] rather than the row it touched,
-     *   for the reason the project-settings writes do it: the dialog re-renders
-     *   from the server's answer and never patches its own copy.
-     * @throws ApiFailure 403 for a non-admin, 404 if there is no such user.
-     */
-    override suspend fun setUserMcpAllowed(userId: Long, isAllowed: Boolean): AdminSettingsState =
-        httpClient.post(baseUrl + ApiRoutes.ADMIN_USER_MCP) {
-            contentType(ContentType.Application.Json)
-            setBody(UserMcpAccess(userId, isAllowed))
-        }.requireSuccess()
-
-    /**
-     * Set one instance-wide switch (LNL-115): require sign-in, or open project
-     * creation.
+     * Set one instance-wide switch: whether projects may be published, and what each
+     * tier of signed-in person may do (LNL-192).
      *
      * @param key which switch, @param isEnabled the state to move it to — named,
      *   not "toggle", see [SetInstanceSettingRequest].
-     * @return the whole refreshed [AdminSettingsState], like [setUserMcpAllowed]:
-     *   the General tab re-renders from the server's answer and never patches its
-     *   own copy.
+     * @return the whole refreshed [AdminSettingsState]: the General tab re-renders
+     *   from the server's answer and never patches its own copy.
      * @throws ApiFailure 403 for a non-admin.
      */
     override suspend fun setInstanceSetting(key: InstanceSettingKey, isEnabled: Boolean): AdminSettingsState =
@@ -390,11 +363,64 @@ class HttpLunicleApi(
         }.requireSuccess()
 
     /**
+     * Set who may hold an account on this deployment (LNL-192).
+     *
+     * Its own call rather than a sixth switch, because it is the one setting here
+     * with a refusal: the deployment's configuration can leave a policy
+     * unhonourable, and the server says so rather than storing it. See
+     * [AdmissionState].
+     *
+     * @throws ApiFailure 403 for a non-admin, 409 carrying the server's sentence
+     *   when this deployment cannot admit people that way.
+     */
+    override suspend fun setAdmissionPolicy(policy: AdmissionPolicy): AdminSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.ADMIN_ADMISSION) {
+            contentType(ContentType.Application.Json)
+            setBody(SetAdmissionPolicyRequest(policy))
+        }.requireSuccess()
+
+    /**
+     * Say what rung one audience arrives at in a **newly created** project (LNL-195).
+     *
+     * Keys rather than typed enums in the signature, because the audiences and rungs this
+     * deployment has are the server's list — the screen is handed
+     * [AdminSettingsState.newProjectAudiences] and [AdminSettingsState.rungs] and echoes a
+     * key back, exactly as a project's own Access rows do.
+     *
+     * @param roleKey the rung, or null to hand that audience nothing — which is not the
+     *   same as the lowest rung, and is what a fresh instance has.
+     * @throws ApiFailure 403 for a non-admin, 409 when a guest row is asked for on a
+     *   deployment whose public-projects veto stands.
+     */
+    override suspend fun setNewProjectAudience(audienceKey: String, roleKey: String?): AdminSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.ADMIN_NEW_PROJECT_AUDIENCE) {
+            contentType(ContentType.Application.Json)
+            setBody(AudienceGrant(audienceKey, roleKey))
+        }.requireSuccess()
+
+    /**
+     * Hand the whole deployment to another account (LNL-198). The owner's alone.
+     *
+     * @param userId the successor, from [AdminSettingsState]'s
+     *   `ownership.handOverCandidates`. A claim rather than an eligibility: the route
+     *   re-derives who may be handed the instance and refuses anything else.
+     * @return the whole refreshed [AdminSettingsState] — which describes an instance the
+     *   caller no longer owns, and is what tells the screen to put the button away.
+     * @throws ApiFailure 403 for anybody but the owner, 404 for an account that does not
+     *   exist, 409 carrying the server's own sentence for one that may not be handed it.
+     */
+    override suspend fun handOverInstance(userId: Long): AdminSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.ADMIN_OWNERSHIP) {
+            contentType(ContentType.Application.Json)
+            setBody(HandOverInstanceRequest(userId))
+        }.requireSuccess()
+
+    /**
      * Put the instance's projects in a given order.
      *
      * The whole new order, not a delta — see [ProjectOrder]. Admin only.
      *
-     * @return the whole refreshed [AdminSettingsState], like [setUserMcpAllowed]:
+     * @return the whole refreshed [AdminSettingsState], like [setInstanceSetting]:
      *   the Projects tab re-renders from the server's answer and never patches its
      *   own copy, so the picker order and the tab's list cannot drift apart.
      * @throws ApiFailure 403 for a non-admin, 409 carrying the server's sentence if
@@ -518,10 +544,16 @@ class HttpLunicleApi(
      * @throws ApiFailure 409 if the name is blank or taken, carrying the server's
      *   own sentence, which the dialog shows verbatim.
      */
-    override suspend fun addVocabulary(projectId: Long, kind: VocabularyKind, name: String): ProjectSettingsState =
+    override suspend fun addVocabulary(
+        projectId: Long,
+        kind: VocabularyKind,
+        name: String,
+        inverseName: String?,
+        marksBlocked: Boolean,
+    ): ProjectSettingsState =
         httpClient.post(baseUrl + ApiRoutes.vocabulary(projectId, kind)) {
             contentType(ContentType.Application.Json)
-            setBody(VocabularyAdd(name))
+            setBody(VocabularyAdd(name, inverseName, marksBlocked))
         }.requireSuccess()
 
     /**
@@ -538,10 +570,12 @@ class HttpLunicleApi(
         name: String,
         requiresResolution: Boolean,
         isDone: Boolean,
+        inverseName: String?,
+        marksBlocked: Boolean,
     ): ProjectSettingsState =
         httpClient.put(baseUrl + ApiRoutes.vocabularyItem(projectId, kind, itemId)) {
             contentType(ContentType.Application.Json)
-            setBody(VocabularyEdit(name, requiresResolution, isDone))
+            setBody(VocabularyEdit(name, requiresResolution, isDone, inverseName, marksBlocked))
         }.requireSuccess()
 
     /**
@@ -610,18 +644,33 @@ class HttpLunicleApi(
         }.requireSuccess()
 
     /**
-     * Set this project's board-display settings — whether cards show the author
-     * (LNL-157). Returns the refreshed [ProjectSettingsState].
+     * Set how this project's board reads — whether cards show the author (LNL-157)
+     * and whether issue numbers are hidden (LNL-194). Returns the refreshed
+     * [ProjectSettingsState].
+     *
+     * Both together, because the route takes the pair: see [ProjectDisplaySettings].
      *
      * @throws ApiFailure 403 for a caller who does not administer this project.
      */
     override suspend fun setProjectDisplaySettings(
         projectId: Long,
         showIssueAuthor: Boolean,
+        hideIssueNumbers: Boolean,
     ): ProjectSettingsState =
         httpClient.post(baseUrl + ApiRoutes.projectDisplay(projectId)) {
             contentType(ContentType.Application.Json)
-            setBody(ProjectDisplaySettings(showIssueAuthor))
+            setBody(ProjectDisplaySettings(showIssueAuthor, hideIssueNumbers))
+        }.requireSuccess()
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * @throws ApiFailure 403 for a caller who does not administer this project.
+     */
+    override suspend fun setProjectEstimateMode(projectId: Long, mode: String): ProjectSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.projectEstimates(projectId)) {
+            contentType(ContentType.Application.Json)
+            setBody(ProjectEstimateSettings(mode))
         }.requireSuccess()
 
     // ── Forums ───────────────────────────────────────────────────────────────
@@ -893,21 +942,42 @@ class HttpLunicleApi(
             setBody(MessageEdit(body))
         }.requireSuccess()
 
-    /** Delete a message. The author, or a system administrator. */
+    /** Delete a message. Nobody may: private messages are retired (LNL-190). */
     override suspend fun deleteMessage(conversationId: Long, messageId: Long): ConversationDetail =
         httpClient.delete(baseUrl + ApiRoutes.conversationMessage(conversationId, messageId))
             .requireSuccess()
 
-    /** Grant or revoke one role for one user in one project. Admin only. */
-    override suspend fun setProjectRole(
-        projectId: Long,
-        userId: Long,
-        roleKey: String,
-        isGranted: Boolean,
-    ): ProjectSettingsState =
+    /**
+     * Put one person on one rung in one project, or take them off it. Admin and above;
+     * the two senior rungs are an owner's. Null is "no access".
+     */
+    override suspend fun setProjectRole(projectId: Long, userId: Long, roleKey: String?): ProjectSettingsState =
         httpClient.post(baseUrl + ApiRoutes.projectRoles(projectId)) {
             contentType(ContentType.Application.Json)
-            setBody(RoleGrant(userId, roleKey, isGranted))
+            setBody(RungGrant(userId, roleKey))
+        }.requireSuccess()
+
+    /** Say at what rung an audience arrives here. The project's owner's. */
+    override suspend fun setProjectAudience(
+        projectId: Long,
+        audienceKey: String,
+        roleKey: String?,
+    ): ProjectSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.projectAudience(projectId)) {
+            contentType(ContentType.Application.Json)
+            setBody(AudienceGrant(audienceKey, roleKey))
+        }.requireSuccess()
+
+    /** Add an address holding a rung. No mail is sent; see [PersonAdd]. */
+    override suspend fun addProjectPerson(projectId: Long, email: String, roleKey: String): ProjectSettingsState =
+        httpClient.post(baseUrl + ApiRoutes.projectPeople(projectId)) {
+            contentType(ContentType.Application.Json)
+            setBody(PersonAdd(email, roleKey))
+        }.requireSuccess()
+
+    override suspend fun projectPeopleCandidates(projectId: Long, query: String): PersonCandidates =
+        httpClient.get(baseUrl + ApiRoutes.projectPeopleCandidates(projectId)) {
+            parameter("q", query)
         }.requireSuccess()
 
     // ── The board ────────────────────────────────────────────────────────────
@@ -1036,6 +1106,31 @@ class HttpLunicleApi(
         }.requireSuccess()
 
     /**
+     * Link this issue to another (LNL-215).
+     *
+     * @return the refreshed [IssueDetail], so the relations list re-renders from the
+     *   server's truth.
+     * @throws ApiFailure 400 when the link breaks a rule — another project, itself, a
+     *   pair already linked under this kind in either direction, or an unpublished
+     *   issue. The message says which.
+     */
+    override suspend fun addIssueRelation(id: Long, toIssueId: Long, kindId: Long): IssueDetail =
+        httpClient.post(baseUrl + ApiRoutes.issueRelations(id)) {
+            contentType(ContentType.Application.Json)
+            setBody(IssueRelationRequest(toIssueId, kindId))
+        }.requireSuccess()
+
+    /**
+     * Remove one link, by its own id (LNL-215).
+     *
+     * @throws ApiFailure 400 when the link does not belong to this issue — which is
+     *   what stops an id from another board being removable by anyone who can edit any
+     *   issue at all.
+     */
+    override suspend fun removeIssueRelation(id: Long, relationId: Long): IssueDetail =
+        httpClient.delete(baseUrl + ApiRoutes.issueRelation(id, relationId)).requireSuccess()
+
+    /**
      * Make a sprint the one the board scopes to, or pass null for none.
      *
      * Returns the whole refreshed board, not the sprint: activating changes which
@@ -1053,6 +1148,10 @@ class HttpLunicleApi(
             contentType(ContentType.Application.Json)
             setBody(SprintCompletion(moveUnfinishedTo))
         }.requireSuccess()
+
+    /** Clear a sprint's completion stamp. No body — the path says everything (LNL-196). */
+    override suspend fun reopenSprint(projectId: Long, sprintId: Long): BoardState =
+        httpClient.post(baseUrl + ApiRoutes.sprintReopening(projectId, sprintId)).requireSuccess()
 
     /** Set exactly which issues are in a sprint — the planning dialog's save. */
     override suspend fun setSprintIssues(projectId: Long, sprintId: Long, issueIds: List<Long>): BoardState =

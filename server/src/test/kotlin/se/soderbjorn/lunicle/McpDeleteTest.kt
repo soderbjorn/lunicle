@@ -5,13 +5,14 @@
  * back, so what is pinned here is narrower and stricter than "it works":
  *
  *  - **The two gates are NOT the same, and must not converge.** Deleting an issue
- *    is [AccessControl.canDeleteIssue], which is `canEditIssue`, which
- *    `change_unowned_issues` satisfies. Deleting a comment is
- *    [AccessControl.canEditComment], which it does not — that role is a grant
- *    over issues and has never meant "and you may erase what other people
- *    wrote". Every project that has handed the role out would be widened by a
- *    build that used one function for both, silently and retroactively. The pair
- *    of tests in "the roles diverge" is the whole point of this file.
+ *    is [AccessControl.canDeleteIssue], which a project administrator satisfies —
+ *    a rung above the maintainer who edits anybody's issue, since LNL-191 split the
+ *    two. Deleting a comment is [AccessControl.canEditComment], which no project
+ *    rung satisfies at all: it is authorship, and running a board has never meant
+ *    "and you may erase what other people wrote". Every project that has handed a
+ *    senior rung out would be widened by a build that used one function for both,
+ *    silently and retroactively. The pair of tests in "the roles diverge" is the
+ *    whole point of this file.
  *  - **A refusal must not destroy anything.** Asserted on both sides of every
  *    refusal: the tool said no *and* the row is still there. A check that runs
  *    after the write refuses just as convincingly.
@@ -64,6 +65,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
+import se.soderbjorn.lunicle.store.InstanceSettings
 
 class McpDeleteTest {
     private val file: File = Files.createTempFile("lunicle-mcp-delete", ".db").toFile().also { it.delete() }
@@ -91,8 +93,14 @@ class McpDeleteTest {
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
     private val sprintRepository = SprintRepository(database, sprints, projects, issues, statuses)
     private val vocabularies =
-        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues)
-    private val access = AccessControl(roles)
+        VocabularyRepository(database, labels, components, statuses, priorities, resolutions, sprints, versions, issues = issues)
+    // Agent access is permitted per tier and defaults to off (LNL-192). These files
+    // are about what an agent may *do*, not about who may bring one, so both tiers are
+    // permitted here and the user's own switch stays the interesting half.
+    private val instanceSettings = InMemoryInstanceSettingsStore(
+        InstanceSettings(staffMayUseAgents = true, memberMayUseAgents = true),
+    )
+    private val access = AccessControl(roles, instanceSettings)
 
     private val clients = OAuthClientStore(database)
     private val loginStates = OAuthLoginStateStore(database)
@@ -215,7 +223,7 @@ class McpDeleteTest {
     fun `a private project the caller holds nothing in is invisible, so the refusal hides it`(): Unit =
         runBlocking {
             val f = seed()
-            val other = projectRepository.create("Secret", "SEC", isPublic = false)
+            val other = projectRepository.create("Secret", "SEC")
             val created = issueRepository.createDraft(other.id, Author.Account(f.adminId))
 
             withMcp { client ->
@@ -238,14 +246,21 @@ class McpDeleteTest {
      *
      * Without this pair, a build that answered "No such issue." to every failed
      * delete would pass.
+     *
+     * **Contributor and not Viewer**, which it was until the agent floor landed. A
+     * Viewer's project is not visible to an agent at all now — see
+     * [AGENT_PROJECT_FLOOR] — so this seat produced "No such issue." and collapsed the
+     * very distinction the test exists to draw. Contributor is the lowest rung that
+     * clears the floor while still being nowhere near deleting an issue, which needs
+     * [ProjectRole.ADMIN]; so the pair goes on saying exactly what it always said.
      */
     @Test
     fun `a member of a private project gets the permission refusal, not the invisible one`(): Unit =
         runBlocking {
             val f = seed()
-            val other = projectRepository.create("Secret", "SEC", isPublic = false)
+            val other = projectRepository.create("Secret", "SEC")
             val created = issueRepository.createDraft(other.id, Author.Account(f.adminId))
-            roles.grant(f.ordinaryId, other.id, Role.VIEW_PROJECT)
+            roles.setRole(f.ordinaryId, other.id, ProjectRole.CONTRIBUTOR)
 
             withMcp { client ->
                 val result =
@@ -291,19 +306,33 @@ class McpDeleteTest {
     // ── The roles diverge ────────────────────────────────────────────────────
 
     /**
-     * `change_unowned_issues` reaches an issue…
+     * A maintainer edits anyone's issue and does **not** delete one; an administrator
+     * does.
      *
-     * Half a claim on its own; it exists to be read against the test below it.
+     * This test used to read "change_unowned_issues lets you delete someone else's
+     * issue", because deleting was the same rule as editing on the argument that
+     * anyone who can open the modal can already empty the issue of everything it
+     * said. LNL-191 draws the line one rung higher instead: emptying an issue leaves
+     * a row somebody can still find and argue with, and deleting it does not. So the
+     * claim is inverted rather than dropped, and the administrator half is asserted
+     * in the same test so the pair cannot drift into "nobody can delete".
      */
     @Test
-    fun `change_unowned_issues lets you delete someone elses issue`(): Unit = runBlocking {
+    fun `a maintainer does not delete someone elses issue, and an administrator does`(): Unit = runBlocking {
         val f = seed()
-        roles.grant(f.ordinaryId, f.projectId, Role.CHANGE_UNOWNED_ISSUES)
+        roles.setRole(f.ordinaryId, f.projectId, ProjectRole.MAINTAINER)
         val issueId = published(f, author = Author.Account(f.adminId))
 
         withMcp { client ->
-            val result = client.callTool(tokenFor(f.ordinaryId), "delete_issue", """{"issue_id":$issueId}""")
-            assertTrue(!result.isError, "change_unowned_issues did not reach deletion: ${result.text}")
+            val refused = client.callTool(tokenFor(f.ordinaryId), "delete_issue", """{"issue_id":$issueId}""")
+            assertTrue(refused.isError, "A maintainer deleted somebody else's issue.")
+        }
+        assertNotNull(issues.findById(issueId), "A refused delete removed the issue anyway.")
+
+        roles.setRole(f.ordinaryId, f.projectId, ProjectRole.ADMIN)
+        withMcp { client ->
+            val allowed = client.callTool(tokenFor(f.ordinaryId), "delete_issue", """{"issue_id":$issueId}""")
+            assertTrue(!allowed.isError, "An administrator could not delete an issue: ${allowed.text}")
         }
         assertNull(issues.findById(issueId))
     }
@@ -318,9 +347,9 @@ class McpDeleteTest {
      * erase other people's words in projects that granted it long ago.
      */
     @Test
-    fun `change_unowned_issues does NOT let you delete someone elses comment`(): Unit = runBlocking {
+    fun `a maintainer does NOT delete someone elses comment`(): Unit = runBlocking {
         val f = seed()
-        roles.grant(f.ordinaryId, f.projectId, Role.CHANGE_UNOWNED_ISSUES)
+        roles.setRole(f.ordinaryId, f.projectId, ProjectRole.MAINTAINER)
         val issueId = published(f, author = Author.Account(f.adminId))
         val commentId = commentBy(issueId, Author.Account(f.adminId), body = "words that are not yours")
 
@@ -328,9 +357,9 @@ class McpDeleteTest {
             val result = client.callTool(tokenFor(f.ordinaryId), "delete_comment", """{"comment_id":$commentId}""")
             assertTrue(
                 result.isError,
-                "change_unowned_issues reached someone else's COMMENT. That role is a grant over " +
+                "The maintainer rung reached someone else's COMMENT. That rung is a grant over " +
                     "issues; widening it to other people's words is retroactive for every project " +
-                    "that has already granted it.",
+                    "that has already handed it out.",
             )
         }
         assertEquals(
@@ -345,15 +374,20 @@ class McpDeleteTest {
     private class Fixture(val adminId: Long, val ordinaryId: Long, val projectId: Long)
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val admin = users.upsert(ProviderIdentity(AuthProvider.GITHUB, "gh-admin", "Admin", "admin@example.com"))
         val ordinary = users.upsert(
             ProviderIdentity(AuthProvider.GITHUB, "gh-ordinary", "Ordinary", "ordinary@example.com"),
         )
-        assertTrue(!ordinary.isSysAdmin, "The fixture's second user is somehow an admin.")
-        val project = projectRepository.create("Lunamux", "LMX", isPublic = false)
-        roles.grant(ordinary.id, project.id, Role.CREATE_ISSUE)
-        roles.grant(ordinary.id, project.id, Role.COMMENT_ON_ISSUE)
+        assertTrue(!ordinary.isInstanceAdmin, "The fixture's second user is somehow an admin.")
+        val project = projectRepository.create("Lunamux", "LMX")
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        roles.setRole(ordinary.id, project.id, ProjectRole.CONTRIBUTOR)
+        // Production seats the instance owner at boot (see InstanceLadder.kt), and
+        // four rules — creating and managing projects, backfilling authorship, agent
+        // mail, out-of-band attachment deletes — are the owner's alone rather than an
+        // administrator's. A fixture that skipped this would be testing an instance
+        // nobody runs: one with an administrator and no owner.
+        seatInstanceOwner(users, instanceSettings)
         return Fixture(admin.id, ordinary.id, project.id)
     }
 
@@ -386,7 +420,6 @@ class McpDeleteTest {
 
     /** A real access token for [userId], with MCP enabled — see McpCommentEditTest.tokenFor. */
     private suspend fun tokenFor(userId: Long): String {
-        users.setMcpAllowed(userId, true)
         users.setMcpEnabled(userId, true)
         val client =
             clients.register("Test agent", listOf("http://localhost:1234/callback"), listOf("authorization_code"))
@@ -429,8 +462,8 @@ class McpDeleteTest {
         tokens = tokens,
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         config = OAuthConfig(google = null),
+        instanceSettings = instanceSettings,
     )
 
     private fun boardDependencies() = BoardDependencies(
@@ -443,7 +476,7 @@ class McpDeleteTest {
         forumPosts = ForumPostRepository(
             ForumPostStore(database), ForumCommentStore(database), attachments, attachmentStore,
         ),
-        audience = ProjectAudience(users, roles),
+        audience = ProjectAudience(users, roles, instanceSettings),
         // Not exercised by this file; here because a route bundle is one object
         // and there is no half of it. See MessageTest for the tests that do.
         conversations = ConversationRepository(
@@ -465,7 +498,6 @@ class McpDeleteTest {
         attachmentTickets = AttachmentTicketStore(),
         sessions = sessions,
         users = users,
-        impersonations = Impersonations(),
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )

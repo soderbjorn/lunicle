@@ -43,7 +43,7 @@ class SqlDelightRoleStoreContractTest : RoleStoreContract() {
     }
 
     override suspend fun newProject(): Long =
-        projectRepository.create("Project $seq", "RL${seq++}", isPublic = false).id
+        projectRepository.create("Project $seq", "RL${seq++}").id
 
     @AfterTest
     fun tearDown() {

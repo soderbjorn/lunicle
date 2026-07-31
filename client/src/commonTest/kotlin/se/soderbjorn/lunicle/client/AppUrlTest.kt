@@ -319,6 +319,86 @@ class AppUrlTest {
         )
     }
 
+    // ── The settings pane (LNL-193) ──────────────────────────────────────────
+
+    /**
+     * The shape the whole pane is addressed with.
+     *
+     * `?settings=projects&projectId=7&section=access` — the tab, the project it is
+     * showing, and the section of it. The project rides `?projectId=`, the
+     * parameter that has always answered "which project", rather than a second
+     * name for the same question.
+     */
+    @Test
+    fun `a settings tab, its project and its section are written together`() {
+        assertEquals(
+            "projectId=7&settings=projects&section=access",
+            nextSearch(
+                "",
+                ticket = null,
+                projectId = 7,
+                tab = null,
+                settings = "projects",
+                section = "access",
+            ),
+        )
+    }
+
+    /**
+     * Closing the pane clears both, and leaves `?projectId=` where it was.
+     *
+     * The split this whole file is about, one parameter apart: the tab and the
+     * section are views and a null clears them, while the project is a position
+     * the caller may not know and a null leaves it alone. Getting that backwards
+     * would mean closing settings forgot which board was open.
+     */
+    @Test
+    fun `a null settings tab clears the tab and the section but not the project`() {
+        assertEquals(
+            "projectId=7",
+            nextSearch(
+                "?projectId=7&settings=projects&section=access",
+                ticket = null,
+                projectId = null,
+                tab = null,
+                settings = null,
+                section = null,
+            ),
+        )
+    }
+
+    /** And the embed's parameter survives the pane opening over it. */
+    @Test
+    fun `opening settings leaves an unknown parameter alone`() {
+        assertEquals(
+            "project=Lunamux&settings=you",
+            nextSearch("?project=Lunamux", ticket = null, projectId = null, tab = null, settings = "you"),
+        )
+    }
+
+    /**
+     * A settings deep link survives its own page load.
+     *
+     * The first sync after a `?settings=` link is opened runs before anything has
+     * rendered, and an implementation that only wrote parameters it had been
+     * *given* would strip the link on the way in. Asserting the no-change null is
+     * how that stays true: the pane is open at what the URL says, so there is
+     * nothing to write.
+     */
+    @Test
+    fun `the settings deep link survives its own page load`() {
+        assertNull(
+            nextSearch(
+                "?projectId=7&settings=projects&section=general",
+                ticket = null,
+                projectId = 7,
+                tab = null,
+                settings = "projects",
+                section = "general",
+            ),
+        )
+    }
+
     // ── Parsing ──────────────────────────────────────────────────────────────
 
     /** A value containing `=` keeps every one after the first, so it round-trips. */

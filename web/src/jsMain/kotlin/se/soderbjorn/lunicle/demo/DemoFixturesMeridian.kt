@@ -17,7 +17,14 @@
  *  - **Agents.** Several issues and comments carry an `agentName`, because on this
  *    project an agent triages the inbox, files regressions it finds while running
  *    the benchmarks, and posts bisect results. That is the workflow Lunicle's MCP
- *    server exists for, so the demo ought to contain one.
+ *    server exists for, so the demo ought to contain one. One issue goes a step
+ *    further and is *assigned* to a maintainer's agent (LNL-215) — a different claim
+ *    from `agentName`, and the one the board draws as a badge on the avatar.
+ *
+ * It also estimates in **points** (LNL-215), where the Amiga board estimates in time
+ * and [seedKlinikProject] estimates not at all. That is not decoration: an open-source
+ * project cannot promise anybody's hours, so relative size is the only estimate that
+ * means anything here — which is exactly the argument for the setting existing at all.
  *
  * Meridian itself is invented but ordinary: a typed key–value store with a
  * coroutine API and `Flow` observation, published for JVM, Android, the Apple
@@ -36,6 +43,9 @@
 package se.soderbjorn.lunicle.demo
 
 import se.soderbjorn.lunicle.clientserver.AuthProvider
+import se.soderbjorn.lunicle.clientserver.Estimate
+import se.soderbjorn.lunicle.clientserver.EstimateMode
+import se.soderbjorn.lunicle.clientserver.EstimateUnit
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
 import se.soderbjorn.lunicle.clientserver.NotificationKind
 
@@ -84,13 +94,15 @@ internal fun seedMeridianProject(w: DemoWorld) {
         id = w.allocId(),
         name = "Meridian KMP",
         prefix = "MRD",
-        isPublic = true,
         discussionsEnabled = false,
         messagesEnabled = false,
         // An open tracker makes people categorise what they are filing.
         requireLabel = true,
         // Who reported it matters when most reporters are strangers.
         showIssueAuthor = true,
+        // Points, not time (LNL-215) — nobody here is on anybody's clock, so a number of
+        // days would be a promise the project cannot make. See the file preamble.
+        estimateMode = EstimateMode.POINTS,
     )
     w.projects.add(p)
 
@@ -172,20 +184,18 @@ internal fun seedMeridianProject(w: DemoWorld) {
 
     // No sprints: releases are the rhythm here. See the file preamble.
 
+    // Relation kinds — the three every project is created with (LNL-215), from the same
+    // helper `provisionProject` uses. An open tracker leans on these harder than anywhere
+    // else: half of triage is deciding whether a new report is a duplicate of an old one.
+    val (rkBlockedBy, rkDuplicateOf, rkRelatedTo) = seedDefaultRelationKinds(w, p)
+
     // Membership. Janeway owns the instance and therefore the board; Tova is the
     // lead maintainer; the contributors may file and talk, and nothing else.
-    p.members[janeway.id] = mutableSetOf(DemoRoleKeys.PROJECT_OWNER)
-    p.members[tova.id] = mutableSetOf(DemoRoleKeys.PROJECT_ADMIN, DemoRoleKeys.BE_ASSIGNED_ISSUE)
-    val maintainer = mutableSetOf(
-        DemoRoleKeys.CREATE_ISSUE,
-        DemoRoleKeys.COMMENT_ON_ISSUE,
-        DemoRoleKeys.CHANGE_UNOWNED_ISSUES,
-        DemoRoleKeys.BE_ASSIGNED_ISSUE,
-    )
-    listOf(rafael, wen, ada).forEach { p.members[it.id] = maintainer.toMutableSet() }
-    val contributor = mutableSetOf(DemoRoleKeys.CREATE_ISSUE, DemoRoleKeys.COMMENT_ON_ISSUE)
-    listOf(kasper, yara, sofia).forEach { p.members[it.id] = contributor.toMutableSet() }
-    p.members[jonas.id] = mutableSetOf(DemoRoleKeys.VIEW_PROJECT, DemoRoleKeys.COMMENT_ON_ISSUE)
+    p.members[janeway.id] = DemoRungKeys.OWNER
+    p.members[tova.id] = DemoRungKeys.ADMIN
+    listOf(rafael, wen, ada).forEach { p.members[it.id] = DemoRungKeys.MAINTAINER }
+    listOf(kasper, yara, sofia).forEach { p.members[it.id] = DemoRungKeys.CONTRIBUTOR }
+    p.members[jonas.id] = DemoRungKeys.CONTRIBUTOR
 
     // ── Issues ────────────────────────────────────────────────────────────────
     //
@@ -193,6 +203,18 @@ internal fun seedMeridianProject(w: DemoWorld) {
     // this board, and `fixedVersion` is the release something actually shipped in.
 
     var order = 0.0
+
+    /**
+     * An estimate in this board's unit: whole points, on whatever scale the maintainers
+     * mean by them (LNL-215).
+     *
+     * A one-line helper rather than an inline `Estimate(n, POINTS)` at each call, so that
+     * the unit is stated once per board. Two boards estimating in different units is the
+     * point of the feature, and it is also the easiest thing to get quietly wrong in a
+     * fixture — a stray `MINUTES` here would render "8m" beside a story nobody could do
+     * in eight minutes, and nothing would complain.
+     */
+    fun points(amount: Int): Estimate = Estimate(amount.toLong(), EstimateUnit.POINTS)
 
     fun issue(
         title: String,
@@ -209,6 +231,13 @@ internal fun seedMeridianProject(w: DemoWorld) {
         createdDaysAgo: Int,
         updatedDaysAgo: Int = createdDaysAgo,
         agentName: String? = null,
+        estimate: Estimate? = null,
+        /**
+         * Whether the work goes to [assignee]'s agent rather than to them in person
+         * (LNL-215). Only ever meaningful beside an assignee, which is why it is folded
+         * against one below rather than trusted.
+         */
+        assigneeIsAgent: Boolean = false,
     ): DemoIssue {
         val created = daysAgo(createdDaysAgo)
         val issue = DemoIssue(
@@ -222,6 +251,8 @@ internal fun seedMeridianProject(w: DemoWorld) {
             authorId = author.id,
             agentName = agentName,
             assigneeId = assignee?.id,
+            assigneeIsAgent = assignee != null && assigneeIsAgent,
+            estimate = estimate,
             plannedVersionId = plannedVersion?.id,
             fixedVersionId = fixedVersion?.id,
             isDraft = false,
@@ -250,6 +281,33 @@ internal fun seedMeridianProject(w: DemoWorld) {
     ) {
         p.events.add(
             DemoEvent(w.allocId(), issue.id, kind, value, emptyList(), author.id, agentName, daysAgo(daysAgoValue)),
+        )
+    }
+
+    /**
+     * Link two issues, and record it on both (LNL-215).
+     *
+     * The same helper the other two boards carry, for the same reasons: one stored row,
+     * two history events, each carrying its own side's word. [from] is the side the
+     * kind's own name describes — `relate(a, rkDuplicateOf, b)` is "a is a duplicate of
+     * b" — and for a blocking kind it is also the side that dims, so the argument order
+     * is load-bearing rather than a style choice.
+     */
+    fun relate(from: DemoIssue, kind: DemoRelationKind, to: DemoIssue, author: DemoUser, daysAgoValue: Int) {
+        p.relations.add(DemoRelation(w.allocId(), from.id, to.id, kind.id))
+        p.events.add(
+            DemoEvent(
+                w.allocId(), from.id, IssueEventKind.RELATION_ADDED, "${p.prefix}-${to.number}",
+                authorId = author.id, createdAt = daysAgo(daysAgoValue),
+                relationKind = kind.labelFor(isFromSide = true),
+            ),
+        )
+        p.events.add(
+            DemoEvent(
+                w.allocId(), to.id, IssueEventKind.RELATION_ADDED, "${p.prefix}-${from.number}",
+                authorId = author.id, createdAt = daysAgo(daysAgoValue),
+                relationKind = kind.labelFor(isFromSide = false),
+            ),
         )
     }
 
@@ -391,7 +449,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "needs the most careful reading.",
         status = stReview, priority = prMinor, author = yara, assignee = wen,
         labels = listOf(lbFeature), components = listOf(cmWeb), plannedVersion = ver110,
-        createdDaysAgo = 21, updatedDaysAgo = 2,
+        createdDaysAgo = 21, updatedDaysAgo = 2, estimate = points(5),
     )
     event(issWasmWasi, IssueEventKind.ASSIGNEE_CHANGED, tova, 20, value = "Wen Li")
     comment(issWasmWasi, wen, "Reading through it now. The implementation is good; my only real note is that the path handling assumes a preopened directory at the root, which we should document rather than silently require.", 3)
@@ -415,7 +473,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "actually compare against ours.",
         status = stReview, priority = prMinor, author = tova, assignee = tova,
         labels = listOf(lbFeature, lbDocs), components = listOf(cmDocs, cmJvm), plannedVersion = ver110,
-        createdDaysAgo = 16, updatedDaysAgo = 4,
+        createdDaysAgo = 16, updatedDaysAgo = 4, estimate = points(3),
     )
 
     // ── In progress — the 2.0 API rework, as an epic ──────────────────────────
@@ -428,6 +486,9 @@ internal fun seedMeridianProject(w: DemoWorld) {
         status = stProgress, priority = prMajor, author = tova, assignee = tova,
         labels = listOf(lbBreaking, lbFeature), components = listOf(cmCore), plannedVersion = ver200,
         createdDaysAgo = 24, updatedDaysAgo = 1,
+        // The epic, and the biggest number on the board — an estimate of the whole rework
+        // rather than of any one of its children.
+        estimate = points(13),
     )
     comment(issApi2, janeway, "As long as 1.x keeps getting fixes while this lands. People on the old API should not feel pushed.", 6)
     comment(issApi2, tova, "> Janeway: 1.x keeps getting fixes\n\nAgreed, and written into the release policy: 1.1.x gets fixes until 2.0 has been out for six months.", 6)
@@ -438,7 +499,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "compiles, so the IDE can migrate a call site with one keystroke. Child of the 2.0 epic.",
         status = stProgress, priority = prMajor, author = tova, assignee = wen,
         labels = listOf(lbBreaking), components = listOf(cmCore), plannedVersion = ver200,
-        createdDaysAgo = 20, updatedDaysAgo = 1,
+        createdDaysAgo = 20, updatedDaysAgo = 1, estimate = points(8),
     )
     comment(issDeprecateBlocking, wen, "Two thirds done. A handful of the replacements can't be expressed as a one-liner and will need a paragraph in the migration guide instead.", 1)
 
@@ -448,7 +509,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "shadows theirs. Rename with a typealias left behind for one release. Child of the 2.0 epic.",
         status = stAccepted, priority = prMinor, author = ada, assignee = null,
         labels = listOf(lbBreaking), components = listOf(cmCore), plannedVersion = ver200,
-        createdDaysAgo = 19, updatedDaysAgo = 8,
+        createdDaysAgo = 19, updatedDaysAgo = 8, estimate = points(2),
     )
 
     val issMigrationGuide = issue(
@@ -457,7 +518,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "handful that cannot be automated. Child of the 2.0 epic; it lands with the alpha, not after it.",
         status = stAccepted, priority = prMajor, author = tova, assignee = null,
         labels = listOf(lbDocs, lbBreaking), components = listOf(cmDocs), plannedVersion = ver200,
-        createdDaysAgo = 19, updatedDaysAgo = 7,
+        createdDaysAgo = 19, updatedDaysAgo = 7, estimate = points(5),
     )
 
     val issAtomicMultiKey = issue(
@@ -467,7 +528,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "keep reaching for.",
         status = stProgress, priority = prMajor, author = sofia, assignee = tova,
         labels = listOf(lbFeature), components = listOf(cmCore), plannedVersion = ver110,
-        createdDaysAgo = 22, updatedDaysAgo = 1,
+        createdDaysAgo = 22, updatedDaysAgo = 1, estimate = points(8),
     )
     comment(issAtomicMultiKey, tova, "Landing in 1.1 rather than waiting for 2.0 — it is additive, so there is no reason to make people wait for the breaking release.", 5)
 
@@ -479,6 +540,13 @@ internal fun seedMeridianProject(w: DemoWorld) {
         status = stProgress, priority = prBlocker, author = tova, assignee = tova,
         labels = listOf(lbRegression, lbBug), components = listOf(cmCore, cmJvm), plannedVersion = ver110,
         createdDaysAgo = 5, updatedDaysAgo = 1, agentName = "Claude Code",
+        estimate = points(5),
+        // Assigned to Tova's **agent** rather than to Tova (LNL-215). The board draws that
+        // as a small badge on her initials, and the two agent facts on this one card are
+        // worth telling apart: `agentName` above says an agent filed it — it found the
+        // regression running the nightly benchmarks — and this says the bisect is the
+        // agent's job too. Neither implies the other, which is why they are two fields.
+        assigneeIsAgent = true,
     )
     comment(
         issColdReadRegression, tova,
@@ -497,7 +565,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "shared, so this is mostly a publication and a CI job rather than new code.",
         status = stAccepted, priority = prMinor, author = kasper, assignee = null,
         labels = listOf(lbFeature), components = listOf(cmCore), plannedVersion = ver110,
-        createdDaysAgo = 17, updatedDaysAgo = 9,
+        createdDaysAgo = 17, updatedDaysAgo = 9, estimate = points(3),
     )
     comment(issLinuxArm, tova, "Happy to take this. The only real work is a runner that can build it — if anyone has an ARM box in CI already, say so.", 9)
 
@@ -508,7 +576,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "each declaration can be done and reviewed on its own.",
         status = stAccepted, priority = prTrivial, author = tova, assignee = null,
         labels = listOf(lbDocs, lbGoodFirst), components = listOf(cmDocs, cmCore), plannedVersion = ver110,
-        createdDaysAgo = 15, updatedDaysAgo = 10,
+        createdDaysAgo = 15, updatedDaysAgo = 10, estimate = points(1),
     )
     comment(issKdocPublic, sofia, "I'd like to take a first slice of this — say the ten declarations in the transaction API — if nobody else has started.", 10)
 
@@ -519,7 +587,7 @@ internal fun seedMeridianProject(w: DemoWorld) {
             "the warning.",
         status = stAccepted, priority = prMajor, author = yara, assignee = null,
         labels = listOf(lbBug), components = listOf(cmAndroid), plannedVersion = ver110,
-        createdDaysAgo = 14, updatedDaysAgo = 11,
+        createdDaysAgo = 14, updatedDaysAgo = 11, estimate = points(3),
     )
 
     // ── Needs info — waiting on the reporter ──────────────────────────────────
@@ -608,6 +676,32 @@ internal fun seedMeridianProject(w: DemoWorld) {
     makeChild(issApi2, issDeprecateBlocking, 0)
     makeChild(issApi2, issRenameStore, 1)
     makeChild(issApi2, issMigrationGuide, 2)
+
+    // ── Relations (LNL-215): triage's own vocabulary ──────────────────────────
+    //
+    // The links an open tracker makes most, and each one turns something that was
+    // already prose in a comment on this board into a thing you can click:
+    //
+    //  - **A duplicate that says which.** The Android resolution report was closed as
+    //    Duplicate with a comment naming the simulator publication bug as the same
+    //    omission from the same list. That reference was a sentence; now it is a link,
+    //    and the simulator issue's own window shows "Duplicated by MRD-6" from its side
+    //    of the one stored row.
+    //  - **A blocked card.** The migration guide cannot be written until the
+    //    deprecations it documents exist, and that work is In progress — open — so the
+    //    guide dims on the board. It is also a child of the 2.0 epic, which is worth
+    //    seeing beside the block: parenthood says what a thing is *part of*, blocking
+    //    says what it is *waiting for*, and one card can honestly wear both.
+    //  - **A symmetric pair, twice.** The cold-read regression and the benchmark harness
+    //    are related because neither can be argued about without the other; the
+    //    unclean-shutdown report and the Darwin durability fix are related because they
+    //    are the same suspicion from two directions. "Related to" reads the same word
+    //    from both ends, which is exactly the claim being made — see DemoRelationKind,
+    //    where a null inverse IS the symmetry.
+    relate(issAndroidDup, rkDuplicateOf, issMissingSimulator, tova, 39)
+    relate(issMigrationGuide, rkBlockedBy, issDeprecateBlocking, tova, 7)
+    relate(issColdReadRegression, rkRelatedTo, issBenchHarness, tova, 4)
+    relate(issRandomCorruption, rkRelatedTo, issDarwinFsync, tova, 4)
 
     // ── Notifications ─────────────────────────────────────────────────────────
 

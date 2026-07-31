@@ -21,7 +21,7 @@ class SqlDelightResolutionStoreContractTest : ResolutionStoreContract() {
     override val store: ResolutionStore = se.soderbjorn.lunicle.ResolutionStore(db)
 
     override suspend fun newProject(): Long =
-        projects.insert("Project $seq", "RS${seq++}", isPublic = false).id
+        projects.insert("Project $seq", "RS${seq++}").id
 
     @AfterTest
     fun tearDown() = fixture.close()

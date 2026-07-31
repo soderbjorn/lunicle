@@ -340,10 +340,9 @@ class IssueHistoryTest {
     )
 
     private suspend fun seed(): Fixture {
-        roles.seed()
         val user = users.upsert(ProviderIdentity(AuthProvider.GOOGLE, "g-1", "Robert", "robert@example.com"))
         val other = users.upsert(ProviderIdentity(AuthProvider.GOOGLE, "g-2", "Other", "other@example.com"))
-        val project = projectRepository.create("Lunicle", "LNL", isPublic = false)
+        val project = projectRepository.create("Lunicle", "LNL")
         return Fixture(
             userId = user.id,
             otherId = other.id,

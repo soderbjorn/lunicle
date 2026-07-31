@@ -19,6 +19,7 @@ import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.HTMLTextAreaElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
+import se.soderbjorn.lunicle.clientserver.RungOption
 import se.soderbjorn.lunula.web.shell.buildMenuTrigger
 import se.soderbjorn.lunula.web.shell.setMenuTriggerLabel
 import se.soderbjorn.lunula.web.shell.setMenuTriggerOpen
@@ -216,8 +217,17 @@ fun textArea(placeholder: String = "", onInput: (String) -> Unit): HTMLTextAreaE
     return el
 }
 
-/** One row of a [Dropdown]: the id reported on select, and the text shown. */
-data class DropdownItem(val id: Long, val label: String)
+/**
+ * One row of a [Dropdown]: the id reported on select, and the text shown.
+ *
+ * @param isEnabled whether this row may be chosen. False draws it struck through and
+ *   inert — see [Dropdown.row] — and is how a permission picker shows a rung it will
+ *   not hand out **without** pretending it might: the row stays visible and keeps its
+ *   reason, which is the transparency the list is for, and stops taking the hover fill
+ *   that made it look pressable. A disabled row is never reported through
+ *   [Dropdown]'s `onSelect`, by any route.
+ */
+data class DropdownItem(val id: Long, val label: String, val isEnabled: Boolean = true)
 
 /**
  * How many options a menu may hold before it grows a filter row.
@@ -482,7 +492,14 @@ class Dropdown(
         // Escape falls through to the menu's own dismissal.
         field.onkeydown = { event ->
             if (event.key == "Enter") {
-                val only = visible(field.value.trim()).singleOrNull()
+                // …unless that row is one that cannot be chosen, which is the keyboard's
+                // half of the same rule the click path enforces by having no handler.
+                // Filtered AFTER `singleOrNull` on purpose: dropping blocked rows first
+                // would change what "the only remaining row" means, so typing a query
+                // that leaves one live rung and one struck-through one would commit the
+                // live one — a keystroke doing something the list did not show as
+                // narrowed down to it.
+                val only = visible(field.value.trim()).singleOrNull()?.takeIf { it.isEnabled }
                 if (only != null) {
                     close()
                     onSelect(only.id)
@@ -508,19 +525,48 @@ class Dropdown(
         // says the same thing a second time, in the gutter every row reserves —
         // deliberately, because the fill is what survives a glance and the check is
         // what survives a theme whose accent sits close to the panel.
-        val row = element("div", "dt-hover-menu-item dt-world-row" + if (active) " dt-menu-selected" else "")
+        //
+        // `dt-disabled` is the toolkit's own marker for a row that is shown and cannot
+        // be chosen, and it is reused rather than reinvented because lunula's hover rule
+        // is already written as `:hover:not(.dt-disabled)` — so naming it is what stops
+        // the accent fill, at the source, instead of a Lunicle rule racing the toolkit's
+        // for specificity. The second class is ours, and only adjusts legibility; see
+        // `.lunicle-dropdown-row-blocked` in styles.css.
+        val row = element(
+            "div",
+            "dt-hover-menu-item dt-world-row" +
+                (if (active) " dt-menu-selected" else "") +
+                (if (item.isEnabled) "" else " dt-disabled lunicle-dropdown-row-blocked"),
+        )
         row.setAttribute("role", "menuitem")
+        // Announced as well as drawn: the strike-through is the sighted half of the same
+        // fact, and a screen reader reading a rung it cannot pick with no hint is exactly
+        // the click-then-revert this fixes, only worse.
+        if (!item.isEnabled) row.setAttribute("aria-disabled", "true")
 
         val check = element("span", "dt-hover-menu-icon dt-world-check")
         // Sanctioned innerHTML, on Icons.kt's terms: the argument is that file's
         // own constant, so there is no input to escape and no caller to pass one.
-        if (active) check.innerHTML = CHECK_SVG
+        //
+        // One gutter, two states, and they cannot collide: a blocked row is one that
+        // may not be chosen, so it is not the row currently holding the value.
+        when {
+            !item.isEnabled -> check.innerHTML = FORBIDDEN_SVG
+            active -> check.innerHTML = CHECK_SVG
+        }
 
         row.children(check, element("span", "dt-hover-menu-label", item.label))
-        row.onclick = {
-            close()
-            onSelect(item.id)
-            Unit
+        // No handler at all on a blocked row, rather than a handler that closes the menu
+        // and drops the choice: swallowing the click was what read as "it reverted". The
+        // menu stays open, because the reader clicked the row to find out why they cannot
+        // have it and the reason is written on it — see installDismissal, which does not
+        // dismiss on a click inside the panel.
+        if (item.isEnabled) {
+            row.onclick = {
+                close()
+                onSelect(item.id)
+                Unit
+            }
         }
         return row
     }
@@ -734,3 +780,114 @@ fun HTMLInputElement.setValueIfChanged(next: String) {
 fun HTMLTextAreaElement.setValueIfChanged(next: String) {
     if (value != next) value = next
 }
+
+/**
+ * A rung menu: every rung the server sent, plus "No access", with the unavailable ones
+ * dead and the reason on them.
+ *
+ * Here rather than in either of its two callers because both a project's Access section
+ * and the instance's "what a new project starts with" rows *are* the same control over
+ * the same vocabulary, and two copies would come to grey a rung differently — which is
+ * the one thing about a permission picker that must never differ.
+ *
+ * Ids are positions in [rungs] because [Dropdown] is keyed on Long and a rung is keyed on
+ * a string. Local to the call, which is safe: the menu is rebuilt with its row, so an
+ * index can never outlive the list it indexes.
+ *
+ * @param rungs what **this control** may be handed, which is per row rather than per
+ *   screen (LNL-202): an audience row is given a list narrowed to what that audience may
+ *   hold, so the Guests row offers Viewer and carries the rest dead with the sentence
+ *   saying why. This function needed no change to gain that, which is the point — it
+ *   already draws a dead rung with its reason and refuses the click, so a second kind of
+ *   refusal is a different list rather than a branch here. Nothing about the ladder is
+ *   decided in this file, and nothing should be.
+ * @param selectedKey the rung currently held, or null for none.
+ * @param isEnabled whether the control may be opened at all — a write in flight, or a row
+ *   this caller may not change.
+ * @param withdrawRefusal why "No access" is not available here, or null because it is
+ *   (LNL-209). The one entry this function invents rather than being handed, so it is also
+ *   the one whose refusal cannot arrive as a [RungOption] — an audience inside a wider one
+ *   cannot come to nothing, and that entry is exactly where the old screen said it could.
+ *   It is drawn dead with the sentence, like every other refused rung, rather than removed:
+ *   an entry that vanishes reads as a bug.
+ * @param onPick the rung's key, or null for "No access".
+ */
+fun rungPicker(
+    rungs: List<RungOption>,
+    selectedKey: String?,
+    isEnabled: Boolean,
+    withdrawRefusal: String? = null,
+    onPick: (String?) -> Unit,
+): HTMLElement {
+    // Live unless the row has a floor — and live regardless when it is the current answer,
+    // which is the rule the rungs below follow and for the same reason: the closed control
+    // reads this row's label, and striking through what the control reports would say the
+    // board is not honouring it.
+    val canWithdraw = withdrawRefusal == null || selectedKey == null
+    val items = mutableListOf(
+        DropdownItem(
+            NO_ACCESS_ID,
+            if (canWithdraw) "No access" else "No access — $withdrawRefusal",
+            isEnabled = canWithdraw,
+        ),
+    )
+    rungs.forEachIndexed { index, rung ->
+        // The reason rides in the label, because the menu draws rows and not rows with
+        // sub-rows. It is the only place a dead rung can say why while still being visible
+        // — and it must stay visible: a rung out of the caller's reach shows with the
+        // reason, never omitted.
+        //
+        // Except on the rung currently held, because the closed control reads that row's
+        // label: a read-only reader, for whom no rung is selectable, saw "Contributor — You
+        // are a Maintainer here, so Cont…" as the *value* of the field. The reason belongs
+        // in the menu, and there is nothing to explain about a rung somebody already holds.
+        // Found by driving the app.
+        val label = when {
+            rung.isSelectable || rung.key == selectedKey -> rung.label
+            else -> "${rung.label} — ${rung.unavailableReason}"
+        }
+        // Drawn struck through and inert, rather than as an ordinary row that discards
+        // the click. The row is still HERE, with its reason — that is what makes the
+        // ladder legible, and it is deliberately not an omission — but it no longer
+        // takes the hover fill, so it stops reading as a choice whose selection reverted
+        // the instant it was made.
+        //
+        // The rung already held is live even when it is not selectable: it is the value
+        // this control is reporting, it carries the check, and striking through the
+        // current answer would say the board is not honouring it. Matches the label rule
+        // directly above, which drops the reason for the same case.
+        val isEnabled = rung.isSelectable || rung.key == selectedKey
+        items.add(DropdownItem(index.toLong(), label, isEnabled = isEnabled))
+    }
+    val dropdown = Dropdown(isField = true) { id ->
+        when {
+            // `canWithdraw` for the reason the rung branch below keeps its own check: the
+            // entry is live when it is the current answer, and re-sending the answer as a
+            // write this row may not make is the one way through a menu that refuses nothing.
+            id == NO_ACCESS_ID -> if (withdrawRefusal == null) onPick(null)
+            else -> {
+                val rung = rungs.getOrNull(id.toInt()) ?: return@Dropdown
+                // Kept as well as the menu's own refusal, and not because the menu might
+                // let one through: a blocked row has no click handler, so this cannot be
+                // reached for one. It is here for the rung that is enabled *only* because
+                // it is the one already held — clicking your own current value must not
+                // re-send it as a grant this caller may not make.
+                if (rung.isSelectable) onPick(rung.key)
+            }
+        }
+    }
+    val selectedId = selectedKey
+        ?.let { key -> rungs.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.toLong() }
+        ?: NO_ACCESS_ID
+    dropdown.render(items, selectedId, placeholder = "No access", unsetId = NO_ACCESS_ID)
+    dropdown.element.disabled = !isEnabled
+    return dropdown.element
+}
+
+/**
+ * The rung-menu id that means "no access".
+ *
+ * Negative, so it cannot collide with a position in the rung list however long that list
+ * grows.
+ */
+private const val NO_ACCESS_ID = -1L

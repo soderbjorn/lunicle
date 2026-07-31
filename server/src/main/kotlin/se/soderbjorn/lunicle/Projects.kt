@@ -17,25 +17,39 @@ import kotlinx.coroutines.withContext
 import se.soderbjorn.lunicle.db.LunicleDatabase
 
 /**
+ * Whether a project offers discussions or private messages — retired, and so
+ * false for every project on every backend (LNL-190).
+ *
+ * Both features were too unfinished to carry through the permission rework, and
+ * between them they accounted for seven access rules and fifteen MCP tools that
+ * the rework would otherwise have had to keep coherent. Rather than migrate the
+ * data, every store maps the stored column onto this constant: a SQLite row or a
+ * Firestore document written when the switches still existed reads as off, and no
+ * deployment needs a roll-forward to make that true.
+ *
+ * Nothing was deleted for it. The tables, the routes, the stores and the views all
+ * still stand, so finishing discussions later means putting the column read back
+ * where this constant is and restoring the two switches in the project settings
+ * dialog — not an excavation.
+ */
+internal const val PROJECT_FORUM_FEATURES_ENABLED = false
+
+/**
  * A project as this server knows it.
  *
  * @property namePrefix the "FOO" in FOO-123. Unique across all projects, so a
  *   ticket reference in a commit message names exactly one issue.
- * @property isPublic whether a caller with no session at all may read this
- *   project's issues. The one rule that says yes to nobody; see
- *   [AccessControl.canReadProject].
- * @property visibleToAllSignedIn whether any signed-in account may read this
- *   project — the middle read tier between members-only and [isPublic] (LNL-138).
- *   Grants reading only; every write gate stays membership-scoped, so a project
- *   with this on is read-only to the signed-in users it admits. ORs with [isPublic]
- *   in [AccessControl.canReadProject], so "public" already implies it.
+ *
+ * `isPublic` and `visibleToAllSignedIn` were here and are gone (LNL-191). Who may
+ * see a project is no longer a fact about the project row at all: it is the
+ * project's audience rows, which live in `project_audience_roles` and say at what
+ * *rung* each audience arrives rather than merely that it may look. See Roles.sq
+ * and [AccessControl.effectiveRole].
  */
 data class ProjectRecord(
     val id: Long,
     val name: String,
     val namePrefix: String,
-    val isPublic: Boolean,
-    val visibleToAllSignedIn: Boolean,
     /**
      * Whether this project offers a discussion forum and private messages —
      * independent per-project switches a project administrator sets (LNL-96).
@@ -45,6 +59,10 @@ data class ProjectRecord(
      * shell on every board, so every read that builds a summary needs them in
      * hand. Both default enabled — the state every project had before the columns
      * existed. See Projects.sq.
+     *
+     * Since LNL-190 neither is read from its column: every store fills both from
+     * [PROJECT_FORUM_FEATURES_ENABLED], so both are always false. The columns and
+     * the setter are still there, untouched, for whoever re-enables discussions.
      */
     val discussionsEnabled: Boolean,
     val messagesEnabled: Boolean,
@@ -73,7 +91,51 @@ data class ProjectRecord(
      */
     val showIssueAuthor: Boolean,
     val createdAt: Long,
-)
+    /**
+     * Whether this project's board and issue windows hide the issue number, or null
+     * because nobody has decided yet (LNL-194).
+     *
+     * The second board-display setting beside [showIssueAuthor], and the only field
+     * on this record that is *three*-valued. Null is not "off": it means the column
+     * has never been written, which is the state every project is in the moment
+     * 34.sqm runs and the state [copyBoardDisplayFromOwners] consumes to decide
+     * whether it may still copy the owner's old per-user preference in. Once
+     * anything writes it, it is never null again.
+     *
+     * Last in the record, with a default, so the dozen positional constructions in
+     * this file and in the Firestore store did not all have to be rewritten to add
+     * it. Read [hideIssueNumbers] rather than this: the three-valued shape is a fact
+     * about the migration and stops at this class.
+     */
+    val hideIssueNumbersStored: Boolean? = null,
+    /**
+     * Whether this project estimates, and in what unit (LNL-215).
+     *
+     * On the record for [showIssueAuthor]'s reason: it reaches [ProjectSummary], and
+     * the issue window reads it off the board it already loads to decide what the
+     * estimate control offers — three inputs, one, or nothing at all.
+     *
+     * [EstimateMode.NONE] is the default and the state nearly every project stays in,
+     * and it renders **nothing**: no cell, no popover, no read-mode line. It governs
+     * only what the editor offers and never how a stored estimate is read — that unit
+     * is stamped on the issue. See Issues.sq's estimate_unit.
+     *
+     * Last in the record, with a default, for [hideIssueNumbersStored]'s reason: the
+     * positional constructions in this file and in the Firestore store did not all
+     * have to be rewritten to add it.
+     */
+    val estimateMode: se.soderbjorn.lunicle.clientserver.EstimateMode =
+        se.soderbjorn.lunicle.clientserver.EstimateMode.NONE,
+) {
+    /**
+     * Whether the board hides issue numbers — the answer every reader wants.
+     *
+     * Null reads as off, which is what the board did for anybody who had not set the
+     * old per-user preference, and is therefore the right answer for the window
+     * between the migration and the startup copy. See [hideIssueNumbersStored].
+     */
+    val hideIssueNumbers: Boolean get() = hideIssueNumbersStored == true
+}
 
 /** A label or a component: an id, a project, a name, and where it sits. */
 data class VocabularyRecord(
@@ -156,8 +218,6 @@ class ProjectStore(
     override suspend fun insert(
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
     ): ProjectRecord =
         withContext(DatabaseDispatcher) {
             // Appended to the end of the list, like every other insert path — see
@@ -167,8 +227,6 @@ class ProjectStore(
                 .insert(
                     name,
                     namePrefix,
-                    if (isPublic) 1L else 0L,
-                    if (visibleToAllSignedIn) 1L else 0L,
                     position,
                     now(),
                 )
@@ -177,15 +235,16 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
         }
 
@@ -193,17 +252,9 @@ class ProjectStore(
         id: Long,
         name: String,
         namePrefix: String,
-        isPublic: Boolean,
-        visibleToAllSignedIn: Boolean,
     ): Unit =
         withContext(DatabaseDispatcher) {
-            database.projectsQueries.update(
-                name,
-                namePrefix,
-                if (isPublic) 1L else 0L,
-                if (visibleToAllSignedIn) 1L else 0L,
-                id,
-            )
+            database.projectsQueries.update(name, namePrefix, id)
         }
 
     /**
@@ -245,19 +296,41 @@ class ProjectStore(
         }
 
     /**
-     * Set this project's board-display flag (LNL-157).
+     * Set this project's two board-display flags together (LNL-157, LNL-194).
      *
      * Its own writer, not folded into [setRequirements] — a display choice is not a
-     * requirement, so the two travel separately. See Projects.sq's setShowIssueAuthor.
+     * requirement, so the two travel separately. Both at once, like [setFeatures]:
+     * the Board display group sends the pair. Writing `hide_issue_numbers` is also
+     * what takes the row out of the "not yet decided" state 34.sqm leaves it in. See
+     * Projects.sq's setBoardDisplay.
      */
-    override suspend fun setShowIssueAuthor(id: Long, showIssueAuthor: Boolean): Unit =
+    override suspend fun setBoardDisplay(id: Long, showIssueAuthor: Boolean, hideIssueNumbers: Boolean): Unit =
         withContext(DatabaseDispatcher) {
-            database.projectsQueries.setShowIssueAuthor(if (showIssueAuthor) 1L else 0L, id)
+            database.projectsQueries.setBoardDisplay(
+                if (showIssueAuthor) 1L else 0L,
+                if (hideIssueNumbers) 1L else 0L,
+                id,
+            )
         }
 
     /** Delete the project. Every row that hangs off it cascades; the files do not — see [IssueRepository.deleteProject]. */
     override suspend fun delete(id: Long): Unit = withContext(DatabaseDispatcher) {
         database.projectsQueries.delete(id)
+    }
+
+    /**
+     * Set whether this project estimates, and in what unit (LNL-215).
+     *
+     * Its own write rather than a third field on [setBoardDisplay], for that method's
+     * own reason turned one notch: those two decide how a board *reads*, and this
+     * decides what an editor *offers*. A stale client sending the display pair must
+     * not be able to reset this in passing. See Projects.sq's setEstimateMode.
+     */
+    override suspend fun setEstimateMode(
+        id: Long,
+        mode: se.soderbjorn.lunicle.clientserver.EstimateMode,
+    ): Unit = withContext(DatabaseDispatcher) {
+        database.projectsQueries.setEstimateMode(mode.key, id)
     }
 
     /**
@@ -283,15 +356,16 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
     }
 
@@ -302,15 +376,16 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
     }
 
@@ -327,15 +402,16 @@ class ProjectStore(
                 it.id,
                 it.name,
                 it.name_prefix,
-                it.is_public != 0L,
-                it.visible_to_all_signed_in != 0L,
-                it.discussions_enabled != 0L,
-                it.messages_enabled != 0L,
+                // Not it.discussions_enabled/it.messages_enabled: retired, see LNL-190.
+                PROJECT_FORUM_FEATURES_ENABLED,
+                PROJECT_FORUM_FEATURES_ENABLED,
                 it.require_label != 0L,
                 it.require_component != 0L,
                 it.require_fixed_version_on_resolve != 0L,
                 it.show_issue_author != 0L,
                 it.created_at,
+                it.hide_issue_numbers?.let { stored -> stored != 0L },
+                se.soderbjorn.lunicle.clientserver.EstimateMode.fromKey(it.estimate_mode),
             ) }
     }
 

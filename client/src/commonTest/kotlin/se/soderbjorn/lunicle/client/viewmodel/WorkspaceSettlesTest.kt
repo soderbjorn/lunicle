@@ -59,8 +59,8 @@ private class HeldSettingsApi(
 private const val USER_ID: Long = 7
 
 private val PROJECTS = listOf(
-    ProjectSummary(id = 1, name = "Lunamux", namePrefix = "LMX", isPublic = true),
-    ProjectSummary(id = 2, name = "Lunicle", namePrefix = "LNL", isPublic = true),
+    ProjectSummary(id = 1, name = "Lunamux", namePrefix = "LMX"),
+    ProjectSummary(id = 2, name = "Lunicle", namePrefix = "LNL"),
 )
 
 /** The layout this account arranged for itself: one tab, holding project 2. */

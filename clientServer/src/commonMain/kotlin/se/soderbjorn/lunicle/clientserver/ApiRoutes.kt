@@ -49,24 +49,56 @@ object ApiRoutes {
     const val SIGN_OUT: String = "/api/auth/signout"
 
     /**
-     * `POST` — start acting as another user. Admin only. Returns the new
-     * [SessionState], whose `user` is now the impersonated one.
+     * `POST` — arm an impersonation. **The instance owner only**, and only where
+     * the deployment has the feature switched on.
      *
-     * The body names *who to become*, and that is the only thing a client may say
-     * about identity here — the server takes who is *asking* from the session
-     * cookie and refuses this unless that session's real user is an admin. A
-     * route that accepted "I am user 7" rather than "let me become user 7" would
-     * be the whole authorization system, undone. See the server's Impersonations.
+     * Signs the caller **out** and hands the browser a short-lived grant in the
+     * `lunicle_probe` cookie. Returns a signed-out [SessionState] with
+     * `isImpersonationArmed` set — the app then renders exactly what a stranger
+     * sees, because the caller is one, which is itself part of what this facility
+     * exists to check.
+     *
+     * The signing-out is the design rather than a side effect. What follows is a
+     * **genuine sign-in** as somebody else, not a costume worn over the owner's
+     * session, so the owner's session has to be gone for there to be nothing left
+     * over. See [IMPERSONATE].
+     */
+    const val IMPERSONATE_ARM: String = "/api/impersonate/arm"
+
+    /**
+     * `POST` — sign in as an address, from an [ImpersonateRequest]. Returns the new
+     * [SessionState] for whoever that address now is.
+     *
+     * ── It is a real sign-in, and that is the point ─────────────────────────
+     *
+     * The address runs through the same pipeline Google and the mailed code end in:
+     * the admission gate, the `users` row, the staff/member stamp, the owner seat.
+     * The only thing substituted is the *proof* — an owner-authorised grant instead
+     * of a code exchange — so an address this deployment would refuse is refused
+     * here with the real refusal, and an address with no account **gets one**.
+     * Nothing is a preview; the row is what makes the check honest.
+     *
+     * ── What authorises it ──────────────────────────────────────────────────
+     *
+     * The `lunicle_probe` cookie [IMPERSONATE_ARM] set, carrying a live grant whose
+     * owner still owns the instance — re-asked on every use, never remembered. The
+     * body names *who to become* and nothing else; a route that accepted "I am user
+     * 7" rather than "let me become this address" would be the whole authorization
+     * system, undone.
+     *
+     * POSTing here again while already probing switches target: the current session
+     * is destroyed before the next is minted, so one grant never has two sessions.
      */
     const val IMPERSONATE: String = "/api/impersonate"
 
     /**
-     * `POST` — stop impersonating and go back to being yourself.
+     * `POST` — stop, and be the owner again.
      *
-     * Authorised against the session's **real** user, not the effective one:
-     * while impersonating, the effective user is an ordinary user, so an
-     * effective-user check would make this route refuse the very person entitled
-     * to call it — locking the admin in as whoever they became.
+     * Destroys the impersonated session, mints one for the owner who armed the
+     * grant, revokes the grant and clears the probe cookie. Authorised against the
+     * **grant**, not against whoever the session currently belongs to: the caller is
+     * deliberately an ordinary user right now, so a check on them would lock the
+     * owner in as the person they became.
      */
     const val STOP_IMPERSONATING: String = "/api/impersonate/stop"
 
@@ -168,32 +200,65 @@ object ApiRoutes {
     const val ADMIN_SETTINGS: String = "/api/admin/settings"
 
     /**
-     * `POST` — turn one user's agent access on or off, from a [UserMcpAccess].
-     * Returns the whole refreshed [AdminSettingsState]. Admin only.
-     *
-     * The sibling of [MCP_ENABLED], which says the same thing about the caller
-     * themselves. Two routes rather than one that takes an optional user id: "set
-     * my own" and "set somebody else's" are different permissions — the first
-     * needs a session and the second needs to be an admin — and a single route
-     * would have to decide which check to run by inspecting the body. A route
-     * whose authorization depends on a field an attacker controls is the shape of
-     * this bug, every time.
-     */
-    const val ADMIN_USER_MCP: String = "/api/admin/users/mcp"
-
-    /**
      * `POST` — set one instance-wide switch, from a [SetInstanceSettingRequest].
      * Returns the whole refreshed [AdminSettingsState]. Admin only.
      *
-     * The home for the General tab's switches (LNL-115): require-sign-in, and
-     * whether anyone may create a project. One route naming the switch in its body
-     * rather than a route per switch, because unlike [ADMIN_USER_MCP] vs
-     * [MCP_ENABLED] there is no second caller with a different permission to keep
-     * apart — every switch here answers to the one admin gate — so the body naming
-     * which switch is a value, not an authorization decision. Answers with the same
-     * state the dialog loaded, so the write never merges two objects.
+     * The home for the General tab's switches: whether projects may be published,
+     * and what each tier of signed-in person may do (LNL-192). One route naming the
+     * switch in its body rather than a route per switch, because unlike
+     * [MCP_ENABLED] there is no second caller with a different
+     * permission to keep apart — every switch here answers to the one admin gate —
+     * so the body naming which switch is a value, not an authorization decision.
+     * Answers with the same state the dialog loaded, so the write never merges two
+     * objects.
      */
     const val ADMIN_INSTANCE_SETTINGS: String = "/api/admin/instance-settings"
+
+    /**
+     * `POST` — set who may hold an account here, from a [SetAdmissionPolicyRequest].
+     * Returns the whole refreshed [AdminSettingsState]. Admin only.
+     *
+     * Its own route rather than a sixth [InstanceSettingKey], because admission is
+     * not a switch: it has three values, and — alone among the things on this
+     * screen — the deployment's configuration can make one of them unhonourable, so
+     * the write has a refusal to make that no boolean setter has. See
+     * [AdmissionState].
+     */
+    const val ADMIN_ADMISSION: String = "/api/admin/admission"
+
+    /**
+     * `POST` — say what rung one audience arrives at in a **newly created** project,
+     * from an [AudienceGrant]. Returns the whole refreshed [AdminSettingsState]. Admin
+     * only (LNL-195).
+     *
+     * Its own route for [ADMIN_ADMISSION]'s reason and one more: it is neither a boolean
+     * nor a single value but one of three rows, and — like a project's own audience
+     * write — it has a refusal to make, since the guest row answers to the
+     * public-projects veto here exactly as it does there. One audience per request, so
+     * two administrators editing different rows cannot revert each other.
+     */
+    const val ADMIN_NEW_PROJECT_AUDIENCE: String = "/api/admin/new-project-audience"
+
+    /**
+     * `POST` — hand this deployment to another account, from a
+     * [HandOverInstanceRequest]. Returns the whole refreshed [AdminSettingsState].
+     * **The instance owner only** (LNL-198).
+     *
+     * The narrowest gate on this surface. [ADMIN_PROJECT_ORDER] is the owner's too, but
+     * this is the write that decides who the owner *is*. An administrator reaching it
+     * gets a 403 naming the owner, which is the same fact the absent button carries.
+     *
+     * Its own route rather than a value on [ADMIN_INSTANCE_SETTINGS] for two reasons
+     * pointing the same way: it is neither a boolean nor governed by the administrator
+     * gate every switch there shares, and it has refusals of its own to make — the named
+     * account has to exist and has to be eligible, and eligibility is re-derived at the
+     * route and never read off the request.
+     *
+     * Answers with the refreshed state like every other write here, which matters more
+     * than usual: the caller is no longer the owner by the time they read it, so the
+     * response is what tells the screen to put the button away.
+     */
+    const val ADMIN_OWNERSHIP: String = "/api/admin/ownership"
 
     /**
      * `POST` — put the instance's projects in a given order, from a [ProjectOrder].
@@ -205,7 +270,7 @@ object ApiRoutes {
      * reorder is an instance-wide statement — "these are the projects, in this
      * order" — not a change to any one project, so a `/api/projects/{id}`-shaped
      * route would be the wrong shape. It answers with the same state the dialog
-     * loaded, so the write never merges two objects. See ADMIN_USER_MCP.
+     * loaded, so the write never merges two objects. See ADMIN_SETTINGS.
      *
      * The base path a [DELETE] on one project hangs off too — [adminProject].
      */
@@ -311,10 +376,12 @@ object ApiRoutes {
      * or re-save it, from a [ForumPostEdit]. `DELETE` — remove it, and everything
      * under it.
      *
-     * Reading needs only what reading the project needs. Writing is the author's
-     * or a system administrator's; deleting is either of those **or** the project
-     * administrator's. That asymmetry is LNL-30's decision rather than an
-     * oversight — see `AccessControl.canDeleteForumContent`.
+     * Every one of the three is reachable by nobody: discussions are retired
+     * (LNL-190) and the checks behind them answer false for every caller. Reading
+     * needed only what reading the project needed; writing was the author's or
+     * whoever ran the instance's; deleting was either of those **or** the project
+     * administrator's. That asymmetry was LNL-30's decision rather than an oversight
+     * — see `AccessControl.canDeleteForumContent`.
      */
     fun forumPost(projectId: Long, forumId: Long, postId: Long): String =
         "$PROJECTS/$projectId/forums/$forumId/posts/$postId"
@@ -579,8 +646,8 @@ object ApiRoutes {
      * administrator only (LNL-96).
      *
      * Its own route rather than a field on the identity `PUT` [project], because
-     * that write is system-administrator only and these two flags are a project
-     * administrator's to set — folding them in would gate them on the wrong role.
+     * that write is the project owner's and these two flags are a project
+     * administrator's to set — folding them in would gate them on the wrong rung.
      */
     fun projectFeatures(id: Long): String = "$PROJECTS/$id/features"
 
@@ -598,6 +665,19 @@ object ApiRoutes {
      * set — but distinct from it because a display choice is not a requirement.
      */
     fun projectDisplay(id: Long): String = "$PROJECTS/$id/display"
+
+    /**
+     * `POST` — whether this project estimates, and in what unit, from a
+     * [ProjectEstimateSettings] (LNL-215). Returns the refreshed
+     * [ProjectSettingsState].
+     *
+     * Its own route beside [projectDisplay] and the requirements one rather than a
+     * third field on either: a display choice is about how a board *reads*, a
+     * requirement about what a ticket must *carry*, and this about what the editor
+     * *offers*. Three kinds of switch, three routes, so a stale client sending one
+     * cannot reset another in passing. Admin and above.
+     */
+    fun projectEstimates(id: Long): String = "$PROJECTS/$id/estimates"
 
     /**
      * `POST` — subscribe or unsubscribe the caller from this project's new-issue
@@ -706,6 +786,24 @@ object ApiRoutes {
         "$PROJECTS/$projectId/sprints/$sprintId/complete"
 
     /**
+     * `POST` — un-finish a sprint: clear its completion stamp. No body. Returns the
+     * refreshed [BoardState].
+     *
+     * The counterpart [sprintCompletion] never had, added with the Sprints section's
+     * per-row action (LNL-196). Completing was a one-way door up to then, and the door
+     * had a wrong side: the stamp is the *only* value on a sprint that nobody typed, so
+     * a mis-click could not be corrected from any screen.
+     *
+     * Deliberately **not** the inverse of completion. Reopening clears the stamp and
+     * does nothing else — it does not fetch the rolled-forward work back, and it does
+     * not re-activate the project's board. Both would be guesses: the issues have been
+     * looked at and possibly re-planned since, and "which sprint is being worked in" is
+     * its own decision with its own route. See SprintRepository.reopen.
+     */
+    fun sprintReopening(projectId: Long, sprintId: Long): String =
+        "$PROJECTS/$projectId/sprints/$sprintId/reopen"
+
+    /**
      * `POST` — set exactly which issues are in a sprint, from a
      * [SprintMembership]. Returns the refreshed [BoardState].
      *
@@ -717,15 +815,39 @@ object ApiRoutes {
         "$PROJECTS/$projectId/sprints/$sprintId/issues"
 
     /**
-     * `POST` — grant or revoke one role for one user in this project, from a
-     * [RoleGrant].
+     * `POST` — put one person on one rung in this project, from a [RungGrant].
      *
-     * One grant per request rather than "here is the whole matrix": a checkbox is
-     * one intent, and a route that took the table would let a stale dialog revoke
-     * a grant another admin made thirty seconds ago just by re-sending what it
-     * had on screen.
+     * One person per request rather than "here is the whole list": a picker is one
+     * intent, and a route that took the table would let a stale screen revoke a grant
+     * another administrator made thirty seconds ago just by re-sending what it had on
+     * screen.
      */
     fun projectRoles(projectId: Long): String = "$PROJECTS/$projectId/roles"
+
+    /**
+     * `POST` — say at what rung a whole audience arrives here, from an
+     * [AudienceGrant]. The project's owner's, and refused for guests outright while the
+     * instance forbids publishing.
+     */
+    fun projectAudience(projectId: Long): String = "$PROJECTS/$projectId/audience"
+
+    /**
+     * `POST` — add an address holding a rung, from a [PersonAdd]. Nothing is sent; the
+     * grant waits to be claimed by a sign-in.
+     */
+    fun projectPeople(projectId: Long): String = "$PROJECTS/$projectId/people"
+
+    /**
+     * `GET` — the accounts the people picker may offer, as [PersonCandidates]. Takes `q`,
+     * matched against name and address; an empty `q` is the head of the directory rather
+     * than nothing, because opening the picker should show you who is there.
+     *
+     * Gated at the rung that may **grant** here, not the rung that may read the section:
+     * these rows carry addresses. That is also why it is its own route rather than a field
+     * on [ProjectSettingsState] — see the handler, which explains why the audit list stays
+     * exceptions-only while granting gets the directory.
+     */
+    fun projectPeopleCandidates(projectId: Long): String = "$PROJECTS/$projectId/people/candidates"
 
     /** `POST` — create a hidden draft issue, returning an [IssueDraft]. */
     fun issues(projectId: Long): String = "$PROJECTS/$projectId/issues"
@@ -814,6 +936,26 @@ object ApiRoutes {
      * Gated by `canEditIssue` on the epic, like [issueOrder] for a board group.
      */
     fun issueChildrenOrder(id: Long): String = "/api/issues/$id/children/order"
+
+    /**
+     * `POST` — link this issue to another, from an [IssueRelationRequest] (LNL-215).
+     * Returns the refreshed [IssueDetail].
+     *
+     * Posted to the **from** issue — the one whose window the link is being added in —
+     * and gated by `canEditIssue` on it alone. The far side is not asked, for
+     * [issueParent]'s reason: an issue does not own who points at it.
+     */
+    fun issueRelations(id: Long): String = "/api/issues/$id/relations"
+
+    /**
+     * `DELETE` — remove one link (LNL-215). Returns the refreshed [IssueDetail].
+     *
+     * Addressed by the RELATION's id rather than by the pair and the kind, because the
+     * caller is looking at a rendered row and has one — and because naming the pair
+     * would have to say which direction it meant, which is the ambiguity storing one
+     * row per link exists to remove. See IssueRelations.sq.
+     */
+    fun issueRelation(id: Long, relationId: Long): String = "/api/issues/$id/relations/$relationId"
 
     /** `POST` — create a hidden draft comment on this issue, returning its id. */
     fun comments(issueId: Long): String = "/api/issues/$issueId/comments"

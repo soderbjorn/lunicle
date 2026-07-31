@@ -78,14 +78,14 @@ fi
 
 # ---- port ----
 # Refuse if something that ISN'T our container holds the port — most likely a
-# run-dev-*.sh server still running. Publishing would fail anyway, but with a
+# run-dev.sh server still running. Publishing would fail anyway, but with a
 # Docker error that buries the actual cause. (port_is_held only counts
 # listeners; see lib/probe.sh for why that distinction matters here.)
 if port_is_held "$LUNICLE_PORT"; then
   if [[ -z "$(docker ps -q --filter "name=^${NAME}$")" ]]; then
     echo "error: something is already using port $LUNICLE_PORT, and it isn't this container." >&2
     echo "       It's: $(port_holder "$LUNICLE_PORT")" >&2
-    echo "       A run-dev-*.sh server, perhaps? Stop it with:  ./scripts/stop-all.sh" >&2
+    echo "       A run-dev.sh server, perhaps? Stop it with:  ./scripts/stop-all.sh" >&2
     echo "       …or re-run with LUNICLE_PORT=<other port>." >&2
     exit 1
   fi
