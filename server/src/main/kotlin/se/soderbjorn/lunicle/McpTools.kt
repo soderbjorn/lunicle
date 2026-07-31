@@ -295,6 +295,17 @@ internal val MCP_INSTRUCTIONS = """
     Reading is filtered the same way: a project you cannot see does not appear in
     list_projects, and there is no way to ask about it.
 
+    One place you have LESS than the person you are acting as: a project where they
+    stand at viewer — able to read it in their browser and nothing more — is not
+    yours at all. It is missing from list_projects and every tool answers "no such
+    project" for it, exactly as for a board they cannot see. So a person who is
+    surprised that some project of theirs is not here is usually right about having
+    access to it, and the answer is that they hold viewer there and an agent needs
+    contributor. Say that rather than reporting the project as gone: it is a rung
+    somebody can raise, not a mistake. This is the only respect in which you are
+    narrower than them; everything else on this list you can do exactly to the
+    extent they can.
+
     What is deliberately not here: you cannot create, rename or delete projects,
     or grant anybody a rung on one. Those tools do not exist, and deleting a
     stored attachment on its own exists only for the instance owner. If a task
@@ -1402,10 +1413,17 @@ class McpTools(private val deps: BoardDependencies) {
     // ── Reading ──────────────────────────────────────────────────────────────
 
     private suspend fun listProjects(user: UserRecord): McpToolResult {
-        // Filtered, exactly as GET /api/projects is. A project this user cannot
-        // read does not appear — it is not returned and hidden, because there is
-        // no UI here to do the hiding and there never should have been.
-        val visible = deps.projects.selectAll().filter { deps.access.canReadProject(user, it) }
+        // Filtered, in the same spirit GET /api/projects is filtered: a project out of
+        // reach does not appear — it is not returned and hidden, because there is no UI
+        // here to do the hiding and there never should have been.
+        //
+        // The filter is the agent floor and NOT canReadProject, so this list is narrower
+        // than the project rail in the person's own browser: boards they can only look at
+        // are simply not here. That is the point rather than an inconsistency — see
+        // AccessControl.canAgentReachProject — and it is why the server instructions say
+        // so out loud. An agent that finds fewer projects than its user expects has to be
+        // able to explain why without guessing.
+        val visible = deps.projects.selectAll().filter { deps.access.canAgentReachProject(user, it) }
         return ok(
             buildJsonArray {
                 visible.forEach { project ->
@@ -3977,27 +3995,45 @@ class McpTools(private val deps: BoardDependencies) {
     // ── Shared resolution ────────────────────────────────────────────────────
 
     /**
-     * Resolve a project the caller may read, by id or by name.
+     * Resolve a project this agent may reach, by id or by name.
      *
-     * Both answer identically when the project is unreadable — see [noSuchProject].
+     * Both answer identically when the project is out of reach — see [noSuchProject].
+     *
+     * ── Why this asks the agent question and not the read one (LNL-217) ─────
+     *
+     * [AccessControl.canAgentReachProject] rather than `canReadProject`, which is the
+     * whole of the agent floor on this path: a project where the caller is only a Viewer
+     * is not "visible but read-only" to an agent, it is **absent**. See that function for
+     * why the line falls at Contributor, and [AGENT_PROJECT_FLOOR] for why it is a
+     * constant.
+     *
+     * That it lands in [noSuchProject] with private projects rather than in a refusal of
+     * its own is deliberate, and it is the same conflation the HTTP routes make: an agent
+     * that could tell "you are only a Viewer here" from "no such project" could enumerate
+     * every board on the deployment by name, which is exactly what a caller below the
+     * floor must not be able to do. The person reading the agent's report is told about
+     * the floor by the server instructions instead, where it belongs — see
+     * [MCP_INSTRUCTIONS], which says it once rather than at every refusal.
      */
     private suspend fun resolveProject(user: UserRecord, arguments: JsonObject): ProjectRecord? {
         val project = arguments.long("project_id")?.let { deps.projects.findById(it) }
             ?: arguments.string("project_name")?.let { deps.projects.findByName(it) }
             ?: return null
-        return project.takeIf { deps.access.canReadProject(user, it) }
+        return project.takeIf { deps.access.canAgentReachProject(user, it) }
     }
 
     /**
-     * Resolve an issue whose project the caller may read.
+     * Resolve an issue whose project this agent may reach.
      *
      * Every issue tool starts here, exactly as every issue route starts at
-     * `readableIssue`: an issue is only as readable as its project.
+     * `readableIssue`: an issue is only as reachable as its project. The floor applies
+     * here for [resolveProject]'s reason and by the same call — an issue id must not be
+     * the way around a project that is out of reach.
      */
     private suspend fun readableIssue(user: UserRecord, arguments: JsonObject): IssueRecord? {
         val issue = arguments.long("issue_id")?.let { deps.issues.findById(it) } ?: return null
         val project = deps.projects.findById(issue.projectId) ?: return null
-        return issue.takeIf { deps.access.canReadProject(user, project) }
+        return issue.takeIf { deps.access.canAgentReachProject(user, project) }
     }
 
     /**
@@ -4014,7 +4050,7 @@ class McpTools(private val deps: BoardDependencies) {
         val comment = arguments.long("comment_id")?.let { deps.comments.findById(it) } ?: return null
         val issue = deps.issues.findById(comment.issueId) ?: return null
         val project = deps.projects.findById(issue.projectId) ?: return null
-        return comment.takeIf { deps.access.canReadProject(user, project) }
+        return comment.takeIf { deps.access.canAgentReachProject(user, project) }
     }
 
     /**

@@ -215,15 +215,35 @@ class ProjectVisibilityTest {
         }
     }
 
-    /** And the MCP twin of the list, which is a second implementation of the same filter. */
+    /**
+     * And the MCP twin of the list, which hides a private project for the same reason.
+     *
+     * ── It is no longer the *same* filter, and the control had to move ──────
+     *
+     * This used to read "a second implementation of the same filter", with the public
+     * project as its control: the outsider holds nothing anywhere, so Lunamux appearing
+     * proved the list was filtering rather than simply empty. The agent floor makes that
+     * control wrong — Lunamux admits guests as Viewers, which is below
+     * [AGENT_PROJECT_FLOOR], so an agent correctly does not see it either. Left as it
+     * was, this test would have failed for the right behaviour.
+     *
+     * So the control is a rung the outsider actually holds. What the two lists still
+     * share is the claim this file is about: **a private project you hold nothing in is
+     * absent, not refused**. Where they now differ — a Viewer-level or public board being
+     * absent from the agent's list and present in the browser's — is
+     * [McpAgentFloorTest]'s subject, and is deliberately not restated here.
+     */
     @Test
     fun `MCP list_projects omits a private project the caller holds nothing in`(): Unit = runBlocking {
         val f = seed()
+        // The control: a rung that clears the agent floor, so a correct build has
+        // something to put in the list and an over-eager one has something to drop.
+        roles.setRole(f.outsiderId, f.publicId, ProjectRole.CONTRIBUTOR)
         withMcp { client ->
             val result = client.callTool(tokenFor(f.outsiderId), "list_projects", "{}")
             assertFalse(result.isError, result.text)
             assertFalse(result.text.contains("Skunkworks"), "MCP listed a private project to a non-member.")
-            assertTrue(result.text.contains("Lunamux"), "MCP dropped the public project.")
+            assertTrue(result.text.contains("Lunamux"), "MCP dropped a project the caller contributes to.")
         }
     }
 

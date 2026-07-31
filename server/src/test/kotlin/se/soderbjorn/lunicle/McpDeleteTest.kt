@@ -246,6 +246,13 @@ class McpDeleteTest {
      *
      * Without this pair, a build that answered "No such issue." to every failed
      * delete would pass.
+     *
+     * **Contributor and not Viewer**, which it was until the agent floor landed. A
+     * Viewer's project is not visible to an agent at all now — see
+     * [AGENT_PROJECT_FLOOR] — so this seat produced "No such issue." and collapsed the
+     * very distinction the test exists to draw. Contributor is the lowest rung that
+     * clears the floor while still being nowhere near deleting an issue, which needs
+     * [ProjectRole.ADMIN]; so the pair goes on saying exactly what it always said.
      */
     @Test
     fun `a member of a private project gets the permission refusal, not the invisible one`(): Unit =
@@ -253,7 +260,7 @@ class McpDeleteTest {
             val f = seed()
             val other = projectRepository.create("Secret", "SEC")
             val created = issueRepository.createDraft(other.id, Author.Account(f.adminId))
-            roles.setRole(f.ordinaryId, other.id, ProjectRole.VIEWER)
+            roles.setRole(f.ordinaryId, other.id, ProjectRole.CONTRIBUTOR)
 
             withMcp { client ->
                 val result =

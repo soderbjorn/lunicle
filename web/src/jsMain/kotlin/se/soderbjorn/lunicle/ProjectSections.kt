@@ -168,10 +168,12 @@ class ProjectSections(
     private lateinit var addPersonButton: HTMLButtonElement
     private lateinit var addPeopleHost: HTMLElement
     private lateinit var accessAdminBlock: HTMLElement
+    private lateinit var rungLegend: HTMLElement
 
-    /** What the two rebuilt lists were last built from, so a busy tick does not tear them down. */
+    /** What the three rebuilt lists were last built from, so a busy tick does not tear them down. */
     private var audienceSignature: String? = null
     private var peopleSignature: String? = null
+    private var rungLegendSignature: String? = null
 
     /**
      * The section views, by kind, built on the first render that has settings. Kept
@@ -535,6 +537,7 @@ class ProjectSections(
      */
     private fun buildAccess(): HTMLElement {
         yourAccessElement = element("p", "modal-message")
+        rungLegend = element("div", "rung-legend")
 
         watchButton = WatchButton { viewModel.onNewIssueNotificationToggled(it) }
         watchRow = element("div", "project-watch-row").children(
@@ -600,6 +603,28 @@ class ProjectSections(
             addPeopleHost,
             adviceElement,
             accessReadOnly,
+            // ── The ladder, spelled out (LNL-217) ────────────────────────────
+            //
+            // Every control above hands out a rung, and until now no screen said what a
+            // rung *is*. The picker structurally cannot: `rungPicker` draws rows and not
+            // rows with sub-rows, which is why a dead rung's reason has to ride inside its
+            // label as an em-dash clause. So the only place the ladder can be explained is
+            // beside the rows, and it was not being explained anywhere.
+            //
+            // Last rather than first, and always open rather than behind a disclosure.
+            // Last because it is reference material — you come to it from a row you were
+            // already reading, not before you have seen one. Always open because the
+            // person who does not know what Maintainer means is precisely the person who
+            // will not guess that a collapsed thing is hiding the answer.
+            element("div", "settings-section-rule"),
+            element("h3", "section-title", "What each rung can do"),
+            element(
+                "p",
+                "field-hint",
+                "The same five rungs everywhere on this screen. Each one contains the ones " +
+                    "above it in this list, so a Maintainer can do everything a Contributor can.",
+            ),
+            rungLegend,
         )
 
         return element("div", "project-pane").children(
@@ -805,8 +830,10 @@ class ProjectSections(
         if (access == null) {
             audienceSignature = null
             peopleSignature = null
+            rungLegendSignature = null
             return
         }
+        renderRungLegend(access)
         accessReadOnly.setTextIfChanged(access.readOnlyReason ?: "")
         accessReadOnly.visible(access.readOnlyReason != null)
         // Set on every render rather than inside renderAudiences' signature guard: it is
@@ -910,6 +937,43 @@ class ProjectSections(
      * somebody would close in their face. The signature carries everything rendered,
      * the greying reasons included, so a veto being lifted redraws the row.
      */
+    /**
+     * The ladder, one row per rung, from what the server sent.
+     *
+     * ── Rendered from `access.rungs`, never from words in this bundle ───────
+     *
+     * The labels and the sentences both come off the wire, which is the discipline
+     * `toRow` follows in the admin pane and it matters more here than there: this is the
+     * screen that *defines* the vocabulary, so a bundle that had its own copy could
+     * describe a rolled-back server's ladder in this build's words and be confidently
+     * wrong about the thing it exists to explain. The strings are written once, on
+     * `ProjectRole`, beside the enum that grants them — see [RungOption.description],
+     * whose whole point is that no screen can disagree with the thing handing out rungs.
+     *
+     * Every rung is drawn, including ones this caller cannot hand out. The legend answers
+     * "what does Admin mean", which is a question somebody has whether or not they may
+     * make one — and greying rows here would conflate "not yours to give" with "not
+     * relevant to you", which the pickers already say properly on the rows themselves.
+     *
+     * Signature-guarded like the two lists above, for the same reason and not because
+     * this one is expensive: it never changes within a session, so a busy tick rebuilding
+     * it is pure churn in the middle of a pane somebody is reading.
+     */
+    private fun renderRungLegend(access: ProjectAccessState) {
+        val signature = access.rungs.joinToString("|") { "${it.key}:${it.label}:${it.description}" }
+        if (signature == rungLegendSignature) return
+        rungLegendSignature = signature
+
+        rungLegend.clear()
+        access.rungs.forEach { rung ->
+            // Both cells appended straight to the grid, with no per-rung wrapper: that is
+            // what puts every description on one left edge without `subgrid`. See the
+            // stylesheet, which says what to do if a row ever needs to be an element.
+            rungLegend.appendChild(element("div", "rung-legend-name", rung.label))
+            rungLegend.appendChild(element("div", "rung-legend-detail", rung.description))
+        }
+    }
+
     private fun renderAudiences(access: ProjectAccessState, isBusy: Boolean) {
         val signature = "$isBusy|" + access.audiences.joinToString("|") {
             // The row's own rung list is in the signature too (LNL-202): the greying inside

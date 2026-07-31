@@ -232,20 +232,40 @@ data class InstanceIdentity(
      *    when every door it has is closed to somebody outside the domain. **The two
      *    live and die together** — see [outsiderCanArrive], which is where LNL-192's
      *    two independent half-rules became one question of the whole configuration.
+     *
+     * ── Every reason is a clause, and it becomes a sentence here (LNL-217) ───
+     *
+     * The three constants below and [outsiderReason] are all written as lower-case
+     * clauses, because [outsiderReason] **composes** them: "Google sign-in is locked to
+     * example.com, and this deployment cannot mail a sign-in code" is one reason built
+     * from two, and a clause is the only shape that survives being joined. That is right
+     * and stays.
+     *
+     * What it is not is something to put on a screen as it stands. Rendered raw under a
+     * greyed button, "this deployment has no domain of its own configured" is a
+     * lower-case fragment sitting where a sentence belongs — it reads as a stray log
+     * line rather than as the explanation the button is owed. So the clause is wrapped
+     * here, at the one point all four reasons pass through on their way out, rather than
+     * by capitalising the constants (which would break the join) or by a screen
+     * prepending words to a server-written string (which is two places writing one
+     * sentence).
      */
     private fun unavailableReason(policy: AdmissionPolicy): String? {
-        if (!hasAnyWayIn) return NO_WAY_IN_REASON
-        return when (policy) {
-            AdmissionPolicy.ANYONE -> outsiderReason.takeIf { !outsiderCanArrive }
+        val clause = when {
+            !hasAnyWayIn -> NO_WAY_IN_REASON
+            else -> when (policy) {
+                AdmissionPolicy.ANYONE -> outsiderReason.takeIf { !outsiderCanArrive }
 
-            AdmissionPolicy.STAFF_DOMAIN_ONLY -> NO_DOMAIN_REASON.takeIf { !hasStaffTier }
+                AdmissionPolicy.STAFF_DOMAIN_ONLY -> NO_DOMAIN_REASON.takeIf { !hasStaffTier }
 
-            AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED -> when {
-                !hasStaffTier -> NO_DOMAIN_REASON
-                !outsiderCanArrive -> outsiderReason
-                else -> null
+                AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED -> when {
+                    !hasStaffTier -> NO_DOMAIN_REASON
+                    !outsiderCanArrive -> outsiderReason
+                    else -> null
+                }
             }
-        }
+        } ?: return null
+        return "Not available here: $clause."
     }
 
     /**

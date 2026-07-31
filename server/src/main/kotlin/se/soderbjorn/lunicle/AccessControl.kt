@@ -51,6 +51,28 @@
 package se.soderbjorn.lunicle
 
 /**
+ * The lowest rung at which an agent may touch a project (LNL-217).
+ *
+ * Hard-coded rather than a per-project setting, and that is a decision worth naming
+ * because the obvious alternative is right there: `project_agent_rung`, a nullable
+ * [ProjectRole], an owner picking it per board. The reason it is a constant is that the
+ * two features are not the same one wearing different clothes. A setting answers "keep
+ * agents off *this* board", which nobody has asked for; a constant answers "an agent
+ * should not be able to read every board its user can merely look at", which applies
+ * everywhere and — crucially — applies to the owner who would never have found the
+ * setting. Opt-in protection protects the people who already knew.
+ *
+ * If a per-project setting is ever wanted, this is the shape it takes: the same rung
+ * vocabulary, this value as the default, and `null` meaning no agents here at all. The
+ * gate that reads it is already down to one function — see [AccessControl.canAgentReachProject].
+ *
+ * **Contributor and not Viewer**, so the floor rules out reading rather than only writing.
+ * Every write is already gated at this rung or above by the ordinary rules, so a Viewer
+ * floor would be a gate that changed nothing.
+ */
+val AGENT_PROJECT_FLOOR = ProjectRole.CONTRIBUTOR
+
+/**
  * Answers "may this caller do that?", and nothing else.
  *
  * @param roles the rung table: a person's own row, and a project's audience rows.
@@ -237,6 +259,43 @@ class AccessControl(
      */
     suspend fun canReadProject(user: UserRecord?, project: ProjectRecord): Boolean =
         holds(user, project.id, ProjectRole.VIEWER)
+
+    /**
+     * May an **agent** acting as [user] touch [project] at all? (LNL-217)
+     *
+     * ── The one place this transport is narrower than the browser ───────────
+     *
+     * Everywhere else, an agent is exactly its user: `McpServer.resolveMcpUser` produces
+     * the same [UserRecord] a session cookie produces, hands it to the functions above,
+     * and adds no capability of its own. That is the design and it stays the design. This
+     * is the single deliberate exception, and it goes the safe way — an agent can do
+     * *less* than the person holding its token, never more.
+     *
+     * The floor is [AGENT_PROJECT_FLOOR], and what it rules out is reading. A Viewer's
+     * agent could previously walk every board that person could merely look at — every
+     * public project on the deployment included — and pull the full text of every issue on
+     * it into a model's context. Nobody granting somebody a look at a board meant that,
+     * and the rung is where the distinction already lives: at Contributor the person is a
+     * participant in that project rather than an audience for it.
+     *
+     * ── Why this is a rung question and not a check on `project_roles` ──────
+     *
+     * It is spelled through [holds], so it takes the whole of [effectiveRole] and not
+     * merely somebody's own row. Two things follow, and both are the point:
+     *
+     *  - **An instance administrator and the owner clear it everywhere**, since
+     *    [effectiveRole] answers [ProjectRole.OWNER] for them on every project without a
+     *    row. Reading `project_roles` directly would strip exactly the two accounts that
+     *    typically have no rows at all, which is the reverse of the intent.
+     *  - **An audience row carries it.** A board admitting members as Contributors admits
+     *    their agents too, with no per-person grant, exactly as it admits them.
+     *
+     * A [ProjectRecord] rather than an id, mirroring [canReadProject]: this substitutes
+     * for that call one-for-one at the four places `McpTools` resolves anything, and a
+     * different shape would make the substitution look like a different question.
+     */
+    suspend fun canAgentReachProject(user: UserRecord?, project: ProjectRecord): Boolean =
+        holds(user, project.id, AGENT_PROJECT_FLOOR)
 
     // ── Projects ─────────────────────────────────────────────────────────────
 

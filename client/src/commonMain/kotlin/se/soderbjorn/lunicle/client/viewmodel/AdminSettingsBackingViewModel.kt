@@ -1024,17 +1024,41 @@ private val AdminUser.subtitle: String
     get() = email ?: "No e-mail address"
 
 /**
- * Both halves of agent access, in one sentence.
+ * Both halves of agent access, in one sentence — and, where it is running, how far it
+ * reaches.
  *
  * The permission is the tier's and the switch is the person's, and an administrator who
  * knows only one of the two cannot answer "why does their agent not work". No control here
  * — see [AdminUserDetail.agentLine].
+ *
+ * ── Why the running case says where it reaches (LNL-217) ────────────────────
+ *
+ * "Permitted, and they have turned it on" read as "their agent can do whatever they can",
+ * which stopped being true when the agent floor landed: an agent is confined to the
+ * projects where its user holds Contributor or above, so a board they are merely a Viewer
+ * on is invisible to it. That is the one respect in which the two differ, and this is the
+ * only line on the screen in a position to say so — the rung table below gives the rungs
+ * and cannot know what they mean for agents.
+ *
+ * Said only in the running case on purpose. For somebody who has not switched it on, the
+ * reach of the agent they do not have is not the fact they need; the switch is.
  */
 private fun agentLine(user: AdminUser): String = when {
     !user.isMcpAllowed ->
         "Agent access: their tier is not permitted it, so no agent can act as them. The tier " +
             "cards on Who gets in are what change that."
-    user.isMcpEnabled -> "Agent access: permitted, and they have turned it on."
+    // Before the ordinary running case, because for these two the clause below would be
+    // false: an administrator and the owner hold Owner on every project without a row, so
+    // the floor is met everywhere and there is no rung to raise. The rights table is
+    // already replaced by a sentence for them for the same underlying reason — see
+    // isRightsSectionShown — so this matches a distinction the pane already draws.
+    user.isMcpEnabled && user.isSysAdmin ->
+        "Agent access: permitted, and they have turned it on. Because they run the instance, " +
+            "their agent reaches every project."
+    user.isMcpEnabled ->
+        "Agent access: permitted, and they have turned it on — in the projects where they " +
+            "hold Contributor or above. A project they are only a Viewer on is invisible to " +
+            "their agent."
     else ->
         "Agent access: permitted, but they have not turned it on, so no agent can act as them " +
             "yet. Only they can."

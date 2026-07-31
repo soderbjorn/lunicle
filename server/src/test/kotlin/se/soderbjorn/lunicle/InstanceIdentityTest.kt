@@ -175,7 +175,7 @@ class InstanceIdentityTest {
         for (policy in listOf(AdmissionPolicy.STAFF_DOMAIN_ONLY, AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)) {
             val option = options.first { it.policy == policy }
             assertFalse(option.isSelectable, "$policy was offered on a deployment with no domain.")
-            assertEquals("this deployment has no domain of its own configured", option.unavailableReason)
+            assertEquals("Not available here: this deployment has no domain of its own configured.", option.unavailableReason)
         }
     }
 
@@ -239,7 +239,7 @@ class InstanceIdentityTest {
         )
         assertFalse(identity.outsiderCanArrive)
         val options = identity.admissionState(AdmissionPolicy.STAFF_DOMAIN_ONLY).options
-        val expected = "Google sign-in is locked to acme.com, and this deployment cannot mail a sign-in code"
+        val expected = "Not available here: Google sign-in is locked to acme.com, and this deployment cannot mail a sign-in code."
         for (policy in listOf(AdmissionPolicy.ANYONE, AdmissionPolicy.STAFF_DOMAIN_PLUS_ADDED)) {
             val option = options.first { it.policy == policy }
             assertFalse(option.isSelectable, "$policy was offered where no outsider can arrive.")
@@ -298,7 +298,7 @@ class InstanceIdentityTest {
             for (option in identity.admissionState(AdmissionPolicy.ANYONE).options) {
                 assertFalse(option.isSelectable, "${option.policy} was offered on a deployment nobody can reach.")
                 assertEquals(
-                    "this deployment has no way to sign in",
+                    "Not available here: this deployment has no way to sign in.",
                     option.unavailableReason,
                     "${option.policy} borrowed a restriction's wording for a missing door.",
                 )
@@ -387,7 +387,7 @@ class InstanceIdentityTest {
             "The strictest policy was greyed by a door it does not need.",
         )
         assertEquals(
-            "this deployment has no domain of its own configured",
+            "Not available here: this deployment has no domain of its own configured.",
             InstanceIdentity(isCodeSignInAvailable = true)
                 .admissionState(AdmissionPolicy.ANYONE).options
                 .first { it.policy == AdmissionPolicy.STAFF_DOMAIN_ONLY }

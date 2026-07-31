@@ -154,7 +154,7 @@ class AdmissionRoutesTest {
             val option = admission.options.first { it.policy == AdmissionPolicy.ANYONE }
             assertFalse(option.isSelectable)
             assertEquals(
-                "Google sign-in is locked to acme.com, and this deployment cannot mail a sign-in code",
+                "Not available here: Google sign-in is locked to acme.com, and this deployment cannot mail a sign-in code.",
                 option.unavailableReason,
             )
         }

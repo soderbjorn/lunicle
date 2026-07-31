@@ -286,8 +286,14 @@ class InstanceTabs(
             // The reason beside the dead choice rather than instead of it: a control that
             // vanishes reads as a bug, where a dead one with a sentence tells you what to
             // change and where.
+            //
+            // Its own class rather than the access rows' `.access-row-reason`, which it
+            // borrowed and which is built for a different shape: that one is a full-width
+            // flex item wrapping under a row whose control sits at the END, so it carries
+            // no indent and needs none. Here the control is at the start and the reason
+            // has to line up under its label — see `.admission-reason`.
             option.unavailableReason?.let {
-                row.appendChild(element("p", "access-row-reason", it))
+                row.appendChild(element("p", "admission-reason", it))
             }
             admissionList.appendChild(row)
         }

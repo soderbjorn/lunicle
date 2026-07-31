@@ -3821,16 +3821,68 @@ body.app-impersonating::after {
 
 /* One admission choice and, when it is dead, the reason under it. A column
    rather than a row: the reason is a sentence and belongs beneath the thing it
-   explains, not squeezed beside it. */
-.admission-list { display: flex; flex-direction: column; gap: 10px; margin: 10px 0 6px; }
-.admission-row { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+   explains, not squeezed beside it.
 
-/* Wide enough for the longest policy label rather than sized to its own text, so
-   the three read as a column of choices instead of three ragged buttons. */
+   The list gap is comfortably larger than the row gap, and that ratio is the
+   only thing that says which button a reason belongs to. At 10px against 4px a
+   reason sat almost as far from its own button as from the next one, so a list
+   with two dead choices read as three buttons and two floating sentences. */
+.admission-list { display: flex; flex-direction: column; gap: 16px; margin: 10px 0 6px; }
+.admission-row { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+
+/* ── Why the width cap is on the ROW and not on the button (LNL-217) ────────
+
+   The three choices must be the same width — they are one column of choices,
+   and a ragged edge reads as three unrelated controls. They were not: the cap
+   lived on the button as `max-width: 42ch`, and the toolkit's
+   `.dt-settings-choice-btn.dt-selected` sets `font-weight: 600`. `ch` is the
+   width of "0" IN THE ELEMENT'S OWN FONT, so the selected button measured its
+   42ch against a bolder face and came out ~40px wider than its siblings —
+   every time, on every deployment, with nothing in this file to suggest why.
+
+   On the row, `ch` is measured against the inherited body face, which is the
+   same for all three whatever the selection does. The button then fills it.
+   Any inherited-font unit would do; `ch` is kept because the number it is
+   expressing is "the longest policy label". */
+.admission-row { max-width: 42ch; }
+
 .admission-choice {
   text-align: left;
   width: 100%;
-  max-width: 42ch;
+}
+
+/* The reason, indented so it reads as a note ON its choice rather than as a
+   note on the section — flush left it hung off to the left of everything above
+   it and belonged to nothing.
+
+   ── The indent deliberately does NOT try to match the button's label ───────
+
+   The obvious target is the button's inner text edge, and it is not reachable
+   from here. That edge is the toolkit's `.dt-settings-choice-btn` padding plus
+   its border, and the toolkit currently declares that selector TWICE with
+   different values — `6px 14px` and, later and winning, `5px 10px`. So the
+   number is both someone else's and already unstable, and a literal chasing it
+   was wrong the first time it was measured in a browser.
+
+   12px instead: enough to subordinate the sentence to the control above it,
+   and close enough to the label that nothing reads as misaligned whichever of
+   the toolkit's two paddings is in force. If the alignment ever has to be
+   exact, the fix is a custom property on the toolkit button — not a better
+   guess here. */
+/* No width of its own: the row already carries the 42ch cap, so the sentence
+   wraps at the button's right edge and the block reads as one column. It had
+   `max-width: 42ch` here too, which looks like the same measurement and is not
+   — `ch` at this element's 11px is a good deal narrower than `ch` at the row's
+   inherited size, so the sentence broke roughly a third short of the button and
+   read as a ragged second column. Same trap as the button width above, one
+   element down. */
+.admission-reason {
+  margin: 0;
+  padding-left: 12px;
+  font-size: 11px;
+  color: var(--body);
+  opacity: .75;
+  text-wrap: pretty;
 }
 
 /* A choice this deployment cannot honour (LNL-210). The rows have always been
@@ -5642,6 +5694,64 @@ body[data-lnl-notif="1"] .lnl-notif-bell {
   margin: -8px 0 16px;
   font-size: 12px;
   color: var(--head);
+}
+
+/* ── What each rung can do (LNL-217) ────────────────────────────────────────
+
+   The ladder written out under the rows that hand it out. It exists because the
+   rung PICKER cannot explain itself: `rungPicker` draws rows, not rows with
+   sub-rows, which is why a dead rung's reason has to ride inside its label. So
+   the sentences had nowhere to go and were being sent down the wire and dropped.
+
+   A grid rather than a name-then-sentence run, because the whole value of the
+   block is being able to scan the five names down one edge and read across to
+   the one you wanted. `max-content` sizes the first column to the longest label
+   (Contributor), so the descriptions share one left edge without a magic width
+   that a rename would silently break.
+
+   The name and the sentence are direct children of the one grid — there is no
+   per-rung wrapper — so the two columns line up across all five rows with no
+   `subgrid` anywhere. That is why the markup has no row element to hang a hover
+   or a border on; if this ever needs one, `subgrid` is the change, not a
+   flex-per-row rewrite that would give up the shared edge. */
+.rung-legend {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 14px;
+  align-items: baseline;
+  margin: 10px 0 4px;
+  max-width: 68ch;
+}
+
+/* The name at the heading colour and the sentence at the body's muted weight —
+   the same pairing `.access-row-name` and `.access-row-detail` use one section
+   above, so the legend reads as an explanation OF those rows rather than as a
+   different kind of thing that happens to sit under them. */
+.rung-legend-name {
+  color: var(--head);
+  font-size: 13px;
+}
+
+.rung-legend-detail {
+  font-size: 11px;
+  color: var(--body);
+  opacity: .75;
+  text-wrap: pretty;
+}
+
+/* Narrow panes: the settings pane opens at 55% of the window and can be dragged
+   well below that, and at some point two columns leaves the sentence a four-word
+   ribbon. Stacking keeps it readable and costs only the scannable edge, which is
+   worth less than the sentence being legible. */
+@media (max-width: 620px) {
+  .rung-legend {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  /* Each name now starts its own rung rather than sitting beside one, so it needs
+     the space above that the two-column gap was providing horizontally. */
+  .rung-legend-name:not(:first-child) { margin-top: 10px; }
 }
 
 /* ── The people picker (LNL-204) ──
