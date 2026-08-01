@@ -361,22 +361,29 @@ class EmailSignInTest {
      * The address key. Each request here comes from a different forwarded client
      * address, so only the per-address bucket can refuse them — which is exactly
      * the botnet-on-one-target case the composed key exists for.
+     *
+     * Pinned to one trusted proxy hop, or the forwarded addresses mean nothing and
+     * this passes for the wrong reason: with the default of zero (LUS-31) every
+     * request shares the engine's socket peer, so the *client* bucket would be doing
+     * the refusing and the assertion would no longer be about the address at all.
      */
     @Test
     fun `one address is refused however many clients ask for it`(): Unit = runBlocking {
-        withRoutes { client ->
-            repeat(5) { attempt ->
+        withTrustedProxyHops(1) {
+            withRoutes { client ->
+                repeat(5) { attempt ->
+                    assertEquals(
+                        HttpStatusCode.NoContent,
+                        client.request("victim@example.com", from = "203.0.113.$attempt").status,
+                        "Request ${attempt + 1} of 5 was refused.",
+                    )
+                }
                 assertEquals(
-                    HttpStatusCode.NoContent,
-                    client.request("victim@example.com", from = "203.0.113.$attempt").status,
-                    "Request ${attempt + 1} of 5 was refused.",
+                    HttpStatusCode.TooManyRequests,
+                    client.request("victim@example.com", from = "203.0.113.99").status,
+                    "A sixth client mailed the same address inside the window.",
                 )
             }
-            assertEquals(
-                HttpStatusCode.TooManyRequests,
-                client.request("victim@example.com", from = "203.0.113.99").status,
-                "A sixth client mailed the same address inside the window.",
-            )
         }
     }
 
@@ -524,21 +531,49 @@ class EmailSignInTest {
         }
     }
 
-    /** And it is keyed on the client too, so one host cannot walk a list of addresses. */
+    /**
+     * And it is keyed on the client too, so one host cannot walk a list of addresses.
+     *
+     * Run with one trusted proxy hop, which is what makes `X-Forwarded-For` mean
+     * anything: the default is now zero (LUS-31), under which the header is ignored
+     * and every request in a test shares the engine's constant socket peer. Two
+     * clients that cannot be told apart cannot demonstrate a per-client bucket.
+     */
     @Test
     fun `redeem's limit follows the client across addresses`(): Unit = runBlocking {
-        withRoutes { client ->
-            repeat(10) { client.redeem("victim$it@example.com", "000000", from = "9.9.9.9") }
-            assertEquals(
-                HttpStatusCode.TooManyRequests,
-                client.redeem("someone-else@example.com", "000000", from = "9.9.9.9").status,
-                "One client walked a list of addresses at full speed.",
-            )
-            assertEquals(
-                HttpStatusCode.BadRequest,
-                client.redeem("someone-else@example.com", "000000", from = "8.8.8.8").status,
-                "An unrelated client was locked out by somebody else's spending.",
-            )
+        withTrustedProxyHops(1) {
+            withRoutes { client ->
+                repeat(10) { client.redeem("victim$it@example.com", "000000", from = "9.9.9.9") }
+                assertEquals(
+                    HttpStatusCode.TooManyRequests,
+                    client.redeem("someone-else@example.com", "000000", from = "9.9.9.9").status,
+                    "One client walked a list of addresses at full speed.",
+                )
+                assertEquals(
+                    HttpStatusCode.BadRequest,
+                    client.redeem("someone-else@example.com", "000000", from = "8.8.8.8").status,
+                    "An unrelated client was locked out by somebody else's spending.",
+                )
+            }
+        }
+    }
+
+    /**
+     * Run [block] with the trusted-hop count pinned, and restore it afterwards.
+     *
+     * The count is read per call through [resolveTrustedProxyHops], so a system
+     * property is enough — and it has to be said out loud now that the default is
+     * zero, which is the safe answer for a directly exposed server and the reason a
+     * forwarded header means nothing unless a test asks for it to.
+     */
+    private inline fun withTrustedProxyHops(hops: Int, block: () -> Unit) {
+        val property = "lunicle.trustedProxyHops"
+        val saved = System.getProperty(property)
+        try {
+            System.setProperty(property, hops.toString())
+            block()
+        } finally {
+            if (saved == null) System.clearProperty(property) else System.setProperty(property, saved)
         }
     }
 

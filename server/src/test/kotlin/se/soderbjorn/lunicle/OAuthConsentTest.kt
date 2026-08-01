@@ -26,6 +26,9 @@ package se.soderbjorn.lunicle
 import io.ktor.client.request.cookie
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.client.HttpClient
 import io.ktor.http.HttpStatusCode
@@ -232,7 +235,76 @@ class OAuthConsentTest {
         }
     }
 
+    // ── LUS-31: the unauthenticated endpoints are metered and bounded ────────
+
+    /**
+     * Registration is the one endpoint where an anonymous caller writes a row.
+     *
+     * Unauthenticated by design (RFC 7591), swept only at startup, and until now
+     * unmetered — so anyone on the internet could fill a volume at whatever rate
+     * they could drive HTTP.
+     */
+    @Test
+    fun `client registration is rate limited`(): Unit = runBlocking {
+        withRoutes { client ->
+            repeat(5) {
+                assertEquals(
+                    HttpStatusCode.Created,
+                    client.register(""""client_name":"Agent $it"""").status,
+                    "A registration inside the budget was refused.",
+                )
+            }
+            assertEquals(
+                HttpStatusCode.TooManyRequests,
+                client.register(""""client_name":"Agent 6"""").status,
+                "Registration is still unmetered — anyone on the internet can fill the volume.",
+            )
+        }
+    }
+
+    /**
+     * And the callback array is bounded, which the client name already was.
+     *
+     * Refused rather than truncated: a name is decoration and losing some of it
+     * breaks nothing, while silently dropping a callback would surface as a
+     * redirect_uri mismatch later, far from the cause.
+     */
+    @Test
+    fun `an unbounded redirect_uris array is refused`(): Unit = runBlocking {
+        withRoutes { client ->
+            val many = (1..40).joinToString(",") { "\"http://localhost:$it/cb\"" }
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.register(""""redirect_uris":[$many]""").status,
+                "A registration claiming forty callbacks was stored.",
+            )
+            val long = "https://example.com/" + "a".repeat(4000)
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.register(""""redirect_uris":["$long"]""").status,
+                "A registration carrying a four-kilobyte callback was stored.",
+            )
+        }
+    }
+
     // ── Plumbing ─────────────────────────────────────────────────────────────
+
+    /**
+     * Register a client, with [fields] overriding the defaults.
+     *
+     * Raw JSON rather than a serialized type, because the endpoint parses the body
+     * by hand — the point of several of these tests is what it does with a body no
+     * well-behaved client would send.
+     */
+    private suspend fun HttpClient.register(fields: String): HttpResponse = post("/oauth/register") {
+        setBody(
+            if ("redirect_uris" in fields) {
+                "{$fields}"
+            } else {
+                """{"redirect_uris":["$LOOPBACK"],$fields}"""
+            },
+        )
+    }
 
     /** An account an agent may act as: instance admin, so the tier is permitted, switch on. */
     private suspend fun seedAgentUser(): UserRecord {

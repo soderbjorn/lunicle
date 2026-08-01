@@ -196,6 +196,18 @@ fun Application.module() {
             "ways-in=${instanceIdentity.waysIn.joinToString(" · ").ifEmpty { "(none)" }}",
     )
 
+    // What this process assumes about its own network, said out loud (LUS-31). It
+    // decides whether every rate limit in the server keys on the caller or on the
+    // proxy in front of them, and both ways of getting it wrong are quiet — so it
+    // goes in the boot log rather than being left to be inferred from a bill or
+    // from nobody being able to sign in. See resolveTrustedProxyHops.
+    val trustedProxyHops = resolveTrustedProxyHops()
+    if (trustedProxyHops == 0) {
+        log.warn("Rate limiting: ${describeTrustedProxyHops(trustedProxyHops)}")
+    } else {
+        log.info("Rate limiting: ${describeTrustedProxyHops(trustedProxyHops)}")
+    }
+
     // Which backend this process runs on, chosen once here — see DatabaseBackend.
     // Nothing GCP is touched unless FIRESTORE is selected: on the SQLite/Railway
     // path this is a pure env read and the Firestore branch of the graph below is

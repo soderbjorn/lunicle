@@ -586,6 +586,23 @@ fun Route.authRoutes(
      */
     val redeemLimiter = RateLimiter(limit = 10, windowMillis = 15L * 60 * 1000)
 
+    /**
+     * How often one client may present a Google authorization code (LUS-31).
+     *
+     * Unauthenticated, and every call makes an **outbound HTTPS request** to
+     * Google's token endpoint before anything can decide the code is nonsense — so
+     * an unmetered loop here spends our sockets, our latency and Google's patience
+     * with our client id, all at no cost to the caller.
+     *
+     * Keyed on the client alone. There is no second identity to compose with: the
+     * request body is an opaque code, not an address, so there is nothing here that
+     * corresponds to [signInLimiter]'s per-address bucket.
+     *
+     * Twenty in fifteen minutes: a real person signs in once, occasionally twice
+     * after a failed popup, and several of them can share one NAT'd address.
+     */
+    val googleLimiter = RateLimiter(limit = 20, windowMillis = 15L * 60 * 1000)
+
     // Never 401s. "Signed out" is a state the view renders, not an error it
     // handles — and an endpoint the whole UI depends on should not have a
     // failure mode for the most common case.
@@ -1220,6 +1237,19 @@ fun Route.authRoutes(
         val request = runCatching { call.receive<GoogleCodeRequest>() }.getOrNull()
         if (request == null || request.code.isBlank()) {
             call.respond(HttpStatusCode.BadRequest, "Missing authorization code.")
+            return@post
+        }
+        // Unauthenticated, and every call makes an outbound HTTPS request to Google
+        // before anything can decide the code is nonsense (LUS-31). So it is metered
+        // on the client, like the two e-mail endpoints beside it — this is the one
+        // sign-in path that spends somebody else's rate limit as well as ours.
+        //
+        // A 429 is honest here: unlike the e-mail *request* endpoint, this one
+        // already answers differently for a good and a bad code, so a refusal
+        // reveals nothing new about anybody.
+        val googleDecision = googleLimiter.tryAcquire("google-client:${call.clientIdentity()}")
+        if (googleDecision is RateLimitDecision.Refused) {
+            call.respondRateLimited(googleDecision, "Too many sign-in attempts. Try again shortly.")
             return@post
         }
         try {

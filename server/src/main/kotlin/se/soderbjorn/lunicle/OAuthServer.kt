@@ -48,8 +48,10 @@
 package se.soderbjorn.lunicle
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.response.header
 import io.ktor.server.request.receiveParameters
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondRedirect
@@ -76,6 +78,12 @@ private val logger = LoggerFactory.getLogger("OAuthServer")
 
 /** Where the MCP endpoint lives. The `resource` every token is minted for. */
 const val MCP_PATH = "/mcp"
+
+/** How many callbacks one registration may claim. See [registrationRoute]. */
+private const val MAX_REDIRECT_URIS = 8
+
+/** How long one of them may be. See [registrationRoute]. */
+private const val MAX_REDIRECT_URI_LENGTH = 2048
 
 /** Everything the authorization server, the MCP transport and the Connections section need. */
 class McpDependencies(
@@ -200,11 +208,63 @@ internal fun isAllowedRedirectUri(uri: String): Boolean = when {
  *   this human?" — which is the half that already worked.
  */
 fun Route.oauthRoutes(deps: McpDependencies) {
+    // ── Every route below is unauthenticated, so every route below is metered ──
+    //
+    // Rate limiting existed in this server and covered two endpoints out of the
+    // whole of it, neither of them here (LUS-31). Everything in this file is
+    // reachable by anyone on the internet with no credential of any kind, which is
+    // the design — see the preamble — and the counterweight it was missing.
+    //
+    // Two limiters rather than one, because registration and the flow are not the
+    // same kind of traffic and one limit for both would have to be the looser.
+    // Both are per route-installation, which is per process: these routes are
+    // mounted once, at startup.
+    val limits = OAuthRateLimits()
     discoveryRoutes()
-    registrationRoute(deps)
-    authorizeRoutes(deps)
-    tokenRoute(deps)
-    revocationRoute(deps)
+    registrationRoute(deps, limits)
+    authorizeRoutes(deps, limits)
+    tokenRoute(deps, limits)
+    revocationRoute(deps, limits)
+}
+
+/**
+ * The limiters in front of the authorization server.
+ *
+ * @property registration how often one client identity may create client rows.
+ *   Tight, because this is the only endpoint on the server where an anonymous
+ *   caller writes a row: registration is unauthenticated by design (RFC 7591) and
+ *   the disk cost was bounded only by a startup sweep. Five in fifteen minutes is
+ *   past anything a real agent does — a client registers once and reuses the id —
+ *   and worth nothing to somebody filling a volume.
+ * @property flow how often one client identity may drive authorize, token and
+ *   revoke. Much looser, because these are the endpoints a working agent actually
+ *   uses: a refresh every so often, plus a handful of round trips per connection,
+ *   and several people can share one NAT'd address. Sixty in fifteen minutes
+ *   leaves that comfortably alone while capping a loop.
+ *
+ *   Credential guessing is not what this is for — a thirty-two-byte secret is not
+ *   guessable at sixty attempts a quarter of an hour or at any other rate. It is
+ *   for the O(table) work each call costs and for the outbound consequences.
+ */
+private class OAuthRateLimits(
+    val registration: RateLimiter = RateLimiter(limit = 5, windowMillis = 15L * 60 * 1000),
+    val flow: RateLimiter = RateLimiter(limit = 60, windowMillis = 15L * 60 * 1000),
+)
+
+/**
+ * Spend one from [limiter] for this call's client, or answer `429` and return false.
+ *
+ * An OAuth error body rather than [respondRateLimited]'s plain text, because every
+ * other refusal from these endpoints is one and a client that parses JSON should
+ * not meet a sentence. `Retry-After` rides along either way.
+ */
+private suspend fun ApplicationCall.withinOAuthLimit(limiter: RateLimiter, key: String): Boolean {
+    val decision = limiter.tryAcquire("$key:${clientIdentity()}")
+    if (decision !is RateLimitDecision.Refused) return true
+    response.header(HttpHeaders.RetryAfter, decision.retryAfterSeconds.toString())
+    logger.info("MCP: rate limited ${request.local.uri} — retry after ${decision.retryAfterSeconds}s")
+    respondJson(HttpStatusCode.TooManyRequests, oauthError("slow_down", "Too many requests. Try again shortly."))
+    return false
 }
 
 // ── Discovery (RFC 9728 / RFC 8414) ──────────────────────────────────────────
@@ -285,8 +345,9 @@ private fun Route.discoveryRoutes() {
  * retained for compatibility. It remains the path every shipping client actually
  * takes, which is the only thing that matters here.
  */
-private fun Route.registrationRoute(deps: McpDependencies) {
+private fun Route.registrationRoute(deps: McpDependencies, limits: OAuthRateLimits) {
     post("/oauth/register") {
+        if (!call.withinOAuthLimit(limits.registration, "oauth-register")) return@post
         val root = runCatching { Json.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
         if (root == null) {
             call.respondJson(HttpStatusCode.BadRequest, oauthError("invalid_client_metadata"))
@@ -306,6 +367,32 @@ private fun Route.registrationRoute(deps: McpDependencies) {
                 oauthError(
                     "invalid_redirect_uri",
                     "redirect_uris must be https, loopback http, or a custom app scheme.",
+                ),
+            )
+            return@post
+        }
+        // Bounded, unlike the client name beside it, which was already capped
+        // (LUS-31). The array was not: an anonymous caller could register a client
+        // carrying megabytes of callbacks, stored in one row and swept only at
+        // startup — and every authorize on that client then walks the list.
+        //
+        // Refused rather than truncated, which is the opposite of what the name
+        // does one block down, and deliberately: a name is decoration and losing
+        // some of it breaks nothing, while silently dropping a callback would
+        // surface as a redirect_uri mismatch later, far from the cause. Same
+        // reasoning as the whole-request refusal directly above.
+        //
+        // Eight and two kilobytes are both far past any real client — an agent
+        // registers one loopback callback, occasionally two while a port is
+        // uncertain — and both are small enough that the worst a caller can store
+        // per registration is measured in kilobytes rather than in whatever they
+        // felt like sending.
+        if (redirectUris.size > MAX_REDIRECT_URIS || redirectUris.any { it.length > MAX_REDIRECT_URI_LENGTH }) {
+            call.respondJson(
+                HttpStatusCode.BadRequest,
+                oauthError(
+                    "invalid_redirect_uri",
+                    "At most $MAX_REDIRECT_URIS redirect_uris, each under $MAX_REDIRECT_URI_LENGTH characters.",
                 ),
             )
             return@post
@@ -355,7 +442,7 @@ private fun redirectWith(redirectUri: String, query: String, clientState: String
     return "$redirectUri$separator$query$state"
 }
 
-private fun Route.authorizeRoutes(deps: McpDependencies) {
+private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits) {
     /**
      * Where the agent sends the user's browser.
      *
@@ -377,6 +464,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
      * better experience, and needs no new provider configuration.
      */
     get("/oauth/authorize") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@get
         val params = call.request.queryParameters
         val clientId = params["client_id"]
         val redirectUri = params["redirect_uri"]
@@ -500,6 +588,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
      * The one click this entire file exists to collect.
      */
     post("/oauth/consent") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@post
         val form = runCatching { call.receiveParameters() }.getOrNull()
         val state = deps.loginStates.find(form?.get("login_state"))
         if (state == null) {
@@ -633,7 +722,7 @@ private fun tokenResponse(tokens: IssuedTokens): JsonObject = buildJsonObject {
     put("scope", tokens.scope)
 }
 
-private fun Route.tokenRoute(deps: McpDependencies) {
+private fun Route.tokenRoute(deps: McpDependencies, limits: OAuthRateLimits) {
     /**
      * Trade a code — or a refresh token — for tokens.
      *
@@ -643,6 +732,7 @@ private fun Route.tokenRoute(deps: McpDependencies) {
      * probing codes.
      */
     post("/oauth/token") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@post
         val form = runCatching { call.receiveParameters() }.getOrNull()
         if (form == null) {
             call.respondJson(HttpStatusCode.BadRequest, oauthError("invalid_request"))
@@ -737,7 +827,7 @@ private fun Route.tokenRoute(deps: McpDependencies) {
 
 // ── Revocation (RFC 7009) ────────────────────────────────────────────────────
 
-private fun Route.revocationRoute(deps: McpDependencies) {
+private fun Route.revocationRoute(deps: McpDependencies, limits: OAuthRateLimits) {
     /**
      * Give a token back.
      *
@@ -746,6 +836,7 @@ private fun Route.revocationRoute(deps: McpDependencies) {
      * token it recognised would be a free oracle for testing stolen values.
      */
     post("/oauth/revoke") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@post
         val token = runCatching { call.receiveParameters() }.getOrNull()?.get("token")
         if (token != null) deps.tokens.revokeByToken(token)
         call.respondJson(HttpStatusCode.OK, buildJsonObject { put("status", "ok") })

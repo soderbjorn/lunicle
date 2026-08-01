@@ -33,6 +33,23 @@ import se.soderbjorn.lunicle.clientserver.StatisticWindow
 import se.soderbjorn.lunicle.clientserver.StatisticsState
 import se.soderbjorn.lunicle.clientserver.TokenModes
 
+/**
+ * How often one client may ask for a recompile (LUS-31).
+ *
+ * The refresh route is deliberately not admin-gated, and on a project with a guest
+ * audience row it is reachable with no session at all. [StatisticsRepository]'s
+ * per-project mutex and freshness window already cap how many *upstream* calls
+ * happen, which is the half that costs money — but not how much work each refused
+ * refresh does before finding that out, and a full issue scan per call on the
+ * single-threaded dispatcher is not free.
+ *
+ * Thirty in fifteen minutes is well past what the dialog does — it posts here once
+ * when the numbers read stale — and caps a loop.
+ *
+ * Per route-installation, which is per process: these routes are mounted once.
+ */
+private val refreshLimiter = RateLimiter(limit = 30, windowMillis = 15L * 60 * 1000)
+
 /** Mount the statistics routes. Called by [boardRoutes]. */
 fun Route.statisticsRoutes(deps: BoardDependencies) {
     /**
@@ -67,6 +84,11 @@ fun Route.statisticsRoutes(deps: BoardDependencies) {
      * cache as though it were a whole one.
      */
     post("${ApiRoutes.PROJECTS}/{id}/statistics/refresh") {
+        val decision = refreshLimiter.tryAcquire("statistics-refresh:${call.clientIdentity()}")
+        if (decision is RateLimitDecision.Refused) {
+            call.respondRateLimited(decision, "Too many refreshes. Try again shortly.")
+            return@post
+        }
         val (statistics, projectId) = call.statisticsScope(deps) ?: return@post
         val snapshot = statistics.refresh(projectId)
         call.respond(StatisticsState(statistics = snapshot.toWire(), isStale = false))
