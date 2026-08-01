@@ -542,6 +542,50 @@ fun Route.authRoutes(
      */
     val signInLimiter = RateLimiter(limit = 5, windowMillis = 15L * 60 * 1000)
 
+    /**
+     * How often a sign-in code may be *spent* — the endpoint the limiter above did
+     * not cover (LUS-11).
+     *
+     * ── What this is and is not for ────────────────────────────────────────
+     *
+     * Not brute force. The issued row caps guesses at five, so five codes per
+     * fifteen minutes times five guesses is twenty-five attempts out of a million,
+     * and no limit here changes that arithmetic. Two other things survive.
+     *
+     * **A targeted lockout.** The victim's code is a resource an attacker can
+     * address by e-mail. Polling redeem with a wrong code in a tight loop destroys
+     * every code the victim requests within milliseconds of it being issued, by the
+     * fifth wrong guess — and the victim sees only the deliberately uniform "that
+     * code is not right", with no way to tell what is happening. On a deployment
+     * where a mailed code is the only door, that is a complete account lockout
+     * costing the attacker nothing.
+     *
+     * **A server-wide stall.** Every call runs a SQLite transaction on the single
+     * threaded dispatcher every other request also queues behind.
+     *
+     * ── Keyed on both, and honest about what that buys ─────────────────────
+     *
+     * The client key is what actually stops the attack: a tight loop from one host
+     * becomes ten attempts a quarter of an hour, and the stall goes with it. The
+     * address key bounds how fast one person's codes can be burned through from
+     * *many* hosts — it cannot eliminate that, because an attacker who reaches the
+     * per-address budget has still spent one code's worth of guesses. Closing it
+     * completely would mean scoping a code's attempt counter to the client that
+     * requested it, which is a larger change to EmailCodes and is not this.
+     *
+     * Ten rather than [signInLimiter]'s five, and deliberately looser than the
+     * five-guess cap on a single code: somebody who exhausts one code, asks for a
+     * second and mistypes that one too is a real person having a bad morning, and
+     * refusing them for fifteen minutes would be the limiter locking out exactly
+     * who it exists to protect.
+     *
+     * A `429` here leaks nothing new. Unlike the request endpoint — whose whole
+     * design is to say nothing about whether an address has an account — this route
+     * already speaks plainly about e-mail sign-in and answers a caller who is
+     * mid-flow.
+     */
+    val redeemLimiter = RateLimiter(limit = 10, windowMillis = 15L * 60 * 1000)
+
     // Never 401s. "Signed out" is a state the view renders, not an error it
     // handles — and an endpoint the whole UI depends on should not have a
     // failure mode for the most common case.
@@ -1108,6 +1152,18 @@ fun Route.authRoutes(
         val address = normalizeEmail(request?.email)
         if (request == null || address == null) {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+
+        // Before the transaction, not after (LUS-11). The stall this guards against
+        // is the SQLite work itself, so a limiter that ran behind it would refuse
+        // requests that had already cost what they cost. See redeemLimiter.
+        val decision = redeemLimiter.tryAcquire(
+            "redeem-address:$address",
+            "redeem-client:${call.clientIdentity()}",
+        )
+        if (decision is RateLimitDecision.Refused) {
+            call.respondRateLimited(decision, "Too many attempts. Try again shortly.")
             return@post
         }
 

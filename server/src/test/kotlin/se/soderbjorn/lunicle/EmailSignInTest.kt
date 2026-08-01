@@ -489,6 +489,59 @@ class EmailSignInTest {
         }
     }
 
+    // ── Redemption is metered too (LUS-11) ───────────────────────────────────
+
+    /**
+     * The limiter guarded the endpoint that *issues* a code and not the one that
+     * spends it, so a tight loop of wrong guesses ran unbounded.
+     *
+     * Brute force was never the risk — the issued row caps guesses at five. What
+     * ran unbounded was a **targeted lockout**: poll redeem against a victim's
+     * address and every code they request dies within milliseconds of arriving, by
+     * the fifth wrong guess, while they see only the deliberately uniform "that code
+     * is not right". Plus a server-wide stall, since every call runs a SQLite
+     * transaction on the single-threaded dispatcher.
+     *
+     * Ten from one client in one window, then a 429 — which leaks nothing here, on a
+     * route that already speaks plainly about e-mail sign-in to a caller mid-flow.
+     */
+    @Test
+    fun `redeem is rate limited`(): Unit = runBlocking {
+        withRoutes { client ->
+            repeat(10) {
+                assertEquals(
+                    HttpStatusCode.BadRequest,
+                    client.redeem("victim@example.com", "000000", from = "9.9.9.9").status,
+                    "A wrong code stopped answering with the uniform refusal.",
+                )
+            }
+            assertEquals(
+                HttpStatusCode.TooManyRequests,
+                client.redeem("victim@example.com", "000000", from = "9.9.9.9").status,
+                "Redeem is still unmetered — a wrong-code loop can destroy every code a " +
+                    "victim requests, and stalls the database while it does.",
+            )
+        }
+    }
+
+    /** And it is keyed on the client too, so one host cannot walk a list of addresses. */
+    @Test
+    fun `redeem's limit follows the client across addresses`(): Unit = runBlocking {
+        withRoutes { client ->
+            repeat(10) { client.redeem("victim$it@example.com", "000000", from = "9.9.9.9") }
+            assertEquals(
+                HttpStatusCode.TooManyRequests,
+                client.redeem("someone-else@example.com", "000000", from = "9.9.9.9").status,
+                "One client walked a list of addresses at full speed.",
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.redeem("someone-else@example.com", "000000", from = "8.8.8.8").status,
+                "An unrelated client was locked out by somebody else's spending.",
+            )
+        }
+    }
+
     // ── Plumbing ─────────────────────────────────────────────────────────────
 
     private fun emailCodes(sender: ResendEmailTransport? = capturingSender()) =
@@ -541,9 +594,10 @@ class EmailSignInTest {
             setBody(EmailSignInRequest(email))
         }
 
-    private suspend fun HttpClient.redeem(email: String, code: String): HttpResponse =
+    private suspend fun HttpClient.redeem(email: String, code: String, from: String? = null): HttpResponse =
         post(ApiRoutes.AUTH_EMAIL_REDEEM) {
             contentType(ContentType.Application.Json)
+            if (from != null) header("X-Forwarded-For", from)
             setBody(EmailSignInRedeemRequest(email, code))
         }
 
