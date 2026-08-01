@@ -37,6 +37,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.io.File
 
@@ -466,6 +467,41 @@ fun Application.module() {
         access = access,
     )
 
+    // ── The one sweep that runs BEFORE this process serves anything (LUS-5) ──
+    //
+    // Every session an owner-impersonation grant minted, whatever the gate says.
+    // Unconditional, which is the whole of the off-switch guarantee: the grants
+    // that authorised these rows lived in the previous process's memory and died
+    // with it, so every row this finds is orphaned by definition. Gating it on
+    // `ownerImpersonation.isEnabled` would leave exactly the hole worth caring
+    // about — turn the feature off while somebody is probing and their session
+    // survives the restart as an ORDINARY session for the person they were
+    // wearing, marker gone and nothing left to notice it. See ImpersonationConfig.
+    //
+    // Unconditional was never the part that was wrong. **Ordered** was. This used
+    // to sit inside the launch{} below, behind `stores.migrate()`, while the
+    // routing block was registered synchronously regardless — so between the port
+    // binding and this line the server was serving with those sessions still live.
+    // During that window `resolveCaller` does precisely what the design warns
+    // against: with the gate now off it returns the caller as an ordinary session,
+    // `isProbe` reads false, the marker leaves the UI and the e-mail guards go
+    // inert, on a deployment whose configuration says the feature is off. On the
+    // Firestore backend the migration it sat behind can wait several minutes for an
+    // elected peer, and if that wedges the sweep never ran at all while the process
+    // kept answering; Cloud Run's request-based CPU billing throttles background
+    // coroutines between requests and stretches the window further.
+    //
+    // So it is hoisted out and blocks the module. It is one indexed delete on a
+    // small collection, it does not need the new schema and it does not need to be
+    // fast — the healthcheck argument the launch{} below rests on does not reach a
+    // statement of this shape. Everything else stays where it was.
+    runBlocking {
+        val probes = sessions.deleteProbeSessions()
+        if (probes > 0) {
+            log.info("Removed $probes impersonation session(s) — their grants did not survive the restart")
+        }
+    }
+
     // Startup housekeeping, all of it in one launch{} rather than blocking the
     // module: a slow sweep must not hold up the port binding, because Railway's
     // healthcheck is watching and nothing here is a precondition for serving.
@@ -513,21 +549,8 @@ fun Application.module() {
         val removed = sessions.deleteExpired()
         if (removed > 0) log.info("Removed $removed expired session(s)")
 
-        // Every session an owner-impersonation grant minted, whatever the gate says.
-        //
-        // UNCONDITIONAL, and that is the whole of the off-switch guarantee. The
-        // grants that authorised these sessions lived in the previous process's
-        // memory and died with it, so every row this finds is orphaned by
-        // definition and there is nothing to preserve. Gating it on
-        // `ownerImpersonation.isEnabled` would leave exactly the hole worth caring
-        // about: turn the feature off while somebody is probing, and their session
-        // survives the restart as an ORDINARY session for the person they were
-        // wearing, with the marker gone and nothing left to notice it. See
-        // ImpersonationConfig.
-        val probes = sessions.deleteProbeSessions()
-        if (probes > 0) {
-            log.info("Removed $probes impersonation session(s) — their grants did not survive the restart")
-        }
+        // The probe-session sweep used to be here. It now runs synchronously above,
+        // ahead of the migration and of anything being served — see LUS-5 there.
         log.info("Sessions live: ${sessions.size()}")
 
         // The mailbox-proof codes, swept beside the sessions. Unlike that sweep
