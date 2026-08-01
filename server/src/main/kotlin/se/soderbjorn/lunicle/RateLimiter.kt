@@ -292,11 +292,20 @@ class RateLimiter(
  *
  * The honest answer, and the right one wherever the fact of a limit reveals
  * nothing. It is deliberately *not* what every caller does: an endpoint where the
- * refusal itself would leak — "this address is being rate-limited" is "this
- * address exists" — should render its ordinary success response instead and
- * simply not do the work. See the sign-in request endpoint, which does exactly
- * that. That choice belongs to the route, which is why [RateLimiter] returns a
- * decision rather than responding to anything.
+ * refusal itself would leak — "this address is being rate-limited" is "somebody
+ * has been asking about this address" — should render its ordinary success
+ * response instead and simply not do the work.
+ *
+ * The sign-in request endpoint does **both**, and is worth reading as the worked
+ * example (LUS-13): it asks its two buckets separately, answers a 429 for the
+ * *client* bucket, whose refusal is a fact about the caller alone, and its
+ * ordinary 204 for the *address* bucket, whose refusal would otherwise vary with
+ * somebody else's recent activity. This documentation used to claim the endpoint
+ * never refused at all, which was wrong in the direction that matters — it read as
+ * though the invariant were already held.
+ *
+ * That choice belongs to the route, which is why [RateLimiter] returns a decision
+ * rather than responding to anything.
  */
 internal suspend fun ApplicationCall.respondRateLimited(refusal: RateLimitDecision.Refused, message: String) {
     response.header(HttpHeaders.RetryAfter, refusal.retryAfterSeconds.toString())

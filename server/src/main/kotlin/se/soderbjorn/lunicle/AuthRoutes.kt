@@ -84,8 +84,32 @@ internal fun ApplicationCall.serverOrigin(): String {
     // edge and speaks plain HTTP to the container, so request.local.scheme is
     // "http" on every deployed request and Google would reject the exchange
     // over a scheme mismatch.
-    val forwardedProto = request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim()
-    val scheme = forwardedProto?.takeIf { it.isNotBlank() } ?: request.local.scheme
+    //
+    // ── Read from the RIGHT, like X-Forwarded-For (LUS-13) ────────────────────
+    //
+    // This used to take the leftmost entry while `clientIdentity` takes the
+    // rightmost, and two forwarded headers read from opposite ends is the kind of
+    // thing that stays harmless until an infrastructure change and then fails
+    // silently. Each proxy *appends*, so the rightmost entry is what the proxy
+    // nearest this server actually observed and the leftmost is whatever the
+    // original request arrived carrying.
+    //
+    // Behind exactly one proxy — both deployments — the two ends are the same
+    // entry and nothing changes. What it buys is a chained deployment where they
+    // are not, and one consistent rule to reason about.
+    //
+    // Being honest about what it does NOT buy: on a server exposed with no proxy at
+    // all, an attacker sending a single-valued header still controls this
+    // completely, because there is no trusted entry to prefer. That case is what
+    // LUNICLE_TRUSTED_PROXY_HOPS describes, and this header deliberately does not
+    // consult it — the hop count defaults to zero now (LUS-31), and ignoring
+    // X-Forwarded-Proto on an unset deployment would make every Railway and Cloud
+    // Run instance compute an http:// origin and break Google sign-in outright. A
+    // wrong scheme here is a broken sign-in; a wrong client identity there is a
+    // weakened limit. The two want different defaults.
+    val forwardedProto = request.headers["X-Forwarded-Proto"]
+        ?.split(',')?.map { it.trim() }?.lastOrNull { it.isNotBlank() }
+    val scheme = forwardedProto ?: request.local.scheme
 
     // The authority is taken verbatim from the request rather than rebuilt from
     // a host and a port, because rebuilding it is wrong in production and the
@@ -102,8 +126,8 @@ internal fun ApplicationCall.serverOrigin(): String {
     // used, carrying a port only when it is not the scheme's default —
     // "localhost:8080" in development, "lunicle.lunamux.dev" deployed. There is
     // nothing to compute.
-    val authority = request.headers["X-Forwarded-Host"]?.substringBefore(',')?.trim()
-        ?.takeIf { it.isNotBlank() }
+    val authority = request.headers["X-Forwarded-Host"]
+        ?.split(',')?.map { it.trim() }?.lastOrNull { it.isNotBlank() }
         ?: request.headers[HttpHeaders.Host]?.takeIf { it.isNotBlank() }
         ?: request.host()
 
@@ -925,8 +949,14 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
         }
-        val address = request.email.trim()
-        if (address.isBlank() || !isPlausibleEmail(address)) {
+        // Through the shared normaliser, like every other entry point (LUS-13). This
+        // was the one path that trimmed and did not lowercase — and the address is
+        // stored on the pending row, mailed to, echoed back, and only normalised at
+        // the final write. On a mail host that honours local-part case, the address
+        // that was *proved* and the address that gets *written* were then not the
+        // same string.
+        val address = normalizeEmail(request.email)
+        if (address == null || !isPlausibleEmail(address)) {
             call.respond(HttpStatusCode.BadRequest, "That does not look like an e-mail address.")
             return@post
         }
@@ -1114,12 +1144,39 @@ fun Route.authRoutes(
         // alone, one host walks a list of many target addresses at full speed;
         // keyed on the address alone, a botnet hammers one. LNL-72 exists for
         // exactly this endpoint.
-        val decision = signInLimiter.tryAcquire(
-            "signin-address:$address",
-            "signin-client:${call.clientIdentity()}",
-        )
-        if (decision is RateLimitDecision.Refused) {
-            call.respondRateLimited(decision, "Too many sign-in codes requested. Try again shortly.")
+        //
+        // ── Two acquires, because the two refusals leak differently (LUS-13) ──
+        //
+        // They used to be one call, answering 429 whichever bucket was empty — and
+        // three places then asserted three different things about that line.
+        // `respondRateLimited`'s own documentation said this endpoint "returns its
+        // ordinary success response instead of refusing"; a comment here said the 429
+        // "leaks only about the caller"; and a test asserted that a fresh client gets
+        // a 429 for an address somebody *else* exhausted. Only the test described
+        // what the code did, and what the code did was a weak activity oracle: ask
+        // about an address, and a 429 says somebody has been asking about it lately.
+        //
+        // So they are asked separately and answered differently.
+        //
+        // The **client** bucket earns an honest 429. "You have been asking too often"
+        // is a fact about the caller and about nobody else, and telling somebody
+        // mid-flow to come back shortly is worth more than the silence costs.
+        //
+        // The **address** bucket gets this endpoint's ordinary silence: a 204, with
+        // no code minted. That is the invariant the limiter's documentation always
+        // claimed and now holds — the whole design of this route is that its answer
+        // says nothing about the address, and a status code that varies with
+        // somebody else's recent activity is exactly the crack it exists to avoid.
+        //
+        // Ordered client-first so a caller in a loop is stopped by the honest
+        // refusal rather than accumulating silence.
+        val clientDecision = signInLimiter.tryAcquire("signin-client:${call.clientIdentity()}")
+        if (clientDecision is RateLimitDecision.Refused) {
+            call.respondRateLimited(clientDecision, "Too many sign-in codes requested. Try again shortly.")
+            return@post
+        }
+        if (signInLimiter.tryAcquire("signin-address:$address") is RateLimitDecision.Refused) {
+            call.respond(HttpStatusCode.NoContent)
             return@post
         }
 

@@ -362,13 +362,26 @@ class EmailSignInTest {
      * address, so only the per-address bucket can refuse them — which is exactly
      * the botnet-on-one-target case the composed key exists for.
      *
+     * ── And it refuses in SILENCE (LUS-13) ───────────────────────────────────
+     *
+     * This test used to assert a 429 on the sixth request, which was the review's
+     * "weak activity oracle": ask about an address from a fresh client, and the
+     * status code told you whether somebody had been asking about it lately. The
+     * limiter's own documentation had claimed all along that this endpoint answers
+     * with its ordinary response instead of refusing; the code did not, and this
+     * test was pinning the code.
+     *
+     * So the sixth request is a 204 like every other, and what has to be asserted is
+     * that **no mail went** — which is the only observable difference there should
+     * be, and is not observable from outside at all.
+     *
      * Pinned to one trusted proxy hop, or the forwarded addresses mean nothing and
      * this passes for the wrong reason: with the default of zero (LUS-31) every
      * request shares the engine's socket peer, so the *client* bucket would be doing
      * the refusing and the assertion would no longer be about the address at all.
      */
     @Test
-    fun `one address is refused however many clients ask for it`(): Unit = runBlocking {
+    fun `one address is refused, silently, however many clients ask for it`(): Unit = runBlocking {
         withTrustedProxyHops(1) {
             withRoutes { client ->
                 repeat(5) { attempt ->
@@ -378,11 +391,15 @@ class EmailSignInTest {
                         "Request ${attempt + 1} of 5 was refused.",
                     )
                 }
+                assertEquals(5, sent.size, "The first five requests did not each send a code.")
+
                 assertEquals(
-                    HttpStatusCode.TooManyRequests,
+                    HttpStatusCode.NoContent,
                     client.request("victim@example.com", from = "203.0.113.99").status,
-                    "A sixth client mailed the same address inside the window.",
+                    "The status code told a fresh client that somebody has been asking about this " +
+                        "address — which is the oracle this endpoint's silence exists to prevent.",
                 )
+                assertEquals(5, sent.size, "A sixth client mailed the same address inside the window.")
             }
         }
     }

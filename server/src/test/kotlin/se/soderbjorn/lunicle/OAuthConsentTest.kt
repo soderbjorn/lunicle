@@ -318,6 +318,40 @@ class OAuthConsentTest {
         }
     }
 
+    // ── LUS-13: a callback that executes is not a callback ───────────────────
+
+    /**
+     * The custom-app-scheme branch admitted anything that parsed as a scheme and
+     * was not plain http — `javascript:` and `data:` included.
+     *
+     * There is no XSS today, and the precision matters: the value only ever reached
+     * a `Location` header, and no browser executes a `javascript:` URL it is
+     * redirected to. But the value is **stored**, and it is now interpolated into
+     * the consent card as the destination the reader is asked to check (LUS-17) — so
+     * one change from a redirect to a rendered link turns a registration into stored
+     * XSS on a session-carrying origin.
+     */
+    @Test
+    fun `an executable scheme cannot be registered as a callback`() {
+        listOf(
+            "javascript:alert(document.cookie)",
+            "JavaScript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+        ).forEach { uri ->
+            assertFalse(isAllowedRedirectUri(uri), "A callback that executes was accepted: $uri")
+        }
+    }
+
+    /** And the app schemes real desktop clients use still register. */
+    @Test
+    fun `an ordinary app scheme still registers`() {
+        listOf("cursor://callback", "claude://oauth", "https://agents.example.com/cb", LOOPBACK)
+            .forEach { uri ->
+                assertTrue(isAllowedRedirectUri(uri), "A legitimate callback was refused: $uri")
+            }
+    }
+
     // ── Plumbing ─────────────────────────────────────────────────────────────
 
     /**

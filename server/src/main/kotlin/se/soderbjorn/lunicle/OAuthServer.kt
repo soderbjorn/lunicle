@@ -85,6 +85,14 @@ private const val MAX_REDIRECT_URIS = 8
 /** How long one of them may be. See [registrationRoute]. */
 private const val MAX_REDIRECT_URI_LENGTH = 2048
 
+/**
+ * URI schemes that execute, and are therefore never a callback (LUS-13).
+ *
+ * Named rather than inlined because the list is the security claim: see
+ * [isAllowedRedirectUri] for why this is a deny-list and what stands behind it.
+ */
+private val DANGEROUS_URI_SCHEMES = setOf("javascript", "data", "vbscript")
+
 /** Everything the authorization server, the MCP transport and the Connections section need. */
 class McpDependencies(
     val clients: se.soderbjorn.lunicle.store.OAuthClientStore,
@@ -233,6 +241,24 @@ private fun String.escapeHtml(): String =
  * authorization code across the internet in cleartext.
  */
 internal fun isAllowedRedirectUri(uri: String): Boolean = when {
+    // ── Dangerous schemes, denied by name (LUS-13) ────────────────────────────
+    //
+    // The custom-app-scheme branch below admits anything that parses as a scheme
+    // and is not plain http, which included `javascript:`, `data:` and `vbscript:`.
+    //
+    // There is no XSS today, and being precise about why matters: the value only
+    // ever reaches a `Location` header, and no browser executes a `javascript:` URL
+    // it is redirected to. But the value is **stored**, and it is now interpolated
+    // into the consent card as the destination the reader is asked to check
+    // (LUS-17) — so one change from a redirect to a rendered link turns a
+    // registration into stored XSS on a session-carrying origin.
+    //
+    // A deny-list rather than an allow-list of app schemes, and that is the weaker
+    // of the two: an allow-list cannot be written here, because the whole point of
+    // the branch is that a client Lunicle has never heard of registers `cursor://`
+    // or `claude://` and works. So this names the three that execute, and the
+    // consent card's escaping is what stands behind it.
+    uri.substringBefore(':').lowercase().trim() in DANGEROUS_URI_SCHEMES -> false
     uri.startsWith("https://") -> true
     // Loopback only. Note the prefix check is deliberately on the scheme+host and
     // not a `contains`: "http://localhost.evil.com" must not pass, and it does not
