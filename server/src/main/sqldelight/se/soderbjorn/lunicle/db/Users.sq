@@ -261,10 +261,13 @@ VALUES (
     -- a setting, and a setting is not something an INSERT can claim atomically.
     (SELECT CASE WHEN EXISTS(SELECT 1 FROM users) THEN NULL ELSE 'admin' END),
     :addedAt,
-    -- Reaching this statement is a sign-in, so the arrival stamp is the same instant
-    -- as the added stamp for every row created this way. The two only ever differ on
-    -- a row an administrator added ahead of time, which `addPending` writes instead.
-    :addedAt
+    -- Reaching this statement is a sign-in, so for every row created this way the
+    -- arrival stamp is the same instant as the added stamp. The two differ in two
+    -- cases: a row an administrator added ahead of time, which `addPending` writes
+    -- instead — and a row an owner-impersonation probe brought into existence, which
+    -- binds NULL here because nobody arrived (LUS-6). See `refreshKindOnProbeSignIn`
+    -- for what `signed_in_at` decides and why a probe must not claim it.
+    :signedInAt
 )
 ON CONFLICT (provider, provider_id) DO UPDATE SET
     provider_name = excluded.provider_name,
@@ -285,7 +288,11 @@ ON CONFLICT (provider, provider_id) DO UPDATE SET
     -- The arrival stamp, on the repeat-sign-in branch too: this is a sign-in, and a
     -- row that had none — one an administrator added ahead of time and whose owner
     -- has just turned up — stops being pending here.
-    signed_in_at = :addedAt
+    --
+    -- COALESCE, so a probe passing NULL leaves whatever was there rather than
+    -- clearing an arrival that genuinely happened (LUS-6). Under a proved sign-in
+    -- the parameter is never null and this reads exactly as `= :addedAt` did.
+    signed_in_at = COALESCE(:signedInAt, users.signed_in_at)
     -- instance_role, display_name and mcp_enabled are deliberately absent.
     -- Recomputing instance_role on every sign-in would be a bug with teeth;
     -- display_name is the user's — the provider has no business overwriting it —
@@ -370,6 +377,38 @@ WHERE provider = ? AND provider_id = ?;
 -- on, so writing it would be writing the value back over itself.
 refreshOnSignIn:
 UPDATE users SET provider_name = ?, kind = ?, email_verified = 1, signed_in_at = ? WHERE id = ?;
+
+-- The same refresh, for a sign-in nobody proved (LUS-6).
+--
+-- Impersonation deliberately runs the real sign-in pipeline, which means it also
+-- ran the statement above — and every one of those three columns then records
+-- something that did not happen. `email_verified = 1` on the strength of "arriving
+-- here at all means the address was just proved again", which under a probe is
+-- exactly what did not occur; `provider_name` overwritten from a name the owner's
+-- own request composed; and `signed_in_at` stamped for an arrival nobody made.
+--
+-- Two of those are cosmetic. `signed_in_at` is not, and it is why this statement
+-- exists: it is a **security input** in two places, and both fail open.
+--
+--   * Admission short-circuits on it — see AdmissionPolicy and `hasSignedIn` — so an
+--     address that has ever been probed is permanently exempt from the policy even
+--     if the policy is later tightened. Probe an added-but-never-arrived contractor
+--     once, tighten admission to staff-domain-only afterwards, and that address is
+--     still admitted, because the gate returns before it ever consults the policy.
+--   * Instance hand-over eligibility requires it, so probing an added-but-unused
+--     address makes that account eligible to receive the whole deployment.
+--
+-- `kind` is still written, deliberately: it is *derived* rather than recorded — the
+-- staff/member answer for an address against the deployment's domain, from the same
+-- UserKind.forEmail the startup stamp runs. Re-deriving it says nothing about who
+-- arrived, and leaving it stale would make a probe the one path that can put the
+-- column out of step with its own rule.
+--
+-- This costs nothing in fidelity. The admission gate, the upsert, the staff/member
+-- stamp and the owner seating all still run, which is the whole claim the facility
+-- makes. What stops is the recording of proof nobody supplied.
+refreshKindOnProbeSignIn:
+UPDATE users SET kind = ? WHERE id = ?;
 
 -- Every account, for the admin's impersonation menu — and for nothing else.
 --

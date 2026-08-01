@@ -351,7 +351,91 @@ class ImpersonationRoutesTest {
             "Signing in as an unknown address created no account, so nothing real was tested.",
         )
         assertEquals(UserKind.STAFF, created.kind, "The kind stamp did not run on the impersonated sign-in.")
-        assertTrue(created.hasSignedIn, "The row exists but records no arrival.")
+        // This used to assert the opposite (LUS-6). The row is real — that is the
+        // whole departure from the preview this replaced — but nobody has arrived at
+        // it, and `signed_in_at` is a security input rather than a display value: see
+        // the two tests below, and Users.sq's refreshKindOnProbeSignIn.
+        assertFalse(
+            created.hasSignedIn,
+            "A probe recorded an arrival at an address nobody has ever signed in with.",
+        )
+    }
+
+    // ── The proof a probe must not write (LUS-6) ────────────────────────────
+
+    /**
+     * The one that has teeth: an added-but-never-arrived row stays never-arrived.
+     *
+     * Admission short-circuits on `signed_in_at` — a policy is asked only about
+     * accounts nobody holds yet — so a row a probe stamped is **permanently exempt**
+     * from any policy tightened afterwards. The scenario in full: a deployment runs
+     * staff-domain-plus-added, an administrator has added an outside contractor's
+     * address, the owner probes it once (permitted, it counts as already added), and
+     * the administrator later tightens to staff-domain-only to lock outsiders out.
+     * Without this, that address is still admitted, because the gate returns before
+     * it consults the policy.
+     *
+     * Instance hand-over eligibility reads the same column, so the same probe would
+     * make an address nobody has used eligible to receive the whole deployment.
+     */
+    @Test
+    fun `probing an added-but-unused address leaves it never signed in`(): Unit = runBlocking {
+        val f = seed()
+        val before = users.selectAll().first { it.email == "pending@acme.com" }
+        assertFalse(before.hasSignedIn, "The fixture's pending row already claims an arrival.")
+
+        withRoutes { client, _ ->
+            val probeId = requireNotNull(client.arm(f.ownerCookie).probeCookie())
+            assertEquals(HttpStatusCode.OK, client.impersonate(probeId, "pending@acme.com").status)
+            client.stop(probeId)
+        }
+
+        val after = users.selectAll().first { it.email == "pending@acme.com" }
+        assertFalse(
+            after.hasSignedIn,
+            "A probe stamped an arrival on a row nobody has used — that address is now " +
+                "permanently exempt from admission and eligible for instance hand-over.",
+        )
+    }
+
+    /**
+     * And the cosmetic two, which are cheap to keep honest once the flag is threaded.
+     *
+     * A probe of an unverified address must not mark it verified: "arriving here at
+     * all means the address was just proved again" is the sentence the ordinary
+     * refresh rests on, and under a probe it is exactly what did not happen.
+     */
+    @Test
+    fun `a probe does not mark an unverified address as proved`(): Unit = runBlocking {
+        val f = seed()
+        // addByEmail writes a row for an address nobody has proved.
+        assertFalse(
+            users.selectAll().first { it.email == "pending@acme.com" }.isEmailVerified,
+            "The fixture's pending row is already verified, so this asserts nothing.",
+        )
+
+        withRoutes { client, _ ->
+            val probeId = requireNotNull(client.arm(f.ownerCookie).probeCookie())
+            client.impersonate(probeId, "pending@acme.com")
+            client.stop(probeId)
+        }
+
+        assertFalse(
+            users.selectAll().first { it.email == "pending@acme.com" }.isEmailVerified,
+            "A probe marked an address proved that nobody proved.",
+        )
+    }
+
+    /** An ordinary sign-in is untouched: it still stamps the arrival it earned. */
+    @Test
+    fun `an ordinary sign-in still records its arrival`(): Unit = runBlocking {
+        seed()
+        val user = users.upsert(
+            ProviderIdentity(AuthProvider.GOOGLE, "g-new", "New", "new@acme.com"),
+            kind = UserKind.STAFF,
+        )
+        assertTrue(user.hasSignedIn, "A proved sign-in stopped recording its arrival.")
+        assertTrue(user.isEmailVerified, "A proved sign-in stopped marking the address proved.")
     }
 
     /**

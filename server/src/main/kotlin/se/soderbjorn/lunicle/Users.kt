@@ -381,12 +381,19 @@ class UserStore(
      * moment someone becomes the instance admin. See the `upsert` query.
      *
      * @param identity who the provider says this is.
+     * @param isProbe an owner-impersonation sign-in, which writes no proof — see the
+     *   interface, and `refreshKindOnProbeSignIn` in Users.sq for what
+     *   `signed_in_at` decides.
      * @return the stored user.
      * @throws IllegalStateException if the row we just wrote cannot be read
      *   back as a valid provider — impossible unless the enum changed under us,
      *   and not something to paper over.
      */
-    override suspend fun upsert(identity: ProviderIdentity, kind: UserKind): UserRecord = withContext(DatabaseDispatcher) {
+    override suspend fun upsert(
+        identity: ProviderIdentity,
+        kind: UserKind,
+        isProbe: Boolean,
+    ): UserRecord = withContext(DatabaseDispatcher) {
         // Normalized once, here, so both branches below and the write they lead to
         // are all looking at the same spelling. A lookup that normalized
         // differently from its write would miss the row and create a second
@@ -395,7 +402,9 @@ class UserStore(
         // Read once, before the branch, so the row's arrival stamp and the record
         // handed back describe the same instant on both paths — and so a pinned clock
         // in a test sees one value rather than two.
-        val signedInAt = now()
+        val addedAt = now()
+        // Null under a probe: nobody arrived, so nothing may say they did (LUS-6).
+        val signedInAt = addedAt.takeUnless { isProbe }
 
         database.transactionWithResult {
             // ── Find, by the account key ──────────────────────────────────
@@ -407,17 +416,33 @@ class UserStore(
             if (email != null) {
                 val existing = database.usersQueries.findByEmail(email).executeAsOneOrNull()
                 if (existing != null) {
-                    database.usersQueries.refreshOnSignIn(identity.providerName, kind.key, signedInAt, existing.id)
-                    // Built from the row we already have plus the two values the
-                    // update just wrote, rather than re-reading. A second SELECT
-                    // would be a round-trip to learn what this statement was told
-                    // — and `provider`/`provider_id` deliberately keep the values
-                    // the row was created with, so they are the existing ones and
-                    // not the identity's.
+                    // Two statements, and which one runs is the whole of LUS-6. The
+                    // probe variant writes the derived `kind` and nothing else, so
+                    // the row keeps saying what it honestly knows: whatever proof it
+                    // last had, whatever name it last showed, and whether anybody has
+                    // ever actually arrived at it.
+                    if (isProbe) {
+                        database.usersQueries.refreshKindOnProbeSignIn(kind.key, existing.id)
+                    } else {
+                        database.usersQueries.refreshOnSignIn(identity.providerName, kind.key, signedInAt, existing.id)
+                    }
+                    // Built from the row we already have plus the values the update
+                    // just wrote, rather than re-reading. A second SELECT would be a
+                    // round-trip to learn what this statement was told — and
+                    // `provider`/`provider_id` deliberately keep the values the row
+                    // was created with, so they are the existing ones and not the
+                    // identity's.
+                    //
+                    // Under a probe the three columns the probe variant leaves alone
+                    // are echoed back from `existing` for the same reason: the record
+                    // handed to the caller has to describe the row that is now there.
                     return@transactionWithResult userRecordOf(
-                        existing.id, existing.provider, existing.provider_id, identity.providerName,
-                        existing.display_name, existing.email, 1L,
-                        kind.key, existing.instance_role, existing.mcp_enabled, signedInAt,
+                        existing.id, existing.provider, existing.provider_id,
+                        if (isProbe) existing.provider_name else identity.providerName,
+                        existing.display_name, existing.email,
+                        if (isProbe) existing.email_verified else 1L,
+                        kind.key, existing.instance_role, existing.mcp_enabled,
+                        if (isProbe) existing.signed_in_at else signedInAt,
                     ) ?: error("User ${existing.id} has provider ${existing.provider}, which cannot be parsed.")
                 }
             }
@@ -438,13 +463,16 @@ class UserStore(
                 providerName = identity.providerName,
                 email = email,
                 kind = kind.key,
-                addedAt = signedInAt,
+                addedAt = addedAt,
+                // The two are the same instant for every proved sign-in and differ
+                // only under a probe, where this is null — see the statement.
+                signedInAt = signedInAt,
             ).executeAsOne()
 
             userRecordOf(
                 row.id, row.provider, row.provider_id, row.provider_name,
                 row.display_name, row.email, row.email_verified,
-                row.kind, row.instance_role, row.mcp_enabled, signedInAt,
+                row.kind, row.instance_role, row.mcp_enabled, row.signed_in_at,
             ) ?: error("Just wrote user ${row.id} with provider ${row.provider}, which cannot be parsed back.")
         }
     }

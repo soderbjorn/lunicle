@@ -675,7 +675,9 @@ fun Route.authRoutes(
             // make the impersonation land somewhere a real sign-in never would.
             email = address,
         )
-        val user = when (val outcome = completeSignIn(provided, users, instanceSettings, identity)) {
+        val user = when (
+            val outcome = completeSignIn(provided, users, instanceSettings, identity, isProbe = true)
+        ) {
             is SignInOutcome.Refused -> {
                 logger.info(
                     "Impersonation: user ${grant.ownerUserId} was refused as <$address> by this instance's admission policy",
@@ -1279,6 +1281,11 @@ internal sealed interface SignInOutcome {
  * one line later. Folding the session in would mean handing this function a probe id
  * it has no business knowing about.
  *
+ * @param isProbe whether the proof upstream was an owner's assertion rather than
+ *   anybody's (LUS-6). Threaded through to the store, where it stops the sign-in
+ *   *recording* proof that nobody supplied — see [UserStore.upsert]. It changes
+ *   nothing else here: the admission gate below still runs, with the genuine
+ *   refusal, and so does the owner seat, which is the fidelity claim.
  * @return [SignInOutcome.Refused] with the sentence [admissionRefusal] produced, or
  *   [SignInOutcome.Admitted] with the row that now exists.
  */
@@ -1287,6 +1294,7 @@ internal suspend fun completeSignIn(
     users: se.soderbjorn.lunicle.store.UserStore,
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore?,
     identity: InstanceIdentity,
+    isProbe: Boolean = false,
 ): SignInOutcome {
     admissionRefusal(provided, users, instanceSettings, identity)?.let {
         return SignInOutcome.Refused(it)
@@ -1297,6 +1305,7 @@ internal suspend fun completeSignIn(
         // stamp uses — see UserKind.forEmail. Whatever proved the address, it is
         // exactly as good a basis for the staff/member answer as Google's is.
         kind = UserKind.forEmail(provided.email, identity.domain),
+        isProbe = isProbe,
     )
     seatOwnerIfVacant(users, instanceSettings)
     return SignInOutcome.Admitted(user)
