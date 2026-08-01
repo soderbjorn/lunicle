@@ -1898,6 +1898,25 @@ internal suspend fun BoardDependencies.resolveEstimate(
  *
  * Every issue route starts here: an issue is only as readable as its project,
  * and there is no route that reaches one without asking this question first.
+ *
+ * ── A draft is its author's, and nobody else's (LUS-15) ─────────────────────
+ *
+ * Board listings filter drafts out, but fetching an issue *by id* resolved any
+ * issue whose project the caller could read — and ids are sequential and global,
+ * so drafts were trivially enumerable.
+ *
+ * What leaked is not the text. A draft's title and description are empty until it
+ * is published; what it holds is the **inline attachments uploaded while
+ * composing**, because an image needs an owner row before it can be uploaded at
+ * all. So an unpublished screenshot was fetchable by every reader of the project.
+ *
+ * The comment-draft and message-draft paths already check authorship, which is
+ * what makes this an inconsistency rather than a considered stance. A project
+ * administrator is admitted alongside the author, matching those paths and keeping
+ * the sweep of abandoned drafts something a human can look at.
+ *
+ * 404 rather than 403, as everything else here does: "that draft is not yours"
+ * confirms the id names something.
  */
 internal suspend fun ApplicationCall.readableIssue(
     deps: BoardDependencies,
@@ -1914,6 +1933,10 @@ internal suspend fun ApplicationCall.readableIssue(
     }
     val project = deps.projects.findById(issue.projectId)
     if (project == null || !deps.access.canReadProject(user, project)) {
+        respond(HttpStatusCode.NotFound, "No such issue.")
+        return null
+    }
+    if (issue.isDraft && !deps.access.canReadDraft(user, issue)) {
         respond(HttpStatusCode.NotFound, "No such issue.")
         return null
     }
