@@ -1291,6 +1291,27 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Those labels or components do not belong to this project.")
             return@put
         }
+        // De-duplicated before the write (LUS-33). Membership was checked and
+        // uniqueness was not, and the writer does not de-duplicate either — so a
+        // repeated id violated the composite primary key on SQLite and threw. That
+        // surfaced as a 500 **after** the title and description had already been
+        // committed, so the request half-applied: the issue kept its new text and
+        // lost its new labels, with nothing on screen to say so.
+        //
+        // On Firestore there is no key to violate, so the duplicates simply landed in
+        // an unbounded array — and one request with enough repeats grows the document
+        // toward its hard size limit, after which the issue cannot be written at all.
+        //
+        // `.distinct()` rather than a refusal: a client that sent the same label
+        // twice means the label once, and there is nothing for a person to fix. The
+        // *count* is capped, because "every label on the project" is the honest
+        // ceiling and anything past it is not a client this server has.
+        val labelIds = body.labelIds.distinct()
+        val componentIds = body.componentIds.distinct()
+        if (labelIds.size > validLabels.size || componentIds.size > validComponents.size) {
+            call.respond(HttpStatusCode.BadRequest, "That is more labels or components than this project has.")
+            return@put
+        }
         // A NEW ticket must carry a label and/or a component when this project's
         // administrator has turned that on (LNL-106). Gated on isDraft — the first
         // publish — so switching a requirement on never blocks a later edit of an
@@ -1299,11 +1320,11 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
         // unfileable, so it is a no-op there rather than a trap the admin cannot see.
         if (issue.isDraft) {
             val project = deps.projects.findById(issue.projectId)
-            if (project?.requireLabel == true && validLabels.isNotEmpty() && body.labelIds.isEmpty()) {
+            if (project?.requireLabel == true && validLabels.isNotEmpty() && labelIds.isEmpty()) {
                 call.respond(HttpStatusCode.BadRequest, "This project requires a label on a new ticket.")
                 return@put
             }
-            if (project?.requireComponent == true && validComponents.isNotEmpty() && body.componentIds.isEmpty()) {
+            if (project?.requireComponent == true && validComponents.isNotEmpty() && componentIds.isEmpty()) {
                 call.respond(HttpStatusCode.BadRequest, "This project requires a component on a new ticket.")
                 return@put
             }
@@ -1390,8 +1411,8 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             estimate = estimate,
             plannedVersionId = plannedVersion,
             fixedVersionId = fixedVersion,
-            labelIds = body.labelIds,
-            componentIds = body.componentIds,
+            labelIds = labelIds,
+            componentIds = componentIds,
             actorId = user?.id,
             actor = user.asAuthor(),
         )
