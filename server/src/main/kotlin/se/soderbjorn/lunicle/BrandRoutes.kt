@@ -72,6 +72,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.http.content.LocalFileContent
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
@@ -305,8 +306,38 @@ private suspend fun io.ktor.server.application.ApplicationCall.respondBrandFile(
         respond(HttpStatusCode.NotFound)
         return
     }
+    // The same headers a user attachment gets, for a weaker but real version of the
+    // same reason (LUS-28).
+    //
+    // `/brand/logo.svg` is directly navigable and served as `image/svg+xml`, which a
+    // browser renders as a *document* — so a script element inside it executes, on
+    // this origin, in a tab carrying the session cookie. The input is the brand
+    // directory, which only a deployment operator or a compromised branding pipeline
+    // controls, so this is a supply-chain concern rather than a user-reachable one.
+    // That is a reason to rate it Low; it is not a reason to serve it bare.
+    //
+    //  - `nosniff`, so a file whose extension lies about its contents is not run as
+    //    whatever it actually is.
+    //  - `sandbox` with NO `allow-same-origin` and NO `allow-scripts`, which puts a
+    //    navigated brand asset in an opaque origin that runs nothing. It does not
+    //    stop the logo rendering: a CSP sandbox governs a *document*, and the app
+    //    fetches this as an image, where script never runs to begin with.
+    //  - `frame-ancestors 'none'`, so a brand asset cannot be framed back into the
+    //    UI it is branding.
+    response.header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+    response.header(
+        CONTENT_SECURITY_POLICY,
+        "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
+            "font-src data:; form-action 'none'; frame-ancestors 'none'",
+    )
     respond(LocalFileContent(file, contentTypeFor(file.name)))
 }
+
+/** Spelled out; Ktor's `HttpHeaders` has neither. See [respondBrandFile]. */
+private const val X_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options"
+
+/** See [respondBrandFile]. */
+private const val CONTENT_SECURITY_POLICY = "Content-Security-Policy"
 
 /**
  * Mount the `/brand` asset endpoints for [info]'s directory. Only called when
