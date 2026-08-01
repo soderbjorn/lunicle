@@ -26,6 +26,8 @@ import io.ktor.server.http.content.staticFiles
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.request.httpMethod
+import io.ktor.server.request.path
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.http.ContentType
@@ -161,7 +163,33 @@ fun main() {
  */
 fun Application.module() {
     install(ContentNegotiation) { json() }
-    install(CallLogging)
+    // An explicit formatter, and the reason is not style (LUS-34).
+    //
+    // CallLogging installed with no format uses Ktor's default formatter, and that
+    // formatter has a special case: on **302 Found** it appends the full `Location`
+    // header to the line. `respondRedirect` without `permanent = true` answers 302,
+    // and the consent endpoint redirects with `code=…` in the query string — so
+    // every successful agent consent wrote a live OAuth authorization code to
+    // stdout, and from there into Cloud Logging or the Railway log stream.
+    //
+    // Lifting a code is not by itself enough: PKCE is mandatory, codes are stored
+    // hashed and consumed on first use, so an attacker also needs the verifier that
+    // never left the agent and has to win a race inside a two-minute single-use
+    // window. What makes it worth fixing promptly is who can read those logs —
+    // anyone with project viewer on the branded deployment, and the default service
+    // account.
+    //
+    // Method, path and status, and nothing that came out of a query string or a
+    // response header. Note the path is `request.path()` rather than the full URI:
+    // a URI would carry the query string, which is where the code was in the first
+    // place — the redirect is not the only way it could reach a log line.
+    //
+    // Any code already in the log window should be treated as spent.
+    install(CallLogging) {
+        format { call ->
+            "${call.request.httpMethod.value} ${call.request.path()} — ${call.response.status()?.value ?: "unhandled"}"
+        }
+    }
     install(DefaultHeaders) {
         header(CONTENT_SECURITY_POLICY, frameAncestors(resolveAllowedFrameAncestors()))
     }
