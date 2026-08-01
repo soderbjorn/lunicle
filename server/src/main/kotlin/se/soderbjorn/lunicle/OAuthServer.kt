@@ -156,6 +156,51 @@ private suspend fun ApplicationCall.respondJson(status: HttpStatusCode, body: Js
     respondText(body.toString(), ContentType.Application.Json, status)
 }
 
+/**
+ * The three server-rendered pages' own `Content-Security-Policy`, replacing the
+ * application's (LUS-27, LUS-21).
+ *
+ * [DefaultHeaders] skips a header the handler already set, so setting this here is
+ * a wholesale replacement rather than a merge — the same mechanism the attachment
+ * view uses, and the reason both can have a policy that suits them.
+ *
+ * Two things differ from the app's policy, and both matter.
+ *
+ * **`frame-ancestors 'none'`, always.** The global policy permits whatever
+ * embedder a deployment configured, on *every* route — and the session cookie is
+ * `SameSite=None` by design so that the tracker can be framed by a marketing site.
+ * Together that means a deployment with an embedder configured could have its
+ * consent page framed by that origin, and a compromise of it becomes a clickjack
+ * of the Approve button: the one boundary this entire design rests on. There is no
+ * legitimate reason to embed a consent page, so it is `'none'` regardless of
+ * configuration rather than inheriting a decision made about the app.
+ *
+ * **Inline script and style are allowed**, because these pages are hand-written
+ * HTML with both, and they are that way deliberately: they render before any
+ * bundle has loaded, to somebody mid-flow between two applications, and a page
+ * whose stylesheet 404s at that moment reads as "this is broken, do not approve".
+ * The consent page itself carries no script at all — only the sign-in page does,
+ * for the two providers — and every value interpolated into either is escaped. See
+ * [String.escapeHtml] and [String.toJsStringLiteral].
+ */
+private const val OAUTH_PAGE_CSP: String =
+    "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline' https://accounts.google.com; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data:; " +
+        "connect-src 'self' https://accounts.google.com; " +
+        "frame-src https://accounts.google.com; " +
+        "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+/** Respond with one of this file's pages, under [OAUTH_PAGE_CSP]. */
+private suspend fun ApplicationCall.respondPage(html: String, status: HttpStatusCode = HttpStatusCode.OK) {
+    response.header(CONTENT_SECURITY_POLICY, OAUTH_PAGE_CSP)
+    respondText(html, ContentType.Text.Html, status)
+}
+
+/** Ktor's `HttpHeaders` has no constant for this one. */
+private const val CONTENT_SECURITY_POLICY = "Content-Security-Policy"
+
 /** An OAuth error body, as RFC 6749 shapes it. */
 private fun oauthError(error: String, description: String? = null): JsonObject = buildJsonObject {
     put("error", error)
@@ -480,14 +525,13 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
         // this client registered may an error be sent there.
         val client = clientId?.let { deps.clients.find(it) }
         if (client == null || redirectUri == null || !deps.clients.isRegisteredRedirectUri(client.clientId, redirectUri)) {
-            call.respondText(
+            call.respondPage(
                 errorPage(
                     "That link is not valid",
                     "The application did not identify itself correctly, so Lunicle will not " +
                         "continue. Nothing has been shared. Try connecting again from the app " +
                         "that sent you here.",
                 ),
-                ContentType.Text.Html,
                 HttpStatusCode.BadRequest,
             )
             return@get
@@ -515,7 +559,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
             // once the cookie lands, so the whole request replays and arrives here
             // with a user. A row created now would be a row abandoned by everyone
             // who wanders off at the provider's password prompt.
-            call.respondText(signInPage(deps.config, client.clientName), ContentType.Text.Html)
+            call.respondPage(signInPage(deps.config, client.clientName))
             return@get
         }
 
@@ -547,9 +591,8 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
                         "agent access. Open Lunicle, click your name, and switch on \"Let AI agents " +
                         "act on your behalf\" — then connect again."
             }
-            call.respondText(
+            call.respondPage(
                 errorPage(title, message),
-                ContentType.Text.Html,
                 HttpStatusCode.Forbidden,
             )
             return@get
@@ -570,7 +613,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
         // grants this user already holds. See consentPage for why it is on the
         // card at all.
         val isFirstApproval = deps.tokens.listGrants(user.id).none { it.clientId == client.clientId }
-        call.respondText(
+        call.respondPage(
             consentPage(
                 loginState = loginState,
                 clientName = client.clientName,
@@ -578,7 +621,6 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
                 redirectUri = redirectUri,
                 isFirstApproval = isFirstApproval,
             ),
-            ContentType.Text.Html,
         )
     }
 
@@ -592,12 +634,11 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
         val form = runCatching { call.receiveParameters() }.getOrNull()
         val state = deps.loginStates.find(form?.get("login_state"))
         if (state == null) {
-            call.respondText(
+            call.respondPage(
                 errorPage(
                     "That took too long",
                     "This authorization has expired. Start again from the app that sent you here.",
                 ),
-                ContentType.Text.Html,
                 HttpStatusCode.BadRequest,
             )
             return@post
@@ -616,13 +657,12 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
         val current = deps.sessions.lookup(sessionId)
         if (current == null || current.id != state.userId) {
             deps.loginStates.delete(state.id)
-            call.respondText(
+            call.respondPage(
                 errorPage(
                     "You are signed in as somebody else",
                     "Your Lunicle session changed while this page was open, so this authorization " +
                         "has been cancelled. Start again from the app that sent you here.",
                 ),
-                ContentType.Text.Html,
                 HttpStatusCode.BadRequest,
             )
             return@post
@@ -661,14 +701,13 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
         if (deps.sessions.probeIdFor(sessionId) != null) {
             deps.loginStates.delete(state.id)
             logger.warn("MCP: refused consent from a probe session for client ${state.clientId}")
-            call.respondText(
+            call.respondPage(
                 errorPage(
                     "You cannot approve this while impersonating",
                     "This browser is signed in as somebody else through owner impersonation, and " +
                         "approving an application is something only that person can do for " +
                         "themselves. Stop impersonating, sign in as yourself, and connect again.",
                 ),
-                ContentType.Text.Html,
                 HttpStatusCode.Forbidden,
             )
             return@post

@@ -94,6 +94,15 @@ private fun resolveAllowedFrameAncestors(): String? =
 /** Ktor's `HttpHeaders` has no constant for this one. */
 private const val CONTENT_SECURITY_POLICY = "Content-Security-Policy"
 
+/** Nor this one. Set globally since LUS-27; it used to be on attachments only. */
+private const val X_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options"
+
+/** Nor this one. */
+private const val PERMISSIONS_POLICY = "Permissions-Policy"
+
+/** Nor this one. */
+private const val REFERRER_POLICY = "Referrer-Policy"
+
 /**
  * How old a draft issue must be before the startup sweep takes it — seven days.
  *
@@ -125,6 +134,76 @@ private const val ABANDONED_DRAFT_AGE_MILLIS = 7L * 24 * 60 * 60 * 1000
  */
 internal fun frameAncestors(ancestors: String?): String =
     if (ancestors.isNullOrBlank()) "frame-ancestors 'self'" else "frame-ancestors 'self' $ancestors"
+
+/**
+ * Where Google Identity Services is loaded from, and talks to.
+ *
+ * Named once because it appears in three directives and a typo in any of them is
+ * a sign-in button that silently does nothing. See `index.html`, which loads the
+ * script, and `SignInView`, which checks for the global it defines.
+ */
+private const val GOOGLE_IDENTITY_ORIGIN = "https://accounts.google.com"
+
+/**
+ * The application origin's `Content-Security-Policy` (LUS-27).
+ *
+ * ── What this used to be ────────────────────────────────────────────────────
+ *
+ * `frame-ancestors` and nothing else. That is not a weak XSS mitigation, it is
+ * **no XSS mitigation at all**: `frame-ancestors` governs who may embed this page
+ * and says nothing about what may execute on it. The whole design rested on
+ * nothing hostile ever running on this origin — which [Markdown] upholds, and
+ * which is a real property rather than a hope — but there was no second line if it
+ * ever slipped, and a renderer is exactly the kind of thing that slips.
+ *
+ * It is cheap here precisely because the app ships one self-hosted bundle. The
+ * only third party in the whole page is Google's sign-in script.
+ *
+ * ── Why each loosening is here ──────────────────────────────────────────────
+ *
+ *  - `script-src` names [GOOGLE_IDENTITY_ORIGIN] because `index.html` loads GIS
+ *    from it, and `frame-src`/`connect-src` because that library opens Google's
+ *    own iframe and calls back to it. There is **no `'unsafe-inline'` and no
+ *    `'unsafe-eval'` for script**, which is the clause that actually does the
+ *    work: the bundle is one external file and the page has no inline script.
+ *  - `style-src 'unsafe-inline'` is not optional and is worth being honest about.
+ *    The toolkit installs its theme by creating a `<style>` element and setting
+ *    its text, and the views set `style` attributes; both are inline styles as far
+ *    as CSP is concerned. Removing it would need a nonce threaded from here into
+ *    the bundle, which is a real change rather than a header edit. Inline *style*
+ *    is a far smaller weapon than inline script.
+ *  - `img-src https:` because a person can write `![](https://…)` in an issue and
+ *    it renders. Blocking that would be a functional regression sold as hardening.
+ *    `data:` and `blob:` are for inline attachments and previews.
+ *
+ * ── The server-rendered pages are NOT covered by this ───────────────────────
+ *
+ * The OAuth consent and sign-in pages carry inline `<script>` and inline `<style>`
+ * and would be broken by the policy above. They set their own CSP header, and
+ * [DefaultHeaders] skips a header the handler already set — which is the same
+ * property that lets the attachment view replace this wholesale rather than merge
+ * with it. **Keep that property.** See OAuthServer's `page`, and BoardRoutes'
+ * `serveAttachment`.
+ *
+ * @param ancestors the permitted framing origin(s), or null for 'self' only.
+ */
+internal fun appContentSecurityPolicy(ancestors: String?): String = listOf(
+    "default-src 'self'",
+    "script-src 'self' $GOOGLE_IDENTITY_ORIGIN",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    "connect-src 'self' $GOOGLE_IDENTITY_ORIGIN",
+    "frame-src 'self' $GOOGLE_IDENTITY_ORIGIN",
+    // Nothing here embeds Flash, Java or a PDF plugin, and `object` is the classic
+    // way a filtered injection still executes.
+    "object-src 'none'",
+    // No `<base>` anywhere, and one injected would silently re-point every relative
+    // URL on the page — including the bundle.
+    "base-uri 'none'",
+    "form-action 'self'",
+    frameAncestors(ancestors),
+).joinToString("; ")
 
 /**
  * Process entry point: start Netty on [resolvePort] and block.
@@ -191,7 +270,26 @@ fun Application.module() {
         }
     }
     install(DefaultHeaders) {
-        header(CONTENT_SECURITY_POLICY, frameAncestors(resolveAllowedFrameAncestors()))
+        // Every one of these is skipped on a response whose handler already set it,
+        // which is what lets the attachment view and the OAuth pages replace the CSP
+        // wholesale rather than merge with it. That property is load-bearing — see
+        // appContentSecurityPolicy.
+        header(CONTENT_SECURITY_POLICY, appContentSecurityPolicy(resolveAllowedFrameAncestors()))
+        // Was set on attachment responses only, which is where it matters most and
+        // is not where it stops mattering: any route that gets a content type
+        // slightly wrong is a route a browser may sniff into something executable.
+        header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+        // Send the origin to other sites and the full URL only to ourselves. Issue
+        // URLs carry ids, and an issue whose description links somewhere should not
+        // tell that somewhere which issue the reader was looking at.
+        header(REFERRER_POLICY, "strict-origin-when-cross-origin")
+        // Ignored by browsers over plain http, so this is inert on a local run and
+        // real in production. Two years, subdomains included; no `preload`, which is
+        // a submission to a browser list and not a header to set casually.
+        header(HttpHeaders.StrictTransportSecurity, "max-age=63072000; includeSubDomains")
+        // Nothing in this application asks for a camera, a microphone or a location,
+        // so an injection that did would be doing it on its own account.
+        header(PERMISSIONS_POLICY, "camera=(), microphone=(), geolocation=(), payment=()")
     }
 
     val webDistPath = System.getProperty("lunicle.webDist")

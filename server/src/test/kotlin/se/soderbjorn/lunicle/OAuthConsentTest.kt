@@ -45,6 +45,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class OAuthConsentTest {
@@ -231,6 +232,36 @@ class OAuthConsentTest {
                 "not an application on your own computer",
                 message = "A userinfo of `localhost` was read as the host, so a remote callback " +
                     "passed as local.",
+            )
+        }
+    }
+
+    // ── LUS-27 / LUS-21: the consent page cannot be framed ───────────────────
+
+    /**
+     * `frame-ancestors 'none'` on the consent page, whatever the app allows.
+     *
+     * The global policy permits whatever embedder a deployment configured, on every
+     * route — and the session cookie is `SameSite=None` by design so the tracker can
+     * be framed by a marketing site. Together, a compromise of a configured
+     * embedding origin becomes a clickjack of the Approve button, which is the one
+     * boundary the whole MCP design rests on.
+     */
+    @Test
+    fun `the consent page refuses to be framed`(): Unit = runBlocking {
+        val user = seedAgentUser()
+        val client = registerClient()
+        val session = sessions.create(user.id)
+
+        withRoutes { client_ ->
+            val policy = client_.get(authorizeUrl(client.clientId)) { cookie(SESSION_COOKIE, session) }
+                .headers["Content-Security-Policy"]
+            assertNotNull(policy, "The consent page carries no Content-Security-Policy of its own.")
+            assertContains(
+                policy,
+                "frame-ancestors 'none'",
+                message = "The consent page inherited the app's framing policy — on a deployment " +
+                    "that configures an embedder, Approve is clickjackable.",
             )
         }
     }
