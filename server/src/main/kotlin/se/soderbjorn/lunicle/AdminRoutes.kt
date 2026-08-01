@@ -364,6 +364,9 @@ fun Route.adminRoutes(deps: BoardDependencies) {
             return@delete
         }
         deps.projectRepository.delete(id)
+        // The other door onto the same delete — see the project route in BoardRoutes,
+        // where this line's reasoning is written out (LUS-14).
+        deps.notificationStore?.deleteForProject(id)
         logger.info("Project deleted: ${project.name} by admin ${admin.id}")
         call.respond(deps.buildAdminSettings(admin))
     }

@@ -995,6 +995,13 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             return@delete
         }
         deps.projectRepository.delete(id)
+        // Notifications sit outside the cascade on purpose — a pointer to a deleted
+        // issue is merely stale — but the row stores the *title* verbatim, so the
+        // titles of a deleted private project would stay readable in every
+        // recipient's list indefinitely (LUS-14). At the route rather than inside the
+        // repository, so the notification store does not have to be threaded into a
+        // class that has no other reason to know about it.
+        deps.notificationStore?.deleteForProject(id)
         logger.info("Project deleted: ${project.name} by user ${user?.id}")
         call.respond(HttpStatusCode.NoContent)
     }
