@@ -1249,6 +1249,15 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "That title is too long.")
             return@put
         }
+        // The description had no cap at all until LUS-30 — only the title did —
+        // which made it the authenticated half of the unbounded-body finding, and
+        // the half that *persists*. See MAX_LONG_TEXT_LENGTH for why it is far
+        // larger than anything anybody types and far under anything that fills a
+        // volume.
+        tooLongMessage("description", body.description)?.let {
+            call.respond(HttpStatusCode.BadRequest, it)
+            return@put
+        }
         // Every id in the body is checked against *this issue's project* before
         // it is written. The composite foreign keys would refuse a foreign
         // label anyway — that is the point of them — but a constraint violation
@@ -2132,6 +2141,10 @@ private fun Route.commentRoutes(deps: BoardDependencies) {
         }
         if (body.body.isBlank()) {
             call.respond(HttpStatusCode.BadRequest, "A comment needs something in it.")
+            return@put
+        }
+        tooLongMessage("comment", body.body)?.let {
+            call.respond(HttpStatusCode.BadRequest, it)
             return@put
         }
         deps.issueRepository.saveComment(comment.id, body.body, actorId = user?.id)

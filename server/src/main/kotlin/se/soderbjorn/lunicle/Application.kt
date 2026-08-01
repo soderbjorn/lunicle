@@ -241,6 +241,10 @@ fun main() {
  *    by the `copyWebDistToResources` task.
  */
 fun Application.module() {
+    // Before ContentNegotiation, and the order is the whole point (LUS-30): this
+    // refuses an over-size body rather than letting one be buffered into the heap
+    // of a small container and parsed. See installRequestBodyCeiling.
+    installRequestBodyCeiling()
     install(ContentNegotiation) { json() }
     // An explicit formatter, and the reason is not style (LUS-34).
     //

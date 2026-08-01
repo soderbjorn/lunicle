@@ -2312,6 +2312,12 @@ class McpTools(private val deps: BoardDependencies) {
 
         val title = arguments.string("title") ?: return refuse("An issue needs a title.")
         if (title.length > MAX_MCP_TITLE_LENGTH) return refuse("That title is too long.")
+        // The same cap the HTTP route applies (LUS-30). An agent is authenticated and
+        // above the Contributor floor, so this is a bound on the volume rather than a
+        // defence against a stranger — but a field with a cap on one path and none on
+        // the other has no cap.
+        val description = arguments.string("description").orEmpty()
+        tooLongMessage("description", description)?.let { return refuse(it) }
 
         val statuses = deps.statuses.forProject(project.id)
         val status = arguments.string("status")
@@ -2397,7 +2403,7 @@ class McpTools(private val deps: BoardDependencies) {
             deps.issueRepository.save(
                 issue = issue,
                 title = title,
-                description = arguments.string("description").orEmpty(),
+                description = description,
                 statusId = status.id,
                 priorityId = priority.id,
                 resolutionId = resolutionId,
@@ -2538,6 +2544,8 @@ class McpTools(private val deps: BoardDependencies) {
 
         val title = arguments.string("title") ?: issue.title
         if (title.length > MAX_MCP_TITLE_LENGTH) return refuse("That title is too long.")
+        val description = arguments.string("description") ?: issue.description
+        tooLongMessage("description", description)?.let { return refuse(it) }
 
         val statuses = deps.statuses.forProject(issue.projectId)
         val statusId = arguments.string("status")
@@ -2639,7 +2647,7 @@ class McpTools(private val deps: BoardDependencies) {
         deps.issueRepository.save(
             issue = issue,
             title = title,
-            description = arguments.string("description") ?: issue.description,
+            description = description,
             statusId = statusId,
             priorityId = priorityId,
             resolutionId = resolutionId,
@@ -3653,6 +3661,7 @@ class McpTools(private val deps: BoardDependencies) {
         val agentName = resolveAgentName(arguments)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
         val body = arguments.string("body") ?: return refuse("A comment needs something in it.")
+        tooLongMessage("comment", body)?.let { return refuse(it) }
 
         val commentId = deps.issueRepository.createCommentDraft(
             issue.id,
@@ -3716,6 +3725,7 @@ class McpTools(private val deps: BoardDependencies) {
         // Blank or absent keeps the current body, as update_issue does with a title:
         // an edit is not how a comment gets emptied.
         val body = arguments.string("body") ?: comment.body
+        tooLongMessage("comment", body)?.let { return refuse(it) }
 
         deps.comments.edit(
             id = comment.id,
@@ -4304,6 +4314,7 @@ class McpTools(private val deps: BoardDependencies) {
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
         val title = arguments.string("title") ?: return refuse("A post needs a title.")
         val body = arguments.string("body") ?: return refuse("A post needs something in it.")
+        tooLongMessage("post", body)?.let { return refuse(it) }
 
         val draftId = deps.forumPosts.createPostDraft(
             scope.forum.id,
@@ -4340,11 +4351,14 @@ class McpTools(private val deps: BoardDependencies) {
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
             ?: scope.post.agentName
 
+        val body = arguments.string("body") ?: scope.post.body
+        tooLongMessage("post", body)?.let { return refuse(it) }
+
         refusable {
             deps.forumPosts.editPost(
                 post = scope.post,
                 title = arguments.string("title") ?: scope.post.title,
-                body = arguments.string("body") ?: scope.post.body,
+                body = body,
                 createdAt = attribution.at ?: scope.post.createdAt,
                 author = attribution.author,
                 agentName = agentName,
@@ -4375,6 +4389,7 @@ class McpTools(private val deps: BoardDependencies) {
         val agentName = resolveAgentName(arguments)
             .getOrElse { return refuse(it.message ?: "That agent name cannot be used.") }
         val body = arguments.string("body") ?: return refuse("A comment needs something in it.")
+        tooLongMessage("comment", body)?.let { return refuse(it) }
 
         val draftId = deps.forumPosts.createCommentDraft(
             scope.post.id,
