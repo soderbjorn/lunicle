@@ -189,6 +189,104 @@ class McpAgentFloorTest {
         }
     }
 
+    /**
+     * Nor is a comment id, on the one branch that used to let one through (LUS-20).
+     *
+     * `start_attachment_upload`'s `comment_id` branch resolved the comment by hand
+     * and gated on `canReadProject` — the Viewer floor — while the check beside it
+     * asked about *authorship*. So the two together never reached the agent floor,
+     * twenty lines from an `issue_id` branch that gets it right by calling the
+     * shared helper.
+     *
+     * A Viewer who authored the comment could therefore have their agent write bytes
+     * into it; and because this branch's refusal strings differed from every other
+     * one, an agent below the floor could probe comment-id existence across every
+     * board its user can merely view.
+     */
+    @Test
+    fun `a comment id is not a way past the floor`(): Unit = runBlocking {
+        val fixture = seed()
+        // Authored by the Viewer themselves, so authorship cannot be what refuses
+        // this — the floor has to be.
+        val commentId = issueRepository.createCommentDraft(fixture.issueId, Author.Account(fixture.viewerId))
+        issueRepository.saveComment(commentId, "Mine", actorId = fixture.viewerId)
+
+        withMcp { client ->
+            val result = client.callTool(
+                tokenFor(fixture.viewerId),
+                "start_attachment_upload",
+                """{"comment_id":$commentId,"filename":"shot.png","byte_size":10}""",
+            )
+            assertTrue(
+                result.isError,
+                "An agent below the Contributor floor uploaded into a comment on a board it may " +
+                    "only view.",
+            )
+            assertEquals(
+                "No such comment.",
+                result.text,
+                "The refusal differs from every other below-the-floor refusal, which makes this " +
+                    "branch an oracle for comment ids across every readable board.",
+            )
+        }
+    }
+
+    /**
+     * `watch_issue` asks the ownership gate before it resolves a name (LUS-18).
+     *
+     * It used to ask after, and that ordering was an account-existence oracle:
+     * `resolveAuthor` scans every account and returns three distinguishable outcomes
+     * — no such account, N accounts by that name, or a fall-through to the ownership
+     * refusal — so anyone with an agent and Contributor on one shared board could
+     * script it over a list of addresses and read back a membership roster.
+     *
+     * This contradicts a rule the same file states twice, in the assignee resolver's
+     * documentation: "there is no such person" and "they cannot be assigned here"
+     * must be the same sentence. The property that closes it is that the refusal is
+     * **identical** whether or not the name resolved, so both halves are asserted.
+     */
+    @Test
+    fun `watch_issue refuses a named user the same way whether or not they exist`(): Unit = runBlocking {
+        val fixture = seed()
+
+        withMcp { client ->
+            val token = tokenFor(fixture.contributorId)
+            val real = client.callTool(
+                token,
+                "watch_issue",
+                """{"issue_id":${fixture.issueId},"user":"owner@example.com"}""",
+            )
+            val invented = client.callTool(
+                token,
+                "watch_issue",
+                """{"issue_id":${fixture.issueId},"user":"nobody-here@example.com"}""",
+            )
+
+            assertTrue(real.isError && invented.isError, "A non-owner set somebody else's watch.")
+            assertEquals(
+                real.text,
+                invented.text,
+                "Naming a real account and an invented one give different answers, so this tool " +
+                    "is an oracle for which addresses have accounts on this instance.",
+            )
+        }
+    }
+
+    /** And naming yourself still works, which is what makes the gate-first ordering free. */
+    @Test
+    fun `watch_issue still lets a caller name themselves`(): Unit = runBlocking {
+        val fixture = seed()
+
+        withMcp { client ->
+            val result = client.callTool(
+                tokenFor(fixture.contributorId),
+                "watch_issue",
+                """{"issue_id":${fixture.issueId},"user":"contributor@example.com"}""",
+            )
+            assertTrue(!result.isError, "A caller naming their own address was refused: ${result.text}")
+        }
+    }
+
     // ── Who clears it without a row ──────────────────────────────────────────
 
     /**

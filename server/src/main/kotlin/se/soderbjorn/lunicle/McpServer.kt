@@ -180,10 +180,49 @@ private suspend fun respondUnauthorized(call: ApplicationCall) {
     )
 }
 
+/**
+ * How many MCP requests one account may make in a quarter of an hour (LUS-21).
+ *
+ * Not about credential guessing — a thirty-two-byte bearer token is not guessable
+ * at any rate — but about the work each call costs. Several tools walk a table per
+ * call, and an agent in a loop is the ordinary way that happens: a retry that keeps
+ * failing, or a plan that re-reads a board between every write.
+ *
+ * Six hundred is deliberately high. A working session on a busy board makes dozens
+ * of calls, and refusing one mid-task is a worse outcome than the load it saves —
+ * this is a runaway guard, not a quota.
+ *
+ * Keyed on the **account** rather than the client address, because an agent's
+ * address says nothing useful: several agents on one laptop share one, and the
+ * thing being spent is the account's rights either way.
+ *
+ * A file-level `val` so it survives between requests. See [RateLimiter] for what
+ * this becomes if Lunicle is ever scaled horizontally.
+ */
+private val mcpCallLimiter = RateLimiter(limit = 600, windowMillis = 15L * 60 * 1000)
+
 private suspend fun handleMcpPost(call: ApplicationCall, deps: McpDependencies, tools: McpTools) {
     val user = resolveMcpUser(call, deps)
     if (user == null) {
         respondUnauthorized(call)
+        return
+    }
+
+    // After authentication and keyed on the account, so there is nothing here for a
+    // stranger to exhaust on somebody else's behalf — an unauthenticated caller is
+    // already refused above.
+    //
+    // respondText rather than respond(), for the GET handler's reason: an agent
+    // probing with `Accept: text/event-stream` must get this refusal and its
+    // Retry-After, not a 406 from ContentNegotiation that hides both.
+    val decision = mcpCallLimiter.tryAcquire("mcp-user:${user.id}")
+    if (decision is RateLimitDecision.Refused) {
+        call.response.header(HttpHeaders.RetryAfter, decision.retryAfterSeconds.toString())
+        call.respondText(
+            buildJsonObject { put("error", "slow_down") }.toString(),
+            ContentType.Application.Json,
+            HttpStatusCode.TooManyRequests,
+        )
         return
     }
 

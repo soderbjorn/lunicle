@@ -604,7 +604,21 @@ private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits
             codeChallenge = codeChallenge,
             // RFC 8707. Defaulted rather than required: not every client sends
             // one, and the only resource this server issues for is its own /mcp.
-            resource = params["resource"]?.takeIf { it.isNotBlank() } ?: call.mcpResource(),
+            //
+            // The caller's value is no longer stored (LUS-21). It was accepted
+            // verbatim, written onto the login state and from there onto every token,
+            // and **never validated against anything** — this server is both the
+            // authorization server and the resource server, and a token is looked up
+            // in its own table, so the field decided nothing. An attacker-influenced
+            // string that decides nothing is fine right up until somebody reads it
+            // as though it means something, which is exactly the shape of bug worth
+            // removing before it exists.
+            //
+            // So: the one resource this server can issue for, always. A client that
+            // sends a different one is not refused — RFC 8707 makes the parameter a
+            // hint and refusing would break clients that send their own URL with a
+            // trailing slash — it simply does not get to name it.
+            resource = call.mcpResource(),
             clientState = clientState,
             scope = MCP_SCOPE,
             userId = user.id,
