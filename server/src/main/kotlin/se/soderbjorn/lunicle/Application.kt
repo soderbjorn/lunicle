@@ -245,6 +245,13 @@ fun Application.module() {
     // refuses an over-size body rather than letting one be buffered into the heap
     // of a small container and parsed. See installRequestBodyCeiling.
     installRequestBodyCeiling()
+    // Resolved once and used twice — the CSP's framing list and the set of sites
+    // permitted to drive this server are the same answer to the same question, and
+    // two resolutions would be two places for a deployment to be half-configured.
+    val allowedFrameAncestors = resolveAllowedFrameAncestors()
+    // Before anything reads a body, for the ceiling's reason: a request this refuses
+    // should cost nothing. See installOriginCheck (LUS-12).
+    installOriginCheck(allowedFrameAncestors)
     install(ContentNegotiation) { json() }
     // An explicit formatter, and the reason is not style (LUS-34).
     //
@@ -278,7 +285,7 @@ fun Application.module() {
         // which is what lets the attachment view and the OAuth pages replace the CSP
         // wholesale rather than merge with it. That property is load-bearing — see
         // appContentSecurityPolicy.
-        header(CONTENT_SECURITY_POLICY, appContentSecurityPolicy(resolveAllowedFrameAncestors()))
+        header(CONTENT_SECURITY_POLICY, appContentSecurityPolicy(allowedFrameAncestors))
         // Was set on attachment responses only, which is where it matters most and
         // is not where it stops mattering: any route that gets a content type
         // slightly wrong is a route a browser may sniff into something executable.
