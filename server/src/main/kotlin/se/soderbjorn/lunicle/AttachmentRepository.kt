@@ -245,8 +245,36 @@ class AttachmentRepository(
      * [deleteBlob], which works on either byte store. See LNL-145.
      */
     fun fileFor(storageKey: String): File =
-        (blobStore as? DiskAttachmentBlobStore)?.fileFor(storageKey)
+        diskFileFor(storageKey)
             ?: error("fileFor is disk-only; the GCS backend serves bytes through AttachmentBlobStore.")
+
+    /**
+     * The on-disk file for [storageKey], or **null when the store is not disk-backed**
+     * (LUS-24).
+     *
+     * The nullable twin of [fileFor], and the one the download route asks. [fileFor]
+     * throws, which is right for a caller that has no other path and wrong for a
+     * caller that does: the route used to take the zero-copy branch
+     * unconditionally, so with `LUNICLE_DB_BACKEND=firestore` — where the graph
+     * wires exactly the store that is not disk-backed — every attachment download
+     * and inline view threw after the access check and answered a bare 500. Uploads
+     * succeeded and were billed; downloads all failed.
+     *
+     * Null is not a failure here, it is "ask [bytesFor] instead". The zero-copy path
+     * stays exactly what it was on disk — see the interface preamble on why a 10 MB
+     * screenshot must not go through the heap — and the other backend pays the heap
+     * it has no way to avoid.
+     */
+    fun diskFileFor(storageKey: String): File? =
+        (blobStore as? DiskAttachmentBlobStore)?.fileFor(storageKey)
+
+    /**
+     * The bytes under [storageKey], or null if the store has none.
+     *
+     * What the download route serves when [diskFileFor] answers null. Straight
+     * through the seam, so a third backend needs nothing here.
+     */
+    suspend fun bytesFor(storageKey: String): ByteArray? = blobStore.fetch(storageKey)
 
     /**
      * Unlink one doomed file, named by its storage key alone — the cascade-delete

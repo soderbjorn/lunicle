@@ -27,6 +27,7 @@ import io.ktor.server.request.receive
 import io.ktor.server.request.contentType
 import io.ktor.server.request.header
 import io.ktor.server.response.header
+import io.ktor.http.content.ByteArrayContent
 import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -2694,13 +2695,32 @@ private suspend fun serveAttachment(deps: BoardDependencies, call: ApplicationCa
         return
     }
 
-    val file = deps.attachmentRepository.fileFor(record.storageKey)
-    if (!file.isFile) {
-        // The row exists and the file does not: the write half-failed, or a
+    // ── Resolved before the headers, on whichever backend this is (LUS-24) ───
+    //
+    // This used to be `fileFor`, which is disk-only and *throws* on any other
+    // store — so with LUNICLE_DB_BACKEND=firestore, where the graph wires exactly
+    // the store that is not disk-backed, every attachment download and inline view
+    // threw after the access check and answered a bare 500. Uploads succeeded and
+    // were billed; downloads all failed.
+    //
+    // Resolved here, above the header block, and deliberately so. The headers below
+    // are the most dangerous lines in the server and there must be exactly one copy
+    // of them — a second `respond` branch further down that had grown its own
+    // disposition and nosniff is precisely the regression the attachment tests
+    // would not have caught, which is why they are now parameterised over both
+    // stores.
+    //
+    // The disk branch stays byte-for-byte what it was: `LocalFileContent` never
+    // lands the bytes in the heap, which is the whole reason attachments are files
+    // and not BLOBs. A store with no such path pays the heap it cannot avoid.
+    val diskFile = deps.attachmentRepository.diskFileFor(record.storageKey)
+    val bytes = if (diskFile == null) deps.attachmentRepository.bytesFor(record.storageKey) else null
+    if (diskFile?.isFile == false || (diskFile == null && bytes == null)) {
+        // The row exists and the object does not: the write half-failed, or a
         // sweep was wrong. Worth a warning — it is the one failure mode the
         // file-not-BLOB decision accepts, so a rash of these is the signal
         // that the trade went bad.
-        logger.warn("Attachment ${record.id} has no file at ${record.storageKey}")
+        logger.warn("Attachment ${record.id} has no bytes at ${record.storageKey}")
         call.respond(HttpStatusCode.NotFound, "That attachment is missing.")
         return
     }
@@ -2794,7 +2814,15 @@ private suspend fun serveAttachment(deps: BoardDependencies, call: ApplicationCa
     // the inert answer, and by then the disposition is already `attachment`.
     val contentType = runCatching { ContentType.parse(record.mimeType) }
         .getOrElse { ContentType.Application.OctetStream }
-    call.respond(LocalFileContent(file, contentType))
+    // One `respond`, two bodies. Every header above has already been set, so the
+    // choice of backend cannot change what the browser is told about these bytes —
+    // which is the property LUS-24's fix exists to preserve, and the one a second
+    // branch further up would have quietly lost.
+    if (diskFile != null) {
+        call.respond(LocalFileContent(diskFile, contentType))
+    } else {
+        call.respond(ByteArrayContent(bytes!!, contentType))
+    }
 }
 
 /** An upload's three facts, once the request has been read. */
