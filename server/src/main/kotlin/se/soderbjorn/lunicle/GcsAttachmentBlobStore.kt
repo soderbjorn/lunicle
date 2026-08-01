@@ -93,15 +93,28 @@ class GcsAttachmentBlobStore(
     }
 
     override suspend fun sweepOrphans(known: Set<String>): Int = withContext(Dispatchers.IO) {
-        var removed = 0
-        // Page through every object in the bucket; the object name is the storage key.
-        storage.list(bucket).iterateAll().forEach { blob ->
-            val key = blob.name
-            if (key !in known) {
-                logger.info("Sweeping orphaned attachment object: $key")
-                if (runCatching { blob.delete() }.getOrDefault(false)) removed++
-            }
+        // Paged into a list before anything is deleted, so the guard below sees the
+        // whole bucket rather than deciding partway through the iteration. The object
+        // name is the storage key, and the handles are the same order of magnitude as
+        // the key set already held in memory beside them.
+        val blobs = storage.list(bucket).iterateAll().toList()
+        val orphans = blobs.filter { it.name !in known }
+        // The guard matters most on this backend: the database and the bucket are
+        // named by separate environment variables, so pointing a process at an empty
+        // or fresh Firestore while the bucket still names the real one is a
+        // one-variable mistake that used to destroy every file. See OrphanSweepGuard.
+        OrphanSweepGuard.refusal(total = blobs.size, orphans = orphans.size)?.let { reason ->
+            logger.warn("Attachment sweep refused: $reason")
+            return@withContext 0
         }
+        var removed = 0
+        orphans.forEach { blob ->
+            logger.info("Sweeping orphaned attachment object: ${blob.name}")
+            if (runCatching { blob.delete() }.getOrDefault(false)) removed++
+        }
+        // A summary at WARN beside the per-object lines (LUS-25): a sweep that takes
+        // anything deserves one line somebody scanning a boot log will actually see.
+        if (removed > 0) logger.warn("Attachment sweep removed $removed of ${blobs.size} object(s)")
         removed
     }
 

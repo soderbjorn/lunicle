@@ -55,6 +55,57 @@ interface AttachmentBlobStore {
 }
 
 /**
+ * The sanity check both sweeps run before they delete anything (LUS-25).
+ *
+ * ── What this is defending against ──────────────────────────────────────────
+ *
+ * The sweep deletes every object whose key is not in the set the metadata store
+ * answered with. Neither implementation checked that answer for plausibility, so
+ * an empty or badly truncated key set against a full bucket meant **every
+ * attachment on the instance deleted at startup**, one INFO line per object.
+ *
+ * That is not theoretical on the Firestore backend, where the key list comes from
+ * an unindexed full-collection scan and where the *database* and the *bucket* are
+ * named by separate environment variables. Pointing a process at a fresh or empty
+ * Firestore database while the bucket variable still names the real bucket is a
+ * one-variable mistake — a botched rollback, a staging deploy inheriting a
+ * production value, a restore that brings up empty metadata — and it destroys all
+ * user files before anybody has made a request.
+ *
+ * ── The two rules ───────────────────────────────────────────────────────────
+ *
+ * [refusal] is the second one. The first — an empty known set means do not sweep
+ * at all — lives in [AttachmentRepository.sweepOrphans], because it needs no
+ * listing and belongs where the two stores meet.
+ *
+ * @property MAX_FRACTION how much of what it finds a sweep may take. Half is
+ *   deliberately loose: a sweep is *expected* to be a rounding error, so anything
+ *   approaching half the bucket is a symptom rather than a busy week.
+ * @property MIN_TOTAL how many objects have to be there before the fraction means
+ *   anything. On a store holding three files, one orphan is a third of it, and a
+ *   guard that fired there would refuse to do its job on every small deployment.
+ */
+internal object OrphanSweepGuard {
+    const val MAX_FRACTION: Double = 0.5
+    const val MIN_TOTAL: Int = 20
+
+    /**
+     * Why this sweep should not run, or null to go ahead.
+     *
+     * @param total how many objects the store holds.
+     * @param orphans how many of them are about to be deleted.
+     */
+    fun refusal(total: Int, orphans: Int): String? {
+        if (total < MIN_TOTAL) return null
+        if (orphans <= total * MAX_FRACTION) return null
+        return "would delete $orphans of $total stored attachment(s), which is more than " +
+            "${(MAX_FRACTION * 100).toInt()}% — refusing. This usually means the metadata store " +
+            "and the blob store are not describing the same deployment; check that the database " +
+            "and bucket settings name the same instance before restarting."
+    }
+}
+
+/**
  * The volume-backed byte store — today's behaviour, lifted out of
  * [AttachmentRepository] unchanged and still the default.
  *
@@ -90,17 +141,26 @@ class DiskAttachmentBlobStore(private val directory: File) : AttachmentBlobStore
     }
 
     override suspend fun sweepOrphans(known: Set<String>): Int = withContext(Dispatchers.IO) {
-        val files = directory.listFiles() ?: return@withContext 0
-        var removed = 0
-        files.forEach { file ->
-            if (file.isFile && file.name !in known) {
-                // Logged individually and at INFO: this deletes user data that is
-                // *believed* unreferenced, and if the belief is ever wrong, the log
-                // is the only record of what went.
-                logger.info("Sweeping orphaned attachment file: ${file.name}")
-                if (file.delete()) removed++
-            }
+        val files = (directory.listFiles() ?: return@withContext 0).filter { it.isFile }
+        val orphans = files.filter { it.name !in known }
+        // Counted before anything is deleted, so the guard sees the whole picture
+        // rather than deciding halfway through. See OrphanSweepGuard.
+        OrphanSweepGuard.refusal(total = files.size, orphans = orphans.size)?.let { reason ->
+            logger.warn("Attachment sweep refused: $reason")
+            return@withContext 0
         }
+        var removed = 0
+        orphans.forEach { file ->
+            // Logged individually and at INFO: this deletes user data that is
+            // *believed* unreferenced, and if the belief is ever wrong, the log
+            // is the only record of what went.
+            logger.info("Sweeping orphaned attachment file: ${file.name}")
+            if (file.delete()) removed++
+        }
+        // A summary at WARN beside the per-object lines (LUS-25). A sweep that takes
+        // anything is worth one line somebody scanning a boot log will actually see;
+        // the individual names stay at INFO for when they need to know which.
+        if (removed > 0) logger.warn("Attachment sweep removed $removed of ${files.size} file(s)")
         removed
     }
 }
