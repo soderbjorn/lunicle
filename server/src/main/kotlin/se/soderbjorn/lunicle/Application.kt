@@ -454,6 +454,12 @@ fun Application.module() {
     // store — which is why it is written even when `emailSender` is null: the bell
     // needs no mailbox.
     val notificationDispatcher = NotificationDispatcher(users, emailSender, notificationStore)
+    // Who can see a project, as a set — the forum's @ autocomplete, LNL-60's
+    // recipient picker, LNL-63's send-time visibility check, and since LUS-22 the
+    // issue notifier's too. Named here rather than built inline at
+    // BoardDependencies because several things hold it, and several of these would
+    // be several objects answering one question. See ProjectAudience.
+    val projectAudience = ProjectAudience(users, roles, instanceSettings)
     val notifications = NotificationService(
         subscriptions = subscriptions,
         projects = projects,
@@ -463,6 +469,9 @@ fun Application.module() {
         // LNL-201 includes whoever owns the deployment, so the settings ride along.
         roles = roles,
         instanceSettings = instanceSettings,
+        // A subscription outlives the reason somebody was allowed to make it, and
+        // revoking a rung writes to the roles table and nothing else (LUS-22).
+        audience = projectAudience,
         dispatch = notificationDispatcher,
         baseUrl = emailBaseUrl,
     )
@@ -473,16 +482,12 @@ fun Application.module() {
         dispatch = notificationDispatcher,
         baseUrl = emailBaseUrl,
     )
-    // Who can see a project, as a set — the forum's @ autocomplete, LNL-60's
-    // recipient picker, and now LNL-63's send-time visibility check. Named here
-    // rather than built inline at BoardDependencies because two things hold it,
-    // and two of these would be two objects answering one question. See
-    // ProjectAudience.
-    val projectAudience = ProjectAudience(users, roles, instanceSettings)
     // The Discussion tab's two notifications. A third service rather than a wider
-    // one, for the reason EmailNotifier's preamble gives — and the only one of the
-    // three that takes a `ProjectAudience`, because a forum watcher's visibility
-    // of the project is re-checked at send time. See ForumNotificationService.
+    // one, for the reason EmailNotifier's preamble gives. It was the only one of the
+    // three that took a `ProjectAudience`, because a forum watcher's visibility of
+    // the project is re-checked at send time; since LUS-22 the issue service takes
+    // the same object for the same reason, and both share the one built above.
+    // See ForumNotificationService.
     val forumNotifications = ForumNotificationService(
         subscriptions = subscriptions,
         audience = projectAudience,

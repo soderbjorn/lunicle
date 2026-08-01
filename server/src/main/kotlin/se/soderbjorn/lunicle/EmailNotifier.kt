@@ -604,6 +604,25 @@ open class NotificationDispatcher(
 ) {
     private val logger = LoggerFactory.getLogger("NotificationDispatcher")
 
+    /**
+     * How much notification mail one recipient may receive, and one actor cause,
+     * in a quarter of an hour (LUS-23).
+     *
+     * Thirty is deliberately generous. A busy morning on a watched issue — a few
+     * comments, a move, an assignment — is well inside it, and so is a person who
+     * watches several boards on the day a sprint is planned. What it stops is a
+     * loop, which is the only thing that reaches it.
+     *
+     * In memory and per process, with the caveat [RateLimiter]'s preamble states
+     * about horizontal scaling: this limit multiplies by the instance count if
+     * Lunicle is ever run as more than one.
+     *
+     * On the dispatcher rather than in each of the three notification services,
+     * because that is the one place every outbound message passes through — and a
+     * limit each service kept for itself would be three limits, which is no limit.
+     */
+    private val mailLimiter = RateLimiter(limit = 30, windowMillis = 15L * 60 * 1000)
+
     /** What to call whoever caused this, or null for an unauthenticated write. */
     suspend fun actorName(actorId: Long?): String? =
         actorId?.let { users.findById(it)?.resolvedName }
@@ -660,7 +679,53 @@ open class NotificationDispatcher(
      * dispatcher was the alternative and is more machinery than one overridable
      * method for one test; if a second reason ever appears, that is the change.
      */
-    open suspend fun send(recipient: EmailRecipient, subject: String, html: String) {
+    open suspend fun send(recipient: EmailRecipient, subject: String, html: String, actorId: Long? = null) {
+        // ── The mail cannon, metered (LUS-23) ────────────────────────────────
+        //
+        // Rate limiting exists in this codebase and was applied to exactly two
+        // endpoints, with the limiter's own preamble naming the risk: "a free mail
+        // cannon pointed at arbitrary third parties from a verified domain".
+        // Notification mail had none of it.
+        //
+        // Every save that introduces a mention, changes an assignee or touches a
+        // watched issue sends. The mention notifier is careful to mail only *new*
+        // mentions — and a mention removed and re-added on the next save is new
+        // again, so that throttle is defeated by a loop. A Contributor on any shared
+        // board could therefore drive DKIM-signed messages out of the organisation's
+        // own sending domain at whatever rate they could drive HTTP.
+        //
+        // Recipients are bounded to people already mentionable on that project, so
+        // this is an inside attack rather than an open relay. It is still a mail bomb
+        // and a phishing amplifier carrying the deployment's sender reputation.
+        //
+        // Two keys, refused if either is empty — see RateLimiter.tryAcquire.
+        //
+        //  - **The recipient.** The person being bombed, and the only key that helps
+        //    them when several accounts point at one inbox.
+        //  - **The actor**, where the caller knows one. Bounds a single account
+        //    spraying many colleagues, which per-recipient keying alone permits.
+        //    Null for a send with no person behind it — an address-change notice,
+        //    say — which is then bounded by its recipient alone, correctly: nobody
+        //    chose to cause it.
+        //
+        // Refused mail is dropped, not queued. A notification is a courtesy on top of
+        // a write that already succeeded; holding one to redeliver later would mean a
+        // queue, a retry policy and a second thing to reason about, to salvage the
+        // tail of what is by then an abusive burst.
+        val keys = listOfNotNull(
+            "mail-to:${recipient.email.lowercase()}",
+            actorId?.let { "mail-from:$it" },
+        )
+        val decision = mailLimiter.tryAcquire(*keys.toTypedArray())
+        if (decision is RateLimitDecision.Refused) {
+            logger.warn(
+                "Notification to <{}> dropped: too many in this window (retry after {}s)",
+                recipient.email,
+                decision.retryAfterSeconds,
+            )
+            return
+        }
+
         val sender = sender
         if (sender == null) {
             // No mail configured: the message is fully composed and would be sent,
@@ -781,6 +846,7 @@ class MessageNotificationService(
                             .sorted(),
                         link = link,
                     ),
+                    actorId = actorId,
                 )
             }
         }
@@ -922,6 +988,7 @@ class ForumNotificationService(
                         body = post.body,
                         link = link,
                     ),
+                    actorId = actorId,
                 )
             }
         }
@@ -961,6 +1028,7 @@ class ForumNotificationService(
                         body = comment.body,
                         link = link,
                     ),
+                    actorId = actorId,
                 )
             }
         }
@@ -1124,9 +1192,49 @@ class NotificationService(
     private val users: se.soderbjorn.lunicle.store.UserStore,
     private val roles: se.soderbjorn.lunicle.store.RoleStore,
     private val instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore,
+    /**
+     * "Who can see this project", as a set — the same object the forum service
+     * holds, and now for the same reason (LUS-22).
+     *
+     * The forum notifier re-checks visibility at send time and its comment says
+     * exactly why: *a subscription outlives the reason somebody was allowed to make
+     * it*. The issue notifier, twenty lines away in this same file, took its list
+     * straight from SQL and mailed it.
+     *
+     * Subscription rows cascade when a project, issue or user is **deleted**, and
+     * are untouched when somebody's **role is revoked** — removing a rung writes to
+     * the roles table and nothing else. So a departed contractor who had subscribed
+     * to new issues, or been auto-subscribed to one they filed, kept receiving
+     * subject lines carrying the issue reference and full title, plus the project
+     * name and the acting person's name in the body, indefinitely. The link 404s
+     * correctly; the metadata in the subject line does not.
+     */
+    private val audience: ProjectAudience,
     private val dispatch: NotificationDispatcher,
     private val baseUrl: String = resolvePublicBaseUrl() ?: "",
 ) : IssueNotifier {
+
+    /**
+     * [candidates], narrowed to those who can still see [project].
+     *
+     * The issue-side twin of [ForumNotificationService.recipientsIn], same shape and
+     * same reasoning — see [audience]. A second small function rather than something
+     * hoisted and shared: the two services are deliberately separate for the reason
+     * this file's preamble gives at length, and a helper spanning both would be the
+     * first thread sewing them back together.
+     *
+     * Costs nothing on the common path. The candidate list is read first and is
+     * usually empty, so [ProjectAudience.forProject] — which reads the whole user
+     * table on a public project — is never reached.
+     */
+    private suspend fun visibleIn(
+        project: ProjectRecord,
+        candidates: List<NotificationRecipient>,
+    ): List<NotificationRecipient> {
+        if (candidates.isEmpty()) return emptyList()
+        val visible = audience.forProject(project).mapTo(mutableSetOf()) { it.id }
+        return candidates.filter { it.userId in visible }
+    }
 
     /**
      * A new issue was published in a project: e-mail everyone watching that
@@ -1134,7 +1242,9 @@ class NotificationService(
      */
     override suspend fun issueCreated(issue: IssueRecord, actorId: Long?) {
         val project = projects.findById(issue.projectId) ?: return
-        val audience = subscriptions.audienceForProjectNewIssue(project.id, actorId)
+        // Narrowed to who can still see the project, not merely who once asked to
+        // hear about it (LUS-22). See visibleIn.
+        val audience = visibleIn(project, subscriptions.audienceForProjectNewIssue(project.id, actorId))
         if (audience.isEmpty()) return
 
         val actor = actorName(actorId)
@@ -1161,6 +1271,7 @@ class NotificationService(
                         reference = reference,
                         title = issue.title,
                     ),
+                    actorId = actorId,
                 )
             }
         }
@@ -1174,7 +1285,7 @@ class NotificationService(
      */
     override suspend fun issueUpdated(issue: IssueRecord, actorId: Long?, summary: String) {
         val project = projects.findById(issue.projectId) ?: return
-        val audience = subscriptions.audienceForIssueUpdate(issue.id, actorId)
+        val audience = visibleIn(project, subscriptions.audienceForIssueUpdate(issue.id, actorId))
         if (audience.isEmpty()) return
 
         val actor = actorName(actorId)
@@ -1201,6 +1312,7 @@ class NotificationService(
                         reference = reference,
                         title = issue.title,
                     ),
+                    actorId = actorId,
                 )
             }
         }
@@ -1235,6 +1347,13 @@ class NotificationService(
         if (assigneeId == actorId) return
         val assignee = users.findById(assigneeId) ?: return
         val project = projects.findById(issue.projectId) ?: return
+        // Resolved by id and never asked whether they can still see the project
+        // (LUS-22). Assignment writes no subscription row, so this is not a stale
+        // *subscription* — it is somebody who holds an issue on a board they have
+        // been removed from, which is at least as easy to arrive at. The same
+        // narrowing, on a list of one.
+        val recipient = NotificationRecipient(assignee.id, assignee.resolvedName, assignee.email)
+        if (visibleIn(project, listOf(recipient)).isEmpty()) return
 
         val actor = actorName(actorId)
         val reference = "${project.namePrefix}-${issue.number}"
@@ -1251,7 +1370,12 @@ class NotificationService(
         val email = assignee.email ?: return
         dispatch(
             EmailRecipient(userId = assignee.id, email = email, name = assignee.resolvedName),
-            "[$reference] Assigned to you: ${issue.title}",
+            // No title in the subject (LUS-23). It was up to 300 characters chosen by
+            // whoever last edited the issue, delivered from the organisation's own
+            // DKIM-signed domain — a credible internal-phishing lure after a short
+            // fixed prefix. The reference alone reads fine, and the title is in the
+            // body a line below, escaped. The same call the mention subject makes.
+            "[$reference] Assigned to you",
             issueAssignedBody(
                 assigneeName = assignee.resolvedName,
                 actor = actor,
@@ -1260,6 +1384,7 @@ class NotificationService(
                 reference = reference,
                 title = issue.title,
             ),
+            actorId = actorId,
         )
     }
 
@@ -1325,7 +1450,12 @@ class NotificationService(
                 val email = recipient.email ?: return@forEach
                 dispatch(
                     EmailRecipient(userId = recipient.id, email = email, name = recipient.resolvedName),
-                    "[$reference] You were mentioned: ${issue.title}",
+                    // No title in the subject — see the assignment mail above (LUS-23).
+                    // This one is the sharpest of the three: the mention notifier is
+                    // careful to mail only *new* mentions, and a mention removed and
+                    // re-added on the next save is new again, so an attacker could
+                    // loop it with a subject of their choosing.
+                    "[$reference] You were mentioned",
                     issueMentionedBody(
                         recipientName = recipient.resolvedName,
                         actor = actor,
@@ -1335,6 +1465,7 @@ class NotificationService(
                         reference = reference,
                         title = issue.title,
                     ),
+                    actorId = actorId,
                 )
             }
     }
@@ -1348,8 +1479,12 @@ class NotificationService(
      * number where a rename to the shared thing stops being a readability
      * improvement and starts being noise.
      */
-    private suspend fun dispatch(recipient: EmailRecipient, subject: String, html: String) =
-        dispatch.send(recipient, subject, html)
+    private suspend fun dispatch(
+        recipient: EmailRecipient,
+        subject: String,
+        html: String,
+        actorId: Long? = null,
+    ) = dispatch.send(recipient, subject, html, actorId)
 
     private suspend fun actorName(actorId: Long?): String? = dispatch.actorName(actorId)
 }
