@@ -478,8 +478,18 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
             scope = MCP_SCOPE,
             userId = user.id,
         )
+        // "Have you approved this application before?" — one indexed read of the
+        // grants this user already holds. See consentPage for why it is on the
+        // card at all.
+        val isFirstApproval = deps.tokens.listGrants(user.id).none { it.clientId == client.clientId }
         call.respondText(
-            consentPage(loginState, client.clientName, user.resolvedName),
+            consentPage(
+                loginState = loginState,
+                clientName = client.clientName,
+                userName = user.resolvedName,
+                redirectUri = redirectUri,
+                isFirstApproval = isFirstApproval,
+            ),
             ContentType.Text.Html,
         )
     }
@@ -513,7 +523,8 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
         // signed out and back in as somebody else between the page and the click
         // cannot mint a code naming the identity the page showed, which would be
         // this flow authorizing an account its owner never saw named.
-        val current = deps.sessions.lookup(call.request.cookies[SESSION_COOKIE])
+        val sessionId = call.request.cookies[SESSION_COOKIE]
+        val current = deps.sessions.lookup(sessionId)
         if (current == null || current.id != state.userId) {
             deps.loginStates.delete(state.id)
             call.respondText(
@@ -524,6 +535,52 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
                 ),
                 ContentType.Text.Html,
                 HttpStatusCode.BadRequest,
+            )
+            return@post
+        }
+
+        // ── A probe session may not consent (LUS-2) ──────────────────────────
+        //
+        // The deliberate exception to the fidelity claim, and the only one. See
+        // ProbeGrants' preamble, where it is written down beside the claim it
+        // qualifies: everything downstream of a ProviderIdentity is the function
+        // the real paths call — except this click.
+        //
+        // The reason is that consent is by definition a statement somebody makes
+        // about *their own* identity, and a probe session is exactly the state in
+        // which no such statement can be made: the page said the worn account's
+        // name and the human clicking is the owner. Approving would mint an access
+        // token plus a thirty-day rotating refresh token bound to the worn user —
+        // a credential that survives the probe, the boot sweep and the feature
+        // switch being turned off, which is the one thing the in-memory-grant
+        // design exists to prevent.
+        //
+        // Refused HERE and not at `get("/oauth/authorize")`, which renders the
+        // page. A probing owner may still drive authorize and watch the client
+        // resolve, PKCE and redirect validation pass, canUseMcp evaluate and the
+        // card render — the whole diagnostic value of wearing somebody. Only the
+        // irreversible click is stopped.
+        //
+        // An explicit page rather than falling through to the in-page sign-in: the
+        // caller is not signed out, they are wearing somebody, and offering them a
+        // sign-in form would invite a confusing recovery.
+        //
+        // Asked unconditionally, without consulting `impersonation.isEnabled`. It
+        // is one indexed read on a cold endpoint, and a gate that has just been
+        // turned off is precisely the window in which a live probe session must
+        // still be refused.
+        if (deps.sessions.probeIdFor(sessionId) != null) {
+            deps.loginStates.delete(state.id)
+            logger.warn("MCP: refused consent from a probe session for client ${state.clientId}")
+            call.respondText(
+                errorPage(
+                    "You cannot approve this while impersonating",
+                    "This browser is signed in as somebody else through owner impersonation, and " +
+                        "approving an application is something only that person can do for " +
+                        "themselves. Stop impersonating, sign in as yourself, and connect again.",
+                ),
+                ContentType.Text.Html,
+                HttpStatusCode.Forbidden,
             )
             return@post
         }
@@ -735,6 +792,13 @@ private val PAGE_STYLE = """
     .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #1e2c3a; }
     .hint { font-size: 13px; color: #5c7183; }
     .error { color: #ff8080; min-height: 1.2em; }
+    /* LUS-17's identity lines on the consent card. Smaller than the sentence
+       naming the application, because they are what you check rather than what
+       you read — and the warning is the one thing here allowed to be loud. */
+    .detail { font-size: 13px; color: #5c7183; margin-bottom: 6px; }
+    .host { color: #cfe0ee; font-weight: 600; word-break: break-all; }
+    .warn { font-size: 13px; color: #ffbf80; background: #23180c; border: 1px solid #4a3417;
+        border-radius: 8px; padding: 10px 12px; margin-top: 12px; }
 """.trimIndent()
 
 /** Wrap a card in a document. */
@@ -764,36 +828,136 @@ private fun errorPage(title: String, message: String): String = page(
 )
 
 /**
+ * Where a redirect URI would actually send the code, said in as few characters as
+ * a person can check at a glance.
+ *
+ * @property display scheme and authority, path dropped. The path is noise on a
+ *   consent card — what decides whether this is the application you started is the
+ *   host, and a long callback path pushes it off the end of the line.
+ * @property isRemote the code would leave this machine: an `https` callback to a
+ *   host somewhere on the internet.
+ *
+ *   Loopback is not remote, obviously. Neither is a **custom app scheme** —
+ *   `cursor://`, `claude://` — which the operating system hands to a locally
+ *   installed application and which cannot carry anything to a server. Warning on
+ *   those would put a warning on half the legitimate desktop clients, and a
+ *   warning that fires on the ordinary case is one people learn to click past.
+ */
+private data class RedirectSummary(val display: String, val isRemote: Boolean)
+
+/**
+ * Summarise an **already validated** redirect URI for the consent card.
+ *
+ * Parsed by hand rather than through [java.net.URI], which throws on some of the
+ * custom app schemes real clients register and which would turn a display detail
+ * into a failed authorization. Everything here has already passed
+ * [isAllowedRedirectUri] and exact-match registration, so this is presentation
+ * only — it decides nothing.
+ *
+ * Userinfo is stripped before the host is read. `https://localhost@evil.example/cb`
+ * has host `evil.example`, and a card that showed the part before the `@` would be
+ * showing the one thing an attacker would put there.
+ */
+private fun summariseRedirect(redirectUri: String): RedirectSummary {
+    if ("://" !in redirectUri) return RedirectSummary(redirectUri, isRemote = false)
+    val scheme = redirectUri.substringBefore("://").lowercase()
+    val authority = redirectUri.substringAfter("://")
+        .substringBefore('/').substringBefore('?').substringBefore('#')
+        .substringAfterLast('@')
+    val host = authority.substringBefore(':').lowercase()
+    val isLoopback = host == "localhost" || host == "127.0.0.1" || host == "[::1]"
+    // A scheme that is not http(s) is an app on this machine — see RedirectSummary.
+    // Its authority is usually empty or a made-up word, so the scheme alone is the
+    // honest thing to show.
+    if (scheme != "http" && scheme != "https") return RedirectSummary("$scheme://", isRemote = false)
+    return RedirectSummary("$scheme://$authority", isRemote = !isLoopback)
+}
+
+/**
  * The consent page. **The security boundary of this whole design.**
  *
  * Worth being honest about in review: the toggle in the Connections section is an
  * affordance and a comfort. This page is what actually stands between an agent
  * and someone's account, and it is the only moment a human is asked.
  *
- * It names three things, and each is load-bearing:
+ * It names five things, and each is load-bearing:
  *  - **which application** is asking, escaped, because the name is a string a
  *    stranger chose (see [String.escapeHtml]);
  *  - **who they would act as**, because an impersonating admin or a second
  *    account is exactly the confusion this catches;
  *  - **what it will be able to do**, in the only words that are true — the same
  *    as you. There is no scope to describe because there are no scopes; the token
- *    says who you are and AccessControl says what that means.
+ *    says who you are and AccessControl says what that means;
+ *  - **where the code would go**, and
+ *  - **whether this application has been approved here before**.
+ *
+ * ── Why the last two exist (LUS-17) ─────────────────────────────────────────
+ *
+ * Registration is unauthenticated by design, per RFC 7591, and takes an arbitrary
+ * display name with arbitrary redirect URIs. So for a while this card showed
+ * exactly two facts, and one of them — the name — is chosen by the stranger doing
+ * the asking. [OAuthClientStore] states the rule that broke: the name is "chosen by
+ * a stranger… never let it be the only thing a user sees before approving — anyone
+ * may register a client named 'Claude Code'."
+ *
+ * The attack it invites needs no bug: register `Claude Code` with a callback on a
+ * host you own, mint a PKCE pair, send the victim the authorize link. They see a
+ * page **on the real Lunicle origin** naming an application they genuinely use and
+ * themselves, and approve. Nothing on the old card could have told them apart from
+ * the real thing, because the two differed only in the redirect URI, which was
+ * never shown.
+ *
+ * The name is still shown, and still first — it is what somebody expecting a
+ * connection recognises. What changed is that it is no longer *alone*.
  */
-private fun consentPage(loginState: String, clientName: String, userName: String): String = page(
-    "Authorize ${clientName.escapeHtml()}",
-    """
-    <h1>Authorize access</h1>
-    <p><span class="app">${clientName.escapeHtml()}</span> wants to act on Lunicle as
-       <span class="who">${userName.escapeHtml()}</span>.</p>
-    <p>It will be able to do exactly what you can — no more. You can disconnect it at any
-       time from your profile.</p>
-    <form method="post" action="/oauth/consent" class="actions">
-      <input type="hidden" name="login_state" value="${loginState.escapeHtml()}">
-      <button class="deny" type="submit" name="decision" value="deny">Deny</button>
-      <button class="approve" type="submit" name="decision" value="approve">Approve</button>
-    </form>
-    """.trimIndent(),
-)
+private fun consentPage(
+    loginState: String,
+    clientName: String,
+    userName: String,
+    redirectUri: String,
+    isFirstApproval: Boolean,
+): String {
+    val redirect = summariseRedirect(redirectUri)
+    // Stated for every client, not only the suspicious ones. A line that appears
+    // only when something is wrong is a line nobody has read before, at the exact
+    // moment they most need to already know what it means.
+    val destination =
+        """<p class="detail">It will be sent back to
+           <span class="host">${redirect.display.escapeHtml()}</span>.</p>"""
+    val firstUse = if (isFirstApproval) {
+        """<p class="detail">You have not approved this application before.</p>"""
+    } else {
+        """<p class="detail">You have approved this application before.</p>"""
+    }
+    // Soft, and deliberately not a refusal: an https callback is legitimate for a
+    // hosted agent and refusing it would break a supported client. But real MCP
+    // clients are overwhelmingly loopback, so this is the shape worth a second look.
+    val remoteWarning = if (redirect.isRemote) {
+        """<p class="warn">This is not an application on your own computer — approving
+           would send your access to that address. Deny unless you started this
+           yourself and recognise it.</p>"""
+    } else {
+        ""
+    }
+    return page(
+        "Authorize ${clientName.escapeHtml()}",
+        """
+        <h1>Authorize access</h1>
+        <p><span class="app">${clientName.escapeHtml()}</span> wants to act on Lunicle as
+           <span class="who">${userName.escapeHtml()}</span>.</p>
+        <p>It will be able to do exactly what you can — no more. You can disconnect it at any
+           time from your profile.</p>
+        $destination
+        $firstUse
+        $remoteWarning
+        <form method="post" action="/oauth/consent" class="actions">
+          <input type="hidden" name="login_state" value="${loginState.escapeHtml()}">
+          <button class="deny" type="submit" name="decision" value="deny">Deny</button>
+          <button class="approve" type="submit" name="decision" value="approve">Approve</button>
+        </form>
+        """.trimIndent(),
+    )
+}
 
 /**
  * Sign in, then come back — for a visitor who arrived here with no session.
