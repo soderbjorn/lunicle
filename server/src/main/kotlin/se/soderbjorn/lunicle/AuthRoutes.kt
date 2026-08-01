@@ -338,6 +338,55 @@ private suspend fun pendingEmailFor(user: UserRecord?, emailCodes: EmailCodeServ
     else emailCodes.pendingFor(user.id, EmailCodePurpose.EMAIL_CHANGE)
 
 /**
+ * The one refusal standing in front of every route that touches an account's
+ * e-mail address.
+ *
+ * ── Why it is a function and not three copies (LUS-4) ───────────────────────
+ *
+ * Three routes touch `users.email` — request a change, confirm one, and clear the
+ * address — and for a while two of them carried this guard and the third did not.
+ * The one that did not was the *clearing* route, and its own comment explained the
+ * absence: "you cannot take somebody else's account by removing an address from
+ * your own." True, and it stops being true the moment the caller is wearing
+ * somebody else's face.
+ *
+ * What clearing an address actually does under a probe: the victim's address and
+ * verification flag go in one statement, so every notification to that person
+ * silently stops; the account key is severed, so a later impersonation of the same
+ * address makes a *second* account for the same human; and any pending
+ * e-mail-change code is cancelled. Unlogged, and undoable only by someone who
+ * knows to look.
+ *
+ * So the check is hoisted here, and the three routes call it rather than restating
+ * it. A fourth route that writes an address is not automatically guarded — Kotlin
+ * cannot promise that — but it now has one obvious thing to call, and the two-line
+ * refusal it would otherwise be tempted to hand-roll no longer exists to copy
+ * wrongly.
+ *
+ * ── `isProbe`, never a comparison ───────────────────────────────────────────
+ *
+ * This guard used to read `isImpersonating`, which meant "effective differs from
+ * real" — and under a genuine probe session the two are the SAME account, so that
+ * comparison reads false and the guard would silently never fire. It is a fact the
+ * session row carries or it is nothing. See [Caller.isProbe].
+ *
+ * @return true when the caller was refused **and this function already answered
+ *   the request**, so the caller must return without responding again.
+ */
+private suspend fun ApplicationCall.refusedEmailWriteAsProbe(caller: Caller): Boolean {
+    if (!caller.isProbe) return false
+    // Logged, unlike the writes it prevents. An owner reaching for somebody else's
+    // address is the single thing full impersonation powers are documented not to
+    // include, so an attempt is worth a line even though it failed.
+    logger.warn("Refused an e-mail write from a probe session on user ${caller.user?.id}")
+    respond(
+        HttpStatusCode.Forbidden,
+        "You cannot change somebody else's e-mail address while impersonating them.",
+    )
+    return true
+}
+
+/**
  * The caller's current [SessionState], impersonation included.
  *
  * The one builder every route that can *see* an impersonation uses. The plain
@@ -742,6 +791,12 @@ fun Route.authRoutes(
      * to stop receiving mail would be ceremony charged to the one person it
      * cannot protect.
      *
+     * The qualification that sentence needs, and did not have (LUS-4): *your own*
+     * is doing all the work in it. Under a probe session the address being given up
+     * belongs to somebody else, and that is an account being quietly severed from
+     * its mailbox rather than a person declining their own mail. Hence the same
+     * refusal the sibling routes carry — see [refusedEmailWriteAsProbe].
+     *
      * A non-null address is *refused* rather than quietly ignored. An older
      * client still trying to set one has to be told, not silently obeyed and left
      * believing it worked.
@@ -752,6 +807,7 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
+        if (call.refusedEmailWriteAsProbe(caller)) return@post
         val request = runCatching { call.receive<SetEmailRequest>() }.getOrNull() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
@@ -795,21 +851,9 @@ fun Route.authRoutes(
         }
         // An owner wearing somebody's face has no business changing where that
         // person's mail goes — and, once e-mail is the account key, redirecting it
-        // is redirecting the account.
-        //
-        // `isProbe`, and the change of field is the security-critical half of this
-        // whole rework. This guard used to read `isImpersonating`, which meant
-        // "effective differs from real" — and under a genuine probe session the two
-        // are the SAME account, so that comparison now reads false and this guard
-        // would silently never fire. It is a fact the session row carries or it is
-        // nothing. See Caller.isProbe.
-        if (caller.isProbe) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                "You cannot change somebody else's e-mail address while impersonating them.",
-            )
-            return@post
-        }
+        // is redirecting the account. See refusedEmailWriteAsProbe, which is where
+        // this refusal and its reasoning now live for all three routes.
+        if (call.refusedEmailWriteAsProbe(caller)) return@post
         val codes = emailCodes ?: run {
             call.respond(HttpStatusCode.BadRequest, "This server has no e-mail configured, so it cannot send a code.")
             return@post
@@ -877,15 +921,7 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
-        // `isProbe`, never a comparison — see the request endpoint above for why the
-        // obvious-looking `isImpersonating` would never fire here.
-        if (caller.isProbe) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                "You cannot change somebody else's e-mail address while impersonating them.",
-            )
-            return@post
-        }
+        if (call.refusedEmailWriteAsProbe(caller)) return@post
         val codes = emailCodes ?: run {
             call.respond(HttpStatusCode.BadRequest, "This server has no e-mail configured.")
             return@post

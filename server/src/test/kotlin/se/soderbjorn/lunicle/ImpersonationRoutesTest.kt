@@ -51,7 +51,9 @@ import se.soderbjorn.lunicle.clientserver.ImpersonateRequest
 import se.soderbjorn.lunicle.clientserver.IssueDraft
 import se.soderbjorn.lunicle.clientserver.IssueUpdate
 import se.soderbjorn.lunicle.clientserver.ProjectListState
+import se.soderbjorn.lunicle.clientserver.ConfirmEmailRequest
 import se.soderbjorn.lunicle.clientserver.RequestEmailChangeRequest
+import se.soderbjorn.lunicle.clientserver.SetEmailRequest
 import se.soderbjorn.lunicle.clientserver.SessionState
 import java.io.File
 import java.nio.file.Files
@@ -524,6 +526,65 @@ class ImpersonationRoutesTest {
             users.selectAll().first { it.providerId == "g-out" }.email,
             "The address moved despite the refusal.",
         )
+    }
+
+    /**
+     * Clearing is a write to `users.email` too (LUS-4).
+     *
+     * The route that only *removes* an address had no guard, on the reasoning that
+     * "you cannot take somebody else's account by removing an address from your
+     * own". Under a probe the address is not your own — and clearing it stops every
+     * notification to that person silently, severs the account key so a later probe
+     * of the same address makes a second account for the same human, and cancels any
+     * confirmation code in flight. All in one statement, all unlogged.
+     */
+    @Test
+    fun `a probe session cannot clear the worn account's address`(): Unit = runBlocking {
+        val f = seed()
+
+        withRoutes { client, _ ->
+            val probeId = requireNotNull(client.arm(f.ownerCookie).probeCookie())
+            val worn = requireNotNull(client.impersonate(probeId, "outsider@example.com").sessionCookie())
+
+            val refused = client.post(ApiRoutes.USER_EMAIL) {
+                cookie(SESSION_COOKIE, worn)
+                contentType(ContentType.Application.Json)
+                setBody(SetEmailRequest(email = null))
+            }
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                refused.status,
+                "A probe session cleared somebody else's address — their mail stops and their " +
+                    "account key is gone.",
+            )
+        }
+        assertEquals(
+            "outsider@example.com",
+            users.selectAll().first { it.providerId == "g-out" }.email,
+            "The address was cleared despite the refusal.",
+        )
+    }
+
+    /** And the third of the three: spending a code to attach an address. */
+    @Test
+    fun `a probe session cannot confirm an address change`(): Unit = runBlocking {
+        val f = seed()
+
+        withRoutes { client, _ ->
+            val probeId = requireNotNull(client.arm(f.ownerCookie).probeCookie())
+            val worn = requireNotNull(client.impersonate(probeId, "outsider@example.com").sessionCookie())
+
+            val refused = client.post(ApiRoutes.USER_EMAIL_CONFIRM) {
+                cookie(SESSION_COOKIE, worn)
+                contentType(ContentType.Application.Json)
+                setBody(ConfirmEmailRequest(code = "123456"))
+            }
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                refused.status,
+                "A probe session reached the confirm route, which writes users.email.",
+            )
+        }
     }
 
     /**
