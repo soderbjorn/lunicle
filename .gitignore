@@ -11,13 +11,6 @@ local.properties
 # Kotlin / KMP
 .kotlin/
 *.klib
-# …except the ones in libs-repo, which are published artifacts rather than build
-# output. The rule above is aimed at build/ (already ignored anyway); catching
-# libs-repo too is silent and expensive: git commits the .pom, .module and every
-# checksum, and drops only the .klib the checksums describe. The result is a repo
-# that resolves fine on any machine with a sibling lunula checkout
-# (composite build, libs-repo unused) and fails only in the container.
-!libs-repo/**/*.klib
 # The Kotlin/JS yarn.lock. Ignored to match the sibling Lunamux repo, which
 # doesn't commit it either. Nothing depends on it being here: the Dockerfile
 # COPYs specific paths and this isn't one of them, so image builds resolve npm

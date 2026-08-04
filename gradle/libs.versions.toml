@@ -1,8 +1,8 @@
 [versions]
 kotlin = "2.3.20"
-# lunula UI shell. Resolved from the committed libs-repo (see
-# settings.gradle.kts); a sibling lunula checkout transparently
-# substitutes these with project builds during development.
+# lunula UI shell. Resolved from Maven Central; a sibling lunula
+# checkout transparently substitutes these with project builds during
+# development (see settings.gradle.kts).
 lunula = "0.2.72"
 ktor = "3.4.1"
 kotlinx-coroutines = "1.10.2"

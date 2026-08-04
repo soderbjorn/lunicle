@@ -155,7 +155,7 @@ read -r web_t web_c                  < <(count_loc web/src -- kt)
 # levels further down at <repo>/.claude/worktrees/<name>. Bounded at eight
 # levels, which is far past any real layout and stops the search from walking to
 # the filesystem root on a machine with no lunula at all. When no checkout is
-# found, Gradle resolves from the committed libs-repo and these counts stay 0.
+# found, Gradle resolves the published artifacts and these counts stay 0.
 toolkit_t=0; toolkit_c=0; toolkit_path=""
 toolkit_candidates=("${LUNULA_PATH:-}")
 for depth in 0 1 2 3 4 5 6 7 8; do
