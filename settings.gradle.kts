@@ -11,20 +11,13 @@ pluginManagement {
 dependencyResolutionManagement {
     repositories {
         mavenCentral()
-        // Committed file-Maven-repo holding lunula artifacts. Lets
-        // Lunicle build with no lunula checkout on disk. Refresh
-        // from the toolkit checkout with `./gradlew publishAllToLibsRepo`.
-        maven {
-            name = "lunulaLibsLocal"
-            url = uri("libs-repo")
-        }
     }
 }
 
 // Auto-detect a sibling lunula checkout. When present, switch to a
 // Gradle composite build so toolkit edits flow into Lunicle with no extra
 // steps. Pass -Plunula.toolkit.useArtifacts=true to force resolution from
-// the committed libs-repo even when sources are present (verifies published
+// Maven Central even when sources are present (verifies published
 // artifacts). Pass -Plunula.toolkit.path=… to point at an explicit checkout.
 val toolkitOverride: String? = settings.providers.gradleProperty("lunula.toolkit.path").orNull
 val useArtifacts: Boolean = settings.providers.gradleProperty("lunula.toolkit.useArtifacts").orNull == "true"
@@ -33,7 +26,7 @@ val useArtifacts: Boolean = settings.providers.gradleProperty("lunula.toolkit.us
 // `<repo>/.claude/worktrees/<name>`. So the sibling is searched for by walking
 // up from rootDir rather than by counting `..` — the count is a fact about
 // where the build happens to be running, and getting it wrong fails silently:
-// resolution falls back to the committed libs-repo and the toolkit edits you
+// resolution falls back to the published artifacts and the toolkit edits you
 // are testing are simply not in the bundle, with a green build to say so.
 //
 // Bounded at eight levels, which is far past any real layout and stops this
