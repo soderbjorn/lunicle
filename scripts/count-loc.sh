@@ -27,11 +27,11 @@
 #                                                           counted when the
 #                                                           checkout is present on
 #                                                           disk — a build resolving
-#                                                           from libs-repo instead
-#                                                           reports 0)
+#                                                           the published artifacts
+#                                                           instead reports 0)
 #
-# Generated/dependency trees (node_modules, build, dist) are pruned, as is the
-# committed libs-repo. Counted code file types: .kt (all modules), .sq and .sqm
+# Generated/dependency trees (node_modules, build, dist) are pruned. Counted
+# code file types: .kt (all modules), .sq and .sqm
 # (SQLDelight schema and migrations).
 #
 # Comment stripping recognises C-style `//` line comments and `/* ... */` block
@@ -100,9 +100,9 @@ tally() {
 # count_loc <root-dir...> -- <ext...>  ->  "<total> <code>"
 #
 # Counts lines across all files under the given root directories whose extension
-# matches one of the listed extensions. Directories named node_modules, build,
-# dist or libs-repo are pruned so generated/dependency/published code is never
-# counted. Missing directories contribute 0.
+# matches one of the listed extensions. Directories named node_modules, build
+# or dist are pruned so generated/dependency code is never counted. Missing
+# directories contribute 0.
 #
 # Args:
 #   Everything before the literal `--` token is a root directory; everything
@@ -124,7 +124,7 @@ count_loc() {
   done
 
   find "${dirs[@]}" \
-      -type d \( -name node_modules -o -name build -o -name dist -o -name libs-repo \) -prune -o \
+      -type d \( -name node_modules -o -name build -o -name dist \) -prune -o \
       -type f \( "${name_pred[@]}" \) -print0 2>/dev/null \
     | tally
 }
