@@ -390,6 +390,16 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
             }
         }
         deps.roles.setRole(target.id, scope.project.id, rung)
+        // A withdrawn rung used to write to the roles table and nothing else, so the
+        // person kept a permanent, indexed list of this project's titles in their
+        // notification panel (LUS-14). The list route re-filters by present access,
+        // which is what closes the leak; this is what stops the rows sitting there
+        // until a re-grant delivers a year of history at once.
+        //
+        // Only on the way *out*. Somebody moved between rungs still holds one, and
+        // clearing their notifications on a promotion would take away history they
+        // are entitled to for no reason at all.
+        if (rung == null) deps.notificationStore?.deleteForUserInProject(target.id, scope.project.id)
         logger.info(
             "Rung set: user ${target.id} is now ${rung?.key ?: "nothing"} in project " +
                 "${scope.project.id}, by user ${scope.user.id}",

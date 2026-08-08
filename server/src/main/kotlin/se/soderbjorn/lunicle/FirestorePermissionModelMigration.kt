@@ -156,18 +156,45 @@ internal class FirestorePermissionModelMigration(
      * Every old grant document, gone — recognised by the `roleKey` field the new
      * shape does not have, so the owner documents step 2 just wrote survive.
      *
-     * Paginated with the same document-id cursor [FirestoreBackfill] uses, and for
-     * the same reason: it is stable, needs no index, and orders identically on every
-     * run, so an interrupted sweep resumes rather than restarts. Deletes cannot go
-     * through the backfill helper itself, which merges rather than removes.
+     * Ordered by document id, the same key [FirestoreBackfill] pages on and for the
+     * same reason: it is stable, needs no index, and orders identically on every
+     * run. Deletes cannot go through the backfill helper itself, which merges rather
+     * than removes.
+     *
+     * ── It used to re-query the front, and stop on a clean page (LUS-16) ──────
+     *
+     * There was no cursor. Each round asked for the first page again and stopped the
+     * first time a page held nothing stale, on the reasoning that deleting from the
+     * front means the front is where the remaining stale documents are.
+     *
+     * That misses **step 2 of this same migration**, which writes one new-shape
+     * owner document per project into this collection under the same naming. Once a
+     * page-worth of those sort ahead of the surviving stale ones, the front page is
+     * clean, the sweep stops, and the runner checkpoints the version — so it never
+     * runs again.
+     *
+     * It does not fail open on authorisation, which is the important half: role
+     * lookups read a field the legacy documents do not have, so a leftover grants no
+     * rung. But membership listing deliberately returns anyone with a row, and that
+     * feeds "who can see this project" — so ex-members keep appearing in people
+     * pickers, mention autocomplete and notification recipient sets for boards they
+     * hold nothing on.
+     *
+     * With a cursor the loop walks the collection once and stops on a short page,
+     * which is the only honest end condition. An interrupted run restarts from the
+     * front on the next boot rather than resuming — the old comment claimed
+     * otherwise — and re-scanning is correct either way, because deleting what is
+     * already deleted is nothing.
      */
     private suspend fun dropOldGrants(db: Firestore) {
         var deleted = 0
+        var cursor: com.google.cloud.firestore.DocumentSnapshot? = null
         while (true) {
-            val page = db.collection(FirestoreRoleStore.GRANTS)
+            var query = db.collection(FirestoreRoleStore.GRANTS)
                 .orderBy(com.google.cloud.firestore.FieldPath.documentId())
                 .limit(pageSize)
-                .get().await().documents
+            cursor?.let { query = query.startAfter(it) }
+            val page = query.get().await().documents
             if (page.isEmpty()) break
 
             val stale = page.filter { it.getString(OLD_ROLE_KEY) != null }
@@ -177,10 +204,13 @@ internal class FirestorePermissionModelMigration(
                 batch.commit().await()
                 deleted += stale.size
             }
-            // Deleting from the front of the ordering means the next page starts
-            // where this one did; a page with nothing stale in it is the signal that
-            // the front is clean and there is nothing more to remove.
-            if (stale.isEmpty()) break
+            // A short page is the end of the collection, and the only thing that ends
+            // this loop. Advancing past the last id read is safe even though some of
+            // this page has just been deleted: the cursor is an id to start after
+            // rather than an offset, so removing documents cannot shift anything into
+            // or out of the next page.
+            if (page.size < pageSize) break
+            cursor = page.last()
         }
         if (deleted > 0) logger.info("LNL-191: removed $deleted old role grant(s), granting nothing in their place")
     }

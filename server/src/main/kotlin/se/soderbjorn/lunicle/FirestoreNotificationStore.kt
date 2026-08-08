@@ -125,6 +125,36 @@ class FirestoreNotificationStore(
         batch.commit().await()
     }
 
+    /**
+     * Every notification pointing at [projectId], for everybody (LUS-14).
+     *
+     * A single-field equality, like every other read here, so it needs no composite
+     * index. See the interface for why the project is the one granularity at which
+     * notifications are dropped rather than left stale.
+     */
+    override suspend fun deleteForProject(projectId: Long) {
+        val batch = firestore.batch()
+        collection().whereEqualTo(DEST_PROJECT_ID, projectId).get().await().documents
+            .forEach { batch.delete(it.reference) }
+        batch.commit().await()
+    }
+
+    /**
+     * [userId]'s notifications for [projectId].
+     *
+     * Filtered in Kotlin over the user's own rows rather than as a two-field query,
+     * deliberately: a composite equality would want a composite index, and a
+     * withdrawn rung is rare while one person's notification list is small. The same
+     * trade the SQLite side does not have to make and would make the same way.
+     */
+    override suspend fun deleteForUserInProject(userId: Long, projectId: Long) {
+        val batch = firestore.batch()
+        rowsFor(userId)
+            .filter { it.getLong(DEST_PROJECT_ID) == projectId }
+            .forEach { batch.delete(it.reference) }
+        batch.commit().await()
+    }
+
     /** One user's rows, unordered — the single-field equality every read is built on. */
     private suspend fun rowsFor(userId: Long): List<DocumentSnapshot> =
         collection().whereEqualTo(USER_ID, userId).get().await().documents

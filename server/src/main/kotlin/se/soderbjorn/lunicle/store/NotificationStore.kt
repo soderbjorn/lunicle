@@ -43,4 +43,32 @@ interface NotificationStore {
 
     /** Clear all of [userId]'s notifications. */
     suspend fun clear(userId: Long)
+
+    /**
+     * Drop every notification pointing at [projectId], for everybody (LUS-14).
+     *
+     * Notifications are deliberately excluded from the delete cascade, on the sound
+     * reasoning that a notification pointing at a deleted issue is merely *stale* —
+     * the pointer 404s, and that is the correct outcome. What that reasoning does
+     * not address is the **payload**: a row stores the issue or post title verbatim,
+     * so deleting a private project leaves its titles readable indefinitely in every
+     * recipient's list.
+     *
+     * Which makes the project the right granularity for an exception, and only the
+     * project. An issue deleted out of a project somebody can still read has leaked
+     * nothing — they could read that title when it arrived and a moment before it
+     * went.
+     */
+    suspend fun deleteForProject(projectId: Long)
+
+    /**
+     * Drop [userId]'s notifications for [projectId] — the other half of LUS-14.
+     *
+     * Revoking somebody's rung writes to the roles table and nothing else, so
+     * without this they keep a permanent, indexed list of titles from a board they
+     * can no longer open. The list route re-filters by *present* access, which is
+     * what closes the leak; this is what stops the rows sitting there until somebody
+     * is re-granted a rung and sees a year of history arrive at once.
+     */
+    suspend fun deleteForUserInProject(userId: Long, projectId: Long)
 }

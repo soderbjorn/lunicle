@@ -64,7 +64,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation as ServerContentNegotiation
 
-class AttachmentTest {
+open class AttachmentTest {
     private val file: File = Files.createTempFile("lunicle-attachments", ".db").toFile().also { it.delete() }
     private val opened = openDatabase(DatabaseLocation(file, isPersistent = false, reason = "test"))
     private val database = opened.database
@@ -84,7 +84,28 @@ class AttachmentTest {
     private val comments = CommentStore(database)
     private val attachmentStore = AttachmentStore(database)
     private val directory = File(file.parentFile, "attachments-${file.name}")
-    private val attachments = AttachmentRepository(attachmentStore, directory)
+
+    /**
+     * Where the bytes go, and the one thing a subclass swaps (LUS-24).
+     *
+     * The download route used to take the disk-only zero-copy path unconditionally,
+     * so on the Firestore backend — which wires exactly the store that is not
+     * disk-backed — every download and inline view threw after the access check and
+     * answered a bare 500. Uploads succeeded and were billed; downloads all failed.
+     *
+     * Every assertion in this file is about the *headers*, and the headers are the
+     * most dangerous lines in the server. A new streaming branch that forgot the
+     * disposition or the nosniff would have passed this whole suite, because the
+     * suite only ever exercised disk. So the suite runs twice — see
+     * [NonDiskAttachmentTest], which is this class with one line different.
+     *
+     * A function rather than an open `val`, because an overridden val is null while
+     * the superclass initialiser runs and this is read from one. The override uses
+     * no subclass state, which is what makes calling it from here safe.
+     */
+    protected open fun newBlobStore(): AttachmentBlobStore = DiskAttachmentBlobStore(directory)
+
+    private val attachments = AttachmentRepository(attachmentStore, newBlobStore())
     private val projectRepository = ProjectRepository(database, projects, attachments, attachmentStore)
     private val issueRepository =
         IssueRepository(issues, comments, statuses, priorities, attachments, attachmentStore)
@@ -605,4 +626,22 @@ class AttachmentTest {
         subscriptions = SubscriptionStore(database),
         reads = ReadStore(database),
     )
+}
+
+/**
+ * Every assertion in [AttachmentTest], against a store that is **not disk-backed**
+ * (LUS-24).
+ *
+ * One line different, and that line is the whole point: the download route now
+ * resolves its bytes through the blob-store seam when there is no file to hand,
+ * and every header above it is set once, before the branch. This subclass is what
+ * says so — without it, "the headers are on both paths" is a claim rather than a
+ * fact, and the GCS store is the one implementation the suite cannot reach.
+ *
+ * [InMemoryAttachmentBlobStore] stands in for GCS for [AttachmentBlobStoreContract]'s
+ * reason: the emulator story is weaker than Firestore's, and what is being tested
+ * here is the route's branch rather than the store's fidelity.
+ */
+class NonDiskAttachmentTest : AttachmentTest() {
+    override fun newBlobStore(): AttachmentBlobStore = InMemoryAttachmentBlobStore()
 }

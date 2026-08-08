@@ -429,12 +429,29 @@ fun profileIcon(): HTMLElement = icon(PROFILE_SVG, "icon-profile")
 /**
  * Wrap one of the markup constants above in a span.
  *
- * `innerHTML` here is the third sanctioned use in this app, and the safest of the
- * three: the argument is always one of the `private const val`s in this file, so
- * there is no input to escape and no caller who could pass one. The alternative —
+ * `innerHTML` here is the third sanctioned use in this app. The alternative —
  * `createElementNS` plus `setAttribute` per node — would turn each drawing above
  * into thirty lines of DOM calls, and the paths would stop being readable as
  * paths, which is the whole point of keeping them as markup.
+ *
+ * ── This used to claim there was no input to escape (LUS-28) ────────────────
+ *
+ * It said the argument "is always one of the private constants in this file, so
+ * there is no input to escape and no caller who could pass one". That was true
+ * when it was written and **stopped being true when the brand logo landed**
+ * (LNL-110): [brandLogo] passes markup read from `/brand/logo.svg`. A comment
+ * asserting a broken invariant is worse than no comment, because the next reader
+ * builds on it.
+ *
+ * The invariant is now the narrower, true one: every caller passes either a
+ * constant from this file or markup that has been through `sanitiseSvg` — parsed
+ * by the browser's own parser, stripped of `script`, `foreignObject`, every `on*`
+ * attribute and every link that is not a fragment or a data image, then
+ * re-serialised. See BrandConfig's `sanitiseSvg`, which also says why an `<img>`
+ * — the fix that would need no sanitiser at all — is not available here.
+ *
+ * **A new caller passing unsanitised markup breaks that invariant**, and no type
+ * here enforces it. This sentence is the enforcement.
  *
  * The span exists because an `<svg>` is awkward to size from the outside; the
  * CSS sets the span's box and `.icon > svg` fills it. See styles.css.

@@ -68,17 +68,53 @@ private val logger = LoggerFactory.getLogger("RateLimiter")
  * variable for the deployed container where `java -jar` sees an exact
  * environment. See [resolveValue]'s twin in OAuthConfig.
  *
- * The default is 1 because there is one deployment and it is behind Railway. A
- * value of 0 means "nothing in front of me", which makes [clientIdentity] ignore
- * the header entirely — the right answer for a direct local run, and the only
- * safe answer for a server exposed without a proxy.
+ * ── The default is 0, and it used to be 1 (LUS-31) ─────────────────────────
+ *
+ * A value of 0 means "nothing in front of me", which makes [clientIdentity] ignore
+ * the header entirely. It is the right answer for a direct local run, and — as this
+ * file already said before anything acted on it — **the only safe answer for a
+ * server exposed without a proxy**.
+ *
+ * Defaulting to 1 was correct for the deployments that exist and wrong for the
+ * deployment somebody sets up next. Behind exactly one proxy, 1 reads the address
+ * that proxy observed. Exposed directly, with no proxy to append anything, a
+ * request arriving with `X-Forwarded-For: 1.2.3.4` has one entry, and 1 reads it —
+ * so the attacker-chosen value *is* the identity and every limiter in this server
+ * is bypassed by a header the attacker varies per request. A `docker run` or a
+ * self-host was therefore misconfigured out of the box, silently, in the direction
+ * that removes the defence.
+ *
+ * Safe-by-default costs a configuration line on a proxied deployment and the
+ * failure mode is loud rather than silent — every visitor lands in the proxy's
+ * bucket and the sign-in limiter starts refusing, which somebody notices in
+ * minutes. The reverse failure is invisible for as long as nobody looks.
+ *
+ * **So a deployment behind a proxy must now set `LUNICLE_TRUSTED_PROXY_HOPS`**: 1
+ * behind a single edge (Railway, Cloud Run), 2 behind a CDN in front of one. See
+ * [describeTrustedProxyHops], which the boot log prints so the assumption is stated
+ * rather than assumed.
  */
 fun resolveTrustedProxyHops(): Int =
     (
         System.getProperty("lunicle.trustedProxyHops")?.takeIf { it.isNotBlank() }
             ?: System.getenv("LUNICLE_TRUSTED_PROXY_HOPS")?.takeIf { it.isNotBlank() }
         )?.toIntOrNull()?.takeIf { it >= 0 }
-        ?: 1
+        ?: 0
+
+/**
+ * What the boot log says about [resolveTrustedProxyHops], in one line.
+ *
+ * Printed at startup because the value decides whether every rate limit in this
+ * server is real, and both ways of getting it wrong are quiet. An operator reading
+ * the boot log should not have to know this file exists to find out what the server
+ * assumed about its own network.
+ */
+fun describeTrustedProxyHops(hops: Int): String = when (hops) {
+    0 -> "trusted proxy hops: 0 — X-Forwarded-For is IGNORED and rate limits key on the socket peer. " +
+        "Correct for a directly exposed server; set LUNICLE_TRUSTED_PROXY_HOPS=1 if this is behind a proxy, " +
+        "or every visitor shares one bucket."
+    else -> "trusted proxy hops: $hops — rate limits key on the X-Forwarded-For entry $hops from the right."
+}
 
 /**
  * Who is asking, as far as a rate limiter can tell.
@@ -256,11 +292,20 @@ class RateLimiter(
  *
  * The honest answer, and the right one wherever the fact of a limit reveals
  * nothing. It is deliberately *not* what every caller does: an endpoint where the
- * refusal itself would leak — "this address is being rate-limited" is "this
- * address exists" — should render its ordinary success response instead and
- * simply not do the work. See the sign-in request endpoint, which does exactly
- * that. That choice belongs to the route, which is why [RateLimiter] returns a
- * decision rather than responding to anything.
+ * refusal itself would leak — "this address is being rate-limited" is "somebody
+ * has been asking about this address" — should render its ordinary success
+ * response instead and simply not do the work.
+ *
+ * The sign-in request endpoint does **both**, and is worth reading as the worked
+ * example (LUS-13): it asks its two buckets separately, answers a 429 for the
+ * *client* bucket, whose refusal is a fact about the caller alone, and its
+ * ordinary 204 for the *address* bucket, whose refusal would otherwise vary with
+ * somebody else's recent activity. This documentation used to claim the endpoint
+ * never refused at all, which was wrong in the direction that matters — it read as
+ * though the invariant were already held.
+ *
+ * That choice belongs to the route, which is why [RateLimiter] returns a decision
+ * rather than responding to anything.
  */
 internal suspend fun ApplicationCall.respondRateLimited(refusal: RateLimitDecision.Refused, message: String) {
     response.header(HttpHeaders.RetryAfter, refusal.retryAfterSeconds.toString())

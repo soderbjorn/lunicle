@@ -26,6 +26,8 @@ import io.ktor.server.http.content.staticFiles
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.request.httpMethod
+import io.ktor.server.request.path
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.http.ContentType
@@ -37,6 +39,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.io.File
 
@@ -91,6 +94,15 @@ private fun resolveAllowedFrameAncestors(): String? =
 /** Ktor's `HttpHeaders` has no constant for this one. */
 private const val CONTENT_SECURITY_POLICY = "Content-Security-Policy"
 
+/** Nor this one. Set globally since LUS-27; it used to be on attachments only. */
+private const val X_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options"
+
+/** Nor this one. */
+private const val PERMISSIONS_POLICY = "Permissions-Policy"
+
+/** Nor this one. */
+private const val REFERRER_POLICY = "Referrer-Policy"
+
 /**
  * How old a draft issue must be before the startup sweep takes it — seven days.
  *
@@ -122,6 +134,76 @@ private const val ABANDONED_DRAFT_AGE_MILLIS = 7L * 24 * 60 * 60 * 1000
  */
 internal fun frameAncestors(ancestors: String?): String =
     if (ancestors.isNullOrBlank()) "frame-ancestors 'self'" else "frame-ancestors 'self' $ancestors"
+
+/**
+ * Where Google Identity Services is loaded from, and talks to.
+ *
+ * Named once because it appears in three directives and a typo in any of them is
+ * a sign-in button that silently does nothing. See `index.html`, which loads the
+ * script, and `SignInView`, which checks for the global it defines.
+ */
+private const val GOOGLE_IDENTITY_ORIGIN = "https://accounts.google.com"
+
+/**
+ * The application origin's `Content-Security-Policy` (LUS-27).
+ *
+ * ── What this used to be ────────────────────────────────────────────────────
+ *
+ * `frame-ancestors` and nothing else. That is not a weak XSS mitigation, it is
+ * **no XSS mitigation at all**: `frame-ancestors` governs who may embed this page
+ * and says nothing about what may execute on it. The whole design rested on
+ * nothing hostile ever running on this origin — which [Markdown] upholds, and
+ * which is a real property rather than a hope — but there was no second line if it
+ * ever slipped, and a renderer is exactly the kind of thing that slips.
+ *
+ * It is cheap here precisely because the app ships one self-hosted bundle. The
+ * only third party in the whole page is Google's sign-in script.
+ *
+ * ── Why each loosening is here ──────────────────────────────────────────────
+ *
+ *  - `script-src` names [GOOGLE_IDENTITY_ORIGIN] because `index.html` loads GIS
+ *    from it, and `frame-src`/`connect-src` because that library opens Google's
+ *    own iframe and calls back to it. There is **no `'unsafe-inline'` and no
+ *    `'unsafe-eval'` for script**, which is the clause that actually does the
+ *    work: the bundle is one external file and the page has no inline script.
+ *  - `style-src 'unsafe-inline'` is not optional and is worth being honest about.
+ *    The toolkit installs its theme by creating a `<style>` element and setting
+ *    its text, and the views set `style` attributes; both are inline styles as far
+ *    as CSP is concerned. Removing it would need a nonce threaded from here into
+ *    the bundle, which is a real change rather than a header edit. Inline *style*
+ *    is a far smaller weapon than inline script.
+ *  - `img-src https:` because a person can write `![](https://…)` in an issue and
+ *    it renders. Blocking that would be a functional regression sold as hardening.
+ *    `data:` and `blob:` are for inline attachments and previews.
+ *
+ * ── The server-rendered pages are NOT covered by this ───────────────────────
+ *
+ * The OAuth consent and sign-in pages carry inline `<script>` and inline `<style>`
+ * and would be broken by the policy above. They set their own CSP header, and
+ * [DefaultHeaders] skips a header the handler already set — which is the same
+ * property that lets the attachment view replace this wholesale rather than merge
+ * with it. **Keep that property.** See OAuthServer's `page`, and BoardRoutes'
+ * `serveAttachment`.
+ *
+ * @param ancestors the permitted framing origin(s), or null for 'self' only.
+ */
+internal fun appContentSecurityPolicy(ancestors: String?): String = listOf(
+    "default-src 'self'",
+    "script-src 'self' $GOOGLE_IDENTITY_ORIGIN",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    "connect-src 'self' $GOOGLE_IDENTITY_ORIGIN",
+    "frame-src 'self' $GOOGLE_IDENTITY_ORIGIN",
+    // Nothing here embeds Flash, Java or a PDF plugin, and `object` is the classic
+    // way a filtered injection still executes.
+    "object-src 'none'",
+    // No `<base>` anywhere, and one injected would silently re-point every relative
+    // URL on the page — including the bundle.
+    "base-uri 'none'",
+    "form-action 'self'",
+    frameAncestors(ancestors),
+).joinToString("; ")
 
 /**
  * Process entry point: start Netty on [resolvePort] and block.
@@ -159,10 +241,66 @@ fun main() {
  *    by the `copyWebDistToResources` task.
  */
 fun Application.module() {
+    // Before ContentNegotiation, and the order is the whole point (LUS-30): this
+    // refuses an over-size body rather than letting one be buffered into the heap
+    // of a small container and parsed. See installRequestBodyCeiling.
+    installRequestBodyCeiling()
+    // Resolved once and used twice — the CSP's framing list and the set of sites
+    // permitted to drive this server are the same answer to the same question, and
+    // two resolutions would be two places for a deployment to be half-configured.
+    val allowedFrameAncestors = resolveAllowedFrameAncestors()
+    // Before anything reads a body, for the ceiling's reason: a request this refuses
+    // should cost nothing. See installOriginCheck (LUS-12).
+    installOriginCheck(allowedFrameAncestors)
     install(ContentNegotiation) { json() }
-    install(CallLogging)
+    // An explicit formatter, and the reason is not style (LUS-34).
+    //
+    // CallLogging installed with no format uses Ktor's default formatter, and that
+    // formatter has a special case: on **302 Found** it appends the full `Location`
+    // header to the line. `respondRedirect` without `permanent = true` answers 302,
+    // and the consent endpoint redirects with `code=…` in the query string — so
+    // every successful agent consent wrote a live OAuth authorization code to
+    // stdout, and from there into Cloud Logging or the Railway log stream.
+    //
+    // Lifting a code is not by itself enough: PKCE is mandatory, codes are stored
+    // hashed and consumed on first use, so an attacker also needs the verifier that
+    // never left the agent and has to win a race inside a two-minute single-use
+    // window. What makes it worth fixing promptly is who can read those logs —
+    // anyone with project viewer on the branded deployment, and the default service
+    // account.
+    //
+    // Method, path and status, and nothing that came out of a query string or a
+    // response header. Note the path is `request.path()` rather than the full URI:
+    // a URI would carry the query string, which is where the code was in the first
+    // place — the redirect is not the only way it could reach a log line.
+    //
+    // Any code already in the log window should be treated as spent.
+    install(CallLogging) {
+        format { call ->
+            "${call.request.httpMethod.value} ${call.request.path()} — ${call.response.status()?.value ?: "unhandled"}"
+        }
+    }
     install(DefaultHeaders) {
-        header(CONTENT_SECURITY_POLICY, frameAncestors(resolveAllowedFrameAncestors()))
+        // Every one of these is skipped on a response whose handler already set it,
+        // which is what lets the attachment view and the OAuth pages replace the CSP
+        // wholesale rather than merge with it. That property is load-bearing — see
+        // appContentSecurityPolicy.
+        header(CONTENT_SECURITY_POLICY, appContentSecurityPolicy(allowedFrameAncestors))
+        // Was set on attachment responses only, which is where it matters most and
+        // is not where it stops mattering: any route that gets a content type
+        // slightly wrong is a route a browser may sniff into something executable.
+        header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+        // Send the origin to other sites and the full URL only to ourselves. Issue
+        // URLs carry ids, and an issue whose description links somewhere should not
+        // tell that somewhere which issue the reader was looking at.
+        header(REFERRER_POLICY, "strict-origin-when-cross-origin")
+        // Ignored by browsers over plain http, so this is inert on a local run and
+        // real in production. Two years, subdomains included; no `preload`, which is
+        // a submission to a browser list and not a header to set casually.
+        header(HttpHeaders.StrictTransportSecurity, "max-age=63072000; includeSubDomains")
+        // Nothing in this application asks for a camera, a microphone or a location,
+        // so an injection that did would be doing it on its own account.
+        header(PERMISSIONS_POLICY, "camera=(), microphone=(), geolocation=(), payment=()")
     }
 
     val webDistPath = System.getProperty("lunicle.webDist")
@@ -194,6 +332,18 @@ fun Application.module() {
             "google-pin=${instanceIdentity.googleHostedDomainPin ?: "(none)"}; " +
             "ways-in=${instanceIdentity.waysIn.joinToString(" · ").ifEmpty { "(none)" }}",
     )
+
+    // What this process assumes about its own network, said out loud (LUS-31). It
+    // decides whether every rate limit in the server keys on the caller or on the
+    // proxy in front of them, and both ways of getting it wrong are quiet — so it
+    // goes in the boot log rather than being left to be inferred from a bill or
+    // from nobody being able to sign in. See resolveTrustedProxyHops.
+    val trustedProxyHops = resolveTrustedProxyHops()
+    if (trustedProxyHops == 0) {
+        log.warn("Rate limiting: ${describeTrustedProxyHops(trustedProxyHops)}")
+    } else {
+        log.info("Rate limiting: ${describeTrustedProxyHops(trustedProxyHops)}")
+    }
 
     // Which backend this process runs on, chosen once here — see DatabaseBackend.
     // Nothing GCP is touched unless FIRESTORE is selected: on the SQLite/Railway
@@ -311,6 +461,12 @@ fun Application.module() {
     // store — which is why it is written even when `emailSender` is null: the bell
     // needs no mailbox.
     val notificationDispatcher = NotificationDispatcher(users, emailSender, notificationStore)
+    // Who can see a project, as a set — the forum's @ autocomplete, LNL-60's
+    // recipient picker, LNL-63's send-time visibility check, and since LUS-22 the
+    // issue notifier's too. Named here rather than built inline at
+    // BoardDependencies because several things hold it, and several of these would
+    // be several objects answering one question. See ProjectAudience.
+    val projectAudience = ProjectAudience(users, roles, instanceSettings)
     val notifications = NotificationService(
         subscriptions = subscriptions,
         projects = projects,
@@ -320,6 +476,9 @@ fun Application.module() {
         // LNL-201 includes whoever owns the deployment, so the settings ride along.
         roles = roles,
         instanceSettings = instanceSettings,
+        // A subscription outlives the reason somebody was allowed to make it, and
+        // revoking a rung writes to the roles table and nothing else (LUS-22).
+        audience = projectAudience,
         dispatch = notificationDispatcher,
         baseUrl = emailBaseUrl,
     )
@@ -330,16 +489,12 @@ fun Application.module() {
         dispatch = notificationDispatcher,
         baseUrl = emailBaseUrl,
     )
-    // Who can see a project, as a set — the forum's @ autocomplete, LNL-60's
-    // recipient picker, and now LNL-63's send-time visibility check. Named here
-    // rather than built inline at BoardDependencies because two things hold it,
-    // and two of these would be two objects answering one question. See
-    // ProjectAudience.
-    val projectAudience = ProjectAudience(users, roles, instanceSettings)
     // The Discussion tab's two notifications. A third service rather than a wider
-    // one, for the reason EmailNotifier's preamble gives — and the only one of the
-    // three that takes a `ProjectAudience`, because a forum watcher's visibility
-    // of the project is re-checked at send time. See ForumNotificationService.
+    // one, for the reason EmailNotifier's preamble gives. It was the only one of the
+    // three that took a `ProjectAudience`, because a forum watcher's visibility of
+    // the project is re-checked at send time; since LUS-22 the issue service takes
+    // the same object for the same reason, and both share the one built above.
+    // See ForumNotificationService.
     val forumNotifications = ForumNotificationService(
         subscriptions = subscriptions,
         audience = projectAudience,
@@ -466,6 +621,41 @@ fun Application.module() {
         access = access,
     )
 
+    // ── The one sweep that runs BEFORE this process serves anything (LUS-5) ──
+    //
+    // Every session an owner-impersonation grant minted, whatever the gate says.
+    // Unconditional, which is the whole of the off-switch guarantee: the grants
+    // that authorised these rows lived in the previous process's memory and died
+    // with it, so every row this finds is orphaned by definition. Gating it on
+    // `ownerImpersonation.isEnabled` would leave exactly the hole worth caring
+    // about — turn the feature off while somebody is probing and their session
+    // survives the restart as an ORDINARY session for the person they were
+    // wearing, marker gone and nothing left to notice it. See ImpersonationConfig.
+    //
+    // Unconditional was never the part that was wrong. **Ordered** was. This used
+    // to sit inside the launch{} below, behind `stores.migrate()`, while the
+    // routing block was registered synchronously regardless — so between the port
+    // binding and this line the server was serving with those sessions still live.
+    // During that window `resolveCaller` does precisely what the design warns
+    // against: with the gate now off it returns the caller as an ordinary session,
+    // `isProbe` reads false, the marker leaves the UI and the e-mail guards go
+    // inert, on a deployment whose configuration says the feature is off. On the
+    // Firestore backend the migration it sat behind can wait several minutes for an
+    // elected peer, and if that wedges the sweep never ran at all while the process
+    // kept answering; Cloud Run's request-based CPU billing throttles background
+    // coroutines between requests and stretches the window further.
+    //
+    // So it is hoisted out and blocks the module. It is one indexed delete on a
+    // small collection, it does not need the new schema and it does not need to be
+    // fast — the healthcheck argument the launch{} below rests on does not reach a
+    // statement of this shape. Everything else stays where it was.
+    runBlocking {
+        val probes = sessions.deleteProbeSessions()
+        if (probes > 0) {
+            log.info("Removed $probes impersonation session(s) — their grants did not survive the restart")
+        }
+    }
+
     // Startup housekeeping, all of it in one launch{} rather than blocking the
     // module: a slow sweep must not hold up the port binding, because Railway's
     // healthcheck is watching and nothing here is a precondition for serving.
@@ -513,21 +703,8 @@ fun Application.module() {
         val removed = sessions.deleteExpired()
         if (removed > 0) log.info("Removed $removed expired session(s)")
 
-        // Every session an owner-impersonation grant minted, whatever the gate says.
-        //
-        // UNCONDITIONAL, and that is the whole of the off-switch guarantee. The
-        // grants that authorised these sessions lived in the previous process's
-        // memory and died with it, so every row this finds is orphaned by
-        // definition and there is nothing to preserve. Gating it on
-        // `ownerImpersonation.isEnabled` would leave exactly the hole worth caring
-        // about: turn the feature off while somebody is probing, and their session
-        // survives the restart as an ORDINARY session for the person they were
-        // wearing, with the marker gone and nothing left to notice it. See
-        // ImpersonationConfig.
-        val probes = sessions.deleteProbeSessions()
-        if (probes > 0) {
-            log.info("Removed $probes impersonation session(s) — their grants did not survive the restart")
-        }
+        // The probe-session sweep used to be here. It now runs synchronously above,
+        // ahead of the migration and of anything being served — see LUS-5 there.
         log.info("Sessions live: ${sessions.size()}")
 
         // The mailbox-proof codes, swept beside the sessions. Unlike that sweep

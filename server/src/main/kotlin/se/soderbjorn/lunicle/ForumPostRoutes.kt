@@ -144,6 +144,12 @@ fun Route.forumPostRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed post.")
             return@put
         }
+        // LUS-30. Bounded for the same reason the issue description now is: this
+        // field is meant to hold a lot, which is not the same promise as unbounded.
+        tooLongMessage("post", body.body)?.let {
+            call.respond(HttpStatusCode.BadRequest, it)
+            return@put
+        }
         deps.runPostWrite(call) {
             // Captured before the publish flips it, exactly as IssueRepository.save
             // captures `wasDraft`: this `PUT` is publish *and* re-save, and only the
@@ -196,6 +202,10 @@ fun Route.forumPostRoutes(deps: BoardDependencies) {
         }
         val body = call.receiveOrNull<ForumCommentEdit>() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed comment.")
+            return@put
+        }
+        tooLongMessage("comment", body.body)?.let {
+            call.respond(HttpStatusCode.BadRequest, it)
             return@put
         }
         deps.runPostWrite(call) {

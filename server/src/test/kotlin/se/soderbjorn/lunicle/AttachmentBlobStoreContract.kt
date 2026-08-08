@@ -16,6 +16,7 @@ package se.soderbjorn.lunicle
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
@@ -68,5 +69,45 @@ abstract class AttachmentBlobStoreContract {
     @Test
     fun `sweepOrphans over an empty store removes nothing`() = runBlocking {
         assertEquals(0, store.sweepOrphans(setOf("anything")))
+    }
+
+    /**
+     * A sweep that would empty the store refuses instead (LUS-25).
+     *
+     * Neither implementation checked the metadata store's answer for plausibility,
+     * so an empty or badly truncated key set against a full store meant every
+     * attachment on the instance deleted at startup, one INFO line per object. On
+     * the Firestore backend that key list comes from an unindexed full-collection
+     * scan, and the database and the bucket are named by *separate* environment
+     * variables — so a botched rollback, or a staging deploy inheriting a production
+     * value, is one variable away from destroying all user files.
+     *
+     * Both backends have to refuse identically, which is why this lives in the
+     * contract rather than beside one of them.
+     */
+    @Test
+    fun `sweepOrphans refuses to take most of the store`(): Unit = runBlocking {
+        repeat(30) { store.store("obj-$it", "x".toByteArray()) }
+
+        // Two known keys against thirty stored objects: the shape a wrong database
+        // produces, and nothing a real deployment reaches.
+        assertEquals(
+            0,
+            store.sweepOrphans(setOf("obj-0", "obj-1")),
+            "A sweep emptied almost the whole store on the word of a key set that cannot be right.",
+        )
+        assertNotNull(store.fetch("obj-29"), "The refused sweep deleted objects anyway.")
+    }
+
+    /** And an ordinary sweep still runs, however many objects are there. */
+    @Test
+    fun `a proportionate sweep still runs on a large store`(): Unit = runBlocking {
+        repeat(30) { store.store("obj-$it", "x".toByteArray()) }
+        val known = (0 until 30).map { "obj-$it" }.toMutableSet()
+        known.remove("obj-7")
+
+        assertEquals(1, store.sweepOrphans(known), "An ordinary one-object sweep was refused.")
+        assertNull(store.fetch("obj-7"))
+        assertNotNull(store.fetch("obj-8"))
     }
 }

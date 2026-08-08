@@ -183,4 +183,27 @@ abstract class SessionStoreContract {
         assertEquals(0L, store.deleteProbeSessions(), "nothing to sweep on an ordinary instance")
         assertNotNull(store.lookup(token), "and the sweep is harmless where it finds nothing")
     }
+
+    /**
+     * A cookie that is not the shape a mint produces is a clean miss (LUS-33).
+     *
+     * The Firestore store put the raw cookie into a document path, so a value with a
+     * slash in it made the SDK build an invalid resource name and throw — a 500 with
+     * a stack trace, on the hottest read in the server, reachable by any
+     * unauthenticated visitor at will. Not a path escape: Firestore does not
+     * normalise, and an invalid resource name is rejected server-side. Just noise
+     * anybody could make.
+     *
+     * In the contract because "a forged cookie is a signed-out visitor" has to hold
+     * on both backends, and it is the SQLite store — where a string is only ever a
+     * bound parameter — that made it easy to assume.
+     */
+    @Test
+    fun `a malformed session id misses rather than throwing`(): Unit = runBlocking {
+        listOf("../../users/1", "a/b", "", "short", "!".repeat(43)).forEach { forged ->
+            assertNull(store.lookup(forged), "A forged id resolved to somebody: \"$forged\"")
+            assertNull(store.probeIdFor(forged), "A forged id carried a probe label: \"$forged\"")
+            store.destroy(forged) // must not throw
+        }
+    }
 }

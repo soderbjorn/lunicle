@@ -18,6 +18,40 @@
  * a [ProviderIdentity] is the same function the real paths call. The cost is that
  * probing creates real accounts — which is the point rather than a regret.
  *
+ * ── The one deliberate exception to that claim (LUS-2) ──────────────────────
+ *
+ * `POST /oauth/consent` refuses a probe session. It is written down here rather
+ * than left to be rediscovered as an inconsistency, because "the same code path as
+ * a real sign-in" is a claim a future maintainer will build on and this is the
+ * single place it is not true.
+ *
+ * The justification is not convenience. Consent is by definition a statement
+ * somebody makes about *their own* identity — the consent page names the account
+ * out loud and the click is the whole security boundary of the MCP design — and a
+ * probe session is exactly the state in which no such statement can be made: the
+ * page said the worn account's name and the human who clicked was the owner.
+ *
+ * What made it worth an exception rather than a note is that approving is the only
+ * act of impersonation that **leaves a credential behind**. Everything else a probe
+ * does dies with the grant, the session or the process; a token does not. It is an
+ * access token plus a thirty-day rotating refresh token bound to the worn user's
+ * id, and the token path deliberately honours no impersonation — so it survives the
+ * probe ending, the boot sweep, and the feature switch being turned off and
+ * applied. That defeats the off-switch guarantee below, which is otherwise whole.
+ *
+ * The refusal is at the POST only. A probing owner can still drive
+ * `GET /oauth/authorize` and watch the client resolve, PKCE and redirect validation
+ * pass, `canUseMcp` evaluate and the consent card render — so "can this person
+ * connect an agent?" is still most of the way answerable by wearing them. What is
+ * lost is only the final, irreversible click, and that is the trade.
+ *
+ * Note the corollary for revocation, which cuts the other way: the connections
+ * routes resolve through `resolveCaller`, so a probe session reaches the worn
+ * account's own `DELETE /api/mcp/connections/{clientId}`. Impersonation is
+ * currently the **only** administrative revoke surface for agent tokens, and
+ * disarming removes it. Check `oauth_tokens` *before* turning impersonation off,
+ * not after.
+ *
  * ── The rule this file exists to make unbreakable ────────────────────────────
  *
  * **The client never says who it is.** An address in a request body is a petition

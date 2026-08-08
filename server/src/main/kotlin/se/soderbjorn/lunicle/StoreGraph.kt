@@ -343,33 +343,42 @@ internal fun firestoreStoreGraph(
     )
 
     // ── Seam 5: attachment scope resolver → ancestry across sibling stores ─────
+    // Strict, and every miss below is a refusal rather than a null (LUS-26). A null
+    // project id is a legitimate answer for a message-owned attachment and a
+    // *silent escape from the project cascade* for anything else — see
+    // AttachmentScopeMissing, where that distinction and its cost are written down.
+    fun <T : Any> T?.orMissing(what: String, id: Long): T =
+        this ?: throw AttachmentScopeMissing("Cannot resolve an attachment scope: no $what $id.")
+
     val scopeResolver = object : AttachmentScopeResolver {
         override suspend fun forIssue(issueId: Long): AttachmentScope {
-            val issue = issues.findById(issueId)
-            return AttachmentScope(projectId = issue?.projectId, issueId = issueId)
+            val issue = issues.findById(issueId).orMissing("issue", issueId)
+            return AttachmentScope(projectId = issue.projectId, issueId = issueId)
         }
 
         override suspend fun forComment(commentId: Long): AttachmentScope {
-            val comment = comments.findById(commentId) ?: return AttachmentScope()
-            val issue = issues.findById(comment.issueId)
-            return AttachmentScope(projectId = issue?.projectId, issueId = comment.issueId)
+            val comment = comments.findById(commentId).orMissing("comment", commentId)
+            val issue = issues.findById(comment.issueId).orMissing("issue", comment.issueId)
+            return AttachmentScope(projectId = issue.projectId, issueId = comment.issueId)
         }
 
         override suspend fun forForumPost(forumPostId: Long): AttachmentScope {
-            val post = forumPosts.findById(forumPostId) ?: return AttachmentScope()
-            val forum = forums.findById(post.forumId)
-            return AttachmentScope(projectId = forum?.projectId, forumId = post.forumId, postId = forumPostId)
+            val post = forumPosts.findById(forumPostId).orMissing("forum post", forumPostId)
+            val forum = forums.findById(post.forumId).orMissing("forum", post.forumId)
+            return AttachmentScope(projectId = forum.projectId, forumId = post.forumId, postId = forumPostId)
         }
 
         override suspend fun forForumComment(forumCommentId: Long): AttachmentScope {
-            val comment = forumComments.findById(forumCommentId) ?: return AttachmentScope()
-            val post = forumPosts.findById(comment.postId)
-            val forum = post?.let { forums.findById(it.forumId) }
-            return AttachmentScope(projectId = forum?.projectId, forumId = post?.forumId, postId = comment.postId)
+            val comment = forumComments.findById(forumCommentId).orMissing("forum comment", forumCommentId)
+            val post = forumPosts.findById(comment.postId).orMissing("forum post", comment.postId)
+            val forum = forums.findById(post.forumId).orMissing("forum", post.forumId)
+            return AttachmentScope(projectId = forum.projectId, forumId = post.forumId, postId = comment.postId)
         }
 
         override suspend fun forMessage(messageId: Long): AttachmentScope {
-            val message = messages.findById(messageId) ?: return AttachmentScope()
+            val message = messages.findById(messageId).orMissing("message", messageId)
+            // No project id, and correctly so: a conversation does not hang under
+            // one. This is the null field that is an answer rather than a miss.
             return AttachmentScope(conversationId = message.conversationId)
         }
     }
