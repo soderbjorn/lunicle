@@ -11,16 +11,25 @@
  * ── Which keys, and why not all of them ─────────────────────────────────────
  *
  * Only [UiSettingKeys.persisted] travels: the theme selection, the user's own
- * themes, where the panes sit, how wide they dragged the sidebar, and the fonts
- * they picked. Everything else the shell writes — collapsed sidebar sections,
- * hotkeys, the shell's corner radius and density — stays in memory and dies with
- * the tab, deliberately: a key reaches this list when some part of the app would
- * be *wrong* without it across a reload, not merely different.
+ * themes, the ones they starred, where the panes sit, how wide they dragged the
+ * sidebar, and the fonts they picked. Everything else the shell writes —
+ * collapsed sidebar sections, hotkeys, the shell's corner radius and density —
+ * stays in memory and dies with the tab, deliberately: a key reaches this list
+ * when some part of the app would be *wrong* without it across a reload, not
+ * merely different.
  *
- * The fonts key is the newest and the clearest case of that bar being met: the
- * Appearance sidebar offers the choice unconditionally, every brand font seam
- * this file's neighbours set is documented as yielding to it, and without the key
- * the pick was undone by the very default it outranked, one reload later.
+ * The fonts key is the clearest case of that bar being met: the Appearance
+ * sidebar offers the choice unconditionally, every brand font seam this file's
+ * neighbours set is documented as yielding to it, and without the key the pick
+ * was undone by the very default it outranked, one reload later. The stars are
+ * the same shape of failure with a shorter argument — the ☆ on every theme card
+ * filled in and emptied again on reload.
+ *
+ * The corner radius and density are the deliberate holdout among the shell's
+ * remaining keys: they are the same class of preference, and keeping them out is
+ * a standing call about how much of a signed-in browser this app stores rather
+ * than an oversight. Nothing about them is harder than the two above if that call
+ * changes.
  *
  * That the *custom themes* key is on the list is not a bonus. The toolkit's
  * theme manager lets a user build and edit themes, and the selection names the
@@ -318,10 +327,22 @@ class ThemePersister(
      *
      * The toolkit's own parser does the reading, and it is total: a blob that is
      * missing, blank or malformed yields the defaults rather than an exception.
+     *
+     * The stars are part of it, and leaving them out was not an option once
+     * [UiSettingKeys.THEME_FAVORITES] started travelling. A snapshot is the *whole*
+     * of the theme manager's state to the toolkit, not a patch on it: the shell
+     * folds a pushed one into its own state wholesale (`applySnapshotV2`), so a
+     * snapshot built without favourites empties them — and the next thing to
+     * persist, a flick of the sun/moon control, would then write that emptiness to
+     * the account. Signing in would have unstarred everything the account had
+     * starred, one click later and server-side. Boot does not go through here (the
+     * shell reads the key off [read] itself), which is why the loss would have
+     * shown up only on an identity change.
      */
     fun snapshot(): ThemeSnapshotV2 = ThemeSnapshotV2.fromStrings(
         selectionJson = effectiveSelectionJson(),
         customThemesJson = effectiveCustomThemesJson(),
+        favoritesJson = memory[UiSettingKeys.THEME_FAVORITES],
     )
 
     // ── Brand merge/strip helpers ───────────────────────────────────────────

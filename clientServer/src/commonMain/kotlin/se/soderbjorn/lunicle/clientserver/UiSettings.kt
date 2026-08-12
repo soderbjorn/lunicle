@@ -159,6 +159,38 @@ object UiSettingKeys {
      */
     const val APPEARANCE_FONTS: String = "darkness.appearance.fonts"
 
+    /**
+     * `darkness.theme.v2.favorites` — the themes the user starred in the theme
+     * manager.
+     *
+     * A toolkit key like [LAYOUT_STATE] and [APPEARANCE_FONTS], and opaque here: a
+     * JSON array of theme names. Its own key upstream rather than a field on
+     * [THEME_SELECTION], because a star answers "which of these do I want to find
+     * again" while the selection answers "which one is on" — so starring has to
+     * survive a theme change without being able to cause one.
+     *
+     * Stored for [APPEARANCE_FONTS]' reason and it clears the same bar: the ☆ is
+     * drawn on every card of the theme manager this app mounts, so it is one click
+     * away on the shell's own chrome, and until this key travelled that click
+     * filled the star in and emptied it again on the next load. A control that
+     * visibly takes effect and has forgotten by the next load is a broken control,
+     * not a preference it would merely be nicer to keep.
+     *
+     * A star is also worth more here than the count of built-in themes suggests: a
+     * branded deployment layers its own themes onto the user's own (see
+     * ThemePersister), so the list this hoists from is as long as the instance
+     * makes it.
+     *
+     * `darkness.appearance.shape` — corner radius, density, selection style — is
+     * the one neighbour still deliberately left off this list. It is the same class
+     * of preference and the toolkit writes it, so this is an omission on purpose
+     * rather than one nobody noticed; see the note in ThemePersister's header.
+     *
+     * Signed out, nothing is stored and a visitor's stars live for the tab, as with
+     * every key here.
+     */
+    const val THEME_FAVORITES: String = "darkness.theme.v2.favorites"
+
     /** Every key the server will store. Anything else is refused. */
     val persisted: Set<String> = setOf(
         THEME_SELECTION,
@@ -168,6 +200,7 @@ object UiSettingKeys {
         LAYOUT_STATE,
         SIDEBAR_WIDTH,
         APPEARANCE_FONTS,
+        THEME_FAVORITES,
     )
 }
 
