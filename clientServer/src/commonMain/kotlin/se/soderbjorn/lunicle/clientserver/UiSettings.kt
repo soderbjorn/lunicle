@@ -134,6 +134,31 @@ object UiSettingKeys {
      */
     const val SIDEBAR_WIDTH: String = "darkness.sidebarWidth"
 
+    /**
+     * `darkness.appearance.fonts` — which face and size the user picked for each
+     * lettered surface: the sidebar and topbar, the tab strip, pane titles, prose,
+     * headings, and monospaced content.
+     *
+     * A toolkit key like [LAYOUT_STATE] and [SIDEBAR_WIDTH], and opaque here: one
+     * JSON object holding a family and a size per surface, any of them absent
+     * meaning "this user picked nothing for it". The toolkit argues the one-blob
+     * shape where it defines it; what it means here is that a font feature costs
+     * this allowlist one entry rather than twelve.
+     *
+     * Stored because Lunicle *offers* the choice and then lost it. The Appearance
+     * sidebar's font rows are unconditional chrome, every brand seam this app sets
+     * is documented as yielding to "any font the user picks in Appearance" — and
+     * until this key travelled, that pick lived in a JS object that died with the
+     * tab. It clears the bar this list sets: not "different without it" but
+     * *wrong* without it, because a control that visibly takes effect and has
+     * forgotten by the next load is a broken control, and the deploy-time brand
+     * font it yielded to came straight back over the top of it.
+     *
+     * Signed out, nothing is stored and the brand (then toolkit) default applies
+     * on every load, as with every key here.
+     */
+    const val APPEARANCE_FONTS: String = "darkness.appearance.fonts"
+
     /** Every key the server will store. Anything else is refused. */
     val persisted: Set<String> = setOf(
         THEME_SELECTION,
@@ -142,6 +167,7 @@ object UiSettingKeys {
         WORKSPACE,
         LAYOUT_STATE,
         SIDEBAR_WIDTH,
+        APPEARANCE_FONTS,
     )
 }
 

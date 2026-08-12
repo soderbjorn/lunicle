@@ -41,8 +41,13 @@ class ThemeKeysMatchToolkitTest {
         assertEquals(PersistKeys.SIDEBAR_WIDTH, UiSettingKeys.SIDEBAR_WIDTH)
     }
 
+    @Test
+    fun `the appearance-fonts key is still the toolkit's`() {
+        assertEquals(PersistKeys.APPEARANCE_FONTS, UiSettingKeys.APPEARANCE_FONTS)
+    }
+
     /**
-     * The allowlist is the four toolkit keys plus Lunicle's own two, and
+     * The allowlist is the five toolkit keys plus Lunicle's own two, and
      * nothing else.
      *
      * The set is what the server's allowlist is written against, so a key added
@@ -65,6 +70,7 @@ class ThemeKeysMatchToolkitTest {
                 PersistKeys.THEME_V2_CUSTOM,
                 PersistKeys.LAYOUT_STATE,
                 PersistKeys.SIDEBAR_WIDTH,
+                PersistKeys.APPEARANCE_FONTS,
                 UiSettingKeys.PROJECT_PREFS,
                 UiSettingKeys.WORKSPACE,
             ),

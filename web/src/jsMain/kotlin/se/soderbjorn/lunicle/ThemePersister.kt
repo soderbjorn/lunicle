@@ -11,10 +11,16 @@
  * ── Which keys, and why not all of them ─────────────────────────────────────
  *
  * Only [UiSettingKeys.persisted] travels: the theme selection, the user's own
- * themes, where the panes sit, and how wide they dragged the sidebar. Everything
- * else the shell writes — collapsed sidebar sections, hotkeys — stays in memory
- * and dies with the tab, deliberately: a key reaches this list when some part of
- * the app would be *wrong* without it across a reload, not merely different.
+ * themes, where the panes sit, how wide they dragged the sidebar, and the fonts
+ * they picked. Everything else the shell writes — collapsed sidebar sections,
+ * hotkeys, the shell's corner radius and density — stays in memory and dies with
+ * the tab, deliberately: a key reaches this list when some part of the app would
+ * be *wrong* without it across a reload, not merely different.
+ *
+ * The fonts key is the newest and the clearest case of that bar being met: the
+ * Appearance sidebar offers the choice unconditionally, every brand font seam
+ * this file's neighbours set is documented as yielding to it, and without the key
+ * the pick was undone by the very default it outranked, one reload later.
  *
  * That the *custom themes* key is on the list is not a bonus. The toolkit's
  * theme manager lets a user build and edit themes, and the selection names the
