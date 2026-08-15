@@ -1,0 +1,64 @@
+<!--
+  Lunicle's mark on a plate: the board itself, in miniature — three columns of
+  cards stacking 3-2-1 inside a frame, so the icon draws the thing it stands for.
+
+  This file is the ORIGINAL of the *plated* family. The web favicon, the raster
+  fallback and the add-to-home-screen icon are all generated from it by
+  scripts/make-icons.sh, so a change to the plate or the colours is a change here
+  and a re-run — never an edit to one of the generated copies.
+
+  The DRAWING, though, is not original here: every path below is copied from
+  `LOGO_SVG` in web/src/jsMain/kotlin/se/soderbjorn/lunicle/Icons.kt, which is the
+  mark the running app paints in its topbar and on the sign-in surface, and which
+  carries the construction notes for the geometry (why 3-2-1, why the cards are
+  round-capped strokes rather than filled rects). Two copies, because one is
+  Kotlin the bundle compiles and the other is an image file rsvg-convert reads;
+  if the mark changes, both move together.
+
+  ── The construction is the family's, not this icon's ──────────────────────
+
+  32-unit grid, an `rx="8"` plate, a 0.6-inset hairline border at 0.34 opacity,
+  and a 1.6 stroke with round caps and joins. LunaPin's icon is built exactly this
+  way and Lunamux's shares the plate; matching it is the point, so none of those
+  five numbers is free to drift for aesthetic reasons.
+
+  The mark sits in `translate(4 4)`, which drops Icons.kt's 24×24 grid into the
+  middle of this one untouched — its frame spans 2.5→21.5 and 3.5→20.5 there, so
+  it lands 6.5 in from the plate's left and right and 7.5 from its top and bottom.
+  Centred without moving a number. The only value that changes on the way in is
+  the stroke: 1.5 in the app, 1.6 here, because 1.6 is what the family draws at.
+
+  ── The colours are the app's own default theme, not picks ─────────────────
+
+  Lunicle boots into "Lunamux Classic Dark" (see LUNICLE_DEFAULT_DARK_THEME), and
+  every colour below is read out of that palette rather than chosen beside it:
+
+    plate     #08110c   the theme's `bg`, used as-is. LunaPin darkens its theme's
+                        bg to reach a plate, because Citron Dark's #19101a is too
+                        light to sit under a mark; Classic Dark's bg is already
+                        darker than the plate that produced, and the same factor
+                        applied here lands on #040906 — a black with no colour
+                        left in it. Same intent, one step fewer.
+    gradient  #a7f0c4 → #6ee7a0   the theme's `addText` (its mint lift) to its
+                        `accent`, which is the tint→base direction the family's
+                        gradients run.
+    border    #6ee7a0 at 0.34, the accent, exactly as LunaPin has it.
+
+  Fixed colours, deliberately: this is the product's identity, not one of the 84
+  palettes a reader can switch to, and a favicon that changed with the theme would
+  be a tab you could no longer find by its icon.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Lunicle">
+  <defs>
+    <linearGradient id="lnlMint" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a7f0c4"/>
+      <stop offset="1" stop-color="#6ee7a0"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="#08110c"/>
+  <rect x="0.6" y="0.6" width="30.8" height="30.8" rx="7.4" fill="none" stroke="#6ee7a0" stroke-opacity="0.34"/>
+  <g transform="translate(4 4)" fill="none" stroke="url(#lnlMint)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.5" y="3.5" width="19" height="17" rx="2.5"/>
+    <path d="M4.5 8 h4 M10 8 h4 M15.5 8 h4 M4.5 12 h4 M10 12 h4 M4.5 16 h4"/>
+  </g>
+</svg>

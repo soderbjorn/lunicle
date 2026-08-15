@@ -366,6 +366,24 @@ internal fun Route.brandRoutes(info: BrandInfo) {
 }
 
 /**
+ * The page's own icon links — the two `rel="icon"` declarations and the
+ * `rel="apple-touch-icon"` one — matched whole lines including their indentation
+ * and line break, so removing them leaves no blank line behind.
+ *
+ * Written against the shape index.html actually has rather than against HTML in
+ * general: one link per line, `rel` double-quoted. That is a fair assumption
+ * about a file in this repo and a bad one about markup at large, and it is why
+ * this is here rather than a general-purpose helper. A `rel="stylesheet"` line
+ * cannot match — the alternation is anchored to the two icon rels — so the
+ * styles.css link and the brand's fonts.css ordering are untouched.
+ *
+ * If the links in index.html are ever reformatted, [BrandRoutesTest] fails: it
+ * asserts against the real resource rather than a string of its own.
+ */
+private val DEFAULT_ICON_LINKS =
+    Regex("""^[ \t]*<link\b[^>]*\brel="(?:icon|apple-touch-icon)"[^>]*>\n?""", RegexOption.MULTILINE)
+
+/**
  * Splice branding into an `index.html` [template] at serve time.
  *
  * Three independent additions to `<head>`, each gated on the file actually being
@@ -378,9 +396,21 @@ internal fun Route.brandRoutes(info: BrandInfo) {
  *
  * Returns the template unchanged when [info] adds nothing, so the served bytes
  * match the default page exactly whenever the brand happens to be logo-only.
+ *
+ * The favicon case does one thing more than "add": it first REMOVES the page's
+ * own three icon links. Adding alone was enough when index.html declared no icon
+ * at all, and stopped being enough the moment it did — appending a `rel="icon"`
+ * png after an existing `rel="icon" type="image/svg+xml"` does not override it,
+ * because a browser picks the icon it likes best rather than the last one
+ * declared, and every current one likes the SVG best. A branded deployment would
+ * have got Lunicle's mark in the tab and its own only in the places the SVG is
+ * not used. So the brand's favicon replaces the default set rather than joining
+ * it, which is also what "brand" means everywhere else in this file.
  */
 internal fun brandedIndexHtml(template: String, info: BrandInfo): String {
     var html = template
+
+    if (info.hasFavicon) html = DEFAULT_ICON_LINKS.replace(html, "")
 
     if (info.title != null) {
         val replaced = Regex("<title>.*?</title>", RegexOption.DOT_MATCHES_ALL)

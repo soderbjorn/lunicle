@@ -120,6 +120,22 @@ private const val PEOPLE_SVG = """
  * and the stroke needs two numbers instead of five. It also means they take
  * `stroke-width` from the same place everything else here does, so the mark
  * thickens as one drawing rather than as a frame with fillings that stayed put.
+ *
+ * ── There is a second copy of this drawing, and it is not generated ─────────
+ *
+ * `icons/icon.svg` is this mark on a dark plate, and every icon file the web
+ * client ships — the favicon, its raster fallback, the add-to-home-screen icon —
+ * is generated from that by `scripts/make-icons.sh`. It is a HAND copy: the two
+ * shapes below are repeated there verbatim, because one of them has to be Kotlin
+ * the bundle compiles and the other an image file `rsvg-convert` can read, and no
+ * tool spans both. So changing the mark means changing it in both places and
+ * re-running that script. Nothing checks it; the copy says so at the top of
+ * itself, and this paragraph is the other half of that.
+ *
+ * What deliberately does NOT travel is the colour. Here the stroke is
+ * `currentColor` and follows whatever theme the reader picked; there it is a
+ * fixed mint gradient on a fixed plate, because a favicon is how somebody finds
+ * this tab among forty and it cannot move with a preference.
  */
 private const val LOGO_SVG = """
 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"

@@ -148,4 +148,58 @@ class BrandRoutesTest {
         File(dir, "logo.svg").writeText("<svg></svg>")
         assertEquals(template, brandedIndexHtml(template, loadBrandInfo(dir)))
     }
+
+    // ── The brand's favicon against the app's own ────────────────────────────
+
+    /**
+     * The real page, read off disk rather than typed out here.
+     *
+     * The two tests below are about a regex matching the icon links index.html
+     * actually declares, so a copy of those links in this file would assert that
+     * the regex matches the copy — which it would go on doing after somebody
+     * reformatted the page, single-quoted a `rel`, or added a fourth icon.
+     *
+     * Gradle runs a module's tests with the module directory as the working
+     * directory, which is what the `..` climbs out of.
+     */
+    private fun realIndexHtml(): String =
+        File("../web/src/jsMain/resources/index.html").also {
+            assertTrue(it.isFile, "index.html not found at ${it.absolutePath}")
+        }.readText()
+
+    @Test
+    fun `a brand favicon replaces the app's own icon links rather than joining them`() {
+        val html = brandedIndexHtml(realIndexHtml(), loadBrandInfo(brandDir()))
+
+        // The brand's is the only icon left. Not "is present" — a browser given
+        // both picks the SVG, so the default set surviving is the whole bug.
+        //
+        // Asserted on the `href`/`rel` rather than on the bare filenames: the
+        // page's comment about where those files come from names every one of
+        // them, stays in the served bytes, and would satisfy a `contains` check
+        // for "icon.svg" whether the link was still there or not.
+        assertTrue(html.contains("""<link rel="icon" href="/brand/favicon.png">"""), "brand favicon")
+        assertFalse(html.contains("""href="icon.svg""""), "the default SVG icon link survived")
+        assertFalse(html.contains("""href="favicon-32.png""""), "the default png icon link survived")
+        assertFalse(html.contains("""rel="apple-touch-icon""""), "the default apple-touch link survived")
+
+        // Only the icon links go. The stylesheet is a <link> too, and the brand's
+        // fonts.css still has to land after it.
+        assertTrue(html.contains("""<link type="text/css" rel="stylesheet" href="styles.css">"""), "styles.css")
+        assertTrue(
+            html.indexOf("styles.css") < html.indexOf("fonts.css"),
+            "brand fonts.css loads after styles.css so its --mono wins",
+        )
+    }
+
+    @Test
+    fun `a brand with no favicon leaves the app's own icon links alone`() {
+        val dir = Files.createTempDirectory("no-favicon").toFile()
+        File(dir, "logo.svg").writeText("<svg></svg>")
+        val page = realIndexHtml()
+
+        // Nothing to replace them with, so removing them would leave the tab with
+        // no icon at all — worse than the default and invisible until deployed.
+        assertEquals(page, brandedIndexHtml(page, loadBrandInfo(dir)))
+    }
 }

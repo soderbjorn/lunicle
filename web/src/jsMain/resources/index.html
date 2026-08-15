@@ -4,6 +4,37 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lunicle</title>
+    <!--
+        The tab icon, three declarations for one mark.
+
+        The SVG is the real one and every current browser prefers it: one file, sharp at
+        any size, and the only one of the three that is the drawing rather than a
+        photograph of it. `favicon-32.png` is there for the browsers that still ignore an
+        SVG icon link, and `apple-touch-icon.png` is what iOS Safari uses when somebody
+        adds the site to their home screen — square and opaque, because that platform
+        masks the icon itself and composites alpha onto black.
+
+        The apple-touch icon earns its place on the desktop too. This app declares no web
+        manifest, so when somebody uses Chrome's *Install as app* the largest icon the
+        page offers is what lands in their dock; without one Chrome draws a grey tile with
+        an "L" in it, which is what this block exists to stop.
+
+        All three are generated from icons/icon.svg by scripts/make-icons.sh, and are
+        served from this directory. A deployment that supplies its own `favicon.png` gets
+        that instead — BrandRoutes strips these three links before splicing its own in, so
+        the two never compete. See brandedIndexHtml.
+    -->
+    <link rel="icon" type="image/svg+xml" href="icon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <!--
+        The browser chrome around the tab, on the platforms that colour it: the icon's
+        plate, so a Lunicle tab is the same near-black green whether you are looking at
+        the icon or the strip it sits in. Not a theme token — the page has not booted when
+        this is read, and this is the app's identity rather than one of the 84 palettes a
+        reader can switch to.
+    -->
+    <meta name="theme-color" content="#08110c">
     <link type="text/css" rel="stylesheet" href="styles.css">
 </head>
 <body>
