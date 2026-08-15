@@ -957,6 +957,37 @@ class McpTools(private val deps: BoardDependencies) {
             ),
         ),
         McpTool(
+            name = "reorder_children",
+            description = "Put one epic's children in a given order, first to last. That order is " +
+                "what get_issue's `children` reports and what anything reading an epic as a plan of " +
+                "work — build it in this order, merge it in this order — goes by.\n\n" +
+                "A separate axis from the board's own ordering: reordering an epic does not " +
+                "reshuffle its children's cards in their columns, and dragging a card on the board " +
+                "does not change the epic's order. An epic is a sequence; a column is a queue.\n\n" +
+                "`child_ids` must name EXACTLY this issue's current children — all of them, each " +
+                "once, and none from anywhere else. Anything short of that is refused rather than " +
+                "partly applied, because omitting a child would otherwise read as detaching it, and " +
+                "detaching is `update_issue`'s `parent_id` doing it deliberately. So read the " +
+                "current children from get_issue and send them back rearranged.\n\n" +
+                "Attaching a child puts it at the BOTTOM, so an epic assembled child by child comes " +
+                "out in the order you happened to attach them — call this afterwards if that is not " +
+                "the order you meant. Needs edit rights on the epic.",
+            inputSchema = schema(
+                "issue_id" to integerProp("The epic whose children are being ordered."),
+                "child_ids" to buildJsonObject {
+                    put("type", "array")
+                    putJsonObject("items") { put("type", "integer") }
+                    put(
+                        "description",
+                        "Every child's `id` — from get_issue's `children`, not the FOO-123 key — " +
+                            "in the order you want them.",
+                    )
+                },
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
+                required = listOf("issue_id", "child_ids"),
+            ),
+        ),
+        McpTool(
             name = "add_comment",
             description = "Post a comment on an issue. Written and published in one call.",
             inputSchema = schema(
@@ -1740,6 +1771,7 @@ class McpTools(private val deps: BoardDependencies) {
         "watch_issue" -> watchIssue(user, arguments)
         "link_issues" -> linkIssues(user, arguments)
         "unlink_issues" -> unlinkIssues(user, arguments)
+        "reorder_children" -> reorderChildren(user, arguments)
         "list_vocabulary" -> listVocabulary(user, arguments)
         "add_vocabulary" -> addVocabulary(user, arguments)
         "rename_vocabulary" -> renameVocabulary(user, arguments)
@@ -2885,6 +2917,47 @@ class McpTools(private val deps: BoardDependencies) {
             if (farKey != null) "$here and $farKey are no longer linked."
             else "Removed link $relationId from $here.",
         )
+    }
+
+    /**
+     * Rank one epic's children.
+     *
+     * The MCP half of what the web app has had since LNL-55: the repository, the SQL and
+     * the HTTP route all existed, and only this surface was missing — so an agent could
+     * *read* an epic's order through `get_issue` and never set it. That gap is worse than
+     * it sounds, because attaching a child appends it to the bottom: an epic assembled
+     * through this server came out in whatever order its children happened to be attached,
+     * which is rarely the order they should be built in.
+     *
+     * [IssueRepository.reorderChildren] owns the rule — exactly this set, no repeats — and
+     * its refusals are not restated here, which is the point of going through it. The one
+     * thing worth adding is a sentence naming the keys rather than the ids, for
+     * [linkIssues]' reason: an answer a person can check beats "reordered 4 children".
+     */
+    private suspend fun reorderChildren(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val issue = readableIssue(user, arguments) ?: return noSuchIssue()
+        if (!deps.access.canEditIssue(user, issue)) {
+            return refuse("You cannot reorder this issue's children.")
+        }
+        // longs() refuses the whole argument when any element is unreadable rather than
+        // dropping that one — reorderVocabulary's reason, and it matters more here: a
+        // silently dropped id would look to the repository like an attempt to detach a
+        // child, and the refusal would describe a list the caller never sent.
+        val childIds = arguments.longs(CHILD_IDS_ARGUMENT)
+            ?: return refuse(
+                "`$CHILD_IDS_ARGUMENT` must be an array of issue ids, as numbers — every child of " +
+                    "this issue, in the order you want them. get_issue gives them.",
+            )
+
+        deps.issueRepository
+            .reorderChildren(issue, childIds)
+            .getOrElse { return refuse(it.message ?: "That order was refused.") }
+
+        // Read after the write, so the sentence describes the order that now exists.
+        // A loop rather than joinToString, because issueKey is itself suspend and a
+        // lambda is not a coroutine body.
+        val ordered = deps.issues.childrenOf(issue.id).map { issueKey(it) }
+        return ok("${issueKey(issue)}'s children are now in this order: ${ordered.joinToString(", ")}.")
     }
 
     /**
@@ -5559,6 +5632,9 @@ private const val KIND_ARGUMENT = "kind"
 private const val NAME_ARGUMENT = "name"
 private const val VOCABULARY_ID_ARGUMENT = "id"
 private const val IDS_ARGUMENT = "ids"
+
+/** `reorder_children`'s list, for [IDS_ARGUMENT]'s reason and not shared with it: one names vocabulary rows, the other issues. */
+private const val CHILD_IDS_ARGUMENT = "child_ids"
 private const val INVERSE_NAME_ARGUMENT = "inverse_name"
 private const val MARKS_BLOCKED_ARGUMENT = "marks_blocked"
 private const val REQUIRES_RESOLUTION_ARGUMENT = "requires_resolution"
@@ -5713,7 +5789,8 @@ private const val PARENT_PROP_DESCRIPTION =
         "the SAME project, and epics are one level deep: you cannot parent an issue that already " +
         "has a parent, and you cannot give a parent to an issue that already has children of its " +
         "own — you will be refused with the reason. get_issue reports an issue's `parent` and its " +
-        "`children`."
+        "`children`, and reports the children IN ORDER — a child attached here goes to the BOTTOM " +
+        "of that order, and reorder_children is what rearranges them afterwards."
 
 /**
  * The half of `assignee_is_agent` both issue tools share (LNL-215).
