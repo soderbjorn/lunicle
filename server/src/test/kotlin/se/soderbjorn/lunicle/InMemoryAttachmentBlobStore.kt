@@ -28,6 +28,10 @@ class InMemoryAttachmentBlobStore : AttachmentBlobStore {
 
     override suspend fun sweepOrphans(known: Set<String>): Int {
         val doomed = objects.keys.filter { it !in known }
+        // The same floor the two real stores apply (LUS-25). A double that would
+        // happily empty itself is a double that cannot hold the contract asserting
+        // the real ones will not — see OrphanSweepGuard.
+        if (OrphanSweepGuard.refusal(total = objects.size, orphans = doomed.size) != null) return 0
         doomed.forEach { objects.remove(it) }
         return doomed.size
     }

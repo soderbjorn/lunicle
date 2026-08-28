@@ -18,12 +18,16 @@
  */
 package se.soderbjorn.lunicle
 
+import org.slf4j.LoggerFactory
 import se.soderbjorn.lunicle.clientserver.MAX_ATTACHMENT_BYTES
 import se.soderbjorn.lunicle.clientserver.formatByteSize
 import se.soderbjorn.lunicle.clientserver.normaliseMimeType
 import java.io.File
 import java.security.SecureRandom
 import java.util.Base64
+
+/** For the one thing here worth a line in a boot log: a sweep that refused to run. */
+private val logger = LoggerFactory.getLogger("AttachmentRepository")
 
 /**
  * The shape a `Content-Type` has to have to be written to a row.
@@ -241,8 +245,36 @@ class AttachmentRepository(
      * [deleteBlob], which works on either byte store. See LNL-145.
      */
     fun fileFor(storageKey: String): File =
-        (blobStore as? DiskAttachmentBlobStore)?.fileFor(storageKey)
+        diskFileFor(storageKey)
             ?: error("fileFor is disk-only; the GCS backend serves bytes through AttachmentBlobStore.")
+
+    /**
+     * The on-disk file for [storageKey], or **null when the store is not disk-backed**
+     * (LUS-24).
+     *
+     * The nullable twin of [fileFor], and the one the download route asks. [fileFor]
+     * throws, which is right for a caller that has no other path and wrong for a
+     * caller that does: the route used to take the zero-copy branch
+     * unconditionally, so with `LUNICLE_DB_BACKEND=firestore` — where the graph
+     * wires exactly the store that is not disk-backed — every attachment download
+     * and inline view threw after the access check and answered a bare 500. Uploads
+     * succeeded and were billed; downloads all failed.
+     *
+     * Null is not a failure here, it is "ask [bytesFor] instead". The zero-copy path
+     * stays exactly what it was on disk — see the interface preamble on why a 10 MB
+     * screenshot must not go through the heap — and the other backend pays the heap
+     * it has no way to avoid.
+     */
+    fun diskFileFor(storageKey: String): File? =
+        (blobStore as? DiskAttachmentBlobStore)?.fileFor(storageKey)
+
+    /**
+     * The bytes under [storageKey], or null if the store has none.
+     *
+     * What the download route serves when [diskFileFor] answers null. Straight
+     * through the seam, so a third backend needs nothing here.
+     */
+    suspend fun bytesFor(storageKey: String): ByteArray? = blobStore.fetch(storageKey)
 
     /**
      * Unlink one doomed file, named by its storage key alone — the cascade-delete
@@ -286,9 +318,35 @@ class AttachmentRepository(
      * SQLite has no way to reach the filesystem), and the files behind drafts
      * somebody abandoned by closing the tab.
      *
+     * ── The floor (LUS-25) ──────────────────────────────────────────────────
+     *
+     * An empty key set is refused rather than acted on. Neither blob store checked
+     * the metadata store's answer for plausibility, so an empty or badly truncated
+     * set against a full volume meant every attachment on the instance deleted at
+     * startup, one INFO line per file.
+     *
+     * Here rather than in the stores because it needs no listing and because there
+     * is one of it. The second guard — a cap on what fraction of what it finds a
+     * sweep may take — has to be inside each store, where the total is known. See
+     * [OrphanSweepGuard].
+     *
+     * Skipping costs nothing when the store really is empty as well: a sweep with
+     * nothing to compare against would have deleted nothing either way.
+     *
      * @return how many files were removed, for the log.
      */
-    suspend fun sweepOrphans(): Int = blobStore.sweepOrphans(attachments.allStorageKeys())
+    suspend fun sweepOrphans(): Int {
+        val known = attachments.allStorageKeys()
+        if (known.isEmpty()) {
+            logger.warn(
+                "Attachment sweep skipped: the metadata store lists no attachments at all. If that " +
+                    "is wrong — an empty or fresh database pointed at a full volume or bucket — " +
+                    "sweeping would have deleted every stored file.",
+            )
+            return 0
+        }
+        return blobStore.sweepOrphans(known)
+    }
 
     /**
      * Check the size, and reduce the caller's type claim to something storable.

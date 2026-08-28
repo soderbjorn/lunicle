@@ -94,6 +94,42 @@ interface AttachmentScopeResolver {
     suspend fun forMessage(messageId: Long): AttachmentScope
 }
 
+/**
+ * An ancestor a scope needs is not there, so the upload must fail (LUS-26).
+ *
+ * ── Why this is a throw and not another null field ──────────────────────────
+ *
+ * A null field in [AttachmentScope] is a real answer: a message-owned attachment
+ * reaches no project, and an issue-owned one reaches no forum. The resolver used
+ * to write a null project id **for a lookup miss as well**, which makes those two
+ * cases indistinguishable in the stored document — and this file's documentation
+ * anticipated exactly that failure mode while the resolver took the lenient branch
+ * anyway.
+ *
+ * What it costs is not confidentiality. The cascade reads are single-field
+ * equalities on the project id, so a document written with a null one **escapes
+ * the project cascade entirely**: after the project is deleted, the metadata row
+ * and the stored object both survive. The owner chain is gone, so the URL 404s and
+ * nobody can read it — the problem is retention and erasure. Bytes somebody asked
+ * to have deleted persist, and the orphan sweep will not collect them either,
+ * because the row still exists and its key is therefore still "known".
+ *
+ * Failing the upload is the safe direction and costs almost nothing: the cleanup
+ * path that unlinks the blob on a failed write already exists, so the caller sees
+ * a write that did not happen rather than one that half did. In practice this
+ * fires only on a genuine race — the issue deleted between the ticket being minted
+ * and the bytes arriving — where refusing is also the right answer.
+ *
+ * ── What is deliberately NOT here ───────────────────────────────────────────
+ *
+ * A reconciler for attachment documents whose owner is *already* gone. This stops
+ * new ones; existing ones need a pass that enumerates every attachment and checks
+ * each owner, which is a new O(attachments) boot scan on a backend where that is a
+ * billed read per document. Worth doing and worth deciding on its own — see the
+ * ticket, where it is recorded rather than left implied.
+ */
+class AttachmentScopeMissing(message: String) : IllegalStateException(message)
+
 class FirestoreAttachmentStore(
     private val firestore: Firestore,
     private val scopes: AttachmentScopeResolver,

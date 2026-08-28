@@ -48,14 +48,20 @@ fun Route.notificationRoutes(deps: BoardDependencies) {
     /**
      * The bell's five-minute poll: the caller's unread count alone.
      *
-     * One indexed count, never the list — that is the whole reason this is its own
-     * route. Zero for a signed-out caller or a null store.
+     * It used to be one indexed count, which was the whole reason this is its own
+     * route, and it is not any more (LUS-14). The count has to be computed the same
+     * way the list is — narrowed by present access — because a badge that counts
+     * rows the panel withholds is a badge nobody can clear.
+     *
+     * The cost is bounded by one person's own notifications, which is a small number
+     * by construction: this reads nothing shared and scans nothing but rows that
+     * already belong to the caller.
+     *
+     * Zero for a signed-out caller or a null store.
      */
     get(ApiRoutes.NOTIFICATIONS_UNREAD_COUNT) {
-        val user = call.caller(deps)
-        val store = deps.notificationStore
-        val count = if (user == null || store == null) 0 else store.unreadCount(user.id)
-        call.respond(NotificationCountState(unreadCount = count))
+        val state = deps.notificationListFor(call.caller(deps))
+        call.respond(NotificationCountState(unreadCount = state.unreadCount))
     }
 
     /** The panel's list: the caller's notifications, newest first, with the count. */
@@ -123,17 +129,54 @@ private suspend fun io.ktor.server.application.ApplicationCall.requireCaller(dep
 }
 
 /**
- * The caller's whole notification list and unread count, or an empty state for a
- * signed-out caller or a null store.
+ * The caller's notification list and unread count, narrowed to what they may
+ * **currently** read, or an empty state for a signed-out caller or a null store.
  *
- * The one place the two reads are paired, so every response — the list route and
- * all four writes' refreshed answer — agrees on what "the current state" is.
+ * The one place the two are computed, so every response — the count route, the list
+ * route and all four writes' refreshed answer — agrees on what "the current state"
+ * is. That was already true; what changed is what the state means.
+ *
+ * ── Why "is it mine" was not enough (LUS-14) ────────────────────────────────
+ *
+ * A notification row stores the issue or post title **verbatim**, and this file's
+ * preamble says every route here runs no project gate at all: a notification
+ * belongs to one person, so "may I see this" was answered by "is it mine".
+ *
+ * That reasoning is sound about *ownership* and silent about *time*. Revoking
+ * somebody's rung writes to the roles table and nothing else, so a former
+ * Contributor kept a permanent, indexed list of titles from a board they can no
+ * longer open. Clicking through correctly 404s — the leak was never the content, it
+ * was the metadata. And every other instance-wide read in this codebase narrows by
+ * present access: the discussion-unread badge next door re-runs its read check at
+ * request time and its comment names this as a lesson already learned once.
+ *
+ * ── Where the rule lives ────────────────────────────────────────────────────
+ *
+ * In Kotlin, at the route, over `canReadProject` — so there is one copy of it, and
+ * it is the same copy `discussionUnreadFor` and `messageableUsers` use. A SQL
+ * predicate would be a second implementation of a rule that already has ladders,
+ * audiences and an instance role in it.
+ *
+ * A notification with no project — a private message — is nobody's project to gate,
+ * and the conversation it points at is already scoped to its participants. Those
+ * pass through untouched.
  */
 private suspend fun BoardDependencies.notificationListFor(user: UserRecord?): NotificationListState {
     val store = notificationStore
     if (user == null || store == null) return NotificationListState()
+
+    val items = store.listForUser(user.id)
+    // Resolved once for the whole list rather than per row: a person with fifty
+    // notifications across four boards should ask the ladder four times, not fifty.
+    val readable = items.mapNotNull { it.projectId }.toSet()
+        .filter { id -> projects.findById(id)?.let { access.canReadProject(user, it) } == true }
+        .toSet()
+    val visible = items.filter { it.projectId == null || it.projectId in readable }
+
     return NotificationListState(
-        items = store.listForUser(user.id),
-        unreadCount = store.unreadCount(user.id),
+        items = visible,
+        // Counted off the same list, not asked of the store again. Two questions
+        // answered by two different rules is exactly the badge-nobody-can-clear bug.
+        unreadCount = visible.count { !it.isRead },
     )
 }

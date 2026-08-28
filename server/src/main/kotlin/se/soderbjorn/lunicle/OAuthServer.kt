@@ -48,8 +48,10 @@
 package se.soderbjorn.lunicle
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.response.header
 import io.ktor.server.request.receiveParameters
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondRedirect
@@ -76,6 +78,20 @@ private val logger = LoggerFactory.getLogger("OAuthServer")
 
 /** Where the MCP endpoint lives. The `resource` every token is minted for. */
 const val MCP_PATH = "/mcp"
+
+/** How many callbacks one registration may claim. See [registrationRoute]. */
+private const val MAX_REDIRECT_URIS = 8
+
+/** How long one of them may be. See [registrationRoute]. */
+private const val MAX_REDIRECT_URI_LENGTH = 2048
+
+/**
+ * URI schemes that execute, and are therefore never a callback (LUS-13).
+ *
+ * Named rather than inlined because the list is the security claim: see
+ * [isAllowedRedirectUri] for why this is a deny-list and what stands behind it.
+ */
+private val DANGEROUS_URI_SCHEMES = setOf("javascript", "data", "vbscript")
 
 /** Everything the authorization server, the MCP transport and the Connections section need. */
 class McpDependencies(
@@ -148,6 +164,51 @@ private suspend fun ApplicationCall.respondJson(status: HttpStatusCode, body: Js
     respondText(body.toString(), ContentType.Application.Json, status)
 }
 
+/**
+ * The three server-rendered pages' own `Content-Security-Policy`, replacing the
+ * application's (LUS-27, LUS-21).
+ *
+ * [DefaultHeaders] skips a header the handler already set, so setting this here is
+ * a wholesale replacement rather than a merge — the same mechanism the attachment
+ * view uses, and the reason both can have a policy that suits them.
+ *
+ * Two things differ from the app's policy, and both matter.
+ *
+ * **`frame-ancestors 'none'`, always.** The global policy permits whatever
+ * embedder a deployment configured, on *every* route — and the session cookie is
+ * `SameSite=None` by design so that the tracker can be framed by a marketing site.
+ * Together that means a deployment with an embedder configured could have its
+ * consent page framed by that origin, and a compromise of it becomes a clickjack
+ * of the Approve button: the one boundary this entire design rests on. There is no
+ * legitimate reason to embed a consent page, so it is `'none'` regardless of
+ * configuration rather than inheriting a decision made about the app.
+ *
+ * **Inline script and style are allowed**, because these pages are hand-written
+ * HTML with both, and they are that way deliberately: they render before any
+ * bundle has loaded, to somebody mid-flow between two applications, and a page
+ * whose stylesheet 404s at that moment reads as "this is broken, do not approve".
+ * The consent page itself carries no script at all — only the sign-in page does,
+ * for the two providers — and every value interpolated into either is escaped. See
+ * [String.escapeHtml] and [String.toJsStringLiteral].
+ */
+private const val OAUTH_PAGE_CSP: String =
+    "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline' https://accounts.google.com; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data:; " +
+        "connect-src 'self' https://accounts.google.com; " +
+        "frame-src https://accounts.google.com; " +
+        "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+/** Respond with one of this file's pages, under [OAUTH_PAGE_CSP]. */
+private suspend fun ApplicationCall.respondPage(html: String, status: HttpStatusCode = HttpStatusCode.OK) {
+    response.header(CONTENT_SECURITY_POLICY, OAUTH_PAGE_CSP)
+    respondText(html, ContentType.Text.Html, status)
+}
+
+/** Ktor's `HttpHeaders` has no constant for this one. */
+private const val CONTENT_SECURITY_POLICY = "Content-Security-Policy"
+
 /** An OAuth error body, as RFC 6749 shapes it. */
 private fun oauthError(error: String, description: String? = null): JsonObject = buildJsonObject {
     put("error", error)
@@ -180,6 +241,24 @@ private fun String.escapeHtml(): String =
  * authorization code across the internet in cleartext.
  */
 internal fun isAllowedRedirectUri(uri: String): Boolean = when {
+    // ── Dangerous schemes, denied by name (LUS-13) ────────────────────────────
+    //
+    // The custom-app-scheme branch below admits anything that parses as a scheme
+    // and is not plain http, which included `javascript:`, `data:` and `vbscript:`.
+    //
+    // There is no XSS today, and being precise about why matters: the value only
+    // ever reaches a `Location` header, and no browser executes a `javascript:` URL
+    // it is redirected to. But the value is **stored**, and it is now interpolated
+    // into the consent card as the destination the reader is asked to check
+    // (LUS-17) — so one change from a redirect to a rendered link turns a
+    // registration into stored XSS on a session-carrying origin.
+    //
+    // A deny-list rather than an allow-list of app schemes, and that is the weaker
+    // of the two: an allow-list cannot be written here, because the whole point of
+    // the branch is that a client Lunicle has never heard of registers `cursor://`
+    // or `claude://` and works. So this names the three that execute, and the
+    // consent card's escaping is what stands behind it.
+    uri.substringBefore(':').lowercase().trim() in DANGEROUS_URI_SCHEMES -> false
     uri.startsWith("https://") -> true
     // Loopback only. Note the prefix check is deliberately on the scheme+host and
     // not a `contains`: "http://localhost.evil.com" must not pass, and it does not
@@ -200,11 +279,63 @@ internal fun isAllowedRedirectUri(uri: String): Boolean = when {
  *   this human?" — which is the half that already worked.
  */
 fun Route.oauthRoutes(deps: McpDependencies) {
+    // ── Every route below is unauthenticated, so every route below is metered ──
+    //
+    // Rate limiting existed in this server and covered two endpoints out of the
+    // whole of it, neither of them here (LUS-31). Everything in this file is
+    // reachable by anyone on the internet with no credential of any kind, which is
+    // the design — see the preamble — and the counterweight it was missing.
+    //
+    // Two limiters rather than one, because registration and the flow are not the
+    // same kind of traffic and one limit for both would have to be the looser.
+    // Both are per route-installation, which is per process: these routes are
+    // mounted once, at startup.
+    val limits = OAuthRateLimits()
     discoveryRoutes()
-    registrationRoute(deps)
-    authorizeRoutes(deps)
-    tokenRoute(deps)
-    revocationRoute(deps)
+    registrationRoute(deps, limits)
+    authorizeRoutes(deps, limits)
+    tokenRoute(deps, limits)
+    revocationRoute(deps, limits)
+}
+
+/**
+ * The limiters in front of the authorization server.
+ *
+ * @property registration how often one client identity may create client rows.
+ *   Tight, because this is the only endpoint on the server where an anonymous
+ *   caller writes a row: registration is unauthenticated by design (RFC 7591) and
+ *   the disk cost was bounded only by a startup sweep. Five in fifteen minutes is
+ *   past anything a real agent does — a client registers once and reuses the id —
+ *   and worth nothing to somebody filling a volume.
+ * @property flow how often one client identity may drive authorize, token and
+ *   revoke. Much looser, because these are the endpoints a working agent actually
+ *   uses: a refresh every so often, plus a handful of round trips per connection,
+ *   and several people can share one NAT'd address. Sixty in fifteen minutes
+ *   leaves that comfortably alone while capping a loop.
+ *
+ *   Credential guessing is not what this is for — a thirty-two-byte secret is not
+ *   guessable at sixty attempts a quarter of an hour or at any other rate. It is
+ *   for the O(table) work each call costs and for the outbound consequences.
+ */
+private class OAuthRateLimits(
+    val registration: RateLimiter = RateLimiter(limit = 5, windowMillis = 15L * 60 * 1000),
+    val flow: RateLimiter = RateLimiter(limit = 60, windowMillis = 15L * 60 * 1000),
+)
+
+/**
+ * Spend one from [limiter] for this call's client, or answer `429` and return false.
+ *
+ * An OAuth error body rather than [respondRateLimited]'s plain text, because every
+ * other refusal from these endpoints is one and a client that parses JSON should
+ * not meet a sentence. `Retry-After` rides along either way.
+ */
+private suspend fun ApplicationCall.withinOAuthLimit(limiter: RateLimiter, key: String): Boolean {
+    val decision = limiter.tryAcquire("$key:${clientIdentity()}")
+    if (decision !is RateLimitDecision.Refused) return true
+    response.header(HttpHeaders.RetryAfter, decision.retryAfterSeconds.toString())
+    logger.info("MCP: rate limited ${request.local.uri} — retry after ${decision.retryAfterSeconds}s")
+    respondJson(HttpStatusCode.TooManyRequests, oauthError("slow_down", "Too many requests. Try again shortly."))
+    return false
 }
 
 // ── Discovery (RFC 9728 / RFC 8414) ──────────────────────────────────────────
@@ -285,8 +416,9 @@ private fun Route.discoveryRoutes() {
  * retained for compatibility. It remains the path every shipping client actually
  * takes, which is the only thing that matters here.
  */
-private fun Route.registrationRoute(deps: McpDependencies) {
+private fun Route.registrationRoute(deps: McpDependencies, limits: OAuthRateLimits) {
     post("/oauth/register") {
+        if (!call.withinOAuthLimit(limits.registration, "oauth-register")) return@post
         val root = runCatching { Json.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
         if (root == null) {
             call.respondJson(HttpStatusCode.BadRequest, oauthError("invalid_client_metadata"))
@@ -306,6 +438,32 @@ private fun Route.registrationRoute(deps: McpDependencies) {
                 oauthError(
                     "invalid_redirect_uri",
                     "redirect_uris must be https, loopback http, or a custom app scheme.",
+                ),
+            )
+            return@post
+        }
+        // Bounded, unlike the client name beside it, which was already capped
+        // (LUS-31). The array was not: an anonymous caller could register a client
+        // carrying megabytes of callbacks, stored in one row and swept only at
+        // startup — and every authorize on that client then walks the list.
+        //
+        // Refused rather than truncated, which is the opposite of what the name
+        // does one block down, and deliberately: a name is decoration and losing
+        // some of it breaks nothing, while silently dropping a callback would
+        // surface as a redirect_uri mismatch later, far from the cause. Same
+        // reasoning as the whole-request refusal directly above.
+        //
+        // Eight and two kilobytes are both far past any real client — an agent
+        // registers one loopback callback, occasionally two while a port is
+        // uncertain — and both are small enough that the worst a caller can store
+        // per registration is measured in kilobytes rather than in whatever they
+        // felt like sending.
+        if (redirectUris.size > MAX_REDIRECT_URIS || redirectUris.any { it.length > MAX_REDIRECT_URI_LENGTH }) {
+            call.respondJson(
+                HttpStatusCode.BadRequest,
+                oauthError(
+                    "invalid_redirect_uri",
+                    "At most $MAX_REDIRECT_URIS redirect_uris, each under $MAX_REDIRECT_URI_LENGTH characters.",
                 ),
             )
             return@post
@@ -355,7 +513,7 @@ private fun redirectWith(redirectUri: String, query: String, clientState: String
     return "$redirectUri$separator$query$state"
 }
 
-private fun Route.authorizeRoutes(deps: McpDependencies) {
+private fun Route.authorizeRoutes(deps: McpDependencies, limits: OAuthRateLimits) {
     /**
      * Where the agent sends the user's browser.
      *
@@ -377,6 +535,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
      * better experience, and needs no new provider configuration.
      */
     get("/oauth/authorize") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@get
         val params = call.request.queryParameters
         val clientId = params["client_id"]
         val redirectUri = params["redirect_uri"]
@@ -392,14 +551,13 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
         // this client registered may an error be sent there.
         val client = clientId?.let { deps.clients.find(it) }
         if (client == null || redirectUri == null || !deps.clients.isRegisteredRedirectUri(client.clientId, redirectUri)) {
-            call.respondText(
+            call.respondPage(
                 errorPage(
                     "That link is not valid",
                     "The application did not identify itself correctly, so Lunicle will not " +
                         "continue. Nothing has been shared. Try connecting again from the app " +
                         "that sent you here.",
                 ),
-                ContentType.Text.Html,
                 HttpStatusCode.BadRequest,
             )
             return@get
@@ -427,7 +585,7 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
             // once the cookie lands, so the whole request replays and arrives here
             // with a user. A row created now would be a row abandoned by everyone
             // who wanders off at the provider's password prompt.
-            call.respondText(signInPage(deps.config, client.clientName), ContentType.Text.Html)
+            call.respondPage(signInPage(deps.config, client.clientName))
             return@get
         }
 
@@ -459,9 +617,8 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
                         "agent access. Open Lunicle, click your name, and switch on \"Let AI agents " +
                         "act on your behalf\" — then connect again."
             }
-            call.respondText(
+            call.respondPage(
                 errorPage(title, message),
-                ContentType.Text.Html,
                 HttpStatusCode.Forbidden,
             )
             return@get
@@ -473,14 +630,37 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
             codeChallenge = codeChallenge,
             // RFC 8707. Defaulted rather than required: not every client sends
             // one, and the only resource this server issues for is its own /mcp.
-            resource = params["resource"]?.takeIf { it.isNotBlank() } ?: call.mcpResource(),
+            //
+            // The caller's value is no longer stored (LUS-21). It was accepted
+            // verbatim, written onto the login state and from there onto every token,
+            // and **never validated against anything** — this server is both the
+            // authorization server and the resource server, and a token is looked up
+            // in its own table, so the field decided nothing. An attacker-influenced
+            // string that decides nothing is fine right up until somebody reads it
+            // as though it means something, which is exactly the shape of bug worth
+            // removing before it exists.
+            //
+            // So: the one resource this server can issue for, always. A client that
+            // sends a different one is not refused — RFC 8707 makes the parameter a
+            // hint and refusing would break clients that send their own URL with a
+            // trailing slash — it simply does not get to name it.
+            resource = call.mcpResource(),
             clientState = clientState,
             scope = MCP_SCOPE,
             userId = user.id,
         )
-        call.respondText(
-            consentPage(loginState, client.clientName, user.resolvedName),
-            ContentType.Text.Html,
+        // "Have you approved this application before?" — one indexed read of the
+        // grants this user already holds. See consentPage for why it is on the
+        // card at all.
+        val isFirstApproval = deps.tokens.listGrants(user.id).none { it.clientId == client.clientId }
+        call.respondPage(
+            consentPage(
+                loginState = loginState,
+                clientName = client.clientName,
+                userName = user.resolvedName,
+                redirectUri = redirectUri,
+                isFirstApproval = isFirstApproval,
+            ),
         )
     }
 
@@ -490,15 +670,15 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
      * The one click this entire file exists to collect.
      */
     post("/oauth/consent") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@post
         val form = runCatching { call.receiveParameters() }.getOrNull()
         val state = deps.loginStates.find(form?.get("login_state"))
         if (state == null) {
-            call.respondText(
+            call.respondPage(
                 errorPage(
                     "That took too long",
                     "This authorization has expired. Start again from the app that sent you here.",
                 ),
-                ContentType.Text.Html,
                 HttpStatusCode.BadRequest,
             )
             return@post
@@ -513,17 +693,62 @@ private fun Route.authorizeRoutes(deps: McpDependencies) {
         // signed out and back in as somebody else between the page and the click
         // cannot mint a code naming the identity the page showed, which would be
         // this flow authorizing an account its owner never saw named.
-        val current = deps.sessions.lookup(call.request.cookies[SESSION_COOKIE])
+        val sessionId = call.request.cookies[SESSION_COOKIE]
+        val current = deps.sessions.lookup(sessionId)
         if (current == null || current.id != state.userId) {
             deps.loginStates.delete(state.id)
-            call.respondText(
+            call.respondPage(
                 errorPage(
                     "You are signed in as somebody else",
                     "Your Lunicle session changed while this page was open, so this authorization " +
                         "has been cancelled. Start again from the app that sent you here.",
                 ),
-                ContentType.Text.Html,
                 HttpStatusCode.BadRequest,
+            )
+            return@post
+        }
+
+        // ── A probe session may not consent (LUS-2) ──────────────────────────
+        //
+        // The deliberate exception to the fidelity claim, and the only one. See
+        // ProbeGrants' preamble, where it is written down beside the claim it
+        // qualifies: everything downstream of a ProviderIdentity is the function
+        // the real paths call — except this click.
+        //
+        // The reason is that consent is by definition a statement somebody makes
+        // about *their own* identity, and a probe session is exactly the state in
+        // which no such statement can be made: the page said the worn account's
+        // name and the human clicking is the owner. Approving would mint an access
+        // token plus a thirty-day rotating refresh token bound to the worn user —
+        // a credential that survives the probe, the boot sweep and the feature
+        // switch being turned off, which is the one thing the in-memory-grant
+        // design exists to prevent.
+        //
+        // Refused HERE and not at `get("/oauth/authorize")`, which renders the
+        // page. A probing owner may still drive authorize and watch the client
+        // resolve, PKCE and redirect validation pass, canUseMcp evaluate and the
+        // card render — the whole diagnostic value of wearing somebody. Only the
+        // irreversible click is stopped.
+        //
+        // An explicit page rather than falling through to the in-page sign-in: the
+        // caller is not signed out, they are wearing somebody, and offering them a
+        // sign-in form would invite a confusing recovery.
+        //
+        // Asked unconditionally, without consulting `impersonation.isEnabled`. It
+        // is one indexed read on a cold endpoint, and a gate that has just been
+        // turned off is precisely the window in which a live probe session must
+        // still be refused.
+        if (deps.sessions.probeIdFor(sessionId) != null) {
+            deps.loginStates.delete(state.id)
+            logger.warn("MCP: refused consent from a probe session for client ${state.clientId}")
+            call.respondPage(
+                errorPage(
+                    "You cannot approve this while impersonating",
+                    "This browser is signed in as somebody else through owner impersonation, and " +
+                        "approving an application is something only that person can do for " +
+                        "themselves. Stop impersonating, sign in as yourself, and connect again.",
+                ),
+                HttpStatusCode.Forbidden,
             )
             return@post
         }
@@ -576,7 +801,7 @@ private fun tokenResponse(tokens: IssuedTokens): JsonObject = buildJsonObject {
     put("scope", tokens.scope)
 }
 
-private fun Route.tokenRoute(deps: McpDependencies) {
+private fun Route.tokenRoute(deps: McpDependencies, limits: OAuthRateLimits) {
     /**
      * Trade a code — or a refresh token — for tokens.
      *
@@ -586,6 +811,7 @@ private fun Route.tokenRoute(deps: McpDependencies) {
      * probing codes.
      */
     post("/oauth/token") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@post
         val form = runCatching { call.receiveParameters() }.getOrNull()
         if (form == null) {
             call.respondJson(HttpStatusCode.BadRequest, oauthError("invalid_request"))
@@ -680,7 +906,7 @@ private fun Route.tokenRoute(deps: McpDependencies) {
 
 // ── Revocation (RFC 7009) ────────────────────────────────────────────────────
 
-private fun Route.revocationRoute(deps: McpDependencies) {
+private fun Route.revocationRoute(deps: McpDependencies, limits: OAuthRateLimits) {
     /**
      * Give a token back.
      *
@@ -689,6 +915,7 @@ private fun Route.revocationRoute(deps: McpDependencies) {
      * token it recognised would be a free oracle for testing stolen values.
      */
     post("/oauth/revoke") {
+        if (!call.withinOAuthLimit(limits.flow, "oauth-flow")) return@post
         val token = runCatching { call.receiveParameters() }.getOrNull()?.get("token")
         if (token != null) deps.tokens.revokeByToken(token)
         call.respondJson(HttpStatusCode.OK, buildJsonObject { put("status", "ok") })
@@ -735,6 +962,13 @@ private val PAGE_STYLE = """
     .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #1e2c3a; }
     .hint { font-size: 13px; color: #5c7183; }
     .error { color: #ff8080; min-height: 1.2em; }
+    /* LUS-17's identity lines on the consent card. Smaller than the sentence
+       naming the application, because they are what you check rather than what
+       you read — and the warning is the one thing here allowed to be loud. */
+    .detail { font-size: 13px; color: #5c7183; margin-bottom: 6px; }
+    .host { color: #cfe0ee; font-weight: 600; word-break: break-all; }
+    .warn { font-size: 13px; color: #ffbf80; background: #23180c; border: 1px solid #4a3417;
+        border-radius: 8px; padding: 10px 12px; margin-top: 12px; }
 """.trimIndent()
 
 /** Wrap a card in a document. */
@@ -764,36 +998,136 @@ private fun errorPage(title: String, message: String): String = page(
 )
 
 /**
+ * Where a redirect URI would actually send the code, said in as few characters as
+ * a person can check at a glance.
+ *
+ * @property display scheme and authority, path dropped. The path is noise on a
+ *   consent card — what decides whether this is the application you started is the
+ *   host, and a long callback path pushes it off the end of the line.
+ * @property isRemote the code would leave this machine: an `https` callback to a
+ *   host somewhere on the internet.
+ *
+ *   Loopback is not remote, obviously. Neither is a **custom app scheme** —
+ *   `cursor://`, `claude://` — which the operating system hands to a locally
+ *   installed application and which cannot carry anything to a server. Warning on
+ *   those would put a warning on half the legitimate desktop clients, and a
+ *   warning that fires on the ordinary case is one people learn to click past.
+ */
+private data class RedirectSummary(val display: String, val isRemote: Boolean)
+
+/**
+ * Summarise an **already validated** redirect URI for the consent card.
+ *
+ * Parsed by hand rather than through [java.net.URI], which throws on some of the
+ * custom app schemes real clients register and which would turn a display detail
+ * into a failed authorization. Everything here has already passed
+ * [isAllowedRedirectUri] and exact-match registration, so this is presentation
+ * only — it decides nothing.
+ *
+ * Userinfo is stripped before the host is read. `https://localhost@evil.example/cb`
+ * has host `evil.example`, and a card that showed the part before the `@` would be
+ * showing the one thing an attacker would put there.
+ */
+private fun summariseRedirect(redirectUri: String): RedirectSummary {
+    if ("://" !in redirectUri) return RedirectSummary(redirectUri, isRemote = false)
+    val scheme = redirectUri.substringBefore("://").lowercase()
+    val authority = redirectUri.substringAfter("://")
+        .substringBefore('/').substringBefore('?').substringBefore('#')
+        .substringAfterLast('@')
+    val host = authority.substringBefore(':').lowercase()
+    val isLoopback = host == "localhost" || host == "127.0.0.1" || host == "[::1]"
+    // A scheme that is not http(s) is an app on this machine — see RedirectSummary.
+    // Its authority is usually empty or a made-up word, so the scheme alone is the
+    // honest thing to show.
+    if (scheme != "http" && scheme != "https") return RedirectSummary("$scheme://", isRemote = false)
+    return RedirectSummary("$scheme://$authority", isRemote = !isLoopback)
+}
+
+/**
  * The consent page. **The security boundary of this whole design.**
  *
  * Worth being honest about in review: the toggle in the Connections section is an
  * affordance and a comfort. This page is what actually stands between an agent
  * and someone's account, and it is the only moment a human is asked.
  *
- * It names three things, and each is load-bearing:
+ * It names five things, and each is load-bearing:
  *  - **which application** is asking, escaped, because the name is a string a
  *    stranger chose (see [String.escapeHtml]);
  *  - **who they would act as**, because an impersonating admin or a second
  *    account is exactly the confusion this catches;
  *  - **what it will be able to do**, in the only words that are true — the same
  *    as you. There is no scope to describe because there are no scopes; the token
- *    says who you are and AccessControl says what that means.
+ *    says who you are and AccessControl says what that means;
+ *  - **where the code would go**, and
+ *  - **whether this application has been approved here before**.
+ *
+ * ── Why the last two exist (LUS-17) ─────────────────────────────────────────
+ *
+ * Registration is unauthenticated by design, per RFC 7591, and takes an arbitrary
+ * display name with arbitrary redirect URIs. So for a while this card showed
+ * exactly two facts, and one of them — the name — is chosen by the stranger doing
+ * the asking. [OAuthClientStore] states the rule that broke: the name is "chosen by
+ * a stranger… never let it be the only thing a user sees before approving — anyone
+ * may register a client named 'Claude Code'."
+ *
+ * The attack it invites needs no bug: register `Claude Code` with a callback on a
+ * host you own, mint a PKCE pair, send the victim the authorize link. They see a
+ * page **on the real Lunicle origin** naming an application they genuinely use and
+ * themselves, and approve. Nothing on the old card could have told them apart from
+ * the real thing, because the two differed only in the redirect URI, which was
+ * never shown.
+ *
+ * The name is still shown, and still first — it is what somebody expecting a
+ * connection recognises. What changed is that it is no longer *alone*.
  */
-private fun consentPage(loginState: String, clientName: String, userName: String): String = page(
-    "Authorize ${clientName.escapeHtml()}",
-    """
-    <h1>Authorize access</h1>
-    <p><span class="app">${clientName.escapeHtml()}</span> wants to act on Lunicle as
-       <span class="who">${userName.escapeHtml()}</span>.</p>
-    <p>It will be able to do exactly what you can — no more. You can disconnect it at any
-       time from your profile.</p>
-    <form method="post" action="/oauth/consent" class="actions">
-      <input type="hidden" name="login_state" value="${loginState.escapeHtml()}">
-      <button class="deny" type="submit" name="decision" value="deny">Deny</button>
-      <button class="approve" type="submit" name="decision" value="approve">Approve</button>
-    </form>
-    """.trimIndent(),
-)
+private fun consentPage(
+    loginState: String,
+    clientName: String,
+    userName: String,
+    redirectUri: String,
+    isFirstApproval: Boolean,
+): String {
+    val redirect = summariseRedirect(redirectUri)
+    // Stated for every client, not only the suspicious ones. A line that appears
+    // only when something is wrong is a line nobody has read before, at the exact
+    // moment they most need to already know what it means.
+    val destination =
+        """<p class="detail">It will be sent back to
+           <span class="host">${redirect.display.escapeHtml()}</span>.</p>"""
+    val firstUse = if (isFirstApproval) {
+        """<p class="detail">You have not approved this application before.</p>"""
+    } else {
+        """<p class="detail">You have approved this application before.</p>"""
+    }
+    // Soft, and deliberately not a refusal: an https callback is legitimate for a
+    // hosted agent and refusing it would break a supported client. But real MCP
+    // clients are overwhelmingly loopback, so this is the shape worth a second look.
+    val remoteWarning = if (redirect.isRemote) {
+        """<p class="warn">This is not an application on your own computer — approving
+           would send your access to that address. Deny unless you started this
+           yourself and recognise it.</p>"""
+    } else {
+        ""
+    }
+    return page(
+        "Authorize ${clientName.escapeHtml()}",
+        """
+        <h1>Authorize access</h1>
+        <p><span class="app">${clientName.escapeHtml()}</span> wants to act on Lunicle as
+           <span class="who">${userName.escapeHtml()}</span>.</p>
+        <p>It will be able to do exactly what you can — no more. You can disconnect it at any
+           time from your profile.</p>
+        $destination
+        $firstUse
+        $remoteWarning
+        <form method="post" action="/oauth/consent" class="actions">
+          <input type="hidden" name="login_state" value="${loginState.escapeHtml()}">
+          <button class="deny" type="submit" name="decision" value="deny">Deny</button>
+          <button class="approve" type="submit" name="decision" value="approve">Approve</button>
+        </form>
+        """.trimIndent(),
+    )
+}
 
 /**
  * Sign in, then come back — for a visitor who arrived here with no session.

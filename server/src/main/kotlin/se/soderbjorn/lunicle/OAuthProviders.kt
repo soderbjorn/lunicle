@@ -10,6 +10,7 @@ package se.soderbjorn.lunicle
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
@@ -37,6 +38,28 @@ private val logger = LoggerFactory.getLogger("OAuthProviders")
 internal fun createProviderHttpClient(): HttpClient = HttpClient {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
+    }
+    // Deadlines, which this client had none of (LUS-33).
+    //
+    // The per-project mutex and freshness window in the statistics repository cap
+    // how many *upstream calls* happen, which is the half that costs money. What was
+    // uncapped is how many requests sit blocked on an upstream that has stopped
+    // answering — and the statistics refresh is deliberately not admin-gated and is
+    // reachable anonymously on a project with a guest audience row.
+    //
+    // Three limits rather than one, because they fail differently: `connect` is a
+    // host that is not there, `socket` is a connection that goes quiet mid-body, and
+    // `request` is the whole exchange, which is the only one that bounds a server
+    // answering slowly on purpose.
+    //
+    // Fifteen seconds end to end. Google's token endpoint answers in well under a
+    // second and GitHub's API in a few; past this is a provider having a bad day,
+    // and a caller who waited the full fifteen has already had a worse time than the
+    // refusal would have given them.
+    install(HttpTimeout) {
+        requestTimeoutMillis = 15_000
+        connectTimeoutMillis = 5_000
+        socketTimeoutMillis = 10_000
     }
 }
 

@@ -35,8 +35,27 @@ interface UserStore {
      *   should be holding. It defaults to the lesser value, so a caller that has no
      *   domain to match against — and every test fixture — lands on `member` and is
      *   corrected by the startup stamp rather than being over-privileged.
+     * @param isProbe whether this "sign-in" is an owner-impersonation probe rather
+     *   than somebody proving who they are (LUS-6).
+     *
+     *   Everything a proved sign-in does still happens — the row, the admission gate
+     *   ahead of this, the staff/member stamp, the owner seat behind it — which is
+     *   the whole fidelity claim the facility makes. What stops is the **recording
+     *   of proof**: `email_verified`, `provider_name` and, the one that matters,
+     *   `signed_in_at`. That last is a security input rather than a display value.
+     *   Admission short-circuits on it, so a probed address would be permanently
+     *   exempt from a policy tightened afterwards; and instance hand-over
+     *   eligibility requires it, so probing an added-but-never-used address would
+     *   make that account eligible to receive the whole deployment.
+     *
+     *   Defaulted false, because a flag whose safe value has to be remembered at
+     *   every call site is one that gets forgotten at the next one.
      */
-    suspend fun upsert(identity: ProviderIdentity, kind: UserKind = UserKind.MEMBER): UserRecord
+    suspend fun upsert(
+        identity: ProviderIdentity,
+        kind: UserKind = UserKind.MEMBER,
+        isProbe: Boolean = false,
+    ): UserRecord
 
     /**
      * The account [upsert] would *find* for this identity, or null when it would

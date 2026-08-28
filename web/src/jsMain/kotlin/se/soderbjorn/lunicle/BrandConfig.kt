@@ -223,7 +223,7 @@ suspend fun loadBrand(): Brand? {
 
     val fonts = parseBrandFonts(manifest)
 
-    val logoSvg = fetchText("/brand/logo.svg")?.takeIf { it.contains("<svg", ignoreCase = true) }
+    val logoSvg = fetchText("/brand/logo.svg")?.let(::sanitiseSvg)
 
     return Brand(
         themes = themes,
@@ -300,4 +300,85 @@ private suspend fun fetchText(url: String): String? {
     }.getOrNull() ?: return null
     if (!response.ok) return null
     return runCatching { response.text().await() }.getOrNull()
+}
+
+/**
+ * Parse a brand SVG, strip everything that can execute, and hand back the
+ * re-serialised markup — or null if it is not an SVG at all (LUS-28).
+ *
+ * ── Why this exists, and why it is not an `<img>` ───────────────────────────
+ *
+ * The logo was checked only for containing the substring `<svg`, which filters
+ * nothing, and assigned to `innerHTML` on three surfaces — including the
+ * pre-authentication sign-in dialog. Inline via `innerHTML` a `<script>` element
+ * does **not** execute, so this was never the whole story; but an `onerror` on a
+ * sibling element in the same string does, on the app origin, on the sign-in page.
+ *
+ * The simplest robust fix is `<img src="/brand/logo.svg">`, which never runs
+ * script whatever the file contains. It is not available here: [brandLogo]'s whole
+ * design is that a logo authored with `currentColor` or `var(--t-accent)` tracks
+ * the active theme like the built-in glyph does, and an `<img>` renders in its own
+ * document where those resolve to nothing. So the markup has to stay inline, and
+ * what changes is that it is parsed and re-serialised rather than trusted.
+ *
+ * ── What it removes ─────────────────────────────────────────────────────────
+ *
+ *  - **Executable elements**: `script`, and `foreignObject`, which is the hole in
+ *    every SVG sanitiser that forgets it — it embeds arbitrary HTML.
+ *  - **Every `on*` attribute**, which is where the actual reachable payload lived.
+ *  - **`href` / `xlink:href` values that are not plain fragments or data images.**
+ *    A `<use href="javascript:…">` and an `<a href="javascript:…">` wrapping the
+ *    mark are both live links on our origin otherwise.
+ *
+ * The browser's own parser does the parsing, which is the point: a regex over
+ * markup loses to the first thing it did not imagine, and `DOMParser` is the same
+ * parser that would have to be fooled to execute anything.
+ *
+ * A file that does not parse, or whose root is not an `<svg>`, returns null and
+ * the deployment falls back to the built-in mark — the same outcome as no brand
+ * logo at all, which is a look rather than a failure.
+ */
+internal fun sanitiseSvg(markup: String): String? {
+    val parsed = runCatching {
+        js("new DOMParser()").parseFromString(markup, "image/svg+xml")
+    }.getOrNull() ?: return null
+    val root = parsed.documentElement ?: return null
+    // A parse failure is reported as a document whose root is <parsererror>, not as
+    // a throw — so the root's own name is the check, and it doubles as "this file is
+    // not an SVG".
+    if ((root.tagName as? String)?.lowercase() != "svg") return null
+
+    fun scrub(node: dynamic) {
+        val children = node.children
+        val length = (children.length as Int)
+        // Backwards, because removing a child renumbers the live collection.
+        for (index in length - 1 downTo 0) {
+            val child = children[index]
+            val name = (child.tagName as? String)?.lowercase()?.substringAfterLast(':')
+            if (name == "script" || name == "foreignobject") {
+                node.removeChild(child)
+                continue
+            }
+            val attributes = child.attributes
+            val attributeCount = (attributes.length as Int)
+            for (attributeIndex in attributeCount - 1 downTo 0) {
+                val attribute = attributes[attributeIndex]
+                val attributeName = (attribute.name as String).lowercase()
+                val value = (attribute.value as String).trim()
+                val isEventHandler = attributeName.startsWith("on")
+                val isLink = attributeName == "href" || attributeName.endsWith(":href")
+                // A fragment reference into the same document, or an inline image.
+                // Everything else — including every scheme — goes, because a logo has
+                // no business linking anywhere.
+                val isSafeLink = value.startsWith("#") || value.startsWith("data:image/")
+                if (isEventHandler || (isLink && !isSafeLink)) {
+                    child.removeAttribute(attribute.name)
+                }
+            }
+            scrub(child)
+        }
+    }
+    scrub(root)
+
+    return runCatching { js("new XMLSerializer()").serializeToString(root) as String }.getOrNull()
 }

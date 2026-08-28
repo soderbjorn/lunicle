@@ -128,4 +128,15 @@ class NotificationStore(
     override suspend fun clear(userId: Long): Unit = withContext(DatabaseDispatcher) {
         database.notificationsQueries.deleteAllForUser(userId)
     }
+
+    /** Every notification pointing at [projectId], for everybody. See the interface. */
+    override suspend fun deleteForProject(projectId: Long): Unit = withContext(DatabaseDispatcher) {
+        database.notificationsQueries.deleteForProject(projectId)
+    }
+
+    /** [userId]'s notifications for [projectId]. See the interface. */
+    override suspend fun deleteForUserInProject(userId: Long, projectId: Long): Unit =
+        withContext(DatabaseDispatcher) {
+            database.notificationsQueries.deleteForUserInProject(userId, projectId)
+        }
 }

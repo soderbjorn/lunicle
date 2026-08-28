@@ -84,8 +84,32 @@ internal fun ApplicationCall.serverOrigin(): String {
     // edge and speaks plain HTTP to the container, so request.local.scheme is
     // "http" on every deployed request and Google would reject the exchange
     // over a scheme mismatch.
-    val forwardedProto = request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim()
-    val scheme = forwardedProto?.takeIf { it.isNotBlank() } ?: request.local.scheme
+    //
+    // ── Read from the RIGHT, like X-Forwarded-For (LUS-13) ────────────────────
+    //
+    // This used to take the leftmost entry while `clientIdentity` takes the
+    // rightmost, and two forwarded headers read from opposite ends is the kind of
+    // thing that stays harmless until an infrastructure change and then fails
+    // silently. Each proxy *appends*, so the rightmost entry is what the proxy
+    // nearest this server actually observed and the leftmost is whatever the
+    // original request arrived carrying.
+    //
+    // Behind exactly one proxy — both deployments — the two ends are the same
+    // entry and nothing changes. What it buys is a chained deployment where they
+    // are not, and one consistent rule to reason about.
+    //
+    // Being honest about what it does NOT buy: on a server exposed with no proxy at
+    // all, an attacker sending a single-valued header still controls this
+    // completely, because there is no trusted entry to prefer. That case is what
+    // LUNICLE_TRUSTED_PROXY_HOPS describes, and this header deliberately does not
+    // consult it — the hop count defaults to zero now (LUS-31), and ignoring
+    // X-Forwarded-Proto on an unset deployment would make every Railway and Cloud
+    // Run instance compute an http:// origin and break Google sign-in outright. A
+    // wrong scheme here is a broken sign-in; a wrong client identity there is a
+    // weakened limit. The two want different defaults.
+    val forwardedProto = request.headers["X-Forwarded-Proto"]
+        ?.split(',')?.map { it.trim() }?.lastOrNull { it.isNotBlank() }
+    val scheme = forwardedProto ?: request.local.scheme
 
     // The authority is taken verbatim from the request rather than rebuilt from
     // a host and a port, because rebuilding it is wrong in production and the
@@ -102,8 +126,8 @@ internal fun ApplicationCall.serverOrigin(): String {
     // used, carrying a port only when it is not the scheme's default —
     // "localhost:8080" in development, "lunicle.lunamux.dev" deployed. There is
     // nothing to compute.
-    val authority = request.headers["X-Forwarded-Host"]?.substringBefore(',')?.trim()
-        ?.takeIf { it.isNotBlank() }
+    val authority = request.headers["X-Forwarded-Host"]
+        ?.split(',')?.map { it.trim() }?.lastOrNull { it.isNotBlank() }
         ?: request.headers[HttpHeaders.Host]?.takeIf { it.isNotBlank() }
         ?: request.host()
 
@@ -338,6 +362,55 @@ private suspend fun pendingEmailFor(user: UserRecord?, emailCodes: EmailCodeServ
     else emailCodes.pendingFor(user.id, EmailCodePurpose.EMAIL_CHANGE)
 
 /**
+ * The one refusal standing in front of every route that touches an account's
+ * e-mail address.
+ *
+ * ── Why it is a function and not three copies (LUS-4) ───────────────────────
+ *
+ * Three routes touch `users.email` — request a change, confirm one, and clear the
+ * address — and for a while two of them carried this guard and the third did not.
+ * The one that did not was the *clearing* route, and its own comment explained the
+ * absence: "you cannot take somebody else's account by removing an address from
+ * your own." True, and it stops being true the moment the caller is wearing
+ * somebody else's face.
+ *
+ * What clearing an address actually does under a probe: the victim's address and
+ * verification flag go in one statement, so every notification to that person
+ * silently stops; the account key is severed, so a later impersonation of the same
+ * address makes a *second* account for the same human; and any pending
+ * e-mail-change code is cancelled. Unlogged, and undoable only by someone who
+ * knows to look.
+ *
+ * So the check is hoisted here, and the three routes call it rather than restating
+ * it. A fourth route that writes an address is not automatically guarded — Kotlin
+ * cannot promise that — but it now has one obvious thing to call, and the two-line
+ * refusal it would otherwise be tempted to hand-roll no longer exists to copy
+ * wrongly.
+ *
+ * ── `isProbe`, never a comparison ───────────────────────────────────────────
+ *
+ * This guard used to read `isImpersonating`, which meant "effective differs from
+ * real" — and under a genuine probe session the two are the SAME account, so that
+ * comparison reads false and the guard would silently never fire. It is a fact the
+ * session row carries or it is nothing. See [Caller.isProbe].
+ *
+ * @return true when the caller was refused **and this function already answered
+ *   the request**, so the caller must return without responding again.
+ */
+private suspend fun ApplicationCall.refusedEmailWriteAsProbe(caller: Caller): Boolean {
+    if (!caller.isProbe) return false
+    // Logged, unlike the writes it prevents. An owner reaching for somebody else's
+    // address is the single thing full impersonation powers are documented not to
+    // include, so an attempt is worth a line even though it failed.
+    logger.warn("Refused an e-mail write from a probe session on user ${caller.user?.id}")
+    respond(
+        HttpStatusCode.Forbidden,
+        "You cannot change somebody else's e-mail address while impersonating them.",
+    )
+    return true
+}
+
+/**
  * The caller's current [SessionState], impersonation included.
  *
  * The one builder every route that can *see* an impersonation uses. The plain
@@ -493,6 +566,67 @@ fun Route.authRoutes(
      */
     val signInLimiter = RateLimiter(limit = 5, windowMillis = 15L * 60 * 1000)
 
+    /**
+     * How often a sign-in code may be *spent* — the endpoint the limiter above did
+     * not cover (LUS-11).
+     *
+     * ── What this is and is not for ────────────────────────────────────────
+     *
+     * Not brute force. The issued row caps guesses at five, so five codes per
+     * fifteen minutes times five guesses is twenty-five attempts out of a million,
+     * and no limit here changes that arithmetic. Two other things survive.
+     *
+     * **A targeted lockout.** The victim's code is a resource an attacker can
+     * address by e-mail. Polling redeem with a wrong code in a tight loop destroys
+     * every code the victim requests within milliseconds of it being issued, by the
+     * fifth wrong guess — and the victim sees only the deliberately uniform "that
+     * code is not right", with no way to tell what is happening. On a deployment
+     * where a mailed code is the only door, that is a complete account lockout
+     * costing the attacker nothing.
+     *
+     * **A server-wide stall.** Every call runs a SQLite transaction on the single
+     * threaded dispatcher every other request also queues behind.
+     *
+     * ── Keyed on both, and honest about what that buys ─────────────────────
+     *
+     * The client key is what actually stops the attack: a tight loop from one host
+     * becomes ten attempts a quarter of an hour, and the stall goes with it. The
+     * address key bounds how fast one person's codes can be burned through from
+     * *many* hosts — it cannot eliminate that, because an attacker who reaches the
+     * per-address budget has still spent one code's worth of guesses. Closing it
+     * completely would mean scoping a code's attempt counter to the client that
+     * requested it, which is a larger change to EmailCodes and is not this.
+     *
+     * Ten rather than [signInLimiter]'s five, and deliberately looser than the
+     * five-guess cap on a single code: somebody who exhausts one code, asks for a
+     * second and mistypes that one too is a real person having a bad morning, and
+     * refusing them for fifteen minutes would be the limiter locking out exactly
+     * who it exists to protect.
+     *
+     * A `429` here leaks nothing new. Unlike the request endpoint — whose whole
+     * design is to say nothing about whether an address has an account — this route
+     * already speaks plainly about e-mail sign-in and answers a caller who is
+     * mid-flow.
+     */
+    val redeemLimiter = RateLimiter(limit = 10, windowMillis = 15L * 60 * 1000)
+
+    /**
+     * How often one client may present a Google authorization code (LUS-31).
+     *
+     * Unauthenticated, and every call makes an **outbound HTTPS request** to
+     * Google's token endpoint before anything can decide the code is nonsense — so
+     * an unmetered loop here spends our sockets, our latency and Google's patience
+     * with our client id, all at no cost to the caller.
+     *
+     * Keyed on the client alone. There is no second identity to compose with: the
+     * request body is an opaque code, not an address, so there is nothing here that
+     * corresponds to [signInLimiter]'s per-address bucket.
+     *
+     * Twenty in fifteen minutes: a real person signs in once, occasionally twice
+     * after a failed popup, and several of them can share one NAT'd address.
+     */
+    val googleLimiter = RateLimiter(limit = 20, windowMillis = 15L * 60 * 1000)
+
     // Never 401s. "Signed out" is a state the view renders, not an error it
     // handles — and an endpoint the whole UI depends on should not have a
     // failure mode for the most common case.
@@ -626,7 +760,9 @@ fun Route.authRoutes(
             // make the impersonation land somewhere a real sign-in never would.
             email = address,
         )
-        val user = when (val outcome = completeSignIn(provided, users, instanceSettings, identity)) {
+        val user = when (
+            val outcome = completeSignIn(provided, users, instanceSettings, identity, isProbe = true)
+        ) {
             is SignInOutcome.Refused -> {
                 logger.info(
                     "Impersonation: user ${grant.ownerUserId} was refused as <$address> by this instance's admission policy",
@@ -742,6 +878,12 @@ fun Route.authRoutes(
      * to stop receiving mail would be ceremony charged to the one person it
      * cannot protect.
      *
+     * The qualification that sentence needs, and did not have (LUS-4): *your own*
+     * is doing all the work in it. Under a probe session the address being given up
+     * belongs to somebody else, and that is an account being quietly severed from
+     * its mailbox rather than a person declining their own mail. Hence the same
+     * refusal the sibling routes carry — see [refusedEmailWriteAsProbe].
+     *
      * A non-null address is *refused* rather than quietly ignored. An older
      * client still trying to set one has to be told, not silently obeyed and left
      * believing it worked.
@@ -752,6 +894,7 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
+        if (call.refusedEmailWriteAsProbe(caller)) return@post
         val request = runCatching { call.receive<SetEmailRequest>() }.getOrNull() ?: run {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
@@ -795,21 +938,9 @@ fun Route.authRoutes(
         }
         // An owner wearing somebody's face has no business changing where that
         // person's mail goes — and, once e-mail is the account key, redirecting it
-        // is redirecting the account.
-        //
-        // `isProbe`, and the change of field is the security-critical half of this
-        // whole rework. This guard used to read `isImpersonating`, which meant
-        // "effective differs from real" — and under a genuine probe session the two
-        // are the SAME account, so that comparison now reads false and this guard
-        // would silently never fire. It is a fact the session row carries or it is
-        // nothing. See Caller.isProbe.
-        if (caller.isProbe) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                "You cannot change somebody else's e-mail address while impersonating them.",
-            )
-            return@post
-        }
+        // is redirecting the account. See refusedEmailWriteAsProbe, which is where
+        // this refusal and its reasoning now live for all three routes.
+        if (call.refusedEmailWriteAsProbe(caller)) return@post
         val codes = emailCodes ?: run {
             call.respond(HttpStatusCode.BadRequest, "This server has no e-mail configured, so it cannot send a code.")
             return@post
@@ -818,8 +949,14 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
         }
-        val address = request.email.trim()
-        if (address.isBlank() || !isPlausibleEmail(address)) {
+        // Through the shared normaliser, like every other entry point (LUS-13). This
+        // was the one path that trimmed and did not lowercase — and the address is
+        // stored on the pending row, mailed to, echoed back, and only normalised at
+        // the final write. On a mail host that honours local-part case, the address
+        // that was *proved* and the address that gets *written* were then not the
+        // same string.
+        val address = normalizeEmail(request.email)
+        if (address == null || !isPlausibleEmail(address)) {
             call.respond(HttpStatusCode.BadRequest, "That does not look like an e-mail address.")
             return@post
         }
@@ -877,15 +1014,7 @@ fun Route.authRoutes(
             call.respond(HttpStatusCode.Forbidden, "You must be signed in to change your profile.")
             return@post
         }
-        // `isProbe`, never a comparison — see the request endpoint above for why the
-        // obvious-looking `isImpersonating` would never fire here.
-        if (caller.isProbe) {
-            call.respond(
-                HttpStatusCode.Forbidden,
-                "You cannot change somebody else's e-mail address while impersonating them.",
-            )
-            return@post
-        }
+        if (call.refusedEmailWriteAsProbe(caller)) return@post
         val codes = emailCodes ?: run {
             call.respond(HttpStatusCode.BadRequest, "This server has no e-mail configured.")
             return@post
@@ -1015,12 +1144,39 @@ fun Route.authRoutes(
         // alone, one host walks a list of many target addresses at full speed;
         // keyed on the address alone, a botnet hammers one. LNL-72 exists for
         // exactly this endpoint.
-        val decision = signInLimiter.tryAcquire(
-            "signin-address:$address",
-            "signin-client:${call.clientIdentity()}",
-        )
-        if (decision is RateLimitDecision.Refused) {
-            call.respondRateLimited(decision, "Too many sign-in codes requested. Try again shortly.")
+        //
+        // ── Two acquires, because the two refusals leak differently (LUS-13) ──
+        //
+        // They used to be one call, answering 429 whichever bucket was empty — and
+        // three places then asserted three different things about that line.
+        // `respondRateLimited`'s own documentation said this endpoint "returns its
+        // ordinary success response instead of refusing"; a comment here said the 429
+        // "leaks only about the caller"; and a test asserted that a fresh client gets
+        // a 429 for an address somebody *else* exhausted. Only the test described
+        // what the code did, and what the code did was a weak activity oracle: ask
+        // about an address, and a 429 says somebody has been asking about it lately.
+        //
+        // So they are asked separately and answered differently.
+        //
+        // The **client** bucket earns an honest 429. "You have been asking too often"
+        // is a fact about the caller and about nobody else, and telling somebody
+        // mid-flow to come back shortly is worth more than the silence costs.
+        //
+        // The **address** bucket gets this endpoint's ordinary silence: a 204, with
+        // no code minted. That is the invariant the limiter's documentation always
+        // claimed and now holds — the whole design of this route is that its answer
+        // says nothing about the address, and a status code that varies with
+        // somebody else's recent activity is exactly the crack it exists to avoid.
+        //
+        // Ordered client-first so a caller in a loop is stopped by the honest
+        // refusal rather than accumulating silence.
+        val clientDecision = signInLimiter.tryAcquire("signin-client:${call.clientIdentity()}")
+        if (clientDecision is RateLimitDecision.Refused) {
+            call.respondRateLimited(clientDecision, "Too many sign-in codes requested. Try again shortly.")
+            return@post
+        }
+        if (signInLimiter.tryAcquire("signin-address:$address") is RateLimitDecision.Refused) {
+            call.respond(HttpStatusCode.NoContent)
             return@post
         }
 
@@ -1070,6 +1226,18 @@ fun Route.authRoutes(
         val address = normalizeEmail(request?.email)
         if (request == null || address == null) {
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
+            return@post
+        }
+
+        // Before the transaction, not after (LUS-11). The stall this guards against
+        // is the SQLite work itself, so a limiter that ran behind it would refuse
+        // requests that had already cost what they cost. See redeemLimiter.
+        val decision = redeemLimiter.tryAcquire(
+            "redeem-address:$address",
+            "redeem-client:${call.clientIdentity()}",
+        )
+        if (decision is RateLimitDecision.Refused) {
+            call.respondRateLimited(decision, "Too many attempts. Try again shortly.")
             return@post
         }
 
@@ -1126,6 +1294,19 @@ fun Route.authRoutes(
         val request = runCatching { call.receive<GoogleCodeRequest>() }.getOrNull()
         if (request == null || request.code.isBlank()) {
             call.respond(HttpStatusCode.BadRequest, "Missing authorization code.")
+            return@post
+        }
+        // Unauthenticated, and every call makes an outbound HTTPS request to Google
+        // before anything can decide the code is nonsense (LUS-31). So it is metered
+        // on the client, like the two e-mail endpoints beside it — this is the one
+        // sign-in path that spends somebody else's rate limit as well as ours.
+        //
+        // A 429 is honest here: unlike the e-mail *request* endpoint, this one
+        // already answers differently for a good and a bad code, so a refusal
+        // reveals nothing new about anybody.
+        val googleDecision = googleLimiter.tryAcquire("google-client:${call.clientIdentity()}")
+        if (googleDecision is RateLimitDecision.Refused) {
+            call.respondRateLimited(googleDecision, "Too many sign-in attempts. Try again shortly.")
             return@post
         }
         try {
@@ -1243,6 +1424,11 @@ internal sealed interface SignInOutcome {
  * one line later. Folding the session in would mean handing this function a probe id
  * it has no business knowing about.
  *
+ * @param isProbe whether the proof upstream was an owner's assertion rather than
+ *   anybody's (LUS-6). Threaded through to the store, where it stops the sign-in
+ *   *recording* proof that nobody supplied — see [UserStore.upsert]. It changes
+ *   nothing else here: the admission gate below still runs, with the genuine
+ *   refusal, and so does the owner seat, which is the fidelity claim.
  * @return [SignInOutcome.Refused] with the sentence [admissionRefusal] produced, or
  *   [SignInOutcome.Admitted] with the row that now exists.
  */
@@ -1251,6 +1437,7 @@ internal suspend fun completeSignIn(
     users: se.soderbjorn.lunicle.store.UserStore,
     instanceSettings: se.soderbjorn.lunicle.store.InstanceSettingsStore?,
     identity: InstanceIdentity,
+    isProbe: Boolean = false,
 ): SignInOutcome {
     admissionRefusal(provided, users, instanceSettings, identity)?.let {
         return SignInOutcome.Refused(it)
@@ -1261,6 +1448,7 @@ internal suspend fun completeSignIn(
         // stamp uses — see UserKind.forEmail. Whatever proved the address, it is
         // exactly as good a basis for the staff/member answer as Google's is.
         kind = UserKind.forEmail(provided.email, identity.domain),
+        isProbe = isProbe,
     )
     seatOwnerIfVacant(users, instanceSettings)
     return SignInOutcome.Admitted(user)

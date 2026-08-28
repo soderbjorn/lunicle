@@ -123,4 +123,47 @@ abstract class NotificationStoreContract {
         assertFalse(store.listForUser(bob).any { it.title == "Alice's" }, "Bob does not see Alice's")
         assertEquals(0, store.unreadCount(bob))
     }
+
+    // ── The two project-scoped deletes (LUS-14) ──────────────────────────────
+
+    /**
+     * A deleted project takes its titles with it, for everybody.
+     *
+     * The row stores the issue or post title verbatim, so without this a deleted
+     * private project stays readable — as metadata — in every recipient's list
+     * indefinitely. Notifications are otherwise outside the delete cascade on
+     * purpose, and this is the one deliberate exception.
+     */
+    @Test
+    fun `deleteForProject removes that project's rows and no others`() = runBlocking {
+        val alice = newUser()
+        val bob = newUser()
+        store.record(alice, issueNotification("Doomed", projectId = 90L))
+        store.record(alice, issueNotification("Kept", projectId = 91L))
+        store.record(bob, issueNotification("Also doomed", projectId = 90L))
+
+        store.deleteForProject(90L)
+
+        assertEquals(listOf("Kept"), store.listForUser(alice).map { it.title })
+        assertTrue(store.listForUser(bob).isEmpty(), "another recipient kept the deleted project's title")
+    }
+
+    /** A withdrawn rung takes one person's rows for one project, and nobody else's. */
+    @Test
+    fun `deleteForUserInProject is scoped to the user and the project`() = runBlocking {
+        val leaver = newUser()
+        val stayer = newUser()
+        store.record(leaver, issueNotification("Theirs, gone", projectId = 95L))
+        store.record(leaver, issueNotification("Theirs, elsewhere", projectId = 96L))
+        store.record(stayer, issueNotification("Somebody else's", projectId = 95L))
+
+        store.deleteForUserInProject(leaver, 95L)
+
+        assertEquals(listOf("Theirs, elsewhere"), store.listForUser(leaver).map { it.title })
+        assertEquals(
+            listOf("Somebody else's"),
+            store.listForUser(stayer).map { it.title },
+            "one person losing a rung emptied somebody else's list",
+        )
+    }
 }

@@ -403,6 +403,40 @@ class ProjectVisibilityTest {
         }
     }
 
+    /**
+     * A draft belongs to whoever is writing it, not to every reader of the board
+     * (LUS-15).
+     *
+     * Board listings filter drafts out, but fetching by id resolved any issue whose
+     * project the caller could read — and ids are sequential and global, so drafts
+     * were trivially enumerable. What leaks is not text: a draft's title and
+     * description are empty until publish, and what it holds is the **inline
+     * attachments uploaded while composing**, because an image needs an owner row
+     * before it can be uploaded at all.
+     *
+     * 404 rather than 403, like every other refusal here — "that draft is not yours"
+     * confirms the id names something.
+     */
+    @Test
+    fun `a draft is not readable by every reader of its project`(): Unit = runBlocking {
+        val f = seed()
+        val draft = issueRepository.createDraft(f.publicId, Author.Account(f.sysAdminId)).first
+
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.NotFound,
+                client.get("/api/issues/$draft") { cookie(SESSION_COOKIE, f.outsiderCookie) }.status,
+                "An unpublished draft — and the screenshots pasted into it — was served to " +
+                    "everybody who can read the board.",
+            )
+            assertEquals(
+                HttpStatusCode.OK,
+                client.get("/api/issues/$draft") { cookie(SESSION_COOKIE, f.sysAdminCookie) }.status,
+                "The person writing the draft cannot open it.",
+            )
+        }
+    }
+
     /** An issue on the public board, so the comment route has something to refuse. */
     private suspend fun publicIssue(f: Fixture): Long {
         val draft = issueRepository.createDraft(f.publicId, Author.Account(f.sysAdminId))

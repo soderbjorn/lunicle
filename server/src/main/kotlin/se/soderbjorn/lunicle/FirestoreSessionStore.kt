@@ -59,6 +59,15 @@ import se.soderbjorn.lunicle.store.SessionStore
  */
 private const val SESSION_LIFETIME_MILLIS: Long = 30L * 24 * 60 * 60 * 1000
 
+/**
+ * How many characters a minted session id has: 32 random bytes as url-safe base64
+ * without padding.
+ *
+ * Named because it is the whole of the shape check in [FirestoreSessionStore] —
+ * see `isMintedShape`, and LUS-33 for what an unchecked cookie reached.
+ */
+private const val MINTED_ID_LENGTH: Int = 43
+
 class FirestoreSessionStore(
     private val firestore: Firestore,
     private val resolveUser: suspend (Long) -> UserRecord?,
@@ -71,6 +80,32 @@ class FirestoreSessionStore(
 
     private fun collection() = firestore.collection(COLLECTION)
     private fun doc(id: String) = collection().document(id)
+
+    /**
+     * Is [id] the shape [create] mints — and therefore safe to put in a document
+     * path (LUS-33)?
+     *
+     * The raw session cookie used to reach `document(id)` unchecked. A value
+     * containing a slash makes the SDK build an invalid resource name and throw,
+     * which surfaces as a 500 with a stack trace in the log for a request that was
+     * simply nonsense — and every unauthenticated visitor can send one.
+     *
+     * It is **not** a path escape, and saying so matters or the fix reads as
+     * superstition: Firestore does not normalise a path, and an invalid resource
+     * name is rejected server-side. Nothing was reachable. What was reachable was a
+     * noisy 500 on the hottest read in the server, from anybody, at will.
+     *
+     * The equivalent OAuth path is already guarded by a prefix check; this store was
+     * the one place that guard was missing.
+     *
+     * A shape check rather than a character blocklist, for the reason a blocklist
+     * always loses: [create] produces exactly [MINTED_ID_LENGTH] url-safe base64
+     * characters, so anything else is not an id this server ever issued and there is
+     * nothing to look up. A miss, not a throw — a forged cookie is a signed-out
+     * visitor, which is what every other backend answers too.
+     */
+    private fun isMintedShape(id: String): Boolean =
+        id.length == MINTED_ID_LENGTH && id.all { it.isLetterOrDigit() || it == '-' || it == '_' }
 
     /**
      * Mint a session id for [userId] and store it, stamped with the moment it
@@ -100,7 +135,7 @@ class FirestoreSessionStore(
      * filter and the resolver seam.
      */
     override suspend fun lookup(id: String?): UserRecord? {
-        if (id == null) return null
+        if (id == null || !isMintedShape(id)) return null
         val snapshot = doc(id).get().await()
         if (!snapshot.exists()) return null
         val expiresAt = snapshot.getLong(EXPIRES_AT) ?: return null
@@ -120,7 +155,7 @@ class FirestoreSessionStore(
      * there is anybody to ask about.
      */
     override suspend fun probeIdFor(id: String?): String? {
-        if (id == null) return null
+        if (id == null || !isMintedShape(id)) return null
         val snapshot = doc(id).get().await()
         if (!snapshot.exists()) return null
         return snapshot.getString(PROBE_ID)
@@ -128,7 +163,9 @@ class FirestoreSessionStore(
 
     /** Forget [id]. Idempotent — a delete of a missing document is a no-op, and a null id nothing at all. */
     override suspend fun destroy(id: String?) {
-        if (id == null) return
+        // A forged id names no document, so there is nothing to delete and no reason
+        // to hand the SDK a path it will refuse — see isMintedShape (LUS-33).
+        if (id == null || !isMintedShape(id)) return
         doc(id).delete().await()
     }
 

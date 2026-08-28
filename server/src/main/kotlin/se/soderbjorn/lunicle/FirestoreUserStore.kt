@@ -73,11 +73,15 @@ class FirestoreUserStore(
      * lookup queries and the "is anyone here" query run first, the counter is read
      * and then bumped, and the document is written last.
      */
-    override suspend fun upsert(identity: ProviderIdentity, kind: UserKind): UserRecord {
+    override suspend fun upsert(identity: ProviderIdentity, kind: UserKind, isProbe: Boolean): UserRecord {
         // Normalised once, here, so the lookup and the write it may lead to are
         // looking at the same spelling — see the class preamble.
         val email = normalizeEmail(identity.email)
         val createdAt = now()
+        // Null under an owner-impersonation probe: nobody arrived, so nothing may
+        // record that they did (LUS-6). The same value the SQLite store binds — see
+        // Users.sq's refreshKindOnProbeSignIn for what this field decides.
+        val signedInAt = createdAt.takeUnless { isProbe }
         return firestore.runTransaction { txn ->
             // ── Find by the account key: verified e-mail first ────────────────
             if (email != null) {
@@ -87,27 +91,39 @@ class FirestoreUserStore(
                     // Refresh exactly what refreshOnSignIn does: the provider's name,
                     // and the verified flag (arriving here proved the address again).
                     // provider/providerId keep the values the row was created with.
+                    //
+                    // Under a probe, exactly what refreshKindOnProbeSignIn does
+                    // instead: the derived kind and nothing else, because none of the
+                    // other three actually happened.
                     txn.update(
                         byEmail.reference,
-                        mapOf(
-                            PROVIDER_NAME to identity.providerName,
-                            EMAIL_VERIFIED to true,
-                            // Follows, because it is derived rather than chosen — see
-                            // Users.sq's refreshOnSignIn.
-                            KIND to kind.key,
-                            // The arrival stamp (LNL-194). Written on every sign-in, so
-                            // a row an administrator added ahead of time stops being
-                            // pending the moment its owner turns up here.
-                            SIGNED_IN_AT to createdAt,
-                        ),
+                        if (isProbe) {
+                            mapOf(KIND to kind.key)
+                        } else {
+                            mapOf(
+                                PROVIDER_NAME to identity.providerName,
+                                EMAIL_VERIFIED to true,
+                                // Follows, because it is derived rather than chosen — see
+                                // Users.sq's refreshOnSignIn.
+                                KIND to kind.key,
+                                // The arrival stamp (LNL-194). Written on every sign-in, so
+                                // a row an administrator added ahead of time stops being
+                                // pending the moment its owner turns up here.
+                                SIGNED_IN_AT to createdAt,
+                            )
+                        },
                     )
-                    return@runTransaction byEmail.toUser()!!
-                        .copy(
+                    val stored = byEmail.toUser()!!
+                    return@runTransaction if (isProbe) {
+                        stored.copy(kind = kind)
+                    } else {
+                        stored.copy(
                             providerName = identity.providerName,
                             isEmailVerified = true,
                             kind = kind,
                             signedInAt = createdAt,
                         )
+                    }
                 }
             }
 
@@ -124,6 +140,11 @@ class FirestoreUserStore(
                 // address has, by construction, proved it. See Users.sq's upsert.
                 val newEmail = email ?: byPair.getString(EMAIL)
                 val newVerified = if (email != null) true else (byPair.getBoolean(EMAIL_VERIFIED) ?: false)
+                // COALESCE again, for the arrival stamp: a probe passing null leaves
+                // whatever was there rather than claiming an arrival, and never
+                // clears one that genuinely happened. The same shape Users.sq's
+                // ON CONFLICT branch takes (LUS-6).
+                val newSignedInAt = signedInAt ?: byPair.getLong(SIGNED_IN_AT)
                 txn.update(
                     byPair.reference,
                     mapOf(
@@ -131,7 +152,7 @@ class FirestoreUserStore(
                         EMAIL to newEmail,
                         EMAIL_VERIFIED to newVerified,
                         KIND to kind.key,
-                        SIGNED_IN_AT to createdAt,
+                        SIGNED_IN_AT to newSignedInAt,
                     ),
                 )
                 return@runTransaction byPair.toUser()!!
@@ -140,7 +161,7 @@ class FirestoreUserStore(
                         email = newEmail,
                         isEmailVerified = newVerified,
                         kind = kind,
-                        signedInAt = createdAt,
+                        signedInAt = newSignedInAt,
                     )
             }
 
@@ -168,8 +189,9 @@ class FirestoreUserStore(
                 isInstanceAdmin = instanceIsEmpty,
                 isMcpEnabled = false,
                 // Reaching this branch is a sign-in, so the arrival stamp and the added
-                // stamp are the same instant. Only addByEmail writes a row without one.
-                signedInAt = createdAt,
+                // stamp are the same instant. Two things write a row without one:
+                // addByEmail, and a probe (LUS-6) — nobody arrived at either.
+                signedInAt = signedInAt,
             )
             txn.set(
                 doc(id),
@@ -187,7 +209,7 @@ class FirestoreUserStore(
                     INSTANCE_ROLE to InstanceRole.ADMIN.key.takeIf { instanceIsEmpty },
                     MCP_ENABLED to false,
                     ADDED_AT to createdAt,
-                    SIGNED_IN_AT to createdAt,
+                    SIGNED_IN_AT to signedInAt,
                 ),
             )
             record

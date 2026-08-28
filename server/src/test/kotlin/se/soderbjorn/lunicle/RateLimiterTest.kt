@@ -225,6 +225,53 @@ class RateLimiterTest {
         )
     }
 
+    /**
+     * Unset means trust nothing (LUS-31).
+     *
+     * It used to mean trust one, which was right for the deployments that existed
+     * and wrong for the next one somebody sets up. Exposed directly, with no proxy
+     * appending anything, a request arriving with `X-Forwarded-For: 1.2.3.4` has one
+     * entry — and trusting one hop reads exactly that, so the attacker-chosen value
+     * becomes the identity and every limiter in this server is bypassed by a header
+     * varied per request.
+     *
+     * Safe-by-default costs a configuration line behind a proxy, and gets it wrong
+     * loudly: everybody lands in the proxy's bucket and sign-in starts refusing,
+     * which somebody notices in minutes. The reverse is invisible until it is used.
+     */
+    @Test
+    fun `the trusted-hop count defaults to trusting nothing`() {
+        val property = "lunicle.trustedProxyHops"
+        val saved = System.getProperty(property)
+        try {
+            System.clearProperty(property)
+            assertEquals(
+                0,
+                resolveTrustedProxyHops(),
+                "An unconfigured server trusts a proxy hop it may not have, so X-Forwarded-For " +
+                    "becomes the caller's own choice of identity.",
+            )
+            System.setProperty(property, "2")
+            assertEquals(2, resolveTrustedProxyHops(), "An explicit hop count was not honoured.")
+            System.setProperty(property, "-1")
+            assertEquals(0, resolveTrustedProxyHops(), "A negative hop count should fall to the safe default.")
+            System.setProperty(property, "banana")
+            assertEquals(0, resolveTrustedProxyHops(), "An unparseable hop count should fall to the safe default.")
+        } finally {
+            if (saved == null) System.clearProperty(property) else System.setProperty(property, saved)
+        }
+    }
+
+    /** The boot log says which of the two it is, because both failures are quiet. */
+    @Test
+    fun `the assumed hop count is described for the boot log`() {
+        assertTrue(
+            "LUNICLE_TRUSTED_PROXY_HOPS" in describeTrustedProxyHops(0),
+            "The zero-hop line does not name the variable an operator behind a proxy has to set.",
+        )
+        assertTrue("1" in describeTrustedProxyHops(1), "The configured line does not state the count.")
+    }
+
     private fun io.ktor.server.testing.ApplicationTestBuilder.mountIdentity(trustedHops: Int) {
         application {
             routing {

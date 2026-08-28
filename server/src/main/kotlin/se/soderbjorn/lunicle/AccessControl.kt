@@ -766,6 +766,36 @@ class AccessControl(
                 instanceRole(user).atLeast(InstanceRole.ADMIN)
             )
 
+    /**
+     * May [user] see [issue] while it is still a **draft** (LUS-15)?
+     *
+     * Asked only for a draft, and only after `canReadProject` has already said yes —
+     * see `readableIssue`, the one caller. A published issue never reaches here.
+     *
+     * ── What a draft actually holds ─────────────────────────────────────────
+     *
+     * Its title and description are empty until it is published, so this is not
+     * about text. It is about the **inline attachments uploaded while composing**:
+     * an image needs an owner row before it can be uploaded, so a draft exists
+     * precisely to hold files nobody has decided to publish yet. Issue ids are
+     * sequential and global, so before this every reader of the project could
+     * enumerate them.
+     *
+     * ── Why a project administrator too ─────────────────────────────────────
+     *
+     * The same shape [canEditComment] takes, for the same reason: cleanup work needs
+     * somebody who can look, and the abandoned-draft sweep is something a human
+     * should be able to inspect before it runs. A *project* administrator rather
+     * than an instance one, because a draft is an issue on a board rather than an
+     * instance-wide object — and `canAdministerProject` already admits the instance
+     * administrator through the ladder.
+     *
+     * Authorship is asked first and `||` short-circuits, so the ordinary case — the
+     * person writing it — costs one comparison and no read.
+     */
+    suspend fun canReadDraft(user: UserRecord?, issue: IssueRecord): Boolean =
+        user != null && (user.wrote(issue.author) || canAdministerProject(user, issue.projectId))
+
     // ── Forums and private messages: switched off ────────────────────────────
     //
     // Both features were retired in LNL-190, which turned their surfaces off and

@@ -253,6 +253,11 @@ fun Route.messageRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Malformed message.")
             return@put
         }
+        // LUS-30, the fourth of the four bodies that had a blank check and no cap.
+        tooLongMessage("message", body.body)?.let {
+            call.respond(HttpStatusCode.BadRequest, it)
+            return@put
+        }
         deps.runMessageWrite(call) {
             val published = deps.conversations.publishMessage(scope.message, body.body)
             deps.messageNotifications.messageSent(

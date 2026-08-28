@@ -39,11 +39,19 @@ package se.soderbjorn.lunicle
  * @property isProbe whether this session was minted by an owner-impersonation
  *   grant rather than by proof of identity.
  *
- *   Read from the session row's `probe_id`, **never** by comparing users. Two
- *   things depend on it: the marker the client cannot dismiss, and the two guards
- *   that refuse to re-point the worn account's e-mail address — which is the one
- *   thing full impersonation powers must not include, because redirecting an
- *   account's mail is redirecting the account.
+ *   Read from the session row's `probe_id`, **never** by comparing users. Three
+ *   things depend on it: the marker the client cannot dismiss; the guards that
+ *   refuse to re-point or clear the worn account's e-mail address — which is the
+ *   one thing full impersonation powers must not include, because redirecting an
+ *   account's mail is redirecting the account; and the refusal at
+ *   `POST /oauth/consent`, which is the single deliberate exception to the claim
+ *   that a probe runs the same code as a real sign-in (see [ProbeGrants], where
+ *   that exception is written down beside the claim it qualifies).
+ *
+ *   Note the OAuth routes ask [se.soderbjorn.lunicle.store.SessionStore.probeIdFor]
+ *   directly rather than through `resolveCaller`: they authenticate off the cookie
+ *   themselves, for the reasons OAuthServer gives, so the fact has to be fetched
+ *   rather than inherited.
  * @property canImpersonate whether this caller may arm an impersonation: they own
  *   the instance **and** the deployment has the feature switched on. Both terms,
  *   in one field, so no surface can render the affordance without the gate having

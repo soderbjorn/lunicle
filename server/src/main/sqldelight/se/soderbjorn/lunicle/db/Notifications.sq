@@ -110,3 +110,22 @@ DELETE FROM notifications WHERE id = ? AND user_id = ?;
 -- Clear all of a user's notifications.
 deleteAllForUser:
 DELETE FROM notifications WHERE user_id = ?;
+
+-- Every notification pointing at one project, for everybody (LUS-14).
+--
+-- The deliberate exception to notifications sitting outside the delete cascade.
+-- The reasoning for that exclusion — a notification pointing at a deleted issue is
+-- merely stale, and its link correctly 404s — is right about the *pointer* and
+-- silent about the *payload*: the title is stored verbatim in this table, so a
+-- deleted private project would otherwise leave its titles readable indefinitely
+-- in every recipient's list. See NotificationStore.deleteForProject.
+--
+-- No index on dest_project_id to go with it: this runs on a project delete and on
+-- a withdrawn rung, neither of which is a hot path, and a third index on a table
+-- written once per notification is the worse trade.
+deleteForProject:
+DELETE FROM notifications WHERE dest_project_id = ?;
+
+-- One user's notifications for one project — what a withdrawn rung takes with it.
+deleteForUserInProject:
+DELETE FROM notifications WHERE user_id = ? AND dest_project_id = ?;

@@ -37,6 +37,7 @@ import se.soderbjorn.lunicle.Author
 import se.soderbjorn.lunicle.CommentRecord
 import se.soderbjorn.lunicle.FirestoreInstanceSettingsStore
 import se.soderbjorn.lunicle.FirestoreMigrations
+import se.soderbjorn.lunicle.FirestorePermissionModelMigration
 import se.soderbjorn.lunicle.FirestoreRoleStore
 import se.soderbjorn.lunicle.FirestoreUserStore
 import se.soderbjorn.lunicle.InstanceRole
@@ -257,6 +258,53 @@ class FirestorePermissionMigrationTest {
                 "not a gate that stopped asking.",
         )
         assertTrue(access.canEditComment(ada, adasComment), "the author lost their own comment")
+    }
+
+    /**
+     * The legacy sweep finishes the collection, however the pages fall (LUS-16).
+     *
+     * The sweep used to re-query from the **front** with no cursor and stop the
+     * first time a page held nothing stale. Step 2 of this same migration writes one
+     * new-shape owner document per project into this collection under the same
+     * naming — and `2_1` sorts before `2_1_project_owner`, so those documents land
+     * *ahead* of the stale ones. Once a page-worth of them accumulates at the front,
+     * the front page is clean, the sweep stops, and the runner checkpoints the
+     * version: it never runs again.
+     *
+     * It does not fail open on authorisation — role lookups read a field the legacy
+     * documents lack, so a leftover grants no rung — but membership listing
+     * deliberately returns anyone with a row, and that feeds "who can see this
+     * project". Ex-members keep appearing in people pickers, mention autocomplete
+     * and notification recipient sets for boards they hold nothing on.
+     *
+     * Page size two and three projects, which is the only shape that triggers it and
+     * the one the existing tests never reach: they seed less than a page.
+     */
+    @Test
+    fun `the legacy sweep clears every page, not just the first`() = runBlocking {
+        oldUser(1, "sys", isSysAdmin = true)
+        oldUser(2, "ada")
+        (1L..3L).forEach { project ->
+            oldProject(project, "Project $project")
+            oldGrant(2, project, "project_owner")
+        }
+
+        FirestorePermissionModelMigration(pageSize = 2).apply(db)
+
+        val leftovers = db.collection(FirestoreRoleStore.GRANTS).get().await().documents
+            .filter { it.getString("roleKey") != null }
+        assertTrue(
+            leftovers.isEmpty(),
+            "The sweep stopped at the first clean page and left ${leftovers.size} legacy grant(s): " +
+                "${leftovers.map { it.id }}. Those keep their holders in every people picker and " +
+                "recipient set for boards they hold nothing on.",
+        )
+        // And the migration's actual work still landed, so this is not passing by
+        // having swept the collection flat.
+        val roles = FirestoreRoleStore(db)
+        (1L..3L).forEach { project ->
+            assertEquals(ProjectRole.OWNER, roles.roleFor(2, project), "project $project lost its owner")
+        }
     }
 
     // ── The old document shape, written by hand ──────────────────────────────

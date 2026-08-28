@@ -27,6 +27,7 @@ import io.ktor.server.request.receive
 import io.ktor.server.request.contentType
 import io.ktor.server.request.header
 import io.ktor.server.response.header
+import io.ktor.http.content.ByteArrayContent
 import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -995,6 +996,13 @@ private fun Route.projectRoutes(deps: BoardDependencies) {
             return@delete
         }
         deps.projectRepository.delete(id)
+        // Notifications sit outside the cascade on purpose — a pointer to a deleted
+        // issue is merely stale — but the row stores the *title* verbatim, so the
+        // titles of a deleted private project would stay readable in every
+        // recipient's list indefinitely (LUS-14). At the route rather than inside the
+        // repository, so the notification store does not have to be threaded into a
+        // class that has no other reason to know about it.
+        deps.notificationStore?.deleteForProject(id)
         logger.info("Project deleted: ${project.name} by user ${user?.id}")
         call.respond(HttpStatusCode.NoContent)
     }
@@ -1249,6 +1257,15 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "That title is too long.")
             return@put
         }
+        // The description had no cap at all until LUS-30 — only the title did —
+        // which made it the authenticated half of the unbounded-body finding, and
+        // the half that *persists*. See MAX_LONG_TEXT_LENGTH for why it is far
+        // larger than anything anybody types and far under anything that fills a
+        // volume.
+        tooLongMessage("description", body.description)?.let {
+            call.respond(HttpStatusCode.BadRequest, it)
+            return@put
+        }
         // Every id in the body is checked against *this issue's project* before
         // it is written. The composite foreign keys would refuse a foreign
         // label anyway — that is the point of them — but a constraint violation
@@ -1275,6 +1292,27 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             call.respond(HttpStatusCode.BadRequest, "Those labels or components do not belong to this project.")
             return@put
         }
+        // De-duplicated before the write (LUS-33). Membership was checked and
+        // uniqueness was not, and the writer does not de-duplicate either — so a
+        // repeated id violated the composite primary key on SQLite and threw. That
+        // surfaced as a 500 **after** the title and description had already been
+        // committed, so the request half-applied: the issue kept its new text and
+        // lost its new labels, with nothing on screen to say so.
+        //
+        // On Firestore there is no key to violate, so the duplicates simply landed in
+        // an unbounded array — and one request with enough repeats grows the document
+        // toward its hard size limit, after which the issue cannot be written at all.
+        //
+        // `.distinct()` rather than a refusal: a client that sent the same label
+        // twice means the label once, and there is nothing for a person to fix. The
+        // *count* is capped, because "every label on the project" is the honest
+        // ceiling and anything past it is not a client this server has.
+        val labelIds = body.labelIds.distinct()
+        val componentIds = body.componentIds.distinct()
+        if (labelIds.size > validLabels.size || componentIds.size > validComponents.size) {
+            call.respond(HttpStatusCode.BadRequest, "That is more labels or components than this project has.")
+            return@put
+        }
         // A NEW ticket must carry a label and/or a component when this project's
         // administrator has turned that on (LNL-106). Gated on isDraft — the first
         // publish — so switching a requirement on never blocks a later edit of an
@@ -1283,11 +1321,11 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
         // unfileable, so it is a no-op there rather than a trap the admin cannot see.
         if (issue.isDraft) {
             val project = deps.projects.findById(issue.projectId)
-            if (project?.requireLabel == true && validLabels.isNotEmpty() && body.labelIds.isEmpty()) {
+            if (project?.requireLabel == true && validLabels.isNotEmpty() && labelIds.isEmpty()) {
                 call.respond(HttpStatusCode.BadRequest, "This project requires a label on a new ticket.")
                 return@put
             }
-            if (project?.requireComponent == true && validComponents.isNotEmpty() && body.componentIds.isEmpty()) {
+            if (project?.requireComponent == true && validComponents.isNotEmpty() && componentIds.isEmpty()) {
                 call.respond(HttpStatusCode.BadRequest, "This project requires a component on a new ticket.")
                 return@put
             }
@@ -1374,8 +1412,8 @@ private fun Route.issueRoutes(deps: BoardDependencies) {
             estimate = estimate,
             plannedVersionId = plannedVersion,
             fixedVersionId = fixedVersion,
-            labelIds = body.labelIds,
-            componentIds = body.componentIds,
+            labelIds = labelIds,
+            componentIds = componentIds,
             actorId = user?.id,
             actor = user.asAuthor(),
         )
@@ -1882,6 +1920,25 @@ internal suspend fun BoardDependencies.resolveEstimate(
  *
  * Every issue route starts here: an issue is only as readable as its project,
  * and there is no route that reaches one without asking this question first.
+ *
+ * ── A draft is its author's, and nobody else's (LUS-15) ─────────────────────
+ *
+ * Board listings filter drafts out, but fetching an issue *by id* resolved any
+ * issue whose project the caller could read — and ids are sequential and global,
+ * so drafts were trivially enumerable.
+ *
+ * What leaked is not the text. A draft's title and description are empty until it
+ * is published; what it holds is the **inline attachments uploaded while
+ * composing**, because an image needs an owner row before it can be uploaded at
+ * all. So an unpublished screenshot was fetchable by every reader of the project.
+ *
+ * The comment-draft and message-draft paths already check authorship, which is
+ * what makes this an inconsistency rather than a considered stance. A project
+ * administrator is admitted alongside the author, matching those paths and keeping
+ * the sweep of abandoned drafts something a human can look at.
+ *
+ * 404 rather than 403, as everything else here does: "that draft is not yours"
+ * confirms the id names something.
  */
 internal suspend fun ApplicationCall.readableIssue(
     deps: BoardDependencies,
@@ -1898,6 +1955,10 @@ internal suspend fun ApplicationCall.readableIssue(
     }
     val project = deps.projects.findById(issue.projectId)
     if (project == null || !deps.access.canReadProject(user, project)) {
+        respond(HttpStatusCode.NotFound, "No such issue.")
+        return null
+    }
+    if (issue.isDraft && !deps.access.canReadDraft(user, issue)) {
         respond(HttpStatusCode.NotFound, "No such issue.")
         return null
     }
@@ -2132,6 +2193,10 @@ private fun Route.commentRoutes(deps: BoardDependencies) {
         }
         if (body.body.isBlank()) {
             call.respond(HttpStatusCode.BadRequest, "A comment needs something in it.")
+            return@put
+        }
+        tooLongMessage("comment", body.body)?.let {
+            call.respond(HttpStatusCode.BadRequest, it)
             return@put
         }
         deps.issueRepository.saveComment(comment.id, body.body, actorId = user?.id)
@@ -2630,13 +2695,32 @@ private suspend fun serveAttachment(deps: BoardDependencies, call: ApplicationCa
         return
     }
 
-    val file = deps.attachmentRepository.fileFor(record.storageKey)
-    if (!file.isFile) {
-        // The row exists and the file does not: the write half-failed, or a
+    // ── Resolved before the headers, on whichever backend this is (LUS-24) ───
+    //
+    // This used to be `fileFor`, which is disk-only and *throws* on any other
+    // store — so with LUNICLE_DB_BACKEND=firestore, where the graph wires exactly
+    // the store that is not disk-backed, every attachment download and inline view
+    // threw after the access check and answered a bare 500. Uploads succeeded and
+    // were billed; downloads all failed.
+    //
+    // Resolved here, above the header block, and deliberately so. The headers below
+    // are the most dangerous lines in the server and there must be exactly one copy
+    // of them — a second `respond` branch further down that had grown its own
+    // disposition and nosniff is precisely the regression the attachment tests
+    // would not have caught, which is why they are now parameterised over both
+    // stores.
+    //
+    // The disk branch stays byte-for-byte what it was: `LocalFileContent` never
+    // lands the bytes in the heap, which is the whole reason attachments are files
+    // and not BLOBs. A store with no such path pays the heap it cannot avoid.
+    val diskFile = deps.attachmentRepository.diskFileFor(record.storageKey)
+    val bytes = if (diskFile == null) deps.attachmentRepository.bytesFor(record.storageKey) else null
+    if (diskFile?.isFile == false || (diskFile == null && bytes == null)) {
+        // The row exists and the object does not: the write half-failed, or a
         // sweep was wrong. Worth a warning — it is the one failure mode the
         // file-not-BLOB decision accepts, so a rash of these is the signal
         // that the trade went bad.
-        logger.warn("Attachment ${record.id} has no file at ${record.storageKey}")
+        logger.warn("Attachment ${record.id} has no bytes at ${record.storageKey}")
         call.respond(HttpStatusCode.NotFound, "That attachment is missing.")
         return
     }
@@ -2730,7 +2814,15 @@ private suspend fun serveAttachment(deps: BoardDependencies, call: ApplicationCa
     // the inert answer, and by then the disposition is already `attachment`.
     val contentType = runCatching { ContentType.parse(record.mimeType) }
         .getOrElse { ContentType.Application.OctetStream }
-    call.respond(LocalFileContent(file, contentType))
+    // One `respond`, two bodies. Every header above has already been set, so the
+    // choice of backend cannot change what the browser is told about these bytes —
+    // which is the property LUS-24's fix exists to preserve, and the one a second
+    // branch further up would have quietly lost.
+    if (diskFile != null) {
+        call.respond(LocalFileContent(diskFile, contentType))
+    } else {
+        call.respond(ByteArrayContent(bytes!!, contentType))
+    }
 }
 
 /** An upload's three facts, once the request has been read. */

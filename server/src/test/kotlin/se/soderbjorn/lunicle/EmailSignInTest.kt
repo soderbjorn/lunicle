@@ -361,22 +361,46 @@ class EmailSignInTest {
      * The address key. Each request here comes from a different forwarded client
      * address, so only the per-address bucket can refuse them — which is exactly
      * the botnet-on-one-target case the composed key exists for.
+     *
+     * ── And it refuses in SILENCE (LUS-13) ───────────────────────────────────
+     *
+     * This test used to assert a 429 on the sixth request, which was the review's
+     * "weak activity oracle": ask about an address from a fresh client, and the
+     * status code told you whether somebody had been asking about it lately. The
+     * limiter's own documentation had claimed all along that this endpoint answers
+     * with its ordinary response instead of refusing; the code did not, and this
+     * test was pinning the code.
+     *
+     * So the sixth request is a 204 like every other, and what has to be asserted is
+     * that **no mail went** — which is the only observable difference there should
+     * be, and is not observable from outside at all.
+     *
+     * Pinned to one trusted proxy hop, or the forwarded addresses mean nothing and
+     * this passes for the wrong reason: with the default of zero (LUS-31) every
+     * request shares the engine's socket peer, so the *client* bucket would be doing
+     * the refusing and the assertion would no longer be about the address at all.
      */
     @Test
-    fun `one address is refused however many clients ask for it`(): Unit = runBlocking {
-        withRoutes { client ->
-            repeat(5) { attempt ->
+    fun `one address is refused, silently, however many clients ask for it`(): Unit = runBlocking {
+        withTrustedProxyHops(1) {
+            withRoutes { client ->
+                repeat(5) { attempt ->
+                    assertEquals(
+                        HttpStatusCode.NoContent,
+                        client.request("victim@example.com", from = "203.0.113.$attempt").status,
+                        "Request ${attempt + 1} of 5 was refused.",
+                    )
+                }
+                assertEquals(5, sent.size, "The first five requests did not each send a code.")
+
                 assertEquals(
                     HttpStatusCode.NoContent,
-                    client.request("victim@example.com", from = "203.0.113.$attempt").status,
-                    "Request ${attempt + 1} of 5 was refused.",
+                    client.request("victim@example.com", from = "203.0.113.99").status,
+                    "The status code told a fresh client that somebody has been asking about this " +
+                        "address — which is the oracle this endpoint's silence exists to prevent.",
                 )
+                assertEquals(5, sent.size, "A sixth client mailed the same address inside the window.")
             }
-            assertEquals(
-                HttpStatusCode.TooManyRequests,
-                client.request("victim@example.com", from = "203.0.113.99").status,
-                "A sixth client mailed the same address inside the window.",
-            )
         }
     }
 
@@ -489,6 +513,87 @@ class EmailSignInTest {
         }
     }
 
+    // ── Redemption is metered too (LUS-11) ───────────────────────────────────
+
+    /**
+     * The limiter guarded the endpoint that *issues* a code and not the one that
+     * spends it, so a tight loop of wrong guesses ran unbounded.
+     *
+     * Brute force was never the risk — the issued row caps guesses at five. What
+     * ran unbounded was a **targeted lockout**: poll redeem against a victim's
+     * address and every code they request dies within milliseconds of arriving, by
+     * the fifth wrong guess, while they see only the deliberately uniform "that code
+     * is not right". Plus a server-wide stall, since every call runs a SQLite
+     * transaction on the single-threaded dispatcher.
+     *
+     * Ten from one client in one window, then a 429 — which leaks nothing here, on a
+     * route that already speaks plainly about e-mail sign-in to a caller mid-flow.
+     */
+    @Test
+    fun `redeem is rate limited`(): Unit = runBlocking {
+        withRoutes { client ->
+            repeat(10) {
+                assertEquals(
+                    HttpStatusCode.BadRequest,
+                    client.redeem("victim@example.com", "000000", from = "9.9.9.9").status,
+                    "A wrong code stopped answering with the uniform refusal.",
+                )
+            }
+            assertEquals(
+                HttpStatusCode.TooManyRequests,
+                client.redeem("victim@example.com", "000000", from = "9.9.9.9").status,
+                "Redeem is still unmetered — a wrong-code loop can destroy every code a " +
+                    "victim requests, and stalls the database while it does.",
+            )
+        }
+    }
+
+    /**
+     * And it is keyed on the client too, so one host cannot walk a list of addresses.
+     *
+     * Run with one trusted proxy hop, which is what makes `X-Forwarded-For` mean
+     * anything: the default is now zero (LUS-31), under which the header is ignored
+     * and every request in a test shares the engine's constant socket peer. Two
+     * clients that cannot be told apart cannot demonstrate a per-client bucket.
+     */
+    @Test
+    fun `redeem's limit follows the client across addresses`(): Unit = runBlocking {
+        withTrustedProxyHops(1) {
+            withRoutes { client ->
+                repeat(10) { client.redeem("victim$it@example.com", "000000", from = "9.9.9.9") }
+                assertEquals(
+                    HttpStatusCode.TooManyRequests,
+                    client.redeem("someone-else@example.com", "000000", from = "9.9.9.9").status,
+                    "One client walked a list of addresses at full speed.",
+                )
+                assertEquals(
+                    HttpStatusCode.BadRequest,
+                    client.redeem("someone-else@example.com", "000000", from = "8.8.8.8").status,
+                    "An unrelated client was locked out by somebody else's spending.",
+                )
+            }
+        }
+    }
+
+    /**
+     * Run [block] with the trusted-hop count pinned, and restore it afterwards.
+     *
+     * The count is read per call through [resolveTrustedProxyHops], so a system
+     * property is enough — and it has to be said out loud now that the default is
+     * zero, which is the safe answer for a directly exposed server and the reason a
+     * forwarded header means nothing unless a test asks for it to.
+     */
+    private inline fun withTrustedProxyHops(hops: Int, block: () -> Unit) {
+        val property = "lunicle.trustedProxyHops"
+        val saved = System.getProperty(property)
+        try {
+            System.setProperty(property, hops.toString())
+            block()
+        } finally {
+            if (saved == null) System.clearProperty(property) else System.setProperty(property, saved)
+        }
+    }
+
     // ── Plumbing ─────────────────────────────────────────────────────────────
 
     private fun emailCodes(sender: ResendEmailTransport? = capturingSender()) =
@@ -541,9 +646,10 @@ class EmailSignInTest {
             setBody(EmailSignInRequest(email))
         }
 
-    private suspend fun HttpClient.redeem(email: String, code: String): HttpResponse =
+    private suspend fun HttpClient.redeem(email: String, code: String, from: String? = null): HttpResponse =
         post(ApiRoutes.AUTH_EMAIL_REDEEM) {
             contentType(ContentType.Application.Json)
+            if (from != null) header("X-Forwarded-For", from)
             setBody(EmailSignInRedeemRequest(email, code))
         }
 
