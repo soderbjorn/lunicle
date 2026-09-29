@@ -92,5 +92,12 @@ WORKDIR /data
 # reads it (see resolvePort in Application.kt). This is the local-run default.
 EXPOSE 8080
 
+# An explicit heap cap, because the JVM otherwise sizes itself from the
+# container limit. Railway reports that limit as 8 GB, so an uncapped server
+# sat on ~500 MB while nearly idle — and Railway bills for memory held, not
+# memory used. 384m leaves room for several concurrent attachment uploads,
+# which are buffered whole (up to MAX_ATTACHMENT_BYTES, 25 MB, each).
+# SerialGC because this is a small server: G1's per-core threads and regions
+# are overhead with nothing to parallelise.
 ENTRYPOINT ["/usr/local/bin/container-entrypoint.sh"]
-CMD ["java", "-jar", "/app/server.jar"]
+CMD ["java", "-Xmx384m", "-XX:+UseSerialGC", "-jar", "/app/server.jar"]
