@@ -164,6 +164,11 @@ data class AdminUser(
  *   than derived in the browser so the view keeps making no decisions, and so a tier
  *   added later needs no new branch in a renderer.
  * @property agentsKey likewise for [mayUseAgents].
+ * @property mayUseApi whether this tier is permitted personal access tokens and the REST
+ *   API (LNL-222). A third switch beside the agents one rather than folded into it — see
+ *   [InstanceSettingKey.STAFF_MAY_USE_API].
+ * @property apiKey the switch [mayUseApi] writes. Nullable only so an older server's
+ *   payload still decodes; every card this build sends carries it.
  * @property grantRefusal why nothing further may be *given* to this tier, or null when
  *   it may (LNL-210). Set where nobody who can sign in stands at the tier at all: a
  *   switch turned on there promises a permission to a set no arriving account is in,
@@ -192,6 +197,8 @@ data class TierCard(
     val mayUseAgents: Boolean = false,
     val createKey: InstanceSettingKey,
     val agentsKey: InstanceSettingKey,
+    val mayUseApi: Boolean = false,
+    val apiKey: InstanceSettingKey? = null,
     val grantRefusal: String? = null,
 )
 

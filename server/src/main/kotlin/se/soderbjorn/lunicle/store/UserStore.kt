@@ -104,6 +104,16 @@ interface UserStore {
     suspend fun setMcpEnabled(id: Long, isEnabled: Boolean)
 
     /**
+     * Whether the account has switched API access on for itself (LNL-222). False for an
+     * unknown id. A read of its own rather than a [UserRecord] field, so the hot session
+     * lookup does not carry a column only `/api/v1` reads — see Users.sq's `api_enabled`.
+     */
+    suspend fun isApiEnabled(id: Long): Boolean
+
+    /** The account's own API-access switch. */
+    suspend fun setApiEnabled(id: Long, isEnabled: Boolean)
+
+    /**
      * The derived staff/member kind. Written by sign-in and by the startup stamp,
      * both from [UserKind.forEmail], and by nothing else.
      */

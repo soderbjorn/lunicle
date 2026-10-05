@@ -307,6 +307,16 @@ class FirestoreUserStore(
         doc(id).update(MCP_ENABLED, isEnabled).await()
     }
 
+    /** The API switch (LNL-222). A missing field — every document written before it — reads as off. */
+    override suspend fun isApiEnabled(id: Long): Boolean {
+        val snapshot = doc(id).get().await()
+        return snapshot.exists() && snapshot.getBoolean(API_ENABLED) == true
+    }
+
+    override suspend fun setApiEnabled(id: Long, isEnabled: Boolean) {
+        doc(id).update(API_ENABLED, isEnabled).await()
+    }
+
     override suspend fun setKind(id: Long, kind: UserKind) {
         doc(id).update(KIND, kind.key).await()
     }
@@ -329,6 +339,7 @@ class FirestoreUserStore(
         const val KIND = "kind"
         const val INSTANCE_ROLE = "instanceRole"
         const val MCP_ENABLED = "mcpEnabled"
+        const val API_ENABLED = "apiEnabled"
 
         /**
          * When the row appeared — renamed from `createdAt` in LNL-191, because a row

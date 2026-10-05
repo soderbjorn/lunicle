@@ -78,6 +78,10 @@ data class InstanceSettings(
     val staffMayUseAgents: Boolean = false,
     /** Whether the member tier is permitted to connect an agent. See [permitsAgents]. */
     val memberMayUseAgents: Boolean = false,
+    /** Whether the staff tier is permitted personal access tokens (LNL-222). See [permitsApi]. */
+    val staffMayUseApi: Boolean = false,
+    /** Whether the member tier is permitted personal access tokens (LNL-222). See [permitsApi]. */
+    val memberMayUseApi: Boolean = false,
     /**
      * Who owns this deployment — the top of the instance ladder — or null if nobody
      * does yet (LNL-191).
@@ -147,6 +151,19 @@ data class InstanceSettings(
         role.atLeast(InstanceRole.ADMIN) -> true
         role == InstanceRole.STAFF -> staffMayUseAgents
         role == InstanceRole.MEMBER -> memberMayUseAgents
+        else -> false
+    }
+
+    /**
+     * Is somebody standing at [role] *permitted* to use the REST API (LNL-222)?
+     *
+     * [permitsAgents]'s shape over the API's own pair of switches. Permission and never
+     * access — the person's own API switch is the other half. See `canUseApi`.
+     */
+    fun permitsApi(role: InstanceRole): Boolean = when {
+        role.atLeast(InstanceRole.ADMIN) -> true
+        role == InstanceRole.STAFF -> staffMayUseApi
+        role == InstanceRole.MEMBER -> memberMayUseApi
         else -> false
     }
 }

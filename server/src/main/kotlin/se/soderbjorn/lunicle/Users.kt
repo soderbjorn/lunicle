@@ -269,6 +269,35 @@ suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.permitsAgentsFor(u
 suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.canUseMcp(user: UserRecord?): Boolean =
     user != null && user.isMcpEnabled && permitsAgentsFor(user)
 
+/**
+ * Is this user's tier *permitted* personal access tokens and the REST API (LNL-222)?
+ *
+ * The API's counterpart of [permitsAgentsFor], over its own pair of tier switches. An
+ * instance administrator and the owner are permitted without a switch, being senior to
+ * both tiers — see [InstanceSettings.permitsApi].
+ */
+suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.permitsApiFor(user: UserRecord?): Boolean {
+    if (user == null) return false
+    val settings = current()
+    return settings.permitsApi(user.instanceRoleWith(settings.ownerUserId))
+}
+
+/**
+ * May a personal access token act as this user right now?
+ *
+ * **The only thing an `/api/v1` gate should read**, for [canUseMcp]'s reason: both terms,
+ * every time — the tier has to be permitted ([permitsApiFor]) and the person has to have
+ * switched API access on ([se.soderbjorn.lunicle.store.UserStore.isApiEnabled]). Re-read
+ * per request, which is what makes either switch a kill switch rather than a preference.
+ *
+ * Takes the user store because the person's half is not on [UserRecord] — see Users.sq's
+ * `api_enabled` for why.
+ */
+suspend fun se.soderbjorn.lunicle.store.InstanceSettingsStore.canUseApi(
+    user: UserRecord?,
+    users: se.soderbjorn.lunicle.store.UserStore,
+): Boolean = user != null && permitsApiFor(user) && users.isApiEnabled(user.id)
+
 /** What goes in `created_by`. Null for both other cases; see [Author]. */
 val Author.accountId: Long? get() = (this as? Author.Account)?.id
 
@@ -624,6 +653,24 @@ class UserStore(
      */
     override suspend fun setMcpEnabled(id: Long, isEnabled: Boolean): Unit = withContext(DatabaseDispatcher) {
         database.usersQueries.setMcpEnabled(if (isEnabled) 1L else 0L, id)
+    }
+
+    /**
+     * Whether this user has turned API access on for themselves (LNL-222). A separate
+     * primary-key read, deliberately — see Users.sq's `api_enabled` for why it is not on
+     * [UserRecord].
+     */
+    override suspend fun isApiEnabled(id: Long): Boolean = withContext(DatabaseDispatcher) {
+        database.usersQueries.findApiEnabled(id).executeAsOneOrNull() == 1L
+    }
+
+    /**
+     * Turn this user's own API switch on or off. Like [setMcpEnabled], a gate and not
+     * a purge: their tokens are untouched either way, and every one of them works
+     * again the moment it is switched back on.
+     */
+    override suspend fun setApiEnabled(id: Long, isEnabled: Boolean): Unit = withContext(DatabaseDispatcher) {
+        database.usersQueries.setApiEnabled(if (isEnabled) 1L else 0L, id)
     }
 
     /**

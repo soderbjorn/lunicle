@@ -37,6 +37,9 @@ import se.soderbjorn.lunicle.clientserver.IssueDraft
 import se.soderbjorn.lunicle.clientserver.IssueUpdate
 import se.soderbjorn.lunicle.clientserver.LunicleApi
 import se.soderbjorn.lunicle.clientserver.McpState
+import se.soderbjorn.lunicle.clientserver.ApiAccessState
+import se.soderbjorn.lunicle.clientserver.CreateApiTokenRequest
+import se.soderbjorn.lunicle.clientserver.CreatedApiToken
 import se.soderbjorn.lunicle.clientserver.ProjectListState
 import se.soderbjorn.lunicle.clientserver.ConversationDetail
 import se.soderbjorn.lunicle.clientserver.ConversationDraft
@@ -99,6 +102,11 @@ class StorageRepository(
     suspend fun mcpState(): McpState = api.mcpState()
     suspend fun setMcpEnabled(isEnabled: Boolean): McpState = api.setMcpEnabled(isEnabled)
     suspend fun revokeMcpConnection(clientId: String): McpState = api.revokeMcpConnection(clientId)
+
+    suspend fun apiAccessState(): ApiAccessState = api.apiAccessState()
+    suspend fun setApiEnabled(isEnabled: Boolean): ApiAccessState = api.setApiEnabled(isEnabled)
+    suspend fun createApiToken(request: CreateApiTokenRequest): CreatedApiToken = api.createApiToken(request)
+    suspend fun revokeApiToken(id: Long): ApiAccessState = api.revokeApiToken(id)
 
     // ── The opening move ─────────────────────────────────────────────────────
 

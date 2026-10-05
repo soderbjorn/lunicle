@@ -111,7 +111,7 @@ const val TIERS_TITLE: String = "What each tier may do"
 /** What the tier cards are, under their heading. */
 const val TIERS_HINT: String =
     "Guests are not listed: a guest is the absence of an account, so there is nothing to " +
-        "permit. Instance administrators and the owner may do both regardless — they are " +
+        "permit. Instance administrators and the owner may do all of it regardless — they are " +
         "senior to every tier here."
 
 /** The label beside a tier's project-creation switch. */
@@ -120,10 +120,13 @@ const val TIER_CREATE_LABEL: String = "May create projects (becoming its owner)"
 /** The label beside a tier's agent-access switch. */
 const val TIER_AGENTS_LABEL: String = "Allow agent access (MCP) — permission only"
 
-/** What "permission only" means, said once under the pair. */
+/** The label beside a tier's REST API switch (LNL-222). */
+const val TIER_API_LABEL: String = "Allow API tokens (REST) — permission only"
+
+/** What "permission only" means, said once under the switches. */
 const val TIER_AGENTS_HINT: String =
-    "Each person still switches agent access on themselves, in the You tab. This decides " +
-        "whether they may."
+    "Each person still switches agent access and API access on themselves, in the You tab. " +
+        "These decide whether they may."
 
 /** The heading over the new-project audience rows. */
 const val NEW_PROJECT_TITLE: String = "What a new project starts with"

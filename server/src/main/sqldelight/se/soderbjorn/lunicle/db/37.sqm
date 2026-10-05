@@ -1,0 +1,43 @@
+-- Version 37 → 38: personal access tokens for the REST API (LNL-222).
+--
+-- Three things, designed together:
+--
+--  * one new table — `api_tokens`, the tokens themselves;
+--  * one new `users` column — `api_enabled`, the person's own switch;
+--  * one new `issue_events` column — `via_token`, which token a change was made with.
+--
+-- The reasoning for each lives beside it in the .sq files — ApiTokens.sq, Users.sq's
+-- api_enabled and IssueEvents.sq's via_token — and is not repeated here.
+--
+-- Plain ALTER TABLE for both columns: each is single-column and either nullable or
+-- NOT NULL with a constant default, the case 36.sqm describes. The CREATE below is
+-- duplicated from ApiTokens.sq minus its prose and must stay in step with it —
+-- MigrationTest compares the two.
+--
+-- ── Nothing to back-fill ────────────────────────────────────────────────────
+--
+-- `api_enabled` defaults to 0, which lands every existing account on "no API access"
+-- — the state it was in before the column existed, and the only honest one: nobody
+-- has asked for it yet. `via_token` is NULL on every event that exists, which is
+-- correct rather than a guess, since no token could have written one. And there are
+-- no tokens to migrate.
+
+CREATE TABLE api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER,
+    expires_at INTEGER,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX api_tokens_user_idx ON api_tokens (user_id);
+
+ALTER TABLE users ADD COLUMN api_enabled INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE issue_events ADD COLUMN via_token TEXT;

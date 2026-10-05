@@ -39,6 +39,8 @@ interface IssueEventStore {
      *   now. One value for the whole batch, so the events of a single save never
      *   appear to have happened at two different times; ordering within the batch is
      *   the id's job. The one caller that passes it is the MCP backfill path.
+     * @param viaToken the name of the personal access token these changes were made
+     *   with, or null for the web app and MCP (LNL-222). See IssueEvents.sq `via_token`.
      */
     suspend fun append(
         issueId: Long,
@@ -46,6 +48,7 @@ interface IssueEventStore {
         author: Author,
         agentName: String? = null,
         createdAt: Long? = null,
+        viaToken: String? = null,
     )
 
     /**

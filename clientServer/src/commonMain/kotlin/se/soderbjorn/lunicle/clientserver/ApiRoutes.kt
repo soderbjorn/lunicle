@@ -189,6 +189,28 @@ object ApiRoutes {
     fun mcpConnection(clientId: String): String = "$MCP/connections/$clientId"
 
     /**
+     * `GET` — the caller's API access section as an [ApiAccessState]: whether their
+     * tier may use the API, their own switch, and the tokens they have made (LNL-222).
+     *
+     * Session-cookie authenticated, like [MCP]: this is the human's view of their
+     * tokens. The tokens themselves are presented to `/api/v1`, never here.
+     */
+    const val API_ACCESS: String = "/api/api-access"
+
+    /** `POST` — set the person's own API switch from an [ApiEnabledRequest]. Returns the new [ApiAccessState]. */
+    const val API_ACCESS_ENABLED: String = "/api/api-access/enabled"
+
+    /** `POST` — make a token from a [CreateApiTokenRequest]. Returns a [CreatedApiToken]. */
+    const val API_ACCESS_TOKENS: String = "/api/api-access/tokens"
+
+    /**
+     * `DELETE` — revoke one of the caller's own tokens. Returns the new [ApiAccessState].
+     * Scoped to the session's user server-side; an id that is not theirs is silently a
+     * no-op, so the route cannot be used to learn which ids exist.
+     */
+    fun apiToken(id: Long): String = "$API_ACCESS_TOKENS/$id"
+
+    /**
      * `GET` — every account on this instance, as an [AdminSettingsState].
      *
      * Admin only, and refused outright — 403, not a narrowed payload. Unlike

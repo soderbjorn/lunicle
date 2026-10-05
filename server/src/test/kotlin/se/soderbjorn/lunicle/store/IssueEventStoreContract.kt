@@ -101,6 +101,30 @@ abstract class IssueEventStoreContract {
     }
 
     /**
+     * Which personal access token a change was made with (LNL-222): carried onto every
+     * event of the batch, absent — null, not empty — on a batch written without one, and
+     * untouched by a reattribution, which corrects who and when but never how.
+     */
+    @Test
+    fun `append carries the token a change was made with, and only when there was one`() = runBlocking {
+        val issue = newIssue()
+        store.append(issue, listOf(NewIssueEvent(IssueEventKind.CREATED)), Author.Nobody, createdAt = 1_000)
+        store.append(
+            issue,
+            listOf(NewIssueEvent(IssueEventKind.TITLE_CHANGED, value = "T"), NewIssueEvent(IssueEventKind.STATUS_CHANGED, value = "Done")),
+            Author.Nobody,
+            createdAt = 2_000,
+            viaToken = "CI",
+        )
+        val history = store.forIssue(issue)
+        assertEquals(listOf(null, "CI", "CI"), history.map { it.viaToken })
+
+        val stamped = history.last()
+        store.reattribute(stamped.id, Author.External("Someone"), 2_500, agentName = null)
+        assertEquals("CI", store.forIssue(issue).last().viaToken, "A reattribution erased the token.")
+    }
+
+    /**
      * The relation kind an event snapshots, and the null on every event that is not
      * about a link (LNL-215).
      *

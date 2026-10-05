@@ -188,5 +188,7 @@ private fun InstanceSettingKey.isOn(settings: InstanceSettings): Boolean = when 
     InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS -> settings.memberMayCreateProjects
     InstanceSettingKey.STAFF_MAY_USE_AGENTS -> settings.staffMayUseAgents
     InstanceSettingKey.MEMBER_MAY_USE_AGENTS -> settings.memberMayUseAgents
+    InstanceSettingKey.STAFF_MAY_USE_API -> settings.staffMayUseApi
+    InstanceSettingKey.MEMBER_MAY_USE_API -> settings.memberMayUseApi
     InstanceSettingKey.HIDE_DISPLAY_NAME -> settings.hideDisplayName
 }

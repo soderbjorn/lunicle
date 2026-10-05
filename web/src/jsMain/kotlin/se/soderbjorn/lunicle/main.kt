@@ -74,6 +74,7 @@ import se.soderbjorn.lunicle.client.parseTicket
 import se.soderbjorn.lunicle.client.viewmodel.ActiveDialog
 import se.soderbjorn.lunicle.client.viewmodel.CommentBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.AdminSettingsBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.ApiAccessBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.EditProjectBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.EditorDirtyRegistry
@@ -2791,6 +2792,7 @@ private class SettingsPanes(
         }
         val pane = SettingsPane(
             viewModel = ConnectionsBackingViewModel(storage, paneScope),
+            apiViewModel = ApiAccessBackingViewModel(storage, paneScope),
             sessionViewModel = sessionViewModel,
             scope = paneScope,
             shell = PaneShell(),

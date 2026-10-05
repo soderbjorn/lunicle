@@ -64,6 +64,7 @@ import se.soderbjorn.lunicle.client.viewmodel.TIERS_HINT
 import se.soderbjorn.lunicle.client.viewmodel.TIERS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.TIER_AGENTS_HINT
 import se.soderbjorn.lunicle.client.viewmodel.TIER_AGENTS_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.TIER_API_LABEL
 import se.soderbjorn.lunicle.client.viewmodel.TIER_CREATE_LABEL
 import se.soderbjorn.lunicle.client.viewmodel.DEPLOYMENT_HINT
 import se.soderbjorn.lunicle.client.viewmodel.DEPLOYMENT_TITLE
@@ -302,7 +303,7 @@ class InstanceTabs(
     /** One card per tier, rebuilt only when they changed. */
     private fun renderTiers(state: AdminSettingsBackingViewModel.State) {
         val signature = "${state.areInstanceTogglesEnabled}|" + state.tiers.joinToString("|") {
-            "${it.key}:${it.accountCount}:${it.mayCreateProjects}/${it.mayUseAgents}:" +
+            "${it.key}:${it.accountCount}:${it.mayCreateProjects}/${it.mayUseAgents}/${it.mayUseApi}:" +
                 "${it.subtitle}:${it.grantRefusal}"
         }
         if (signature == tierSignature) return
@@ -332,6 +333,14 @@ class InstanceTabs(
         val agents = Toggle { viewModel.onInstanceSettingToggled(tier.agentsKey, it) }
         agents.checked = tier.mayUseAgents
         agents.disabled = !isEnabled || isFrozenOff(tier.mayUseAgents)
+        // The REST API's own switch (LNL-222). Null only from a server older than this
+        // client, which has no such switch to show.
+        val api = tier.apiKey?.let { key ->
+            Toggle { viewModel.onInstanceSettingToggled(key, it) }.also {
+                it.checked = tier.mayUseApi
+                it.disabled = !isEnabled || isFrozenOff(tier.mayUseApi)
+            }
+        }
         val card = element("div", "tier-card").children(
             heading,
             element("p", "field-hint", tier.subtitle),
@@ -339,11 +348,12 @@ class InstanceTabs(
         // Above the switches, not below them: this says why they are dead, and a reader
         // who has already tried one has been told too late.
         tier.grantRefusal?.let { card.appendChild(element("p", "tier-card-refusal", it)) }
-        return card.children(
+        card.children(
             toggleRow(create, TIER_CREATE_LABEL),
             toggleRow(agents, TIER_AGENTS_LABEL),
-            element("p", "field-hint", TIER_AGENTS_HINT),
         )
+        api?.let { card.appendChild(toggleRow(it, TIER_API_LABEL)) }
+        return card.children(element("p", "field-hint", TIER_AGENTS_HINT))
     }
 
     /** "3 accounts", and "1 account" — a count nobody has to decode. */

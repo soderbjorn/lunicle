@@ -880,6 +880,13 @@ data class IssueEventView(
      * this into "linked this as Blocked by LNL-9".
      */
     val relationKind: String? = null,
+    /**
+     * The personal access token this change was made with, by the name it had at the
+     * time, or null when it was made in the web app or by an agent (LNL-222). Rendered
+     * as "via API token "CI"" after the sentence — a note on how, never a second author
+     * and never the agent badge. See the server's IssueEvents.sq `via_token`.
+     */
+    val viaToken: String? = null,
 )
 
 /**

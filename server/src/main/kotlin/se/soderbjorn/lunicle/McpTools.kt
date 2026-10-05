@@ -233,6 +233,24 @@ import se.soderbjorn.lunicle.clientserver.VocabularyKind
 import se.soderbjorn.lunicle.clientserver.formatByteSize
 
 /**
+ * Which front door a [McpTools] instance stands behind (LNL-222).
+ *
+ * The tools are one implementation shared by two transports — `/mcp` and the REST
+ * API — and this is the single fact the implementation needs about which one is
+ * asking. Kept to what genuinely differs, which today is one question: see
+ * [McpTools.reaches]. Everything else — the tool table, every refusal, every
+ * AccessControl check — is the same code, and that sameness is the whole argument
+ * that the API adds a caller and not a capability.
+ */
+enum class ToolSurface {
+    /** `/mcp`: an AI agent acting for a person. The agent floor applies. */
+    MCP,
+
+    /** `/api/v1`: a personal access token, which is the person. See [McpTools.reaches]. */
+    REST_API,
+}
+
+/**
  * One tool, as `tools/list` describes it.
  *
  * @property description what the agent reads to decide whether to call it. Per-tool
@@ -252,10 +270,17 @@ data class McpTool(
  *   a *tool* error, not a JSON-RPC one: the call was well-formed and the server
  *   understood it, and the answer is "no". A protocol error would mean the agent
  *   is broken; this means the user cannot do that. See [McpTools.call].
+ * @property structured the machine-readable facts a sentence-shaped answer carries —
+ *   the new issue's id and key, the new comment's id — for the REST API, which has to
+ *   hand a program something it can read rather than parse (LNL-222). Set only by the
+ *   tools that *create* something, because every other write is addressed by ids the
+ *   caller already sent. Never sent over MCP: an agent already reads the sentence, and
+ *   `/mcp`'s responses are left exactly as they were.
  */
 data class McpToolResult(
     val content: List<JsonElement>,
     val isError: Boolean = false,
+    val structured: JsonObject? = null,
 )
 
 /** Wrap text as MCP tool content. */
@@ -265,6 +290,10 @@ private fun textContent(text: String): JsonElement = buildJsonObject {
 }
 
 private fun ok(text: String) = McpToolResult(listOf(textContent(text)))
+
+/** A sentence for the agent, plus the [McpToolResult.structured] facts for the REST API. */
+private fun ok(text: String, structured: JsonObject) =
+    McpToolResult(listOf(textContent(text)), structured = structured)
 
 /** A structured answer. Rendered as pretty JSON inside a text block, which is what agents parse best. */
 private fun ok(value: JsonElement) = McpToolResult(listOf(textContent(McpJson.encodeToString(JsonElement.serializer(), value))))
@@ -655,7 +684,10 @@ private fun boolProp(description: String): JsonObject = buildJsonObject {
  *   set, because "the MCP surface is a second front door onto code that has
  *   already been reasoned about" is only true if it is literally the same code.
  */
-class McpTools(private val deps: BoardDependencies) {
+class McpTools(
+    private val deps: BoardDependencies,
+    private val surface: ToolSurface = ToolSurface.MCP,
+) {
 
     /**
      * Every tool this server has, whoever is asking.
@@ -727,7 +759,8 @@ class McpTools(private val deps: BoardDependencies) {
                 "last-touched stamp for any edit and cannot tell a close from a later typo " +
                 "fix. Each entry has an `id` and a `kind` — CREATED, TITLE_CHANGED, DESCRIPTION_CHANGED, " +
                 "STATUS_CHANGED, ASSIGNEE_CHANGED, LABELS_CHANGED, COMPONENTS_CHANGED — plus " +
-                "`author`, `createdAt`, and `agentName` when an agent made the change. " +
+                "`author`, `createdAt`, `agentName` when an agent made the change, and " +
+                "`viaToken` naming the personal access token when one was used. " +
                 "STATUS_CHANGED and TITLE_CHANGED carry the new value in `value`; " +
                 "ASSIGNEE_CHANGED carries the new assignee there, and omits it when the issue " +
                 "was unassigned. LABELS_CHANGED and COMPONENTS_CHANGED carry the whole set as " +
@@ -1814,13 +1847,14 @@ class McpTools(private val deps: BoardDependencies) {
         // reach does not appear — it is not returned and hidden, because there is no UI
         // here to do the hiding and there never should have been.
         //
-        // The filter is the agent floor and NOT canReadProject, so this list is narrower
-        // than the project rail in the person's own browser: boards they can only look at
-        // are simply not here. That is the point rather than an inconsistency — see
+        // Over MCP the filter is the agent floor and NOT canReadProject, so this list is
+        // narrower than the project rail in the person's own browser: boards they can only
+        // look at are simply not here. (Over the REST API it is canReadProject, and the
+        // list matches the rail — see [reaches].) That is the point rather than an inconsistency — see
         // AccessControl.canAgentReachProject — and it is why the server instructions say
         // so out loud. An agent that finds fewer projects than its user expects has to be
         // able to explain why without guessing.
-        val visible = deps.projects.selectAll().filter { deps.access.canAgentReachProject(user, it) }
+        val visible = deps.projects.selectAll().filter { reaches(user, it) }
         return ok(
             buildJsonArray {
                 visible.forEach { project ->
@@ -2298,6 +2332,8 @@ class McpTools(private val deps: BoardDependencies) {
                                 }
                                 put("author", event.author.displayName(authors))
                                 event.agentName?.let { put("agentName", it) }
+                                // Which personal access token made it, when one did (LNL-222).
+                                event.viaToken?.let { put("viaToken", it) }
                                 put("createdAt", event.createdAt)
                             },
                         )
@@ -2476,7 +2512,13 @@ class McpTools(private val deps: BoardDependencies) {
             deps.issueRepository.delete(issue)
             throw failure
         }
-        return ok("Created ${project.namePrefix}-$number (issue id $issueId): $title")
+        return ok(
+            "Created ${project.namePrefix}-$number (issue id $issueId): $title",
+            buildJsonObject {
+                put("id", issueId)
+                put("key", "${project.namePrefix}-$number")
+            },
+        )
     }
 
     private suspend fun updateIssue(user: UserRecord, arguments: JsonObject): McpToolResult {
@@ -2863,7 +2905,7 @@ class McpTools(private val deps: BoardDependencies) {
         val kind = kinds.firstOrNull { it.name.equals(wanted, ignoreCase = true) }
             ?: return refuseRelationKind(kinds, wanted, issue, toIssueId)
 
-        deps.issueRepository
+        val relation = deps.issueRepository
             .addRelation(issue, toIssueId, kind.id, user.asAuthor(), agentName)
             .getOrElse { return refuse(it.message ?: "That link is not allowed.") }
 
@@ -2875,6 +2917,7 @@ class McpTools(private val deps: BoardDependencies) {
         return ok(
             "$here is now \"${kind.labelFrom}\" $there. The link is stored once and read from both " +
                 "ends: from $there it reads \"${kind.labelTo}\" $here.",
+            buildJsonObject { put("relationId", relation.id) },
         )
     }
 
@@ -3132,6 +3175,10 @@ class McpTools(private val deps: BoardDependencies) {
         return ok(
             "Created sprint \"${row.name}\" (sprint id ${row.id}) in ${project.name}. It is not active " +
                 "— start it with set_active_sprint.",
+            buildJsonObject {
+                put("id", row.id)
+                put("name", row.name)
+            },
         )
     }
 
@@ -3497,6 +3544,10 @@ class McpTools(private val deps: BoardDependencies) {
                     )
                 }
             },
+            buildJsonObject {
+                put("id", row.id)
+                put("name", row.name)
+            },
         )
     }
 
@@ -3739,7 +3790,13 @@ class McpTools(private val deps: BoardDependencies) {
             deps.comments.findById(commentId)?.let { deps.issueRepository.deleteComment(it) }
             throw failure
         }
-        return ok("Commented on issue ${issue.id}.")
+        return ok(
+            "Commented on issue ${issue.id}.",
+            buildJsonObject {
+                put("id", commentId)
+                put("issueId", issue.id)
+            },
+        )
     }
 
     /**
@@ -5470,11 +5527,30 @@ class McpTools(private val deps: BoardDependencies) {
      * the floor by the server instructions instead, where it belongs — see
      * [MCP_INSTRUCTIONS], which says it once rather than at every refusal.
      */
+    /**
+     * May [user] reach [project] on this [surface]?
+     *
+     * The one place the two surfaces differ, and the only question they answer
+     * differently. Over MCP it is the agent floor —
+     * [AccessControl.canAgentReachProject], Contributor and up (LNL-217). Over the
+     * REST API it is the person's own read rule, [AccessControl.canReadProject],
+     * because a personal access token is the person, not an agent acting for them:
+     * the floor exists because of what an agent might do unsupervised on a board its
+     * owner can only look at, and a script the owner wrote is not that (LNL-222).
+     * Writes are unaffected either way — every write tool still asks the same
+     * per-action AccessControl question, so a Viewer's token can read a board and do
+     * nothing else to it, exactly as in the web app.
+     */
+    private suspend fun reaches(user: UserRecord, project: ProjectRecord): Boolean = when (surface) {
+        ToolSurface.MCP -> deps.access.canAgentReachProject(user, project)
+        ToolSurface.REST_API -> deps.access.canReadProject(user, project)
+    }
+
     private suspend fun resolveProject(user: UserRecord, arguments: JsonObject): ProjectRecord? {
         val project = arguments.long("project_id")?.let { deps.projects.findById(it) }
             ?: arguments.string("project_name")?.let { deps.projects.findByName(it) }
             ?: return null
-        return project.takeIf { deps.access.canAgentReachProject(user, it) }
+        return project.takeIf { reaches(user, it) }
     }
 
     /**
@@ -5488,7 +5564,7 @@ class McpTools(private val deps: BoardDependencies) {
     private suspend fun readableIssue(user: UserRecord, arguments: JsonObject): IssueRecord? {
         val issue = arguments.long("issue_id")?.let { deps.issues.findById(it) } ?: return null
         val project = deps.projects.findById(issue.projectId) ?: return null
-        return issue.takeIf { deps.access.canAgentReachProject(user, project) }
+        return issue.takeIf { reaches(user, project) }
     }
 
     /**
@@ -5505,7 +5581,7 @@ class McpTools(private val deps: BoardDependencies) {
         val comment = arguments.long("comment_id")?.let { deps.comments.findById(it) } ?: return null
         val issue = deps.issues.findById(comment.issueId) ?: return null
         val project = deps.projects.findById(issue.projectId) ?: return null
-        return comment.takeIf { deps.access.canAgentReachProject(user, project) }
+        return comment.takeIf { reaches(user, project) }
     }
 
     /**

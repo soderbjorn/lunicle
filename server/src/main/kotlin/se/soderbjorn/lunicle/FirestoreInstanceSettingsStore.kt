@@ -60,6 +60,8 @@ class FirestoreInstanceSettingsStore(
             memberMayCreateProjects = values[InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS.storageKey] == true,
             staffMayUseAgents = values[InstanceSettingKey.STAFF_MAY_USE_AGENTS.storageKey] == true,
             memberMayUseAgents = values[InstanceSettingKey.MEMBER_MAY_USE_AGENTS.storageKey] == true,
+            staffMayUseApi = values[InstanceSettingKey.STAFF_MAY_USE_API.storageKey] == true,
+            memberMayUseApi = values[InstanceSettingKey.MEMBER_MAY_USE_API.storageKey] == true,
             // Not a switch (LNL-191): a user id, stored as a number beside the
             // booleans in the same map. Anything that is not a number — including the
             // absent case — reads as "nobody owns this instance", which withholds

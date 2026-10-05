@@ -579,6 +579,8 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                         mayUseAgents = switches.staffMayUseAgents,
                         createKey = InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS,
                         agentsKey = InstanceSettingKey.STAFF_MAY_USE_AGENTS,
+                        mayUseApi = switches.staffMayUseApi,
+                        apiKey = InstanceSettingKey.STAFF_MAY_USE_API,
                     ),
                 )
             }
@@ -597,6 +599,8 @@ private suspend fun BoardDependencies.buildAdminSettings(caller: UserRecord): Ad
                     mayUseAgents = switches.memberMayUseAgents,
                     createKey = InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
                     agentsKey = InstanceSettingKey.MEMBER_MAY_USE_AGENTS,
+                    mayUseApi = switches.memberMayUseApi,
+                    apiKey = InstanceSettingKey.MEMBER_MAY_USE_API,
                     // Nothing further may be given to a tier nobody arriving can be in
                     // (LNL-210). Two live switches over such a tier read as two switches
                     // over people, and the count above cannot correct them — it can be
@@ -885,6 +889,7 @@ private val InstanceRole.adminLabel: String
 private val MEMBER_TIER_SWITCHES = setOf(
     InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
     InstanceSettingKey.MEMBER_MAY_USE_AGENTS,
+    InstanceSettingKey.MEMBER_MAY_USE_API,
 )
 
 /**

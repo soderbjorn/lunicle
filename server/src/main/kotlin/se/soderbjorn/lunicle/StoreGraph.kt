@@ -98,6 +98,8 @@ internal class StoreGraph(
     val oauthLoginStates: OAuthLoginStateStore,
     val oauthCodes: OAuthCodeStore,
     val oauthTokens: OAuthTokenStore,
+    /** Personal access tokens for the REST API (LNL-222). */
+    val apiTokens: se.soderbjorn.lunicle.store.ApiTokenStore,
     val forums: ForumStore,
     val forumPosts: ForumPostStore,
     val forumComments: ForumCommentStore,
@@ -162,6 +164,7 @@ internal fun sqliteStoreGraph(
         database,
         canUseMcp = { userId -> instanceSettings.canUseMcp(users.findById(userId)) },
     )
+    val apiTokens = ApiTokenStore(database)
     val forums = ForumStore(database)
     val forumPosts = ForumPostStore(database)
     val forumComments = ForumCommentStore(database)
@@ -209,6 +212,7 @@ internal fun sqliteStoreGraph(
         oauthLoginStates = oauthLoginStates,
         oauthCodes = oauthCodes,
         oauthTokens = oauthTokens,
+        apiTokens = apiTokens,
         forums = forums,
         forumPosts = forumPosts,
         forumComments = forumComments,
@@ -296,6 +300,7 @@ internal fun firestoreStoreGraph(
     val oauthClients = FirestoreOAuthClientStore(firestore)
     val oauthLoginStates = FirestoreOAuthLoginStateStore(firestore)
     val oauthCodes = FirestoreOAuthCodeStore(firestore)
+    val apiTokens = FirestoreApiTokenStore(firestore)
 
     // ── Seam 1: session → user find-by-id ─────────────────────────────────────
     val sessions = FirestoreSessionStore(firestore, resolveUser = { userId -> users.findById(userId) })
@@ -430,6 +435,7 @@ internal fun firestoreStoreGraph(
         oauthLoginStates = oauthLoginStates,
         oauthCodes = oauthCodes,
         oauthTokens = oauthTokens,
+        apiTokens = apiTokens,
         forums = forums,
         forumPosts = forumPosts,
         forumComments = forumComments,

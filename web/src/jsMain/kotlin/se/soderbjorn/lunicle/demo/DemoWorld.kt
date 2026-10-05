@@ -46,6 +46,7 @@ import se.soderbjorn.lunicle.clientserver.AdmissionOption
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.AdmissionState
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
+import se.soderbjorn.lunicle.clientserver.ApiTokenView
 import se.soderbjorn.lunicle.clientserver.AdminUser
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AudienceRow
@@ -712,6 +713,8 @@ internal class DemoWorld {
     var memberMayCreateProjects: Boolean = false
     var staffMayUseAgents: Boolean = false
     var memberMayUseAgents: Boolean = false
+    var staffMayUseApi: Boolean = false
+    var memberMayUseApi: Boolean = false
     var admission: AdmissionPolicy = AdmissionPolicy.ANYONE
     var hideDisplayName: Boolean = false
 
@@ -728,6 +731,10 @@ internal class DemoWorld {
      * there.
      */
     var mcpEnabled: Boolean = false
+
+    /** The visitor's own API switch and their tokens (LNL-222). See DemoLunicleApi's API access section. */
+    var apiEnabled: Boolean = false
+    val apiTokens: MutableList<ApiTokenView> = mutableListOf()
 
     /**
      * What a new project starts out admitting, by audience key (LNL-195).
@@ -785,6 +792,13 @@ internal class DemoWorld {
         DemoTierKeys.OWNER, DemoTierKeys.ADMIN -> true
         DemoTierKeys.STAFF -> staffMayUseAgents
         else -> memberMayUseAgents
+    }
+
+    /** [permitsAgents]' shape for the REST API's own pair of switches (LNL-222). */
+    fun permitsApi(tier: String): Boolean = when (tier) {
+        DemoTierKeys.OWNER, DemoTierKeys.ADMIN -> true
+        DemoTierKeys.STAFF -> staffMayUseApi
+        else -> memberMayUseApi
     }
 
     /**
@@ -1673,6 +1687,8 @@ internal class DemoWorld {
                 mayUseAgents = staffMayUseAgents,
                 createKey = InstanceSettingKey.STAFF_MAY_CREATE_PROJECTS,
                 agentsKey = InstanceSettingKey.STAFF_MAY_USE_AGENTS,
+                mayUseApi = staffMayUseApi,
+                apiKey = InstanceSettingKey.STAFF_MAY_USE_API,
             ),
             TierCard(
                 key = DemoTierKeys.MEMBER,
@@ -1683,6 +1699,8 @@ internal class DemoWorld {
                 mayUseAgents = memberMayUseAgents,
                 createKey = InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS,
                 agentsKey = InstanceSettingKey.MEMBER_MAY_USE_AGENTS,
+                mayUseApi = memberMayUseApi,
+                apiKey = InstanceSettingKey.MEMBER_MAY_USE_API,
             ),
         ),
         newProjectAudiences = listOf(

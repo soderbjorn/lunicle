@@ -267,6 +267,10 @@ class SessionBackingViewModel(
          */
         val agentsNotPermittedReason: String
             get() = "Not permitted for ${if (user?.isStaff == true) "staff" else "members"} on this instance."
+
+        /** The same refusal for the API access section (LNL-222) — one tier, one sentence. */
+        val apiNotPermittedReason: String
+            get() = agentsNotPermittedReason
     }
 
     /**

@@ -58,6 +58,11 @@ import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.HTMLTextAreaElement
+import se.soderbjorn.lunicle.client.viewmodel.API_ACCESS_TITLE
+import se.soderbjorn.lunicle.client.viewmodel.API_ENABLE_EXPLANATION
+import se.soderbjorn.lunicle.client.viewmodel.API_ENABLE_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.API_TOKEN_SHOWN_ONCE
+import se.soderbjorn.lunicle.client.viewmodel.ApiAccessBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.CONNECTIONS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.ENABLE_EXPLANATION
@@ -65,11 +70,17 @@ import se.soderbjorn.lunicle.client.viewmodel.ENABLE_LABEL
 import se.soderbjorn.lunicle.client.viewmodel.SessionBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.SettingsRoute
 import se.soderbjorn.lunicle.client.viewmodel.SettingsTab
+import se.soderbjorn.lunicle.client.viewmodel.expiryLabel
+import se.soderbjorn.lunicle.client.viewmodel.scopeLabel
+import se.soderbjorn.lunicle.clientserver.API_TOKEN_EXPIRY_CHOICES
+import se.soderbjorn.lunicle.clientserver.API_TOKEN_NAME_MAX_LENGTH
+import se.soderbjorn.lunicle.clientserver.ApiTokenScope
 
 /**
  * Renders the settings pane.
  *
  * @param viewModel owns the Connections round-trips — the second half of You.
+ * @param apiViewModel owns the API access round-trips — the third (LNL-222).
  * @param sessionViewModel owns who is signed in and the two fields they may edit.
  * @param scope collects both state flows; cancelled by the caller when the pane
  *   closes.
@@ -94,6 +105,7 @@ import se.soderbjorn.lunicle.client.viewmodel.SettingsTab
  */
 class SettingsPane(
     private val viewModel: ConnectionsBackingViewModel,
+    private val apiViewModel: ApiAccessBackingViewModel,
     private val sessionViewModel: SessionBackingViewModel,
     private val scope: CoroutineScope,
     private val shell: DialogShell,
@@ -165,6 +177,25 @@ class SettingsPane(
     private lateinit var connectionsBlock: HTMLElement
     private lateinit var errorElement: HTMLElement
 
+    // ── You: the API access third (LNL-222) ──
+    private lateinit var apiEnableBox: Toggle
+    private lateinit var apiNotPermittedElement: HTMLElement
+    private lateinit var apiSetupSection: HTMLElement
+    private lateinit var apiBaseUrlValue: HTMLElement
+    private lateinit var apiDocsLink: HTMLElement
+    private lateinit var apiNameField: HTMLInputElement
+    private lateinit var apiScopeDropdown: Dropdown
+    private lateinit var apiExpiryDropdown: Dropdown
+    private lateinit var apiCreateButton: HTMLButtonElement
+    private lateinit var apiCreatedPanel: HTMLElement
+    private lateinit var apiCreatedTitle: HTMLElement
+    private lateinit var apiCreatedValue: HTMLElement
+    private lateinit var apiCreatedDormant: HTMLElement
+    private lateinit var apiCurlValue: HTMLElement
+    private lateinit var apiTokensSection: HTMLElement
+    private lateinit var apiTokensList: HTMLElement
+    private lateinit var apiErrorElement: HTMLElement
+
     private var confirmDialog: ConfirmDialog? = null
 
     /**
@@ -208,10 +239,12 @@ class SettingsPane(
 
         scope.launch { sessionViewModel.stateFlow.collect { render(it) } }
         scope.launch { viewModel.stateFlow.collect { render(it) } }
+        scope.launch { apiViewModel.stateFlow.collect { renderApi(it) } }
         // After mount, not from the view model's init: the panes are on screen
         // before the request goes out, so the wait is a rendered empty pane rather
         // than a moment of nothing.
         viewModel.start()
+        apiViewModel.start()
     }
 
     /**
@@ -416,6 +449,100 @@ class SettingsPane(
             // apart by a line rather than by navigation.
             element("div", "settings-section-rule"),
             buildConnectionsSection(),
+            element("div", "settings-section-rule"),
+            buildApiAccessSection(),
+        )
+    }
+
+    /**
+     * The API access third of You (LNL-222): the switch, the address, a form that makes a
+     * token, the token itself the one time it exists, and the list.
+     *
+     * Laid out like Connections above it on purpose — "what can act as me" is one question
+     * with two kinds of answer — and differing only where a token differs: it is made here,
+     * so there is a form, and its value is shown once, so there is a panel that stays up
+     * until the person dismisses it.
+     */
+    private fun buildApiAccessSection(): HTMLElement {
+        apiEnableBox = Toggle { apiViewModel.onEnabledToggled(it) }
+        apiNotPermittedElement = element("p", "admin-note")
+
+        apiBaseUrlValue = element("code", "copy-value")
+        apiDocsLink = element("a", "api-docs-link", "OpenAPI description")
+        apiDocsLink.setAttribute("target", "_blank")
+        apiDocsLink.setAttribute("rel", "noopener")
+
+        apiNameField = textField("e.g. CI, Dashboard, My laptop") { apiViewModel.onDraftNameChanged(it) }
+        apiNameField.maxLength = API_TOKEN_NAME_MAX_LENGTH
+        apiNameField.onkeydown = { event ->
+            if (event.key == "Enter") apiViewModel.onCreateTapped()
+            Unit
+        }
+        apiScopeDropdown = Dropdown(isField = true) { id ->
+            apiViewModel.onDraftScopeChanged(ApiTokenScope.entries[id.toInt()])
+        }
+        apiExpiryDropdown = Dropdown(isField = true) { id ->
+            apiViewModel.onDraftExpiryChanged(API_TOKEN_EXPIRY_CHOICES[id.toInt()])
+        }
+        apiCreateButton = button("Create token", "btn btn-primary btn-small") { apiViewModel.onCreateTapped() }
+
+        // The one moment the token exists outside a hash. Stays until dismissed: a panel
+        // that vanished on the next render would take the only copy with it.
+        apiCreatedTitle = element("p", "field-label")
+        apiCreatedValue = element("code", "copy-value api-token-value")
+        apiCreatedDormant = element(
+            "p",
+            "admin-note",
+            "API access is switched off for your account, so this token will not work until you turn it on above.",
+        )
+        apiCurlValue = element("code", "copy-value")
+        apiCreatedPanel = element("div", "api-token-created").children(
+            apiCreatedTitle,
+            element("p", "field-hint", API_TOKEN_SHOWN_ONCE),
+            copyRow(apiCreatedValue) { apiViewModel.stateFlow.value.createdToken.orEmpty() },
+            apiCreatedDormant,
+            element("label", "field-label", "Try it"),
+            copyRow(apiCurlValue) { apiViewModel.stateFlow.value.curlExample },
+            button("I have copied it", "btn btn-quiet btn-small") { apiViewModel.onCreatedTokenDismissed() },
+        )
+
+        apiTokensList = element("div", "connections-list")
+        apiTokensSection = element("div", "").children(
+            element("label", "field-label", "Your tokens"),
+            apiTokensList,
+        )
+
+        apiSetupSection = element("div", "connections-setup").children(
+            element("label", "field-label", "API base URL"),
+            copyRow(apiBaseUrlValue) { apiViewModel.stateFlow.value.baseUrl },
+            element("p", "field-hint").children(
+                element("span", "", "Every operation is described in the "),
+                apiDocsLink,
+                element("span", "", ". Send the token as "),
+                element("code", "", "Authorization: Bearer <token>"),
+                element("span", "", "."),
+            ),
+            element("label", "field-label", "New token"),
+            element("div", "api-token-form").children(
+                apiNameField,
+                apiScopeDropdown.element,
+                apiExpiryDropdown.element,
+                apiCreateButton,
+            ),
+            apiCreatedPanel,
+            apiTokensSection,
+        )
+
+        apiErrorElement = element("p", "modal-error")
+        apiErrorElement.setAttribute("role", "status")
+
+        return element("div", "").children(
+            element("h3", "section-title", API_ACCESS_TITLE),
+            toggleRow(apiEnableBox, API_ENABLE_LABEL),
+            apiNotPermittedElement,
+            element("p", "field-hint", API_ENABLE_EXPLANATION),
+            apiSetupSection,
+            apiErrorElement,
         )
     }
 
@@ -649,8 +776,9 @@ class SettingsPane(
         userErrorElement.visible(state.errorMessage != null)
 
         // The refusal is worded from the tier, which only the session knows, so a
-        // session tick has to re-render the connections half too.
+        // session tick has to re-render the connections half too — and the API third.
         renderConnectionsPermission(viewModel.stateFlow.value)
+        if (::apiEnableBox.isInitialized) renderApi(apiViewModel.stateFlow.value)
     }
 
     /**
@@ -737,6 +865,58 @@ class SettingsPane(
             if (permitted) "" else lastSession.agentsNotPermittedReason,
         )
         notPermittedElement.visible(!permitted)
+    }
+
+    /** Apply the API access snapshot (LNL-222). */
+    private fun renderApi(state: ApiAccessBackingViewModel.State) {
+        val permitted = !state.isLoaded || state.isAllowed
+        apiEnableBox.checked = state.isEnabled
+        apiEnableBox.disabled = state.isBusy || !state.isLoaded || !state.isAllowed
+        apiNotPermittedElement.setTextIfChanged(if (permitted) "" else lastSession.apiNotPermittedReason)
+        apiNotPermittedElement.visible(!permitted)
+
+        apiSetupSection.visible(state.isSetupVisible)
+        apiBaseUrlValue.setTextIfChanged(state.baseUrl)
+        apiDocsLink.setAttribute("href", state.docsUrl)
+
+        // The field is the person's while they type; only a cleared draft (after a
+        // successful create) is pushed back into it.
+        if (document.activeElement != apiNameField || state.draftName.isEmpty()) {
+            apiNameField.setValueIfChanged(state.draftName)
+        }
+        apiScopeDropdown.render(
+            ApiTokenScope.entries.mapIndexed { index, scope -> DropdownItem(index.toLong(), scopeLabel(scope)) },
+            selectedId = ApiTokenScope.entries.indexOf(state.draftScope).toLong(),
+        )
+        apiExpiryDropdown.render(
+            API_TOKEN_EXPIRY_CHOICES.mapIndexed { index, days -> DropdownItem(index.toLong(), expiryLabel(days)) },
+            selectedId = API_TOKEN_EXPIRY_CHOICES.indexOf(state.draftExpiryDays).toLong(),
+        )
+        apiCreateButton.disabled = !state.canCreate
+
+        apiCreatedPanel.visible(state.createdToken != null)
+        apiCreatedTitle.setTextIfChanged("Your new token${state.createdTokenName?.let { " \u201c$it\u201d" } ?: ""}")
+        apiCreatedValue.setTextIfChanged(state.createdToken.orEmpty())
+        apiCreatedDormant.visible(state.isCreatedTokenDormant)
+        apiCurlValue.setTextIfChanged(state.curlExample)
+
+        apiTokensSection.visible(state.tokens.isNotEmpty())
+        apiTokensList.clear()
+        state.tokens.forEach { token ->
+            val row = element("div", if (token.isExpired) "connection-row connection-row-expired" else "connection-row")
+            // Text, never markup — the name is the person's own, but it is still text.
+            val text = element("div", "connection-text").children(
+                element("div", "connection-name", token.name),
+                element("div", "connection-detail", token.detail),
+            )
+            val revoke = button("Revoke", "btn btn-danger-quiet btn-small") { apiViewModel.onRevokeTapped(token.id) }
+            revoke.disabled = state.isBusy
+            row.children(text, revoke)
+            apiTokensList.appendChild(row)
+        }
+
+        apiErrorElement.setTextIfChanged(state.errorMessage ?: "")
+        apiErrorElement.visible(state.errorMessage != null)
     }
 
     private fun renderConnections(state: ConnectionsBackingViewModel.State) {

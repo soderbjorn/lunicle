@@ -584,6 +584,7 @@ class IssueBackingViewModel(
         private fun IssueEventView.sharesAttributionWith(other: IssueEventView): Boolean =
             authorName == other.authorName &&
                 agentName == other.agentName &&
+                viaToken == other.viaToken &&
                 createdAt == other.createdAt
 
         /** The editable fields as they are on screen right now. */
@@ -1035,9 +1036,15 @@ class IssueBackingViewModel(
         private fun describeSet(noun: String, values: List<String>): String =
             if (values.isEmpty()) "cleared the $noun" else "set the $noun to ${values.joinToString(", ")}"
 
-        /** One event's attribution line. The same shape as [commentByline], for its reasons. */
+        /**
+         * One event's attribution line. The same shape as [commentByline], for its reasons —
+         * plus, when the change came through the REST API, which token made it (LNL-222).
+         * A note on *how*, after the who and the when: the person is still the author, and
+         * a token is not an agent, so it is words here rather than the agent badge.
+         */
         fun historyByline(event: IssueEventView): String =
-            "${event.authorName ?: "A deleted account"} · ${formatTimestamp(event.createdAt)}"
+            "${event.authorName ?: "A deleted account"} · ${formatTimestamp(event.createdAt)}" +
+                (event.viaToken?.let { " · via API token \u201c$it\u201d" } ?: "")
 
         /** One event's agent badge text, or null when a human made the change. See [agentBadge]. */
         fun historyAgentBadge(event: IssueEventView): String? = event.agentName?.let { "Agent · $it" }

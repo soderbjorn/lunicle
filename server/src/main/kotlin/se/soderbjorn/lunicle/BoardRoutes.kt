@@ -2040,6 +2040,8 @@ internal suspend fun BoardDependencies.buildIssueDetail(issue: IssueRecord, user
                 values = event.values,
                 authorName = event.author.displayName(names),
                 agentName = event.agentName,
+                // Which personal access token made it, if one did (LNL-222).
+                viaToken = event.viaToken,
                 createdAt = event.createdAt,
                 // The snapshot, always — a relation kind is vocabulary, and this is
                 // `value`'s rule rather than `valueUserId`'s. See IssueEvents.sq.

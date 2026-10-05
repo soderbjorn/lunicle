@@ -60,6 +60,8 @@ class InstanceSettingsStore(
             memberMayCreateProjects = rows[InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS.storageKey].isTrue(),
             staffMayUseAgents = rows[InstanceSettingKey.STAFF_MAY_USE_AGENTS.storageKey].isTrue(),
             memberMayUseAgents = rows[InstanceSettingKey.MEMBER_MAY_USE_AGENTS.storageKey].isTrue(),
+            staffMayUseApi = rows[InstanceSettingKey.STAFF_MAY_USE_API.storageKey].isTrue(),
+            memberMayUseApi = rows[InstanceSettingKey.MEMBER_MAY_USE_API.storageKey].isTrue(),
             // Not a switch, so not read through isTrue(): the stored form is the id
             // as text. A value that is not a number — a hand-edited row, a row from
             // a build that meant something else by this key — reads as "nobody owns

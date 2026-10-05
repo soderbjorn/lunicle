@@ -186,4 +186,26 @@ abstract class UserStoreContract {
         store.setDisplayName(user.id, "   ")
         assertEquals(null, store.findById(user.id)?.displayNameOverride, "a blank override clears it")
     }
+
+    /**
+     * The API switch (LNL-222): off for an account that never touched it — every row
+     * written before the column or field existed — and independent of the MCP one, which
+     * is the reason it is a switch of its own.
+     */
+    @Test
+    fun `the API switch defaults off, round-trips, and is not the MCP switch`() = runBlocking {
+        val user = store.upsert(identity("gh-api", null))
+        assertEquals(false, store.isApiEnabled(user.id), "A fresh account arrived with API access on.")
+
+        store.setMcpEnabled(user.id, true)
+        assertEquals(false, store.isApiEnabled(user.id), "Turning agent access on turned the API on too.")
+
+        store.setApiEnabled(user.id, true)
+        assertEquals(true, store.isApiEnabled(user.id))
+        store.setApiEnabled(user.id, false)
+        assertEquals(false, store.isApiEnabled(user.id))
+        assertTrue(store.findById(user.id)!!.isMcpEnabled, "Turning the API off cost the MCP switch.")
+
+        assertEquals(false, store.isApiEnabled(987_654L), "An unknown account reads as API access on.")
+    }
 }

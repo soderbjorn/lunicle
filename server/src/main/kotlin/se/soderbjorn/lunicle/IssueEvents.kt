@@ -51,6 +51,11 @@ data class IssueEventRecord(
      * not reach backwards and alter what the event says happened.
      */
     val relationKind: String? = null,
+    /**
+     * The personal access token this change was made with, by its name at the time, or
+     * null for the web app and MCP (LNL-222). A snapshot for [relationKind]'s reason.
+     */
+    val viaToken: String? = null,
 )
 
 /**
@@ -107,6 +112,7 @@ class IssueEventStore(
         author: Author,
         agentName: String?,
         createdAt: Long?,
+        viaToken: String?,
     ): Unit = withContext(DatabaseDispatcher) {
         if (events.isEmpty()) return@withContext
         val timestamp = createdAt ?: now()
@@ -122,6 +128,7 @@ class IssueEventStore(
                     author.externalName,
                     agentName,
                     event.relationKind,
+                    viaToken,
                 ).executeAsOne()
                 event.values.forEachIndexed { index, value ->
                     database.issueEventsQueries.insertValue(eventId, index.toLong(), value)
@@ -164,6 +171,7 @@ class IssueEventStore(
                 author = authorOf(row.created_by, row.created_by_external),
                 agentName = row.agent_name,
                 relationKind = row.value_relation_kind,
+                viaToken = row.via_token,
             )
         }
     }
@@ -194,6 +202,7 @@ class IssueEventStore(
                 author = authorOf(row.created_by, row.created_by_external),
                 agentName = row.agent_name,
                 relationKind = row.value_relation_kind,
+                viaToken = row.via_token,
             )
         }
     }

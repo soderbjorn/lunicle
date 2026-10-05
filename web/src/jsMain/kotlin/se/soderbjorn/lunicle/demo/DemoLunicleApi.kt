@@ -23,7 +23,11 @@ import kotlinx.browser.window
 import se.soderbjorn.lunicle.clientserver.AuthProvider
 import se.soderbjorn.lunicle.clientserver.AdmissionPolicy
 import se.soderbjorn.lunicle.clientserver.AdminSettingsState
+import se.soderbjorn.lunicle.clientserver.ApiAccessState
 import se.soderbjorn.lunicle.clientserver.ApiFailure
+import se.soderbjorn.lunicle.clientserver.ApiTokenView
+import se.soderbjorn.lunicle.clientserver.CreateApiTokenRequest
+import se.soderbjorn.lunicle.clientserver.CreatedApiToken
 import se.soderbjorn.lunicle.clientserver.AttachmentRef
 import se.soderbjorn.lunicle.clientserver.BoardState
 import se.soderbjorn.lunicle.clientserver.CommentDraft
@@ -179,6 +183,57 @@ internal class DemoLunicleApi(
         )
     }
 
+    // ── API access (LNL-222) ─────────────────────────────────────────────────
+
+    /**
+     * Personal access tokens, modelled the way agent access is above: the tier rule and
+     * the person's own switch are real, and the list moves when the visitor makes or
+     * revokes a token.
+     *
+     * What is not real is the token. Demo mode has no server to present it to, so the
+     * value [createApiToken] hands back is shaped like one and works nowhere — which the
+     * You tab's "copy it now" panel cannot make worse, since a real one is also shown once
+     * and never again.
+     */
+    override suspend fun apiAccessState(): ApiAccessState = apiStateForVisitor()
+
+    override suspend fun setApiEnabled(isEnabled: Boolean): ApiAccessState {
+        world.apiEnabled = isEnabled
+        return apiStateForVisitor()
+    }
+
+    override suspend fun createApiToken(request: CreateApiTokenRequest): CreatedApiToken {
+        val now = kotlin.js.Date.now().toLong()
+        val token = "lnl_pat_demo" + (1..52).map { "0123456789abcdef"[kotlin.random.Random.nextInt(16)] }.joinToString("")
+        world.apiTokens += ApiTokenView(
+            id = (world.apiTokens.maxOfOrNull { it.id } ?: 0L) + 1,
+            name = request.name.trim(),
+            prefix = token.take(14),
+            scope = request.scope,
+            createdAt = now,
+            expiresAt = request.expiresInDays?.let { now + it * 24L * 60 * 60 * 1000 },
+        )
+        return CreatedApiToken(state = apiStateForVisitor(), token = token)
+    }
+
+    override suspend fun revokeApiToken(id: Long): ApiAccessState {
+        world.apiTokens.removeAll { it.id == id }
+        return apiStateForVisitor()
+    }
+
+    private fun apiStateForVisitor(): ApiAccessState {
+        val allowed = world.permitsApi(world.tierOf(world.demoUser))
+        return ApiAccessState(
+            isAllowed = allowed,
+            // The server reports the stored switch as it is; the demo matches that, and
+            // the You tab greys the whole section while the tier is not permitted.
+            isEnabled = world.apiEnabled,
+            baseUrl = "${window.location.origin}/api/v1",
+            docsUrl = "${window.location.origin}/api/v1/openapi.json",
+            tokens = world.apiTokens.toList(),
+        )
+    }
+
     // ── Instance administration ──────────────────────────────────────────────
 
     override suspend fun adminSettings(): AdminSettingsState = world.adminSettingsState()
@@ -195,6 +250,8 @@ internal class DemoLunicleApi(
             InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS -> world.memberMayCreateProjects = isEnabled
             InstanceSettingKey.STAFF_MAY_USE_AGENTS -> world.staffMayUseAgents = isEnabled
             InstanceSettingKey.MEMBER_MAY_USE_AGENTS -> world.memberMayUseAgents = isEnabled
+            InstanceSettingKey.STAFF_MAY_USE_API -> world.staffMayUseApi = isEnabled
+            InstanceSettingKey.MEMBER_MAY_USE_API -> world.memberMayUseApi = isEnabled
             InstanceSettingKey.HIDE_DISPLAY_NAME -> world.hideDisplayName = isEnabled
         }
         return world.adminSettingsState()

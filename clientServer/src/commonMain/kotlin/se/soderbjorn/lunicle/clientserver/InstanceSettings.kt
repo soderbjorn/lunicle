@@ -110,6 +110,22 @@ enum class InstanceSettingKey(val storageKey: String) {
     MEMBER_MAY_USE_AGENTS("member_may_use_agents"),
 
     /**
+     * `staff_may_use_api` — when on, an account on the deployment's own domain is
+     * *permitted* to make personal access tokens and call the REST API with them
+     * (LNL-222).
+     *
+     * The API's counterpart of [STAFF_MAY_USE_AGENTS], and deliberately a separate
+     * switch: an administrator may well want people scripting against their own
+     * boards without wanting AI agents connected, or the other way round. Permission
+     * only, exactly as the agents switch is — the person still turns API access on for
+     * themselves, and the server re-reads both on every request.
+     */
+    STAFF_MAY_USE_API("staff_may_use_api"),
+
+    /** `member_may_use_api` — the same permission for everybody else signed in. */
+    MEMBER_MAY_USE_API("member_may_use_api"),
+
+    /**
      * `hide_display_name` — when on, the display-name override in the settings
      * pane's You tab is hidden, so every user's name is the one their sign-in
      * provider gives and cannot be overridden here (LNL-137). Off (the default)

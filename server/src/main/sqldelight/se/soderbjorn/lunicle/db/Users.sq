@@ -176,6 +176,22 @@ CREATE TABLE users (
     -- directly, so restoring the other half stays a one-line change.
     mcp_enabled INTEGER NOT NULL DEFAULT 0,
 
+    -- The user's own switch for personal access tokens (LNL-222): whether the tokens
+    -- they have made may be used at all. The API's counterpart of mcp_enabled, and
+    -- separate from it on purpose — "let an AI agent act as me" and "let my scripts
+    -- call the API as me" are two decisions people make differently, and one switch
+    -- for both would force one answer onto the other.
+    --
+    -- A kill switch exactly as mcp_enabled is: /api/v1 re-reads it on every request
+    -- (through canUseApi, never this column alone), so turning it off stops every
+    -- token at once without deleting any — and turning it back on restores them.
+    --
+    -- Deliberately NOT in the SELECT lists below, which every authenticated request
+    -- runs through Sessions.sq's findUser: widening that would make every request
+    -- carry a column only an /api/v1 request reads. It is a separate primary-key
+    -- lookup instead, the precedent Sessions.sq's findProbeId set. See findApiEnabled.
+    api_enabled INTEGER NOT NULL DEFAULT 0,
+
     -- `mcp_allowed` was here, and 33.sqm dropped it (LNL-191). It was an admin's
     -- per-account permission to hold agent access at all, paired with mcp_enabled
     -- above — the user's own switch. The pairing survived: LNL-192 brought the
@@ -408,6 +424,13 @@ UPDATE users SET email = ?, email_verified = ? WHERE id = ?;
 -- does not do. Called only on behalf of the user themselves.
 setMcpEnabled:
 UPDATE users SET mcp_enabled = ? WHERE id = ?;
+
+-- The user's own API switch (LNL-222). See the column.
+findApiEnabled:
+SELECT api_enabled FROM users WHERE id = ?;
+
+setApiEnabled:
+UPDATE users SET api_enabled = ? WHERE id = ?;
 
 -- The derived staff/member kind. Written by sign-in and by the startup stamp, both
 -- from UserKind.forEmail, and by nothing else — this is not a switch anybody sets.

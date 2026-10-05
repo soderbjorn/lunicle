@@ -334,6 +334,33 @@ class HttpLunicleApi(
     override suspend fun revokeMcpConnection(clientId: String): McpState =
         httpClient.delete(baseUrl + ApiRoutes.mcpConnection(clientId)).requireSuccess()
 
+    // ── API access (personal access tokens) ──────────────────────────────────
+
+    /** The caller's API switch, base URL, and tokens. See [ApiAccessState]. */
+    override suspend fun apiAccessState(): ApiAccessState =
+        httpClient.get(baseUrl + ApiRoutes.API_ACCESS).requireSuccess()
+
+    /** Turn API access on or off — the state to move to, never a toggle. */
+    override suspend fun setApiEnabled(isEnabled: Boolean): ApiAccessState =
+        httpClient.post(baseUrl + ApiRoutes.API_ACCESS_ENABLED) {
+            contentType(ContentType.Application.Json)
+            setBody(ApiEnabledRequest(isEnabled))
+        }.requireSuccess()
+
+    /**
+     * Make a token. The response is the only place the raw token ever appears — the
+     * server keeps a hash. See [CreatedApiToken.token].
+     */
+    override suspend fun createApiToken(request: CreateApiTokenRequest): CreatedApiToken =
+        httpClient.post(baseUrl + ApiRoutes.API_ACCESS_TOKENS) {
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }.requireSuccess()
+
+    /** Revoke one of the caller's own tokens, immediately. */
+    override suspend fun revokeApiToken(id: Long): ApiAccessState =
+        httpClient.delete(baseUrl + ApiRoutes.apiToken(id)).requireSuccess()
+
     // ── Instance administration ──────────────────────────────────────────────
 
     /**

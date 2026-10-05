@@ -1,0 +1,101 @@
+-- Personal access tokens: what another app holds to call /api/v1 as a person (LNL-222).
+--
+-- ── Why these are not oauth_tokens rows ─────────────────────────────────────
+--
+-- OAuthTokens.sq is a grant an *agent* obtained through a consent page: short-lived
+-- access tokens, rotating refresh families, a client registration it hangs off. None
+-- of that fits a token a person mints by hand and pastes into a CI job or a
+-- dashboard's config. There is no client to register, no redirect to bounce through,
+-- and nothing to rotate — the person who made it is the only party, and revoking it
+-- is deleting this row. Two tables because they are two different relationships,
+-- and folding one into the other would have every column in each half-apply.
+--
+-- ── Hashed at rest, shown once ──────────────────────────────────────────────
+--
+-- The raw value exists exactly once: in the response to the request that created
+-- it. This table holds SHA-256(token) and nothing that could be turned back into
+-- it, for OAuthTokens.sq's reason — these values are pasted into config files and
+-- sit there for months, so this table must not be a list of live credentials if it
+-- is ever copied.
+--
+-- `token_prefix` is the one piece of the raw value kept, and only the part every
+-- token shares plus a few characters: enough for a person looking at their list to
+-- tell "the one in the CI config" from "the one on my laptop", not enough to narrow
+-- a guess at the rest. See ApiTokenCrypto.
+
+CREATE TABLE api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Whose token this is. Every request made with it is made as this person,
+    -- through the same AccessControl the web app uses — the token adds a caller, not
+    -- a capability.
+    --
+    -- CASCADE for OAuthTokens.sq's reason: a token that outlived its user would
+    -- authenticate as an id that no longer resolves.
+    user_id INTEGER NOT NULL,
+
+    -- What the person called it, so the list is legible. Not unique: two tokens
+    -- named "CI" is the person's business, and the id is what revoke names.
+    -- Snapshotted onto every history event the token writes (issue_events.via_token),
+    -- so renaming or revoking it later does not rewrite what history says.
+    name TEXT NOT NULL,
+
+    -- SHA-256(token), hex. The lookup key.
+    token_hash TEXT NOT NULL UNIQUE,
+
+    -- `lnl_pat_` plus the first few characters of the random part. Display only.
+    token_prefix TEXT NOT NULL,
+
+    -- 'read' or 'write'. A string for OAuthTokens.sq's `type` reason — a third
+    -- scope would be a value, not a schema change. An unrecognised value reads as
+    -- 'read', the narrower answer: see ApiTokenScope.byKey.
+    scope TEXT NOT NULL,
+
+    created_at INTEGER NOT NULL,
+
+    -- Null until first used. What makes the list worth opening: "made in March, never
+    -- used" is the row a person should revoke.
+    last_used_at INTEGER,
+
+    -- Null is "never expires", which the person chose explicitly. Enforced in the
+    -- lookup's WHERE clause rather than by the caller, as OAuthLoginState.sq does.
+    expires_at INTEGER,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- The Settings list reads one person's tokens and nothing else does.
+CREATE INDEX api_tokens_user_idx ON api_tokens (user_id);
+
+insert:
+INSERT INTO api_tokens (user_id, name, token_hash, token_prefix, scope, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id;
+
+-- Every /api/v1 request goes through this. Expiry is in the WHERE clause, so an
+-- expired row is indistinguishable from an absent one — both are a 401.
+findByHash:
+SELECT id, user_id, name, token_prefix, scope, created_at, last_used_at, expires_at
+FROM api_tokens
+WHERE token_hash = ? AND (expires_at IS NULL OR expires_at > ?);
+
+forUser:
+SELECT id, user_id, name, token_prefix, scope, created_at, last_used_at, expires_at
+FROM api_tokens
+WHERE user_id = ?
+ORDER BY created_at, id;
+
+touch:
+UPDATE api_tokens SET last_used_at = ? WHERE id = ?;
+
+-- Scoped to the owner, and that is the whole safety of the route that calls it: a
+-- token id is a small integer anyone can guess, so the user scope is what stops one
+-- person revoking another's. Silent on an id that is not theirs.
+deleteForUser:
+DELETE FROM api_tokens WHERE id = ? AND user_id = ?;
+
+deleteExpired:
+DELETE FROM api_tokens WHERE expires_at IS NOT NULL AND expires_at <= ?;
+
+countAll:
+SELECT COUNT(*) FROM api_tokens;

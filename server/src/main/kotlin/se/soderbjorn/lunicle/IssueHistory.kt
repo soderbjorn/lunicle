@@ -23,6 +23,7 @@
  */
 package se.soderbjorn.lunicle
 
+import kotlinx.coroutines.currentCoroutineContext
 import se.soderbjorn.lunicle.clientserver.IssueEventKind
 
 /**
@@ -77,6 +78,31 @@ class IssueHistory(
     suspend fun forIssue(issueId: Long): List<IssueEventRecord> = events.forIssue(issueId)
 
     /**
+     * [IssueEventStore.append], stamped with the personal access token the current
+     * request was made with, if any (LNL-222).
+     *
+     * Every write in this class goes through here, so "which token did this" is decided
+     * in one place rather than threaded as a parameter through every tool and route
+     * that ever changes an issue. The token is read from the coroutine context, where
+     * only the REST API's dispatcher puts it — see [ApiTokenAttribution]. A write from
+     * the web app or MCP finds nothing there and stamps nothing.
+     */
+    private suspend fun appendStamped(
+        issueId: Long,
+        events: List<NewIssueEvent>,
+        author: Author,
+        agentName: String? = null,
+        createdAt: Long? = null,
+    ) = this.events.append(
+        issueId,
+        events,
+        author,
+        agentName,
+        createdAt,
+        viaToken = currentCoroutineContext()[ApiTokenAttribution]?.tokenName,
+    )
+
+    /**
      * Delete one issue's whole history, because the issue is being deleted.
      *
      * A pass-through to [IssueEventStore.deleteForIssue], and here for exactly the
@@ -124,7 +150,7 @@ class IssueHistory(
      */
     suspend fun recordCreated(issue: IssueRecord, author: Author, agentName: String?, createdAt: Long?) {
         record {
-            events.append(
+            appendStamped(
                 issue.id,
                 listOf(NewIssueEvent(IssueEventKind.CREATED)),
                 author,
@@ -203,7 +229,7 @@ class IssueHistory(
                     add(versionEvent(IssueEventKind.FIXED_VERSION_CHANGED, before.projectId, fixedVersionId))
                 }
             }
-            events.append(before.id, changes, author, agentName, createdAt)
+            appendStamped(before.id, changes, author, agentName, createdAt)
         }
     }
 
@@ -221,7 +247,7 @@ class IssueHistory(
         // already in is a gesture, not an event.
         if (issue.sprintId == sprintId) return
         record {
-            events.append(issue.id, listOf(sprintEvent(issue.projectId, sprintId)), author, agentName)
+            appendStamped(issue.id, listOf(sprintEvent(issue.projectId, sprintId)), author, agentName)
         }
     }
 
@@ -238,7 +264,7 @@ class IssueHistory(
         if (issue.fixedVersionId == fixedVersionId) return
         record {
             val event = versionEvent(IssueEventKind.FIXED_VERSION_CHANGED, issue.projectId, fixedVersionId)
-            events.append(issue.id, listOf(event), author, agentName)
+            appendStamped(issue.id, listOf(event), author, agentName)
         }
     }
 
@@ -269,7 +295,7 @@ class IssueHistory(
         if (before == parentId) return
         record {
             val newKey = parentId?.let { keyOf(it) }
-            events.append(
+            appendStamped(
                 issue.id,
                 listOf(NewIssueEvent(IssueEventKind.PARENT_CHANGED, value = newKey)),
                 author,
@@ -277,7 +303,7 @@ class IssueHistory(
             )
             val childKey = keyOf(issue.id)
             before?.let { old ->
-                events.append(
+                appendStamped(
                     old,
                     listOf(NewIssueEvent(IssueEventKind.CHILD_REMOVED, value = childKey)),
                     author,
@@ -285,7 +311,7 @@ class IssueHistory(
                 )
             }
             parentId?.let { now ->
-                events.append(
+                appendStamped(
                     now,
                     listOf(NewIssueEvent(IssueEventKind.CHILD_ADDED, value = childKey)),
                     author,
@@ -319,7 +345,7 @@ class IssueHistory(
     ) {
         record {
             val eventKind = if (added) IssueEventKind.RELATION_ADDED else IssueEventKind.RELATION_REMOVED
-            events.append(
+            appendStamped(
                 relation.fromIssueId,
                 listOf(
                     NewIssueEvent(
@@ -331,7 +357,7 @@ class IssueHistory(
                 author,
                 agentName,
             )
-            events.append(
+            appendStamped(
                 relation.toIssueId,
                 listOf(
                     NewIssueEvent(
@@ -367,7 +393,7 @@ class IssueHistory(
         // moved to where it already was.
         if (issue.statusId == statusId) return
         record {
-            events.append(issue.id, listOf(statusEvent(issue.projectId, statusId)), author, agentName)
+            appendStamped(issue.id, listOf(statusEvent(issue.projectId, statusId)), author, agentName)
         }
     }
 
@@ -375,7 +401,7 @@ class IssueHistory(
     suspend fun recordAssigneeChanged(issue: IssueRecord, assigneeId: Long?, author: Author, agentName: String?) {
         if (issue.assigneeId == assigneeId) return
         record {
-            events.append(issue.id, listOf(assigneeEvent(assigneeId)), author, agentName)
+            appendStamped(issue.id, listOf(assigneeEvent(assigneeId)), author, agentName)
         }
     }
 

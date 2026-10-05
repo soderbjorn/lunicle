@@ -54,6 +54,10 @@ interface LunicleApi {
     suspend fun mcpState(): McpState
     suspend fun setMcpEnabled(isEnabled: Boolean): McpState
     suspend fun revokeMcpConnection(clientId: String): McpState
+    suspend fun apiAccessState(): ApiAccessState
+    suspend fun setApiEnabled(isEnabled: Boolean): ApiAccessState
+    suspend fun createApiToken(request: CreateApiTokenRequest): CreatedApiToken
+    suspend fun revokeApiToken(id: Long): ApiAccessState
 
     // ── Instance administration ──────────────────────────────────────────────
 

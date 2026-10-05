@@ -68,6 +68,7 @@ class FirestoreIssueEventStore(
         author: Author,
         agentName: String?,
         createdAt: Long?,
+        viaToken: String?,
     ) {
         if (events.isEmpty()) return
         val timestamp = createdAt ?: now()
@@ -91,6 +92,7 @@ class FirestoreIssueEventStore(
                         CREATED_BY to author.accountId,
                         CREATED_BY_EXTERNAL to author.externalName,
                         AGENT_NAME to agentName,
+                        VIA_TOKEN to viaToken,
                     ),
                 )
             }
@@ -163,6 +165,7 @@ class FirestoreIssueEventStore(
             // is a scalar on the event, not a child table, so there is no SQLite read
             // that omits it and nothing here should either. See VALUE_RELATION_KIND.
             relationKind = getString(VALUE_RELATION_KIND),
+            viaToken = getString(VIA_TOKEN),
         )
     }
 
@@ -203,5 +206,6 @@ class FirestoreIssueEventStore(
         const val CREATED_BY = "createdBy"
         const val CREATED_BY_EXTERNAL = "createdByExternal"
         const val AGENT_NAME = "agentName"
+        const val VIA_TOKEN = "viaToken"
     }
 }

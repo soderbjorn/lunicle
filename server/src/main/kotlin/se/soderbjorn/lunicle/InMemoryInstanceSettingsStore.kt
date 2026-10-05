@@ -32,6 +32,8 @@ class InMemoryInstanceSettingsStore(
             InstanceSettingKey.MEMBER_MAY_CREATE_PROJECTS -> settings.copy(memberMayCreateProjects = isEnabled)
             InstanceSettingKey.STAFF_MAY_USE_AGENTS -> settings.copy(staffMayUseAgents = isEnabled)
             InstanceSettingKey.MEMBER_MAY_USE_AGENTS -> settings.copy(memberMayUseAgents = isEnabled)
+            InstanceSettingKey.STAFF_MAY_USE_API -> settings.copy(staffMayUseApi = isEnabled)
+            InstanceSettingKey.MEMBER_MAY_USE_API -> settings.copy(memberMayUseApi = isEnabled)
             InstanceSettingKey.HIDE_DISPLAY_NAME -> settings.copy(hideDisplayName = isEnabled)
         }
     }

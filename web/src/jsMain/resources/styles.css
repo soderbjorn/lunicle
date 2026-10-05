@@ -3559,6 +3559,44 @@ body.app-impersonating::after {
   margin-top: 2px;
 }
 
+/* ── API access (LNL-222) ──────────────────────────────────────
+   The token form: a name that takes the slack, then the two
+   dropdowns and the button at their natural widths. Wraps on a
+   narrow pane rather than squeezing the name to nothing. */
+.api-token-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.api-token-form .field { flex: 1 1 180px; width: auto; min-width: 0; margin: 0; }
+
+/* The toolkit's field trigger fills its row by default; here it sits beside
+   the name at its own width instead. Three classes, not two: lunula injects
+   `.dt-menu-trigger.dt-menu-trigger-field` after this sheet, so an equal
+   specificity loses on source order. */
+.api-token-form .dt-menu-trigger.dt-menu-trigger-field { flex: 0 0 auto; width: auto; min-width: 150px; }
+
+/* The one time a token is on screen. Ringed in the accent so it is
+   the thing the eye lands on: losing it means making another. */
+.api-token-created {
+  border: 1px solid var(--green-hi);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.api-token-created .field-label:first-child { margin-top: 0; }
+
+/* An expired token stays listed — it is why an integration
+   stopped — but reads as spent. */
+.connection-row-expired .connection-name,
+.connection-row-expired .connection-detail { opacity: 0.55; }
+
+.api-docs-link { color: var(--green-hi); }
+
 /* ============================================================
    A project's settings sections — vocabularies and Access.
 

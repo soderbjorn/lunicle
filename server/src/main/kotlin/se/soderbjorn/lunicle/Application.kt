@@ -272,6 +272,7 @@ fun Application.module() {
     val oauthLoginStates = stores.oauthLoginStates
     val oauthCodes = stores.oauthCodes
     val oauthTokens = stores.oauthTokens
+    val apiTokens = stores.apiTokens
     val forumStore = stores.forums
     val forumPostStore = stores.forumPosts
     val forumCommentStore = stores.forumComments
@@ -590,6 +591,11 @@ fun Application.module() {
         // The counterweight to /oauth/register being unauthenticated: a client
         // that registered, was never used, and holds no tokens is a row somebody
         // on the internet created and walked away from. See OAuthClients.sq.
+        // Personal access tokens past their expiry. Disk only, for the reason above:
+        // ApiTokens.sq's lookup already refuses an expired token in its WHERE clause.
+        val expiredApiTokens = apiTokens.deleteExpired()
+        if (expiredApiTokens > 0) log.info("Removed $expiredApiTokens expired API token(s)")
+
         val staleClients = oauthClients.sweepStale()
         if (staleClients > 0) log.info("Removed $staleClients stale OAuth client registration(s)")
         log.info("MCP: ${oauthClients.size()} client(s), ${oauthTokens.size()} token row(s)")
@@ -674,6 +680,20 @@ fun Application.module() {
         oauthRoutes(mcpDependencies)
         mcpRoutes(mcpDependencies, McpTools(boardDependencies))
         mcpApiRoutes(mcpDependencies)
+
+        // The REST API (LNL-222): the same tools on a second transport, authenticated
+        // by personal access tokens rather than OAuth, and the cookie-authenticated
+        // section where people make those tokens. A McpTools of its own, built for the
+        // REST surface — the /mcp one applies the agent floor, which a person's own
+        // token must not. See ToolSurface.
+        val restApiDependencies = RestApiDependencies(
+            tokens = apiTokens,
+            users = users,
+            instanceSettings = instanceSettings,
+            tools = McpTools(boardDependencies, ToolSurface.REST_API),
+        )
+        restApiRoutes(restApiDependencies)
+        apiAccessRoutes(mcpDependencies, restApiDependencies)
 
         boardRoutes(boardDependencies)
 
