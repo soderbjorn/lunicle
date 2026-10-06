@@ -203,6 +203,10 @@ internal class DemoLunicleApi(
     }
 
     override suspend fun createApiToken(request: CreateApiTokenRequest): CreatedApiToken {
+        // The server's rule: no token while the person's own switch is off (LNL-222).
+        if (!world.apiEnabled) {
+            throw ApiFailure(HttpStatusCode.Conflict, "Turn on API access first — a token cannot be used until you do.")
+        }
         val now = kotlin.js.Date.now().toLong()
         val token = "lnl_pat_demo" + (1..52).map { "0123456789abcdef"[kotlin.random.Random.nextInt(16)] }.joinToString("")
         world.apiTokens += ApiTokenView(

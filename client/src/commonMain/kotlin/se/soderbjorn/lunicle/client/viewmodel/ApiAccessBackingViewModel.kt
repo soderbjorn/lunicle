@@ -48,6 +48,14 @@ const val API_ENABLE_EXPLANATION: String =
 const val API_TOKEN_SHOWN_ONCE: String =
     "Copy this token now. It will not be shown again — Lunicle keeps only a fingerprint of it."
 
+/** Where the token form would be, while the switch above it is off. */
+const val API_TURN_ON_FIRST: String =
+    "Turn this on to make a token. A token only works while it is on."
+
+/** Under a list of tokens that exist but are refused because the switch is off. */
+const val API_TOKENS_DORMANT: String =
+    "API access is off, so these tokens are refused until you turn it back on. Nothing has been deleted."
+
 /** How one lifetime choice reads in the menu. */
 fun expiryLabel(days: Int?): String = when (days) {
     null -> "Never expires"
@@ -119,7 +127,7 @@ class ApiAccessBackingViewModel(
     ) {
         /** Whether the form may be submitted. */
         val canCreate: Boolean
-            get() = isLoaded && isAllowed && !isBusy && draftName.isNotBlank() &&
+            get() = isFormVisible && !isBusy && draftName.isNotBlank() &&
                 draftName.trim().length <= API_TOKEN_NAME_MAX_LENGTH
 
         /**
@@ -132,8 +140,20 @@ class ApiAccessBackingViewModel(
         val curlExample: String
             get() = "curl -H \"Authorization: Bearer ${createdToken ?: "<your token>"}\" $baseUrl/projects"
 
-        /** A token made while the switch is off works nowhere yet; say so beside it. */
-        val isCreatedTokenDormant: Boolean get() = createdToken != null && !isEnabled
+        /**
+         * Whether the form for a new token is offered: only while the person's own switch
+         * is on. A token made while it was off was refused at /api/v1 with nothing on
+         * screen saying why — the first real use of this feature did exactly that
+         * (LNL-222) — so a token now only comes into being when it can work. The server
+         * refuses the same request; this is the affordance, not the gate.
+         */
+        val isFormVisible: Boolean get() = isSetupVisible && isEnabled
+
+        /** Say where the form went: permitted, loaded, but switched off. */
+        val isTurnOnHintVisible: Boolean get() = isSetupVisible && !isEnabled
+
+        /** Tokens exist but the switch is off, so every one of them is refused. Say so beside them. */
+        val areTokensDormant: Boolean get() = !isEnabled && tokens.isNotEmpty()
     }
 
     private var started = false

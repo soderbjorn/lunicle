@@ -42,9 +42,11 @@ private class TokenServer : LunicleApi by HttpLunicleApi(baseUrl = "http://api-a
     val tokens = mutableListOf<ApiTokenView>()
     var requests = mutableListOf<CreateApiTokenRequest>()
 
+    var isEnabled = true
+
     private fun state() = ApiAccessState(
         isAllowed = true,
-        isEnabled = false,
+        isEnabled = isEnabled,
         baseUrl = "https://lunicle.test/api/v1",
         docsUrl = "https://lunicle.test/api/v1/openapi.json",
         tokens = tokens.toList(),
@@ -63,6 +65,11 @@ private class TokenServer : LunicleApi by HttpLunicleApi(baseUrl = "http://api-a
             expiresAt = request.expiresInDays?.let { NOW + it * DAY },
         )
         return CreatedApiToken(state(), token = "lnl_pat_abc123secret")
+    }
+
+    override suspend fun setApiEnabled(isEnabled: Boolean): ApiAccessState {
+        this.isEnabled = isEnabled
+        return state()
     }
 
     override suspend fun revokeApiToken(id: Long): ApiAccessState {
@@ -104,7 +111,6 @@ class ApiAccessTest {
         val shown = viewModel.stateFlow.value
         assertEquals("lnl_pat_abc123secret", shown.createdToken)
         assertEquals("", shown.draftName, "The form kept the name after making the token.")
-        assertTrue(shown.isCreatedTokenDormant, "The panel does not warn that API access is off.")
         assertTrue(shown.curlExample.contains("lnl_pat_abc123secret"))
 
         viewModel.onCreatedTokenDismissed()
@@ -125,6 +131,24 @@ class ApiAccessTest {
             row.detail,
         )
         assertFalse(row.isExpired)
+    }
+
+    @Test
+    fun `no form while the person's own switch is off, and a note beside the tokens`() {
+        viewModel.start()
+        viewModel.onDraftNameChanged("Kept")
+        viewModel.onCreateTapped()
+        server.isEnabled = false
+        viewModel.onEnabledToggled(false)
+
+        val off = viewModel.stateFlow.value
+        assertFalse(off.isFormVisible, "The token form is offered with API access off.")
+        assertTrue(off.isTurnOnHintVisible)
+        assertTrue(off.areTokensDormant, "Nothing says the existing tokens are refused.")
+        viewModel.onDraftNameChanged("Too early")
+        assertFalse(off.copy(draftName = "Too early").canCreate)
+        viewModel.onCreateTapped()
+        assertEquals(1, server.requests.size, "A token was requested with API access off.")
     }
 
     @Test

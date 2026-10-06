@@ -132,11 +132,22 @@ fun Route.apiAccessRoutes(sessionDeps: McpDependencies, deps: RestApiDependencie
             call.respond(HttpStatusCode.BadRequest, "Malformed request.")
             return@post
         }
-        // Permission, not the person's own switch: making a token while API access is
-        // switched off is allowed — it is how somebody sets everything up before turning
-        // it on — and the token is simply refused at /api/v1 until they do.
         if (!deps.instanceSettings.permitsApiFor(user)) {
             call.respond(HttpStatusCode.Forbidden, "An administrator has not given your account API access.")
+            return@post
+        }
+        // The person's own switch too, not only the permission. This used to allow a
+        // token to be made while API access was off, on the theory that somebody might
+        // set things up first — and in practice it produced a token that was refused at
+        // /api/v1 with nothing on screen saying why, while the switch that would fix it
+        // sat one row up looking like decoration (LNL-222, found in the first real use).
+        // A token now exists only while it can work; switching off afterwards is still
+        // a gate rather than a purge.
+        if (!deps.users.isApiEnabled(user.id)) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                "Turn on \u201cLet your scripts and apps use the API\u201d first — a token cannot be used until you do.",
+            )
             return@post
         }
         val name = body.name.trim()

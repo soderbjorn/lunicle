@@ -354,7 +354,7 @@ private suspend fun ApplicationCall.authenticate(deps: RestApiDependencies): Api
             HttpStatusCode.Unauthorized,
             "invalid_token",
             "This token is not valid. It may have expired or been revoked, or API access may be " +
-                "off for its account.",
+                "off for its account — the switch is under Settings → You → API access.",
         )
         return null
     }

@@ -61,7 +61,9 @@ import org.w3c.dom.HTMLTextAreaElement
 import se.soderbjorn.lunicle.client.viewmodel.API_ACCESS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.API_ENABLE_EXPLANATION
 import se.soderbjorn.lunicle.client.viewmodel.API_ENABLE_LABEL
+import se.soderbjorn.lunicle.client.viewmodel.API_TOKENS_DORMANT
 import se.soderbjorn.lunicle.client.viewmodel.API_TOKEN_SHOWN_ONCE
+import se.soderbjorn.lunicle.client.viewmodel.API_TURN_ON_FIRST
 import se.soderbjorn.lunicle.client.viewmodel.ApiAccessBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.CONNECTIONS_TITLE
 import se.soderbjorn.lunicle.client.viewmodel.ConnectionsBackingViewModel
@@ -190,7 +192,9 @@ class SettingsPane(
     private lateinit var apiCreatedPanel: HTMLElement
     private lateinit var apiCreatedTitle: HTMLElement
     private lateinit var apiCreatedValue: HTMLElement
-    private lateinit var apiCreatedDormant: HTMLElement
+    private lateinit var apiFormSection: HTMLElement
+    private lateinit var apiTurnOnHint: HTMLElement
+    private lateinit var apiTokensDormant: HTMLElement
     private lateinit var apiCurlValue: HTMLElement
     private lateinit var apiTokensSection: HTMLElement
     private lateinit var apiTokensList: HTMLElement
@@ -490,26 +494,37 @@ class SettingsPane(
         // that vanished on the next render would take the only copy with it.
         apiCreatedTitle = element("p", "field-label")
         apiCreatedValue = element("code", "copy-value api-token-value")
-        apiCreatedDormant = element(
-            "p",
-            "admin-note",
-            "API access is switched off for your account, so this token will not work until you turn it on above.",
-        )
         apiCurlValue = element("code", "copy-value")
         apiCreatedPanel = element("div", "api-token-created").children(
             apiCreatedTitle,
             element("p", "field-hint", API_TOKEN_SHOWN_ONCE),
             copyRow(apiCreatedValue) { apiViewModel.stateFlow.value.createdToken.orEmpty() },
-            apiCreatedDormant,
             element("label", "field-label", "Try it"),
             copyRow(apiCurlValue) { apiViewModel.stateFlow.value.curlExample },
             button("I have copied it", "btn btn-quiet btn-small") { apiViewModel.onCreatedTokenDismissed() },
         )
 
         apiTokensList = element("div", "connections-list")
+        // Beside the list rather than at the top: it is about these rows, and it is the
+        // one sentence that explains why every one of them is answering 401.
+        apiTokensDormant = element("p", "admin-note", API_TOKENS_DORMANT)
         apiTokensSection = element("div", "").children(
             element("label", "field-label", "Your tokens"),
+            apiTokensDormant,
             apiTokensList,
+        )
+
+        // The form, only while the person's own switch is on (LNL-222) — and where it
+        // would be, a line saying why it is not.
+        apiTurnOnHint = element("p", "admin-note", API_TURN_ON_FIRST)
+        apiFormSection = element("div", "").children(
+            element("label", "field-label", "New token"),
+            element("div", "api-token-form").children(
+                apiNameField,
+                apiScopeDropdown.element,
+                apiExpiryDropdown.element,
+                apiCreateButton,
+            ),
         )
 
         apiSetupSection = element("div", "connections-setup").children(
@@ -522,13 +537,8 @@ class SettingsPane(
                 element("code", "", "Authorization: Bearer <token>"),
                 element("span", "", "."),
             ),
-            element("label", "field-label", "New token"),
-            element("div", "api-token-form").children(
-                apiNameField,
-                apiScopeDropdown.element,
-                apiExpiryDropdown.element,
-                apiCreateButton,
-            ),
+            apiTurnOnHint,
+            apiFormSection,
             apiCreatedPanel,
             apiTokensSection,
         )
@@ -893,11 +903,13 @@ class SettingsPane(
             selectedId = API_TOKEN_EXPIRY_CHOICES.indexOf(state.draftExpiryDays).toLong(),
         )
         apiCreateButton.disabled = !state.canCreate
+        apiFormSection.visible(state.isFormVisible)
+        apiTurnOnHint.visible(state.isTurnOnHintVisible)
+        apiTokensDormant.visible(state.areTokensDormant)
 
         apiCreatedPanel.visible(state.createdToken != null)
         apiCreatedTitle.setTextIfChanged("Your new token${state.createdTokenName?.let { " \u201c$it\u201d" } ?: ""}")
         apiCreatedValue.setTextIfChanged(state.createdToken.orEmpty())
-        apiCreatedDormant.visible(state.isCreatedTokenDormant)
         apiCurlValue.setTextIfChanged(state.curlExample)
 
         apiTokensSection.visible(state.tokens.isNotEmpty())

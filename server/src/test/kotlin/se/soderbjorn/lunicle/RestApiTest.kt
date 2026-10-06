@@ -432,6 +432,27 @@ class RestApiTest {
         }
     }
 
+    /**
+     * The first real use of this feature made a token with the switch off, and then
+     * spent a while being told the token was invalid (LNL-222). A token now exists only
+     * while it can work — refused with a sentence naming the switch, and nothing stored.
+     */
+    @Test
+    fun `a token cannot be made while the person's own API switch is off`() = runBlocking {
+        val f = seed()
+        users.setApiEnabled(f.ownerId, false)
+        withApi { client ->
+            val response = client.post("/api/api-access/tokens") {
+                cookie(f.ownerCookie)
+                contentType(ContentType.Application.Json)
+                setBody(Json.encodeToString(CreateApiTokenRequest.serializer(), CreateApiTokenRequest("Too early", ApiTokenScope.READ, null)))
+            }
+            assertEquals(HttpStatusCode.Conflict, response.status)
+            assertTrue(response.bodyAsText().contains("Let your scripts and apps use the API"), response.bodyAsText())
+            assertEquals(emptyList(), apiTokens.forUser(f.ownerId), "A token was stored anyway.")
+        }
+    }
+
     @Test
     fun `nothing about a person's tokens can be changed through an impersonation`() = runBlocking {
         val f = seed()
@@ -506,7 +527,10 @@ class RestApiTest {
             labelIds = emptyList(),
             componentIds = emptyList(),
         )
+        // Both have switched API access on: a token can only be made while it is (see
+        // `a token cannot be made while the person's own API switch is off`).
         users.setApiEnabled(owner.id, true)
+        users.setApiEnabled(member.id, true)
         return Fixture(
             ownerId = owner.id,
             memberId = member.id,
