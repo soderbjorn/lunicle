@@ -422,6 +422,8 @@ internal suspend fun ApplicationCall.resolveCaller(
 ): Caller {
     val sessionId = request.cookies[SESSION_COOKIE] ?: return Caller(null)
     val user = sessions.lookup(sessionId) ?: return Caller(null)
+    // For the change stream: whatever this request goes on to write is this person's.
+    noteChangeActor(user)
 
     // The whole of what a deployment with the feature switched off does. Note
     // canImpersonate is false here without asking the oracle: the gate is a term of

@@ -18,6 +18,7 @@ package se.soderbjorn.lunicle
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopping
+import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.application.log
@@ -37,6 +38,8 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import se.soderbjorn.lunicle.clientserver.CHANGE_ORIGIN_HEADER
 import org.slf4j.LoggerFactory
 import java.io.File
 
@@ -253,12 +256,19 @@ fun Application.module() {
     val priorities = stores.priorities
     val resolutions = stores.resolutions
     val versions = stores.versions
-    val issues = stores.issues
-    val comments = stores.comments
+    // The change stream's bus (LNL-224), and the stores that publish to it. Wrapped
+    // here, once, so every write below — web routes, MCP, the REST API, and every
+    // repository built on these — announces itself without a call site having to
+    // remember. Anything that reads `stores.*` directly instead would write silently,
+    // which is why the locals are the only names used from here on. See ChangeStream.
+    val changes = ChangeBus()
+    val issues = PublishingIssueStore(stores.issues, changes)
+    val comments = PublishingCommentStore(stores.comments, stores.issues, changes)
+    val issueRelations = PublishingIssueRelationStore(stores.issueRelations, stores.issues, changes)
     val attachments = stores.attachments
     val subscriptions = stores.subscriptions
     val reads = stores.reads
-    val notificationStore = stores.notificationStore
+    val notificationStore = PublishingNotificationStore(stores.notificationStore, changes)
     val uiSettings = stores.uiSettings
     // The deployment-wide switches (LNL-115): open project creation, public
     // projects, hidden display names. Persistent on both backends — unlike the
@@ -280,8 +290,8 @@ fun Application.module() {
     val messageStore = stores.messages
     val attachmentRepository = stores.attachmentRepository
     val projectRepository = stores.projectRepository
-    val vocabularyRepository = stores.vocabularies
-    val sprintRepository = stores.sprints
+    val vocabularyRepository = PublishingVocabularyStore(stores.vocabularies, changes)
+    val sprintRepository = PublishingSprintStore(stores.sprints, changes)
     val statisticsRepository = stores.statistics
     val emailCodes = stores.emailCodes
 
@@ -368,7 +378,7 @@ fun Application.module() {
     )
     val issueRepository = IssueRepository(
         issues, comments, statuses, priorities, attachmentRepository, attachments, notifications, subscriptions,
-        issueHistory, stores.issueRelations, stores.issueRelationKinds,
+        issueHistory, issueRelations, stores.issueRelationKinds,
     )
     val access = AccessControl(roles, instanceSettings)
     // The discussion and Messages repositories — backend-agnostic rules over the
@@ -411,7 +421,7 @@ fun Application.module() {
         sprints = sprintRepository,
         sprintRepository = sprintRepository,
         issues = issues,
-        issueRelations = stores.issueRelations,
+        issueRelations = issueRelations,
         issueRelationKinds = stores.issueRelationKinds,
         issueRepository = issueRepository,
         comments = comments,
@@ -638,6 +648,15 @@ fun Application.module() {
             readShellAsset(name)?.let { name to Triple(it, etagOf(it), type) }
         }.toMap()
 
+    // Every request carries a ChangeOrigin, so a write it makes can say which tab it
+    // came from and — once authentication has filled it in — who made it. See
+    // ChangeStream's preamble.
+    intercept(ApplicationCallPipeline.Plugins) {
+        withContext(ChangeOrigin(ChangeOrigin.sanitise(call.request.headers[CHANGE_ORIGIN_HEADER]))) {
+            proceed()
+        }
+    }
+
     routing {
         authRoutes(
             oauthConfig,
@@ -693,6 +712,21 @@ fun Application.module() {
             tools = McpTools(boardDependencies, ToolSurface.REST_API),
         )
         restApiRoutes(restApiDependencies)
+        // The change stream (LNL-224): the API's way to learn about remote changes,
+        // and the web app's way to stay live. Session or token authenticated, and
+        // exempt from the REST request budget. See ChangeStreamRoutes.
+        changeStreamRoutes(
+            ChangeStreamDependencies(
+                bus = changes,
+                sessions = sessions,
+                impersonation = ownerImpersonation,
+                access = access,
+                projects = projects,
+                tokens = apiTokens,
+                users = users,
+                instanceSettings = instanceSettings,
+            ),
+        )
         apiAccessRoutes(mcpDependencies, restApiDependencies)
 
         boardRoutes(boardDependencies)

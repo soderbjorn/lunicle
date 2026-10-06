@@ -161,7 +161,9 @@ class RestApiTest {
                 .flatMap { it.jsonObject.values }
                 .map { it.jsonObject["operationId"]!!.jsonPrimitive.content }
             assertEquals(operations.size, operations.toSet().size, "Duplicate operationIds.")
-            assertEquals((REST_ROUTES.map { it.tool } + "me").toSet(), operations.toSet())
+            // The tools, plus the three hand-written operations: who the token is, and
+            // the two change streams (LNL-224), which are not tools.
+            assertEquals((REST_ROUTES.map { it.tool } + "me" + "project_events" + "events").toSet(), operations.toSet())
             assertFalse(response.bodyAsText().contains("\"agent_name\""), "The description offers agent_name.")
             assertFalse(response.bodyAsText().contains("\"project_name\""), "The description offers project_name.")
         }

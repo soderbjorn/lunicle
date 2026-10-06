@@ -291,6 +291,7 @@ private suspend fun ApplicationCall.resolveApiCaller(deps: RestApiDependencies):
     val token = deps.tokens.authenticate(ApiTokenCrypto.hash(raw)) ?: return null
     val user = deps.users.findById(token.userId) ?: return null
     if (!deps.instanceSettings.canUseApi(user, deps.users)) return null
+    noteChangeActor(user)
     return ApiCaller(token, user)
 }
 
@@ -612,6 +613,49 @@ internal fun openApiDocument(origin: String, tools: McpTools): JsonObject = buil
                 putJsonObject("responses") { putStandardResponses(HttpStatusCode.OK, includeForbidden = false) }
             }
         })
+        // The change stream (LNL-224) — hand-written, since it is not a tool.
+        put("/projects/{project_id}/events", buildJsonObject {
+            putJsonObject("get") {
+                put("operationId", "project_events")
+                put("summary", "Stream a project's changes (Server-Sent Events)")
+                put("description", CHANGE_STREAM_DESCRIPTION)
+                putJsonArray("tags") { add("projects") }
+                putJsonArray("parameters") {
+                    add(parameterOf("project_id", "path", buildJsonObject { put("type", "integer") }, isRequired = true))
+                    add(changeStreamOriginParameter())
+                }
+                putJsonObject("responses") { putChangeStreamResponses() }
+            }
+        })
+        put(CHANGE_STREAM_PATH, buildJsonObject {
+            putJsonObject("get") {
+                put("operationId", "events")
+                put("summary", "Stream several projects' changes and your notifications (Server-Sent Events)")
+                put(
+                    "description",
+                    "The same stream for several projects at once, on one connection, plus " +
+                        "`notification.changed` whenever your own notifications change. Projects you " +
+                        "cannot read are left out rather than refused. This is the endpoint Lunicle's " +
+                        "web app uses.\n\n" + CHANGE_STREAM_DESCRIPTION,
+                )
+                putJsonArray("tags") { add("events") }
+                putJsonArray("parameters") {
+                    add(
+                        parameterOf(
+                            "projects",
+                            "query",
+                            buildJsonObject {
+                                put("type", "string")
+                                put("description", "Comma-separated project ids, at most 50.")
+                            },
+                            isRequired = false,
+                        ),
+                    )
+                    add(changeStreamOriginParameter())
+                }
+                putJsonObject("responses") { putChangeStreamResponses() }
+            }
+        })
         REST_ROUTES.groupBy { it.path }.forEach { (path, routes) ->
             putJsonObject(path) {
                 routes.forEach { restRoute ->
@@ -755,3 +799,48 @@ private const val OPENAPI_DESCRIPTION: String =
         "`GET /projects/{project_id}/board`. Arguments use the tools' snake_case names. An " +
         "argument an operation does not take is refused, as is `agent_name`: changes made " +
         "with a token are recorded as made with that token, not by an agent."
+
+private fun changeStreamOriginParameter(): JsonObject = parameterOf(
+    "origin",
+    "query",
+    buildJsonObject {
+        put("type", "string")
+        put(
+            "description",
+            "Optional. An id of your choosing (letters, digits, - and _, up to 64). Send the same " +
+                "value as an `X-Lunicle-Origin` header on your writes, and the events they cause " +
+                "carry `\"self\": true` on this stream, so you can skip your own echoes.",
+        )
+    },
+    isRequired = false,
+)
+
+private fun kotlinx.serialization.json.JsonObjectBuilder.putChangeStreamResponses() {
+    putJsonObject("200") {
+        put("description", "An open `text/event-stream`. See the operation's description for the events.")
+        putJsonObject("content") { putJsonObject("text/event-stream") { putJsonObject("schema") { put("type", "string") } } }
+    }
+    putJsonObject("401") { put("description", "No valid token or session.") }
+    putJsonObject("404") { put("description", "No such project, or nothing you can see.") }
+    putJsonObject("429") { put("description", "Too many open streams for this token or session.") }
+}
+
+private const val CHANGE_STREAM_DESCRIPTION: String =
+    "Held open; every change is one Server-Sent Event. Events are thin: they say what changed " +
+        "and where, never the content, so re-read through the normal operations " +
+        "(`GET /issues/{issue_id}`, `GET /projects/{project_id}/board`).\n\n" +
+        "Each event has a monotonic `id:`, an `event:` kind and a JSON `data:` line, e.g.\n\n" +
+        "```\nid: 1791279316477001\nevent: issue.updated\n" +
+        "data: {\"projectId\":2,\"issueId\":774,\"updatedAt\":1791279648030,\"actor\":\"Linus\"}\n```\n\n" +
+        "Kinds: `issue.created`, `issue.updated`, `issue.moved` (its column or place changed), " +
+        "`issue.deleted`, `comment.added`, `comment.edited`, `comment.deleted` (these carry " +
+        "`commentId`), and `board.changed` (the project's columns, labels or sprints changed; no " +
+        "issue — re-read the board). `actor` is absent when nobody was signed in.\n\n" +
+        "`: ping` comes about every 25 seconds. To resume after a drop, reconnect with " +
+        "`Last-Event-ID` (browsers' EventSource does this for you); if the gap is older than " +
+        "the server still holds, you get `event: reset` and should re-read the board.\n\n" +
+        "Auth: a token of either scope, or a signed-in session. Access is re-checked about " +
+        "every 25 seconds, and the stream closes if it is gone. It does not count towards the " +
+        "request rate limit; at most 16 streams may be open per token or session.\n\n" +
+        "One server instance: on a deployment running several, a stream sees only the changes " +
+        "its own instance served."

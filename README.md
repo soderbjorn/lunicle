@@ -6,7 +6,7 @@ Lunicle is a self-hosted issue tracker.
 
 ## Introduction
 
-Lunicle is a web-based issue tracker that supports the usual features you would expect, like issues, comments, attachments, assignees, child issues (filling the same role as epics in some other issue trackers), planned/fix versions, labels and components. It also has an MCP so your agent can work on the issues, and a REST API with personal access tokens so other apps can too — the same operations, described at `/api/v1/openapi.json` on any instance.
+Lunicle is a web-based issue tracker that supports the usual features you would expect, like issues, comments, attachments, assignees, child issues (filling the same role as epics in some other issue trackers), planned/fix versions, labels and components. It also has an MCP so your agent can work on the issues, and a REST API with personal access tokens so other apps can too — the same operations, described at `/api/v1/openapi.json` on any instance. A Server-Sent Events change stream (`/api/v1/projects/{id}/events`) tells API clients — and keeps the web app live — when anything on a board changes.
 
 Lunicle is delivered via Docker. For persistence it uses either an embedded database or Google Cloud Firestore. Personally I use (and recommend) [Railway](https://railway.com/). The vanilla distribution can be adapted to some extent with custom themes and some settings.
 

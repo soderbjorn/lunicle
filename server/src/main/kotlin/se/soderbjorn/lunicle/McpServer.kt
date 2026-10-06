@@ -115,6 +115,7 @@ private suspend fun resolveMcpUser(call: ApplicationCall, deps: McpDependencies)
     // mints them only for its own /mcp. A resource check would be comparing our
     // own URL against itself and would fail the day a proxy changed a hostname,
     // which is a fragile way to enforce something already true by construction.
+    noteChangeActor(user)
     return user
 }
 
