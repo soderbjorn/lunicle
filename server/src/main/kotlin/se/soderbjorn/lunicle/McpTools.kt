@@ -1025,6 +1025,35 @@ class McpTools(
             ),
         ),
         McpTool(
+            name = "reorder_issue",
+            description = "Move an issue up or down within its column — the same thing as dragging " +
+                "its card to another place in the column. A column lists its issues in groups, one " +
+                "per priority (one per resolution in a column that requires a resolution), and the " +
+                "order within a group is what this changes.\n\n" +
+                "Name the neighbour it should land next to with `before_issue_id` or " +
+                "`after_issue_id` (one of them, not both), or neither to put it last in its group. " +
+                "The neighbour must be in the group the issue lands in: same column, same priority.\n\n" +
+                "`priority` moves the issue into another priority group of the same column first, " +
+                "exactly as dragging a card across a group header does; the neighbour is then read " +
+                "in that group. Not for an issue in a column that requires a resolution — those " +
+                "groups are resolutions, not priorities. To change columns, use move_issue first. " +
+                "Needs edit rights on the issue.",
+            inputSchema = schema(
+                "issue_id" to integerProp("The issue to move."),
+                BEFORE_ISSUE_ARGUMENT to integerProp(
+                    "Put it directly above this issue, by its `id` from get_board (not the FOO-123 key).",
+                ),
+                AFTER_ISSUE_ARGUMENT to integerProp(
+                    "Put it directly below this issue, by its `id` from get_board (not the FOO-123 key).",
+                ),
+                "priority" to stringProp(
+                    "A priority name from get_board — the group to move it into. Omit to stay in its own.",
+                ),
+                "agent_name" to stringProp(AGENT_NAME_PROP_DESCRIPTION),
+                required = listOf("issue_id"),
+            ),
+        ),
+        McpTool(
             name = "add_comment",
             description = "Post a comment on an issue. Written and published in one call.",
             inputSchema = schema(
@@ -1809,6 +1838,7 @@ class McpTools(
         "link_issues" -> linkIssues(user, arguments)
         "unlink_issues" -> unlinkIssues(user, arguments)
         "reorder_children" -> reorderChildren(user, arguments)
+        "reorder_issue" -> reorderIssue(user, arguments)
         "list_vocabulary" -> listVocabulary(user, arguments)
         "add_vocabulary" -> addVocabulary(user, arguments)
         "rename_vocabulary" -> renameVocabulary(user, arguments)
@@ -3025,6 +3055,83 @@ class McpTools(
         // lambda is not a coroutine body.
         val ordered = deps.issues.childrenOf(issue.id).map { issueKey(it) }
         return ok("${issueKey(issue)}'s children are now in this order: ${ordered.joinToString(", ")}.")
+    }
+
+    /**
+     * Rank one issue within its board group — the REST API's (and an agent's) form of
+     * the board's drag, `POST /api/issues/{id}/order`.
+     *
+     * Anchored by a neighbour rather than handed the whole group, because a caller
+     * outside the web app holds a board that may be seconds old: "below FOO-12" still
+     * means what it meant when another card has arrived meanwhile, where a full list
+     * would be refused (or, worse, rank a group the caller never saw). The group is
+     * read here, in board order (`forProject`'s ORDER BY), and renumbered whole by
+     * [IssueStore.setGroupOrder], as the drag route does.
+     *
+     * `priority` lands first, as on the drag route, so the neighbour is looked for in
+     * the group the issue arrives in. Refused for a closed issue: its group is its
+     * resolution.
+     */
+    private suspend fun reorderIssue(user: UserRecord, arguments: JsonObject): McpToolResult {
+        val existing = readableIssue(user, arguments) ?: return noSuchIssue()
+        if (!deps.access.canEditIssue(user, existing)) return refuse("You cannot reorder this issue.")
+
+        val beforeId = arguments.long(BEFORE_ISSUE_ARGUMENT)
+        val afterId = arguments.long(AFTER_ISSUE_ARGUMENT)
+        if (beforeId != null && afterId != null) {
+            return refuse("Give `$BEFORE_ISSUE_ARGUMENT` or `$AFTER_ISSUE_ARGUMENT`, not both. Nothing was written.")
+        }
+        if (beforeId == existing.id || afterId == existing.id) {
+            return refuse("An issue cannot be placed next to itself. Nothing was written.")
+        }
+
+        val wantedPriority = arguments.string("priority")?.let { name ->
+            val priorities = deps.priorities.forProject(existing.projectId)
+            priorities.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                ?: return refuseUnknown("priority", name, priorities.map { it.name })
+        }
+        val changesPriority = wantedPriority != null && wantedPriority.id != existing.priorityId
+        if (changesPriority && existing.resolutionId != null) {
+            return refuse(
+                "A closed issue is not grouped by priority, so it cannot be moved into one. Nothing was written.",
+            )
+        }
+
+        // The group as it will be once the issue has landed, in board order, without it.
+        val priorityId = wantedPriority?.id ?: existing.priorityId
+        val group = deps.issues.forProject(existing.projectId).filter { other ->
+            other.id != existing.id &&
+                other.statusId == existing.statusId &&
+                if (existing.resolutionId != null) {
+                    other.resolutionId == existing.resolutionId
+                } else {
+                    other.resolutionId == null && other.priorityId == priorityId
+                }
+        }
+        val anchorId = beforeId ?: afterId
+        val at = if (anchorId == null) {
+            group.size
+        } else {
+            val index = group.indexOfFirst { it.id == anchorId }
+            if (index < 0) {
+                return refuse(
+                    "Issue $anchorId is not in the group this issue lands in (same column, same " +
+                        "priority). Nothing was written.",
+                )
+            }
+            if (beforeId != null) index else index + 1
+        }
+        val ids = group.map { it.id }.toMutableList().apply { add(at, existing.id) }
+
+        if (changesPriority) deps.issues.setPriority(existing.id, priorityId)
+        deps.issues.setGroupOrder(ids)
+        val where = when {
+            beforeId != null -> "above issue $beforeId"
+            afterId != null -> "below issue $afterId"
+            else -> "last in its group"
+        }
+        val priorityText = if (changesPriority) " in ${wantedPriority!!.name}" else ""
+        return ok("Moved ${issueKey(existing)}$priorityText, $where.")
     }
 
     /**
@@ -5735,6 +5842,10 @@ private const val IDS_ARGUMENT = "ids"
 
 /** `reorder_children`'s list, for [IDS_ARGUMENT]'s reason and not shared with it: one names vocabulary rows, the other issues. */
 private const val CHILD_IDS_ARGUMENT = "child_ids"
+
+/** `reorder_issue`'s neighbour arguments: land directly above / below that issue. */
+private const val BEFORE_ISSUE_ARGUMENT = "before_issue_id"
+private const val AFTER_ISSUE_ARGUMENT = "after_issue_id"
 private const val INVERSE_NAME_ARGUMENT = "inverse_name"
 private const val MARKS_BLOCKED_ARGUMENT = "marks_blocked"
 private const val REQUIRES_RESOLUTION_ARGUMENT = "requires_resolution"

@@ -205,6 +205,10 @@ val REST_ROUTES: List<RestRoute> = listOf(
         "Reorder an epic's children",
     ),
     RestRoute(
+        HttpMethod.Put, "/issues/{issue_id}/order", "reorder_issue", WRITE,
+        "Move an issue within its column",
+    ),
+    RestRoute(
         HttpMethod.Post, "/issues/{issue_id}/links", "link_issues", WRITE,
         "Link two issues", successStatus = HttpStatusCode.Created,
     ),

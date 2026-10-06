@@ -28,6 +28,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -355,6 +356,48 @@ class RestApiTest {
         }
     }
 
+    @Test
+    fun `an issue moves within its group by a neighbour, and into another priority`() = runBlocking {
+        val f = seed()
+        withApi { client ->
+            val token = client.mintToken(f.ownerCookie, "Dragger", ApiTokenScope.WRITE)
+            suspend fun file(title: String) =
+                client.sendWith(token, "POST", "/projects/${f.projectId}/issues", """{"title":"$title"}""")
+                    .json()["id"]!!.jsonPrimitive.long
+            val a = file("A")
+            val b = file("B")
+            val c = file("C")
+            val defaultPriority = issues.findById(a)!!.priorityId
+            fun group(priorityId: Long) = runBlocking {
+                issues.forProject(f.projectId)
+                    .filter { it.statusId == issues.findById(a)!!.statusId && it.priorityId == priorityId }
+                    .map { it.id }
+                    .filter { it in setOf(a, b, c) }
+            }
+
+            val up = client.sendWith(token, "PUT", "/issues/$c/order", """{"before_issue_id":$a}""")
+            assertEquals(HttpStatusCode.OK, up.status, up.bodyAsText())
+            assertEquals(listOf(c, a, b), group(defaultPriority))
+
+            val down = client.sendWith(token, "PUT", "/issues/$c/order", """{"after_issue_id":$b}""")
+            assertEquals(HttpStatusCode.OK, down.status, down.bodyAsText())
+            assertEquals(listOf(a, b, c), group(defaultPriority))
+
+            val other = priorities.forProject(f.projectId).first { it.id != defaultPriority }
+            val across = client.sendWith(token, "PUT", "/issues/$b/order", """{"priority":"${other.name}"}""")
+            assertEquals(HttpStatusCode.OK, across.status, across.bodyAsText())
+            assertEquals(other.id, issues.findById(b)!!.priorityId)
+            assertEquals(listOf(a, c), group(defaultPriority))
+
+            // A neighbour outside the landing group, or both neighbours, write nothing.
+            val stray = client.sendWith(token, "PUT", "/issues/$a/order", """{"before_issue_id":$b}""")
+            assertEquals(HttpStatusCode.BadRequest, stray.status, stray.bodyAsText())
+            val both = client.sendWith(token, "PUT", "/issues/$a/order", """{"before_issue_id":$c,"after_issue_id":$c}""")
+            assertEquals(HttpStatusCode.BadRequest, both.status, both.bodyAsText())
+            assertEquals(listOf(a, c), group(defaultPriority))
+        }
+    }
+
     // ── Reach: the person, not an agent ──────────────────────────────────────
 
     /**
@@ -594,6 +637,7 @@ class RestApiTest {
         return when (method) {
             "POST" -> post(REST_API_PATH + path, build)
             "PATCH" -> patch(REST_API_PATH + path, build)
+            "PUT" -> put(REST_API_PATH + path, build)
             "DELETE" -> delete(REST_API_PATH + path, build)
             else -> error("Unsupported method $method")
         }
