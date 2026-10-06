@@ -722,7 +722,11 @@ class McpTools(
                 "which is your signal that any estimate you send will be refused. " +
                 "`relationKinds` names the ways two of its issues can be linked and is ABSENT " +
                 "when there are none, exactly as `sprints` and `versions` are: nothing to see " +
-                "means nothing to reason about. Per " +
+                "means nothing to reason about. `assignableUsers` lists who `assignee` " +
+                "accepts on this board — `[{\"name\": …}]`, the display names exactly as " +
+                "create_issue and update_issue take them, sorted by name — and is absent " +
+                "unless you may file issues here. Two people can share a name; name such " +
+                "an assignee by the email address on their account instead. Per " +
                 "issue you also get `assigneeIsAgent` when the work is flagged for the " +
                 "assignee's agent, `estimate` when one is set, and `isBlocked` with " +
                 "`blockedBy` naming the open issues holding it up. The blocked answer is " +
@@ -1930,6 +1934,19 @@ class McpTools(
         val assignees = issues.mapNotNull { it.assigneeId }.distinct()
             .mapNotNull { id -> deps.users.findById(id)?.let { id to it.resolvedName } }
             .toMap()
+        // Who `assignee` accepts here (LNL-223) — [assignableUsers], the one set the
+        // editor's dropdown and resolveAssignee both read, so a picker built from this
+        // cannot offer a name the write then refuses. Only for a caller who could put
+        // a name to use: the web app hands the list to an issue's editor and to nobody
+        // else, because to a reader it is a directory of who works here and nothing
+        // they can act on. So it is null — and the key absent — unless the caller may
+        // file issues on this board, which is the narrowest write that takes an
+        // assignee. Names only, never e-mail addresses, in the store's name order.
+        val assignable = if (deps.access.canCreateIssue(user, project.id)) {
+            deps.assignableUsers(project.id).map { it.resolvedName }
+        } else {
+            null
+        }
 
         // ── The blocked projection, computed exactly as the web board computes it ──
         //
@@ -2057,6 +2074,13 @@ class McpTools(
                 // identically, and the first of those is exactly what an agent asked to
                 // estimate something must be told before it tries and is refused.
                 put("estimateMode", project.estimateMode.key)
+                // Absent — not empty — for a caller who may not write here, which is a
+                // different answer from "nobody can be assigned": see `assignable`.
+                assignable?.let { names ->
+                    putJsonArray("assignableUsers") {
+                        names.forEach { name -> add(buildJsonObject { put("name", name) }) }
+                    }
+                }
                 putJsonArray("issues") {
                     issues.forEach { issue ->
                         add(

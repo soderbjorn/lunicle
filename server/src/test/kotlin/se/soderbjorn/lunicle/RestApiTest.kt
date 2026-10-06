@@ -377,6 +377,29 @@ class RestApiTest {
         }
     }
 
+    /**
+     * `assignableUsers` (LNL-223): names a picker can offer, for someone who can file
+     * here, and no key at all for the Viewer — who could not use a name, and to whom
+     * the list would only be a directory of who works on the project. The Viewer is a
+     * Viewer, so is not in it; the owner holds every rung, so is.
+     */
+    @Test
+    fun `the board lists who can be assigned, and only to someone who can write`() = runBlocking {
+        val f = seed()
+        withApi { client ->
+            val ownerToken = client.mintToken(f.ownerCookie, "Owner's", ApiTokenScope.READ)
+            val memberToken = client.mintToken(f.memberCookie, "Viewer's", ApiTokenScope.READ)
+
+            val ownerBoard = client.getWith(ownerToken, "/projects/${f.projectId}/board").json()
+            assertEquals(
+                listOf("Owner"),
+                ownerBoard["assignableUsers"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content },
+            )
+            val memberBoard = client.getWith(memberToken, "/projects/${f.projectId}/board").json()
+            assertTrue("assignableUsers" !in memberBoard, "A Viewer was handed the assignable list: $memberBoard")
+        }
+    }
+
     @Test
     fun `a project out of reach is the same 404 as one that does not exist`() = runBlocking {
         val f = seed()
