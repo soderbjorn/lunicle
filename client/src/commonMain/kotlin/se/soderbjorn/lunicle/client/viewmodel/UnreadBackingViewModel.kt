@@ -17,11 +17,11 @@
  *
  * ── What refreshes it, and what deliberately does not ───────────────────────
  *
- * This app polls nothing, anywhere — there is no socket and no timer in it — so a
- * badge is only ever as fresh as the last thing that asked. That is honest rather
- * than a gap: what makes a dot appear is somebody else writing a post, which this
- * browser cannot learn about without being told, and inventing a poll here would be
- * the first one in the codebase.
+ * Boards, open issues and the notification bell are live: they follow the change
+ * stream (LNL-225, see [LiveChangesBackingViewModel]), which tells this browser
+ * when somebody else writes. Discussions are retired (LNL-190) and the stream does
+ * not carry forum posts, so this badge is the one thing left that is only ever as
+ * fresh as the last thing that asked — and nothing polls for it.
  *
  * So it is refreshed at the moments the answer can actually have changed for *this*
  * reader: the session resolving (including a sign-out, which must take the previous

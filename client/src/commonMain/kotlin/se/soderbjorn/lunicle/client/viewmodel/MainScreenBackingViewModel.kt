@@ -22,6 +22,7 @@ package se.soderbjorn.lunicle.client.viewmodel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -533,6 +534,13 @@ class MainScreenBackingViewModel(
          * so none is offered.
          */
         val projectPrefs: Map<Long, UserProjectPrefs> = emptyMap(),
+        /**
+         * Cards somebody else just changed, for a brief highlight (LNL-225). Set in the
+         * same copy as the board that shows the change, so the card is drawn with it
+         * the first time; cleared a moment later without a redraw, which is why it
+         * reads as a one-off flash rather than a state.
+         */
+        val remotelyChangedIssueIds: Set<Long> = emptySet(),
     ) {
         /**
          * Everything one board pane needs, for the project it shows.
@@ -742,6 +750,9 @@ class MainScreenBackingViewModel(
 
         /** This board's filter text; empty for "show everything". */
         val filterQuery: String get() = state.filterQueries[projectId].orEmpty()
+
+        /** Whether [issueId]'s card should flash: somebody else just changed it. See [State.remotelyChangedIssueIds]. */
+        fun isRemotelyChanged(issueId: Long): Boolean = issueId in state.remotelyChangedIssueIds
 
         /**
          * Whether anybody is signed in — an app fact, forwarded so a board pane
@@ -1308,7 +1319,7 @@ class MainScreenBackingViewModel(
      *   where yanking them back to the active sprint because a card moved would
      *   undo a choice they made on purpose.
      */
-    private fun fetchBoard(projectId: Long, resetScope: Boolean) {
+    private fun fetchBoard(projectId: Long, resetScope: Boolean, highlight: Set<Long> = emptySet()) {
         scope.launch {
             runCatching { storage.board(projectId) }
                 .onSuccess { board ->
@@ -1319,6 +1330,7 @@ class MainScreenBackingViewModel(
                     val current = _stateFlow.value
                     _stateFlow.value = current.copy(
                         boards = current.boards + (projectId to board),
+                        remotelyChangedIssueIds = current.remotelyChangedIssueIds + highlight,
                         sprintScopes =
                             if (resetScope) current.sprintScopes + (projectId to board.defaultScope())
                             else current.sprintScopes,
@@ -1342,6 +1354,27 @@ class MainScreenBackingViewModel(
     fun refreshBoard(projectId: Long) {
         if (projectId !in openProjectIds) return
         fetchBoard(projectId, resetScope = false)
+    }
+
+    /**
+     * Somebody else changed this board (LNL-225): re-read it, and flash the cards
+     * they touched.
+     *
+     * A re-read of the whole board rather than a patch of the one card, because a
+     * card's place depends on more than itself — the blocked badge reads its
+     * blockers, swimlanes and sprint scope read the vocabulary — and the board read
+     * already computes all of it, under the reader's own permissions. The live
+     * stream coalesces a burst into one call, so this is one request per burst.
+     */
+    fun onRemoteBoardChange(projectId: Long, issueIds: Set<Long>) {
+        if (projectId !in openProjectIds) return
+        fetchBoard(projectId, resetScope = false, highlight = issueIds)
+        if (issueIds.isEmpty()) return
+        scope.launch {
+            delay(REMOTE_HIGHLIGHT_MILLIS)
+            val current = _stateFlow.value
+            _stateFlow.value = current.copy(remotelyChangedIssueIds = current.remotelyChangedIssueIds - issueIds)
+        }
     }
 
     /** Refresh every open board — after a change that could touch any of them. */
@@ -2241,6 +2274,9 @@ class MainScreenBackingViewModel(
     }
 
     companion object {
+        /** How long a card somebody else changed stays marked — a little past the CSS flash. */
+        const val REMOTE_HIGHLIGHT_MILLIS: Long = 3_000L
+
         /**
          * Show every issue, scheduled or not.
          *

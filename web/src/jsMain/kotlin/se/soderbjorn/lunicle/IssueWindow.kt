@@ -33,6 +33,7 @@ import se.soderbjorn.lunicle.client.renderMarkdown
 import se.soderbjorn.lunicle.client.viewmodel.CommentBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.HistoryBlock
 import se.soderbjorn.lunicle.client.viewmodel.IssueBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.IssueField
 import se.soderbjorn.lunicle.clientserver.CommentView
 import se.soderbjorn.lunicle.clientserver.VocabularyItem
 
@@ -140,6 +141,14 @@ class IssueWindow(
     private lateinit var historyElement: HTMLElement
     private lateinit var historyHeading: HTMLElement
     private lateinit var validationElement: HTMLElement
+
+    /**
+     * "Changed by Linus · Reload", one row per field somebody else changed while it
+     * was being edited here (LNL-225). Above the fields, in edit mode only, and only
+     * while there is something to say. Rebuilt only when [renderedRemoteChanges] moves.
+     */
+    private lateinit var remoteNotes: HTMLElement
+    private var renderedRemoteChanges: Map<IssueField, String?>? = null
     private lateinit var errorElement: HTMLElement
     private lateinit var saveButton: HTMLButtonElement
     private lateinit var editButton: HTMLElement
@@ -452,8 +461,12 @@ class IssueWindow(
         identityLine = element("div", "issue-identity")
         identityLine.children(byline, assignButton)
 
+        remoteNotes = element("div", "issue-remote-notes")
+        remoteNotes.setAttribute("role", "status")
+
         fields = element("div", "issue-fields")
         fields.children(
+            remoteNotes,
             // Title left, watch pill hard right on the same row — the far right at
             // the top, under the window's own chrome, as the issue asks.
             titleRow,
@@ -619,6 +632,8 @@ class IssueWindow(
         // only, so it reduces to exactly !isEditing.
         titleRow.visible(!state.isEditing, displayValue = "flex")
 
+        renderRemoteNotes(state)
+
         titleField.setValueIfChanged(state.title)
         editor.setValue(state.description)
         editor.setEnabled(state.isEditing)
@@ -732,6 +747,25 @@ class IssueWindow(
      * the overwhelming majority of issues on the overwhelming majority of boards —
      * [renderChildren]'s rule, applied to a list that will be empty even more often.
      */
+    private fun renderRemoteNotes(state: IssueBackingViewModel.State) {
+        val notes = if (state.isEditing) state.remoteChanges else emptyMap()
+        remoteNotes.visible(notes.isNotEmpty(), displayValue = "flex")
+        if (notes == renderedRemoteChanges) return
+        renderedRemoteChanges = notes
+        remoteNotes.clear()
+        // In the form's own order, so the notes read top to bottom like the fields.
+        IssueField.entries.filter { it in notes }.forEach { field ->
+            val row = element("div", "issue-remote-note")
+            row.children(
+                element("span", "issue-remote-note-field", REMOTE_FIELD_NAMES.getValue(field)),
+                element("span", "issue-remote-note-text", state.remoteChangeNote(field) ?: ""),
+                element("span", "issue-remote-note-sep", "·"),
+                button("Reload", "btn btn-quiet btn-small") { viewModel.onReloadField(field) },
+            )
+            remoteNotes.appendChild(row)
+        }
+    }
+
     private fun renderRelations(state: IssueBackingViewModel.State) {
         val groups = state.relationGroups
         val editing = state.isEditing && state.showsRelationControls
@@ -1355,3 +1389,20 @@ class IssueWindow(
         estimateSelect.close()
     }
 }
+
+/** What each field is called in a "changed elsewhere" note — the form's own labels. */
+private val REMOTE_FIELD_NAMES: Map<IssueField, String> = mapOf(
+    IssueField.TITLE to "Title",
+    IssueField.DESCRIPTION to "Description",
+    IssueField.STATUS to "Status",
+    IssueField.PRIORITY to "Priority",
+    IssueField.RESOLUTION to "Resolution",
+    IssueField.ASSIGNEE to "Assignee",
+    IssueField.SPRINT to "Sprint",
+    IssueField.PLANNED_VERSION to "Planned version",
+    IssueField.FIXED_VERSION to "Fixed version",
+    IssueField.LABELS to "Labels",
+    IssueField.COMPONENTS to "Components",
+    IssueField.ASSIGNEE_IS_AGENT to "Assign to their agent",
+    IssueField.ESTIMATE to "Estimate",
+)

@@ -138,6 +138,53 @@ data class HistoryBlock(val events: List<IssueEventView>) {
 }
 
 /**
+ * One editable field of an issue, for saying which of them somebody else changed
+ * while this window was editing it (LNL-225). One entry per [IssueBackingViewModel.Fields]
+ * property, and [IssueField.of]/[IssueField.with] are the only places that map between
+ * them — a field added to `Fields` and not here is a field whose remote change would
+ * be silently taken over the user's typing, which is why they are written side by side.
+ */
+enum class IssueField {
+    TITLE, DESCRIPTION, STATUS, PRIORITY, RESOLUTION, ASSIGNEE, SPRINT, PLANNED_VERSION,
+    FIXED_VERSION, LABELS, COMPONENTS, ASSIGNEE_IS_AGENT, ESTIMATE;
+
+    /** This field's value in [fields]. */
+    fun of(fields: IssueBackingViewModel.Fields): Any? = when (this) {
+        TITLE -> fields.title
+        DESCRIPTION -> fields.description
+        STATUS -> fields.statusId
+        PRIORITY -> fields.priorityId
+        RESOLUTION -> fields.resolutionId
+        ASSIGNEE -> fields.assigneeId
+        SPRINT -> fields.sprintId
+        PLANNED_VERSION -> fields.plannedVersionId
+        FIXED_VERSION -> fields.fixedVersionId
+        LABELS -> fields.labelIds
+        COMPONENTS -> fields.componentIds
+        ASSIGNEE_IS_AGENT -> fields.assigneeIsAgent
+        ESTIMATE -> fields.estimate
+    }
+
+    /** [state] with this field set to its value in [from]. */
+    fun with(state: IssueBackingViewModel.State, from: IssueBackingViewModel.Fields): IssueBackingViewModel.State =
+        when (this) {
+            TITLE -> state.copy(title = from.title)
+            DESCRIPTION -> state.copy(description = from.description)
+            STATUS -> state.copy(statusId = from.statusId)
+            PRIORITY -> state.copy(priorityId = from.priorityId)
+            RESOLUTION -> state.copy(resolutionId = from.resolutionId)
+            ASSIGNEE -> state.copy(assigneeId = from.assigneeId)
+            SPRINT -> state.copy(sprintId = from.sprintId)
+            PLANNED_VERSION -> state.copy(plannedVersionId = from.plannedVersionId)
+            FIXED_VERSION -> state.copy(fixedVersionId = from.fixedVersionId)
+            LABELS -> state.copy(labelIds = from.labelIds)
+            COMPONENTS -> state.copy(componentIds = from.componentIds)
+            ASSIGNEE_IS_AGENT -> state.copy(assigneeIsAgent = from.assigneeIsAgent)
+            ESTIMATE -> state.copy(estimate = from.estimate)
+        }
+}
+
+/**
  * Owns one issue window.
  *
  * Several of these can be alive at once — one per open issue window — which is
@@ -472,7 +519,20 @@ class IssueBackingViewModel(
          * no estimate control at all.
          */
         val estimateModeKey: String = EstimateMode.NONE.key,
+        /**
+         * Fields somebody else changed while this window had unsaved edits in them
+         * (LNL-225), and who — null where the server did not say. The edit on screen
+         * is kept; the field shows "Changed by … · Reload" instead, and Reload takes
+         * the other person's version ([onReloadField]). Cleared by a save, a discard
+         * or leaving edit mode, each of which settles the question.
+         */
+        val remoteChanges: Map<IssueField, String?> = emptyMap(),
     ) {
+        /** "Changed by Linus", or plain "Changed elsewhere" — the note for a field in [remoteChanges]. */
+        fun remoteChangeNote(field: IssueField): String? =
+            if (field !in remoteChanges) null
+            else remoteChanges[field]?.let { "Changed by $it" } ?: "Changed elsewhere"
+
         /**
          * What the estimate control should offer. [EstimateMode.NONE] renders **nothing
          * at all** — no cell, no popover, no greyed field — which is the whole promise
@@ -1158,7 +1218,84 @@ class IssueBackingViewModel(
             // whole of why flipping a project from points to time does not silently
             // reinterpret every estimate already stored. See EstimateUnit.
             estimateModeKey = board.project.estimateMode,
+            // A window that is not editing has nothing a note could be about — which is
+            // also how a save that returns to read mode settles every open question.
+            remoteChanges = if (previous.isEditing) previous.remoteChanges else emptyMap(),
         )
+    }
+
+    // ── Somebody else's changes (LNL-225) ────────────────────────────────────
+
+    /**
+     * Somebody else changed — or deleted — this issue, according to the change stream.
+     *
+     * A change re-reads the issue and folds it in with [mergeRemote], which is what
+     * keeps an edit in progress: comments, history, links and every field the reader
+     * has not touched follow the other person, and a field the reader HAS touched
+     * keeps the reader's text and gains a note instead. A delete cannot be merged with
+     * anything, so it says so and takes the editing affordances away; a save would only
+     * be refused.
+     *
+     * @param actor who, as the stream named them, or null.
+     */
+    fun onRemoteChange(actor: String?, deleted: Boolean) {
+        if (deleted) {
+            _stateFlow.value = _stateFlow.value.copy(
+                errorMessage = "${actor ?: "Somebody"} deleted this issue.",
+                canEdit = false,
+                canComment = false,
+                canDelete = false,
+            )
+            return
+        }
+        scope.launch {
+            val detail = runCatching { storage.issue(issueId) }.getOrElse {
+                println("Issue: remote refresh failed: ${it.message}")
+                return@launch
+            }
+            val previous = _stateFlow.value
+            _stateFlow.value = mergeRemote(previous, detail.applyTo(previous, startEditingIfDraft = false), actor)
+        }
+    }
+
+    /**
+     * Take the other person's version of [field], dropping this window's edit of it —
+     * the "Reload" beside "Changed by …".
+     */
+    fun onReloadField(field: IssueField) {
+        val current = _stateFlow.value
+        val saved = current.saved ?: return
+        _stateFlow.value = field.with(current, saved).copy(remoteChanges = current.remoteChanges - field)
+    }
+
+    /**
+     * Fold a freshly read issue ([fresh], already applied over [previous]) into a
+     * window that may be mid-edit.
+     *
+     * Outside edit mode there is nothing to protect, and [fresh] is the answer. In edit
+     * mode, a field whose on-screen value differs from the old baseline was being
+     * edited: it keeps the reader's value, and if the other person changed it too it is
+     * noted in [State.remoteChanges]. The baseline itself moves to the server's copy
+     * either way, so [State.isDirty] keeps meaning "differs from what is saved now",
+     * and saving writes the reader's version over the other person's — their choice,
+     * made knowing, because the note is on screen.
+     */
+    internal fun mergeRemote(previous: State, fresh: State, actor: String?): State {
+        val before = previous.saved ?: return fresh
+        val theirs = fresh.saved ?: return fresh
+        if (!previous.isEditing) return fresh.copy(remoteChanges = emptyMap())
+        val mine = previous.fields
+        var merged = fresh
+        var notes = previous.remoteChanges
+        IssueField.entries.forEach { field ->
+            val edited = field.of(mine) != field.of(before)
+            if (!edited) return@forEach
+            merged = field.with(merged, mine)
+            if (field.of(theirs) != field.of(before) && field.of(theirs) != field.of(mine)) {
+                notes = notes + (field to actor)
+            }
+        }
+        return merged.copy(remoteChanges = notes.filterKeys { it.of(merged.fields) != it.of(theirs) })
     }
 
     /**
@@ -1363,7 +1500,7 @@ class IssueBackingViewModel(
         }
         if (current.isDraft || current.isBusy) return
         if (!current.isDirty) {
-            _stateFlow.value = current.copy(isEditing = false)
+            _stateFlow.value = current.copy(isEditing = false, remoteChanges = emptyMap())
             return
         }
         _stateFlow.value = current.copy(confirmingClose = CloseConfirm.LeaveEdit)
@@ -1443,6 +1580,7 @@ class IssueBackingViewModel(
                 _stateFlow.value = current.copy(
                     confirmingClose = null,
                     isEditing = false,
+                    remoteChanges = emptyMap(),
                     title = saved.title,
                     description = saved.description,
                     statusId = saved.statusId,

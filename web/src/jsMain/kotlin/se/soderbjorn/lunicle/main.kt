@@ -72,6 +72,8 @@ import se.soderbjorn.lunicle.client.queryValue
 import se.soderbjorn.lunicle.client.Ticket
 import se.soderbjorn.lunicle.client.parseTicket
 import se.soderbjorn.lunicle.client.viewmodel.ActiveDialog
+import se.soderbjorn.lunicle.client.viewmodel.LiveChangesBackingViewModel
+import se.soderbjorn.lunicle.client.viewmodel.LiveSignal
 import se.soderbjorn.lunicle.client.viewmodel.CommentBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.AdminSettingsBackingViewModel
 import se.soderbjorn.lunicle.client.viewmodel.ApiAccessBackingViewModel
@@ -445,6 +447,15 @@ private fun start() {
     // the app scope so its live-render collector and the five-minute poll below
     // die with the page. See NotificationsBackingViewModel.
     val notificationsViewModel = NotificationsBackingViewModel(storage, scope)
+
+    // The change stream (LNL-225): one connection for every open board and the bell,
+    // fanned out below to whichever view model each event is for. No transport in
+    // demo mode — there is no server to listen to, and the in-memory world only ever
+    // changes by this tab's own hand. See LiveChangesBackingViewModel.
+    val liveChanges = LiveChangesBackingViewModel(
+        transport = if (demoEnabled()) null else EventSourceTransport(),
+        scope = scope,
+    )
 
     // Modals mount outside the shell so they overlay every window: the shared
     // host is what makes Modal's "topmost wins Escape" true rather than
@@ -821,6 +832,8 @@ private fun start() {
         // 1. Which boards have to exist. The one input the board view model takes
         //    from the workspace; it fetches what is new and drops what is gone.
         mainViewModel.onOpenProjectsChanged(ws.referencedProjectIds)
+        // ...and the change stream listens to the same set.
+        liveChanges.onProjectsChanged(ws.referencedProjectIds)
 
         // 2. Adopt the restored issue panes, once.
         if (!restoreAdopted) {
@@ -1713,16 +1726,28 @@ private fun start() {
         // listener below closes the gap that skipping opens — coming back refreshes
         // immediately, so a returning tab shows a current count rather than one as
         // old as the moment it was backgrounded.
+        //
+        // Since LNL-225 this is only the fallback: while the change stream is
+        // connected, the bell hears about every change the moment it happens, and the
+        // tick skips. It asks again only while the stream is down — refused, or
+        // never able to open behind some proxy — which is the app as it was before.
         launch {
             while (true) {
                 delay(5 * 60 * 1000L)
-                if (tabIsVisible() && sessionViewModel.stateFlow.value.user != null) {
+                if (
+                    tabIsVisible() &&
+                    sessionViewModel.stateFlow.value.user != null &&
+                    !liveChanges.stateFlow.value.isConnected
+                ) {
                     notificationsViewModel.refreshCount()
                 }
             }
         }
 
         document.addEventListener("visibilitychange", {
+            // A hidden tab holds no stream; a returning one reopens it and resumes
+            // from the last event it saw (or is told to re-read, if that is too old).
+            liveChanges.onVisibilityChanged(tabIsVisible())
             if (tabIsVisible() && sessionViewModel.stateFlow.value.user != null) {
                 notificationsViewModel.refreshCount()
             }
@@ -1864,6 +1889,26 @@ private fun start() {
                 )
             }
         }
+        // Who the change stream was last opened for; see the session collector.
+        var liveIdentity: Long? = null
+        var liveIdentityKnown = false
+        // What the stream hears, routed to whoever it concerns (LNL-225).
+        launch {
+            liveChanges.signals.collect { signal ->
+                when (signal) {
+                    is LiveSignal.BoardChanged -> mainViewModel.onRemoteBoardChange(signal.projectId, signal.issueIds)
+                    is LiveSignal.IssueChanged -> issueWindows.onRemoteChange(signal.issueId, signal.actor, signal.deleted)
+                    LiveSignal.NotificationsChanged -> notificationsViewModel.onRemoteChange()
+                    // Events were missed that cannot be replayed — a long sleep, a
+                    // restarted server: read again everything that is open.
+                    LiveSignal.Resync -> {
+                        mainViewModel.refreshAllBoards()
+                        issueWindows.onResync()
+                        notificationsViewModel.onRemoteChange()
+                    }
+                }
+            }
+        }
         launch {
             sessionViewModel.stateFlow.collect { state ->
                 signInView.onState(state)
@@ -1900,6 +1945,14 @@ private fun start() {
                         }
                     }
                     notificationsViewModel.onSessionChanged()
+                    // A new identity is a new stream: the old one's events were the
+                    // previous account's to hear. Only on a change, so the session's
+                    // other emissions do not reconnect it.
+                    if (liveIdentity != state.identity || !liveIdentityKnown) {
+                        liveIdentity = state.identity
+                        liveIdentityKnown = true
+                        liveChanges.onSessionChanged(signedIn = state.user != null)
+                    }
                 }
                 // The boards belong to whoever is asking, so the session drives
                 // them. Identity rather than a boolean — impersonation goes
@@ -2190,6 +2243,20 @@ private class IssueWindows(
      */
     fun onCloseClicked(paneId: String) {
         issueIdOfPane(paneId)?.let { entries[it]?.viewModel?.onCloseRequested() }
+    }
+
+    /**
+     * Somebody else changed, or deleted, an issue (LNL-225). Only an open window
+     * cares; see [IssueBackingViewModel.onRemoteChange] for how it keeps an edit in
+     * progress.
+     */
+    fun onRemoteChange(issueId: Long, actor: String?, deleted: Boolean) {
+        entries[issueId]?.viewModel?.onRemoteChange(actor, deleted)
+    }
+
+    /** Events were missed: every open window re-reads its issue, keeping any edit in progress. */
+    fun onResync() {
+        entries.values.forEach { it.viewModel.onRemoteChange(actor = null, deleted = false) }
     }
 
     /**

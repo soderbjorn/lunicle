@@ -20,6 +20,8 @@ package se.soderbjorn.lunicle.clientserver
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.delete
 import io.ktor.client.request.parameter
@@ -49,6 +51,9 @@ fun createHttpClient(): HttpClient = HttpClient {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
+    // Every request names this tab, so the change stream can mark the events its own
+    // writes caused and the app does not echo them back at itself (LNL-225).
+    defaultRequest { header(CHANGE_ORIGIN_HEADER, ClientOrigin.id) }
 }
 
 /**

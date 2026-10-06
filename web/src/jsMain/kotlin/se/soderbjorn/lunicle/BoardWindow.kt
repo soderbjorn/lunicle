@@ -122,6 +122,15 @@ class BoardWindow(
     private var draggingIssue: IssueSummary? = null
 
     /**
+     * A state that arrived mid-drag and was held back (LNL-225). Somebody else's
+     * change re-reads the board, and a re-render rebuilds every card — including the
+     * one under the pointer, which would end the drag in the reader's hand. So while
+     * a drag is in flight the newest state waits here, and [makeDraggable]'s
+     * `dragend` draws it.
+     */
+    private var heldDuringDrag: MainScreenBackingViewModel.BoardScreen? = null
+
+    /**
      * The board object the columns were last built from — by IDENTITY, which is
      * exactly right for an immutable state: the view model replaces the board
      * object when and only when its content changes.
@@ -258,6 +267,10 @@ class BoardWindow(
 
     /** Apply a state snapshot. Called for every emission of the state flow. */
     fun render(state: MainScreenBackingViewModel.BoardScreen) {
+        if (draggingIssue != null) {
+            heldDuringDrag = state
+            return
+        }
         // Two fixed rows and then the sprints. Rendered before the visibility
         // check rather than inside it, so the control is correct the instant it
         // appears — a project that just had its first sprint made shows the new
@@ -635,6 +648,10 @@ class BoardWindow(
         emphasis: String,
     ): HTMLElement {
         val card = element("article", "card$emphasis")
+        // Somebody else just changed this card: a brief flash, drawn by CSS and gone
+        // on its own (LNL-225). Never on a change this tab made — those are not
+        // reported to it at all.
+        if (state.isRemotelyChanged(issue.id)) card.classList.add("card-remote-changed")
         val label = state.cardLabel(issue)
         val cardTitle = element("p", "card-title")
         // A URL pasted into a title becomes a link, same as one in a description
@@ -882,6 +899,10 @@ class BoardWindow(
         })
         card.addEventListener("dragend", { _: Event ->
             draggingIssue = null
+            heldDuringDrag?.let {
+                heldDuringDrag = null
+                render(it)
+            }
             card.classList.remove("card-dragging")
             document.querySelectorAll(".card").asList()
                 .filterIsInstance<HTMLElement>()

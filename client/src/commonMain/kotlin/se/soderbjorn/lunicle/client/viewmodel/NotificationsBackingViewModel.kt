@@ -16,9 +16,12 @@
  * Unlike [UnreadBackingViewModel] — which refreshes only at moments this browser
  * causes — the notification bell has a genuine liveness need: a notification is
  * usually created by *somebody else's* action, which this browser cannot learn of
- * without asking. So `main.kt` drives a five-minute [refreshCount] loop while
- * signed in (LNL-109's chosen cadence). This view model stays timer-free so the
- * cadence, and the "signed in only" gate, live in one place. Every mutation and
+ * without being told. Since LNL-225 it is told: the change stream carries a
+ * `notification.changed` event to this person, and `main.kt` routes it to
+ * [onRemoteChange]. The five-minute [refreshCount] loop (LNL-109's cadence) remains
+ * only as the fallback while that stream is not connected — see
+ * [LiveChangesBackingViewModel]. This view model stays timer-free so the cadence,
+ * and the "signed in only" gate, live in one place. Every mutation and
  * the list fetch also refresh the count as a side effect, because each returns the
  * whole refreshed [NotificationListState].
  */
@@ -136,6 +139,15 @@ class NotificationsBackingViewModel(
     fun onSessionChanged() {
         _stateFlow.value = State()
         refreshCount()
+    }
+
+    /**
+     * The change stream says this person's notifications changed (LNL-225) — one
+     * arrived, or another tab read or dismissed one. The count always; the list only
+     * if it has been fetched, since an unopened panel fetches its list when it opens.
+     */
+    fun onRemoteChange() {
+        if (_stateFlow.value.listLoaded) refreshList() else refreshCount()
     }
 
     /** Adopt a refreshed list-and-count response as the whole state. */
