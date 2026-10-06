@@ -239,6 +239,20 @@ data class WorkspaceTab(
      * reader typed, and the rename matches neither.
      */
     val isNameGiven: Boolean = false,
+    /**
+     * Pane ids in the order they were last focused, most recent LAST (LNL-227).
+     *
+     * What closing the focused pane falls back to: the window the reader was on
+     * before it, not whichever pane happens to sit last in [panes]. Open two
+     * boards, read an issue from the first, close the issue — the first board
+     * comes back to the front, because that is where the reader came from.
+     *
+     * Kept by [WorkspaceBackingViewModel]'s commit rather than by each gesture, so
+     * every path that moves [activePaneId] feeds it. Pruned to [panes] there too.
+     * Defaults empty, which is what a workspace stored before this field decodes
+     * to; the fallback is then the old one, the last pane in [panes].
+     */
+    val recentPaneIds: List<String> = emptyList(),
 ) {
     /** The pane with that id, or null. */
     fun pane(paneId: String): PaneRef? = panes.firstOrNull { it.paneId == paneId }

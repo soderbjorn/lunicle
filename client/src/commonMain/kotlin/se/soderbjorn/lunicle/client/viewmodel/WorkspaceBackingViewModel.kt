@@ -819,7 +819,7 @@ class WorkspaceBackingViewModel(
         saveNow: Boolean = false,
     ) {
         val next = _stateFlow.value.copy(
-            workspace = workspace,
+            workspace = workspace.copy(tabs = workspace.tabs.map { it.withFocusRecorded() }),
             isRestored = _stateFlow.value.isRestored || markRestored,
             isSettled = _stateFlow.value.isSettled || markSettled,
         )
@@ -919,7 +919,21 @@ private fun WorkspaceTab.withoutPane(paneId: String): WorkspaceTab {
     if (kept.size == panes.size) return this
     return copy(
         panes = kept,
-        activePaneId = activePaneId?.takeUnless { it == paneId } ?: kept.lastOrNull()?.paneId,
+        activePaneId = activePaneId?.takeUnless { it == paneId }
+            ?: recentPaneIds.lastOrNull { id -> id != paneId && kept.any { it.paneId == id } }
+            ?: kept.lastOrNull()?.paneId,
         paneLabels = paneLabels - paneId,
     )
+}
+
+/**
+ * This tab with its [WorkspaceTab.activePaneId] moved to the end of
+ * [WorkspaceTab.recentPaneIds], and every id no longer in [WorkspaceTab.panes]
+ * dropped from it — the focus history [withoutPane] falls back on (LNL-227).
+ */
+private fun WorkspaceTab.withFocusRecorded(): WorkspaceTab {
+    val open = panes.mapTo(mutableSetOf()) { it.paneId }
+    val history = recentPaneIds.filter { it in open && it != activePaneId } +
+        listOfNotNull(activePaneId?.takeIf { it in open })
+    return if (history == recentPaneIds) this else copy(recentPaneIds = history)
 }
