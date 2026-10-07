@@ -159,6 +159,35 @@ abstract class VocabularyStoreContract {
     // list it landed in.
 
     /**
+     * A status's unblocking flag round-trips through add and rename on both backends,
+     * is off unless asked for, and is dropped for a kind that cannot carry it.
+     *
+     * Named "Waiting for sign-off" rather than "Ready for test" for the relation
+     * kinds' reason below: the SQLite fixture seeds the default columns and the
+     * Firestore one does not, so a seeded name would clash on one backend only.
+     */
+    @Test
+    fun `a status carries its unblocking flag through add and rename`(): Unit = runBlocking {
+        val project = newProject()
+        val armed = store.add(project, VocabularyKind.STATUS, "Waiting for sign-off", unblocks = true)
+        assertTrue(armed.unblocks, "add takes the flag")
+        val plain = store.add(project, VocabularyKind.STATUS, "Parked here")
+        assertTrue(!plain.unblocks, "and leaves it off unless asked")
+        assertTrue(store.rows(project, VocabularyKind.STATUS).single { it.id == armed.id }.unblocks)
+
+        store.rename(
+            project, VocabularyKind.STATUS, armed, "Signed off",
+            requiresResolution = false, isDone = false, unblocks = false,
+        )
+        val renamed = store.rows(project, VocabularyKind.STATUS).single { it.id == armed.id }
+        assertEquals("Signed off", renamed.name)
+        assertTrue(!renamed.unblocks, "the rename writes the flag with the name")
+
+        val label = store.add(project, VocabularyKind.LABEL, "Not a column", unblocks = true)
+        assertTrue(!label.unblocks, "a label has nowhere to put it")
+    }
+
+    /**
      * Both labels and the blocking flag round-trip, through add and through rename.
      *
      * The rename half is not padding: a kind's two names and its flag are **one**

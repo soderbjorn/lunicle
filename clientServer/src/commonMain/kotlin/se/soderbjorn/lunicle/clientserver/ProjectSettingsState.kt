@@ -242,6 +242,12 @@ data class VocabularyEntry(
      * as a status's [requiresResolution], and rendered as the same kind of checkbox.
      */
     val marksBlocked: Boolean = false,
+    /**
+     * Whether an issue in this column has stopped blocking the issues that wait on
+     * it. **Statuses only**, like [requiresResolution], which implies it — a closing
+     * column unblocks whether or not this is set. See Statuses.sq's unblocks.
+     */
+    val unblocks: Boolean = false,
 )
 
 /**
@@ -684,6 +690,13 @@ data class VocabularyEdit(
      * its flag are one edit; see IssueRelationKinds.sq's `update`.
      */
     val marksBlocked: Boolean = false,
+    /**
+     * The unblocking flag, for a status. Ignored elsewhere, for [requiresResolution]'s
+     * reason, and sent on every rename with it — see Statuses.sq's `update`. Defaulted
+     * false, so an older client's rename clears it: the same contract every flag here
+     * has, since the dialog always sends the whole row.
+     */
+    val unblocks: Boolean = false,
 )
 
 /**

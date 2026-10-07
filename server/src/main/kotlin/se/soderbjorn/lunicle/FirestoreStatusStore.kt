@@ -10,7 +10,8 @@
  * read from data rather than the column's name so a renamed column keeps its
  * meaning. [insert] takes it and [update] writes it alongside the name (one write,
  * one decision), the same field [FirestoreVocabularyStore.rename] sets for a status
- * and [FirestoreSprintStore] reads to find the closing columns. And
+ * and [FirestoreSprintStore] reads to find the closing columns. `unblocks` rides
+ * beside it the same way (absent reads as false, so no back-fill is needed). And
  * [firstForProject] answers the leftmost column, where a new issue lands — the SQLite
  * `ORDER BY position LIMIT 1`, here the position-sorted list's first row — read
  * rather than hardcoded to "New" so a renamed board still takes an issue.
@@ -31,16 +32,26 @@ class FirestoreStatusStore(private val firestore: Firestore) : StatusStore {
     private fun collection() = firestore.collection(FirestoreVocabularyStore.COLLECTION)
     private fun doc(id: Long) = collection().document(id.toString())
 
-    override suspend fun insert(projectId: Long, name: String, position: Long, requiresResolution: Boolean) {
-        insertVocabularyRow(firestore, counters, VocabularyKind.STATUS, projectId, name, position, requiresResolution)
+    override suspend fun insert(
+        projectId: Long,
+        name: String,
+        position: Long,
+        requiresResolution: Boolean,
+        unblocks: Boolean,
+    ) {
+        insertVocabularyRow(
+            firestore, counters, VocabularyKind.STATUS, projectId, name, position, requiresResolution,
+            unblocks = unblocks,
+        )
     }
 
-    /** Rename and set the closing flag together — one write, one decision. */
-    override suspend fun update(id: Long, name: String, requiresResolution: Boolean) {
+    /** Rename and set the closing and unblocking flags together — one write, one decision. */
+    override suspend fun update(id: Long, name: String, requiresResolution: Boolean, unblocks: Boolean) {
         doc(id).update(
             mapOf(
                 FirestoreVocabularyStore.NAME to name,
                 FirestoreVocabularyStore.REQUIRES_RESOLUTION to requiresResolution,
+                FirestoreVocabularyStore.UNBLOCKS to unblocks,
             ),
         ).await()
     }

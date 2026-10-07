@@ -105,7 +105,9 @@ class FirestoreVocabularyStore(
      * `VocabularyRepository.add` gives: the MCP tool creates a kind in one call, and a
      * kind whose opposite could only be named by a second write would be briefly and
      * visibly symmetric when it is not. Both still default to the safe state —
-     * symmetric, and not blocking — so nothing is armed by accident.
+     * symmetric, and not blocking — so nothing is armed by accident. A status's
+     * [unblocks] is taken here for the same one-call reason, and is just as off by
+     * default.
      */
     override suspend fun add(
         projectId: Long,
@@ -113,6 +115,7 @@ class FirestoreVocabularyStore(
         name: String,
         inverseName: String?,
         marksBlocked: Boolean,
+        unblocks: Boolean,
     ): VocabularyRow {
         val clean = name.trim()
         // Blank normalises to null rather than being stored, so "I cleared the field"
@@ -144,6 +147,7 @@ class FirestoreVocabularyStore(
                     // VocabularyRepository.add.
                     REQUIRES_RESOLUTION to false,
                     IS_DONE to false,
+                    UNBLOCKS to (unblocks && kind == VocabularyKind.STATUS),
                     COMPLETED_AT to null,
                 )
             }
@@ -157,6 +161,7 @@ class FirestoreVocabularyStore(
                 usageCount = 0,
                 inverseName = cleanInverse.takeIf { kind == VocabularyKind.RELATION_KIND },
                 marksBlocked = marksBlocked && kind == VocabularyKind.RELATION_KIND,
+                unblocks = unblocks && kind == VocabularyKind.STATUS,
             )
         }.await()
     }
@@ -181,13 +186,15 @@ class FirestoreVocabularyStore(
         isDone: Boolean,
         inverseName: String?,
         marksBlocked: Boolean,
+        unblocks: Boolean,
     ) {
         val clean = name.trim()
         // Blank is not a to-side label, it is the absence of one. See [add].
         val cleanInverse = inverseName?.trim()?.takeIf { it.isNotBlank() }
         validateName(kind, clean, cleanInverse, docsOfKind(projectId, kind), renamingId = row.id)
         val updates = when (kind) {
-            VocabularyKind.STATUS -> mapOf(NAME to clean, REQUIRES_RESOLUTION to requiresResolution)
+            VocabularyKind.STATUS ->
+                mapOf(NAME to clean, REQUIRES_RESOLUTION to requiresResolution, UNBLOCKS to unblocks)
             VocabularyKind.RESOLUTION -> mapOf(NAME to clean, IS_DONE to isDone)
             VocabularyKind.RELATION_KIND ->
                 mapOf(NAME to clean, INVERSE_NAME to cleanInverse, MARKS_BLOCKED to marksBlocked)
@@ -345,6 +352,7 @@ class FirestoreVocabularyStore(
         // is not a fallback for a relation kind, it is the meaning: symmetric.
         inverseName = getString(INVERSE_NAME),
         marksBlocked = getBoolean(MARKS_BLOCKED) ?: false,
+        unblocks = getBoolean(UNBLOCKS) ?: false,
     )
 
     /**
@@ -372,6 +380,15 @@ class FirestoreVocabularyStore(
          * settings editor agree on it. See Resolutions.sq.
          */
         const val IS_DONE = "isDone"
+
+        /**
+         * A status's "issues here no longer block their dependents" flag — the
+         * companion of [REQUIRES_RESOLUTION] on the same rows, and false on every
+         * other kind. Absent reads as false, which is how every column behaved before
+         * the flag existed, so documents written earlier need no back-fill. See
+         * Statuses.sq's unblocks and [StatusRecord.stopsBlocking].
+         */
+        const val UNBLOCKS = "unblocks"
         const val COMPLETED_AT = "completedAt"
 
         /**

@@ -171,6 +171,11 @@ data class VocabularyItem(
  *   [requiresResolution]. It is what the resolution dialog reads to decide whether
  *   to demand a fixed version; an affordance, re-checked server-side. See
  *   Resolutions.sq.
+ * @property unblocks whether an issue in this column has stopped blocking the
+ *   issues that wait on it, though the column is not a closing one — "Ready for
+ *   test", say. Only ever meaningful for a status. Informational on the board: the
+ *   blocked marker itself is computed server-side ([IssueSummary.isBlocked]), and a
+ *   closing column unblocks whether or not this is set. See Statuses.sq.
  */
 @Serializable
 data class StatusItem(
@@ -179,6 +184,7 @@ data class StatusItem(
     val position: Int,
     val requiresResolution: Boolean = false,
     val isDone: Boolean = false,
+    val unblocks: Boolean = false,
 )
 
 /**
@@ -467,9 +473,11 @@ data class IssueSummary(
      * holds, so a client-side derivation would silently report a blocked card as
      * clear. The server counts over the authoritative set; see BoardRoutes.buildBoard.
      *
-     * "Still open" means the blocker's status has `requiresResolution == false`. Any
-     * closure stops the blocking, including "Will not fix" and "Duplicate" — a blocker
-     * nobody will ever do is not blocking anything. Note this is read off the STATUS's
+     * "Still open" means the blocker's status has neither `requiresResolution` nor
+     * `unblocks` — a column an admin has said is finished enough for the dependents,
+     * such as "Ready for test", stops the blocking just as closing does. Any closure
+     * stops it too, including "Will not fix" and "Duplicate" — a blocker nobody will
+     * ever do is not blocking anything. Note this is read off the STATUS's
      * flag and not off a resolution's `isDone`: [StatusItem] is shared by statuses,
      * priorities and resolutions, and its `isDone` is only ever populated for
      * resolutions.

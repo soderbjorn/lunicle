@@ -357,7 +357,11 @@ internal val MCP_INSTRUCTIONS = """
         links in both directions, already worded from that issue's side, and
         link_issues and unlink_issues change them. A card counts as BLOCKED when a
         link whose kind marks blocking points at an issue that is still open —
-        get_board says so per issue and names the blockers.
+        get_board says so per issue and names the blockers. "Open" means the
+        blocker's status has neither "requiresResolution" nor "unblocks": a
+        column marked "unblocks": true (say "Ready for test") has finished the
+        work its dependents were waiting for, so its issues stop blocking even
+        though they are not closed yet.
       • Estimates are off unless a project turns them on. get_board reports
         "estimateMode": "none", "time" or "points". Under "time" an estimate is a
         number of whole MINUTES; under "points" it is whole points; under "none"
@@ -729,7 +733,9 @@ class McpTools(
                 "an assignee by the email address on their account instead. Per " +
                 "issue you also get `assigneeIsAgent` when the work is flagged for the " +
                 "assignee's agent, `estimate` when one is set, and `isBlocked` with " +
-                "`blockedBy` naming the open issues holding it up. The blocked answer is " +
+                "`blockedBy` naming the open issues holding it up — open meaning in a status " +
+                "with neither `requiresResolution` nor `unblocks`, both of which each status " +
+                "reports. The blocked answer is " +
                 "computed over the WHOLE project even when you filtered to one column, so a " +
                 "blocker sitting somewhere you did not ask about still counts.\n\n" +
                 "It does not report the vocabulary's ids, positions or usage counts — " +
@@ -1261,8 +1267,8 @@ class McpTools(
                 "CHANGING any of it, because rename, reorder and delete all take ids: a name is not " +
                 "a stable handle for a row you are about to rename, and a reorder wants the whole " +
                 "list anyway.\n\n" +
-                "Per-kind extras come back only on the kinds that have them: `requiresResolution` on " +
-                "a status, `isDone` on a resolution, `inverseName` and `marksBlocked` on a relation " +
+                "Per-kind extras come back only on the kinds that have them: `requiresResolution` and " +
+                "`unblocks` on a status, `isDone` on a resolution, `inverseName` and `marksBlocked` on a relation " +
                 "kind, `completedAt` on a finished sprint. `usageCount` counts published issues " +
                 "holding the row — for a status or a priority a non-zero count means a delete will " +
                 "be refused, and for a label it means that many issues would simply lose it.\n\n" +
@@ -1290,9 +1296,9 @@ class McpTools(
                 "project, and retrying will not change it.\n\n" +
                 "The name must be unique within its kind in that project, compared case-insensitively " +
                 "— a clash is refused with the name it collided with. A new status never demands a " +
-                "resolution and a new relation kind never marks blocking unless you say so here: both " +
-                "flags decide how every card on everybody's board reads, so they are armed " +
-                "deliberately rather than by default. A sprint is created NOT active; start it with " +
+                "resolution, a new status never `unblocks` and a new relation kind never marks " +
+                "blocking unless you say so here: those flags decide how every card on everybody's " +
+                "board reads, so they are armed deliberately rather than by default. A sprint is created NOT active; start it with " +
                 "set_active_sprint.",
             inputSchema = schema(
                 "project_id" to integerProp("Which project to add it to."),
@@ -1305,6 +1311,7 @@ class McpTools(
                 ),
                 "inverse_name" to stringProp(INVERSE_NAME_PROP_DESCRIPTION),
                 "marks_blocked" to boolProp(MARKS_BLOCKED_PROP_DESCRIPTION),
+                "unblocks" to boolProp(UNBLOCKS_PROP_DESCRIPTION),
                 required = listOf("kind", "name"),
             ),
         ),
@@ -1350,6 +1357,9 @@ class McpTools(
                 ),
                 "marks_blocked" to boolProp(
                     MARKS_BLOCKED_PROP_DESCRIPTION + " Omit it to leave the flag as it is.",
+                ),
+                "unblocks" to boolProp(
+                    UNBLOCKS_PROP_DESCRIPTION + " Omit it to leave the flag as it is.",
                 ),
                 required = listOf("kind", "id"),
             ),
@@ -1990,13 +2000,15 @@ class McpTools(
         // more length; this is the second reader of that rule and not a second copy of
         // it, since both go through the same two stores.
         //
-        // "Open" is read off the STATUS's requiresResolution and never off a
+        // "Open" is read off the STATUS — requiresResolution OR unblocks, through the
+        // one StatusRecord.stopsBlocking the web board also uses — and never off a
         // resolution's isDone: any closure stops the blocking, "Won't fix" included,
-        // because a blocker nobody will ever do is not blocking anything.
+        // because a blocker nobody will ever do is not blocking anything, and so does a
+        // column the admin marked as finished enough for the dependents.
         val relationKinds = deps.issueRelationKinds.forProject(project.id)
         val blockingKindIds = relationKinds.filter { it.marksBlocked }.map { it.id }.toSet()
-        val closingStatusIds = statuses.filter { it.requiresResolution }.map { it.id }.toSet()
-        val openById = allIssues.associate { it.id to (it.statusId !in closingStatusIds) }
+        val unblockingStatusIds = statuses.filter { it.stopsBlocking }.map { it.id }.toSet()
+        val openById = allIssues.associate { it.id to (it.statusId !in unblockingStatusIds) }
         val numberById = allIssues.associate { it.id to it.number }
         // Issue id → the KEYS of the open issues blocking it. Keys rather than the bare
         // numbers the web board carries, because an agent addresses an issue as
@@ -2032,6 +2044,11 @@ class McpTools(
                                 // Without it, every attempt to close an issue is a
                                 // guess about whether a resolution is needed.
                                 put("requiresResolution", status.requiresResolution)
+                                // Whether an issue here has stopped blocking its
+                                // dependents without being closed. Always present, like
+                                // the flag above, so `isBlocked` can be explained from
+                                // this response alone.
+                                put("unblocks", status.unblocks)
                             },
                         )
                     }
@@ -3602,8 +3619,10 @@ class McpTools(
                                         // `requiresResolution: false` on it would be a
                                         // field inviting a write that does nothing.
                                         when (kind) {
-                                            VocabularyKind.STATUS ->
+                                            VocabularyKind.STATUS -> {
                                                 put("requiresResolution", row.requiresResolution)
+                                                put("unblocks", row.unblocks)
+                                            }
                                             VocabularyKind.RESOLUTION -> put("isDone", row.isDone)
                                             VocabularyKind.RELATION_KIND -> {
                                                 // Absent when the kind reads the same
@@ -3656,9 +3675,15 @@ class McpTools(
         val inverseName = arguments.string(INVERSE_NAME_ARGUMENT)
         val marksBlocked = flag(arguments, MARKS_BLOCKED_ARGUMENT, current = false)
             .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        // A status's unblocking flag, taken here too so a column can be made in one
+        // call. Unlike requires_resolution, which stays a rename-only switch: that one
+        // gates every move into the column, where this one only un-greys cards once
+        // issues arrive. Ignored for the other kinds; off unless sent.
+        val unblocks = flag(arguments, UNBLOCKS_ARGUMENT, current = false)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
 
         val row = vocabularyWrite {
-            deps.vocabularies.add(project.id, kind, name, inverseName, marksBlocked)
+            deps.vocabularies.add(project.id, kind, name, inverseName, marksBlocked, unblocks)
         }.getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be added.") }
 
         return ok(
@@ -3686,7 +3711,7 @@ class McpTools(
      * Rename a row, or change one of its flags.
      *
      * Every field defaults to what the row already says, and that is the whole of this
-     * function's care. [VocabularyStore.rename] writes the name and all three flags in
+     * function's care. [VocabularyStore.rename] writes the name and every flag in
      * one statement — it has to, since the web dialog sends back the row it is
      * rendering — so a value forgotten here is not "unchanged", it is *false*, and an
      * agent fixing a spelling mistake would silently turn off the flag that makes a
@@ -3714,6 +3739,8 @@ class McpTools(
             .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
         val marksBlocked = flag(arguments, MARKS_BLOCKED_ARGUMENT, row.marksBlocked)
             .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
+        val unblocks = flag(arguments, UNBLOCKS_ARGUMENT, row.unblocks)
+            .getOrElse { return refuse(it.message ?: "That flag cannot be used.") }
         // The three-way reading `sprint`, `planned_version` and `parent_id` all take:
         // absent keeps the current opposite label, an explicit null makes the kind
         // symmetric, and a name sets it. A blank string collapses into the null case,
@@ -3728,7 +3755,7 @@ class McpTools(
 
         vocabularyWrite {
             deps.vocabularies.rename(
-                project.id, kind, row, name, requiresResolution, isDone, inverseName, marksBlocked,
+                project.id, kind, row, name, requiresResolution, isDone, inverseName, marksBlocked, unblocks,
             )
         }.getOrElse { return refuse(it.message ?: "That ${kind.noun} could not be changed.") }
 
@@ -5849,6 +5876,7 @@ private const val AFTER_ISSUE_ARGUMENT = "after_issue_id"
 private const val INVERSE_NAME_ARGUMENT = "inverse_name"
 private const val MARKS_BLOCKED_ARGUMENT = "marks_blocked"
 private const val REQUIRES_RESOLUTION_ARGUMENT = "requires_resolution"
+private const val UNBLOCKS_ARGUMENT = "unblocks"
 private const val IS_DONE_ARGUMENT = "is_done"
 private const val MODE_ARGUMENT = "mode"
 
@@ -6066,8 +6094,16 @@ private const val MARKS_BLOCKED_PROP_DESCRIPTION =
     "RELATION KINDS ONLY: whether an issue on the FROM side of one of these counts as blocked. " +
         "Defaults to false, and arming it is a deliberate act — it decides which cards read as " +
         "blocked on everybody's board. Note what it does not say: whether any given issue is " +
-        "blocked right now, which also needs the issue at the other end to still be open. " +
+        "blocked right now, which also needs the issue at the other end to still be open — in a " +
+        "status with neither `requiresResolution` nor `unblocks`. " +
         "get_board answers that per issue with `isBlocked`."
+
+/** One description of `unblocks`, shared by add and rename. */
+private const val UNBLOCKS_PROP_DESCRIPTION =
+    "STATUSES ONLY: whether an issue in this column has stopped BLOCKING the issues that wait " +
+        "on it — for a column like \"Ready for test\", where the work the dependents need is done " +
+        "even though the issue is not closed. Defaults to false. A column that requires a " +
+        "resolution unblocks anyway, so there is no need to set this on a closing column."
 
 private const val AGENT_NAME_PROP_DESCRIPTION =
     "Your own name as the agent doing this on the user's behalf — for example the assistant " +

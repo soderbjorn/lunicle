@@ -115,6 +115,8 @@ interface LunicleApi {
         inverseName: String? = null,
         /** A relation kind's blocking flag (LNL-215). Ignored elsewhere. */
         marksBlocked: Boolean = false,
+        /** A status's "no longer blocks its dependents" flag. Ignored elsewhere. */
+        unblocks: Boolean = false,
     ): ProjectSettingsState
 
     suspend fun deleteVocabulary(projectId: Long, kind: VocabularyKind, itemId: Long): ProjectSettingsState

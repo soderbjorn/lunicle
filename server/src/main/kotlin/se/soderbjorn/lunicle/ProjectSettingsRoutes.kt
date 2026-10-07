@@ -157,7 +157,7 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
     }
 
     /**
-     * Rename, and set a status's closing flag.
+     * Rename, and set a status's closing and unblocking flags.
      *
      * `{itemId}` is resolved *within* the project in the path — see
      * [VocabularyRepository.find]. Admin is admin everywhere, so this is not what
@@ -176,7 +176,7 @@ fun Route.projectSettingsRoutes(deps: BoardDependencies) {
         deps.runVocabularyWrite(call) {
             deps.vocabularies.rename(
                 scope.project.id, kind, row, body.name, body.requiresResolution, body.isDone,
-                body.inverseName, body.marksBlocked,
+                body.inverseName, body.marksBlocked, body.unblocks,
             )
             call.respond(deps.buildSettings(scope.project, scope.user))
         }
@@ -1505,6 +1505,8 @@ private fun VocabularyRow.toEntry(): VocabularyEntry = VocabularyEntry(
     // these two join them rather than forking the type — see VocabularyRow.
     inverseName = inverseName,
     marksBlocked = marksBlocked,
+    // Statuses only, beside requiresResolution; false forever for the other seven.
+    unblocks = unblocks,
 )
 
 /**

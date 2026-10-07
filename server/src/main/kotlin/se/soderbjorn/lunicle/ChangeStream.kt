@@ -555,7 +555,9 @@ class PublishingVocabularyStore(
         name: String,
         inverseName: String?,
         marksBlocked: Boolean,
-    ): VocabularyRow = delegate.add(projectId, kind, name, inverseName, marksBlocked).also { boardChanged(projectId) }
+        unblocks: Boolean,
+    ): VocabularyRow =
+        delegate.add(projectId, kind, name, inverseName, marksBlocked, unblocks).also { boardChanged(projectId) }
 
     override suspend fun rename(
         projectId: Long,
@@ -566,8 +568,9 @@ class PublishingVocabularyStore(
         isDone: Boolean,
         inverseName: String?,
         marksBlocked: Boolean,
+        unblocks: Boolean,
     ) {
-        delegate.rename(projectId, kind, row, name, requiresResolution, isDone, inverseName, marksBlocked)
+        delegate.rename(projectId, kind, row, name, requiresResolution, isDone, inverseName, marksBlocked, unblocks)
         boardChanged(projectId)
     }
 

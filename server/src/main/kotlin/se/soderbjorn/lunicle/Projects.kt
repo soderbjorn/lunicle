@@ -176,7 +176,25 @@ data class StatusRecord(
      * consults. See Resolutions.sq's is_done.
      */
     val isDone: Boolean = false,
-)
+    /**
+     * Whether an issue in this column has stopped blocking the issues that wait on
+     * it — a "Ready for test" whose work is finished from the dependents' side.
+     * Meaningful only on `statuses`, false for the priorities and resolutions that
+     * reuse this type. Never read alone: [stopsBlocking] is the rule. See
+     * Statuses.sq's unblocks.
+     */
+    val unblocks: Boolean = false,
+) {
+    /**
+     * Whether an issue in this column no longer blocks its dependents: a closing
+     * column always, and any other column whose admin armed [unblocks].
+     *
+     * The one place the two flags are combined, so the web board, MCP and the issue
+     * window cannot disagree about which blockers count. A closing column unblocks
+     * without the flag on purpose — see Statuses.sq.
+     */
+    val stopsBlocking: Boolean get() = requiresResolution || unblocks
+}
 
 /**
  * A timebox.
@@ -766,21 +784,24 @@ class StatusStore(private val database: LunicleDatabase) : se.soderbjorn.lunicle
         name: String,
         position: Long,
         requiresResolution: Boolean,
+        unblocks: Boolean,
     ): Unit = withContext(DatabaseDispatcher) {
-        database.statusesQueries.insert(projectId, name, position, if (requiresResolution) 1L else 0L)
+        database.statusesQueries.insert(
+            projectId, name, position, if (requiresResolution) 1L else 0L, if (unblocks) 1L else 0L,
+        )
     }
 
     /**
-     * Rename, and set the closing flag.
+     * Rename, and set the closing and unblocking flags.
      *
-     * Both in one write, because they are one decision — see Statuses.sq's
+     * All in one write, because they are one decision — see Statuses.sq's
      * `update`. [requiresResolution] is the "magic" in "Closed is a magic status",
      * and it is *this* method that lets an admin move that magic to a column of
      * their own naming rather than being stuck with whatever the seed called it.
      */
-    override suspend fun update(id: Long, name: String, requiresResolution: Boolean): Unit =
+    override suspend fun update(id: Long, name: String, requiresResolution: Boolean, unblocks: Boolean): Unit =
         withContext(DatabaseDispatcher) {
-            database.statusesQueries.update(name, if (requiresResolution) 1L else 0L, id)
+            database.statusesQueries.update(name, if (requiresResolution) 1L else 0L, if (unblocks) 1L else 0L, id)
         }
 
     /** See [PriorityStore.setPosition] — only ever called from inside `reorder`'s transaction. */
@@ -796,12 +817,12 @@ class StatusStore(private val database: LunicleDatabase) : se.soderbjorn.lunicle
     override suspend fun findByIdInProject(id: Long, projectId: Long): StatusRecord? =
         withContext(DatabaseDispatcher) {
             database.statusesQueries.findByIdInProject(id, projectId).executeAsOneOrNull()
-                ?.let { StatusRecord(it.id, it.project_id, it.name, it.position, it.requires_resolution != 0L) }
+                ?.let { StatusRecord(it.id, it.project_id, it.name, it.position, it.requires_resolution != 0L, unblocks = it.unblocks != 0L) }
         }
 
     override suspend fun forProject(projectId: Long): List<StatusRecord> = withContext(DatabaseDispatcher) {
         database.statusesQueries.forProject(projectId).executeAsList()
-            .map { StatusRecord(it.id, it.project_id, it.name, it.position, it.requires_resolution != 0L) }
+            .map { StatusRecord(it.id, it.project_id, it.name, it.position, it.requires_resolution != 0L, unblocks = it.unblocks != 0L) }
     }
 
     /**
@@ -812,6 +833,6 @@ class StatusStore(private val database: LunicleDatabase) : se.soderbjorn.lunicle
      */
     override suspend fun firstForProject(projectId: Long): StatusRecord? = withContext(DatabaseDispatcher) {
         database.statusesQueries.firstForProject(projectId).executeAsOneOrNull()
-            ?.let { StatusRecord(it.id, it.project_id, it.name, it.position, it.requires_resolution != 0L) }
+            ?.let { StatusRecord(it.id, it.project_id, it.name, it.position, it.requires_resolution != 0L, unblocks = it.unblocks != 0L) }
     }
 }

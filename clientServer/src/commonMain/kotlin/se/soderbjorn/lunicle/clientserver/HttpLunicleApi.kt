@@ -594,6 +594,7 @@ class HttpLunicleApi(
      * @param requiresResolution ignored by the server for every kind but a status.
      * @param isDone ignored by the server for every kind but a resolution (LNL-134).
      *   See [VocabularyEdit].
+     * @param unblocks ignored by the server for every kind but a status.
      */
     override suspend fun editVocabulary(
         projectId: Long,
@@ -604,10 +605,11 @@ class HttpLunicleApi(
         isDone: Boolean,
         inverseName: String?,
         marksBlocked: Boolean,
+        unblocks: Boolean,
     ): ProjectSettingsState =
         httpClient.put(baseUrl + ApiRoutes.vocabularyItem(projectId, kind, itemId)) {
             contentType(ContentType.Application.Json)
-            setBody(VocabularyEdit(name, requiresResolution, isDone, inverseName, marksBlocked))
+            setBody(VocabularyEdit(name, requiresResolution, isDone, inverseName, marksBlocked, unblocks))
         }.requireSuccess()
 
     /**

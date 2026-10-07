@@ -1,0 +1,17 @@
+-- Version 38 → 39: a status can say that its issues no longer block anything.
+--
+-- One new `statuses` column, `unblocks`. Its reasoning — why a flag rather than a
+-- column name, and why a closing column unblocks without it — lives beside it in
+-- Statuses.sq and is not repeated here.
+--
+-- Plain ALTER TABLE: single-column, NOT NULL with a constant default, the case
+-- 36.sqm describes.
+--
+-- ── Nothing to back-fill ────────────────────────────────────────────────────
+--
+-- 0 on every existing column is the behaviour every board had before this ran: a
+-- blocker stops blocking only once it is closed. Arming the flag on, say, "Ready for
+-- test" un-greys cards on everybody's board, so it is left for an admin to do
+-- deliberately rather than guessed at from column names here.
+
+ALTER TABLE statuses ADD COLUMN unblocks INTEGER NOT NULL DEFAULT 0;

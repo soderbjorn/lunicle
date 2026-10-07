@@ -206,7 +206,7 @@ class McpHistoryTest {
             val issueId = issues.forProject(fixture.projectId).single().id
             client.callTool(token, "move_issue", """{"issue_id":$issueId,"status":"${target.name}"}""")
 
-            statuses.update(target.id, "Renamed since", target.requiresResolution)
+            statuses.update(target.id, "Renamed since", target.requiresResolution, target.unblocks)
 
             assertEquals(
                 target.name,

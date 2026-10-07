@@ -82,6 +82,7 @@ internal suspend fun insertVocabularyRow(
     position: Long,
     requiresResolution: Boolean = false,
     isDone: Boolean = false,
+    unblocks: Boolean = false,
 ) {
     val collection = firestore.collection(FirestoreVocabularyStore.COLLECTION)
     firestore.runTransaction { txn ->
@@ -89,7 +90,7 @@ internal suspend fun insertVocabularyRow(
             .getValue(FirestoreVocabularyStore.COUNTER)
         txn.set(
             collection.document(id.toString()),
-            vocabularyRowFields(id, kind, projectId, name, position, requiresResolution, isDone),
+            vocabularyRowFields(id, kind, projectId, name, position, requiresResolution, isDone, unblocks),
         )
     }.await()
 }
@@ -114,11 +115,12 @@ internal fun seedVocabularyRow(
     position: Long,
     requiresResolution: Boolean,
     isDone: Boolean = false,
+    unblocks: Boolean = false,
 ) {
     val collection = firestore.collection(FirestoreVocabularyStore.COLLECTION)
     txn.set(
         collection.document(id.toString()),
-        vocabularyRowFields(id, kind, projectId, name, position, requiresResolution, isDone),
+        vocabularyRowFields(id, kind, projectId, name, position, requiresResolution, isDone, unblocks),
     )
 }
 
@@ -135,6 +137,7 @@ private fun vocabularyRowFields(
     position: Long,
     requiresResolution: Boolean,
     isDone: Boolean,
+    unblocks: Boolean,
 ): Map<String, Any?> = mapOf(
     FirestoreVocabularyStore.ID to id,
     FirestoreVocabularyStore.PROJECT_ID to projectId,
@@ -143,6 +146,7 @@ private fun vocabularyRowFields(
     FirestoreVocabularyStore.POSITION to position,
     FirestoreVocabularyStore.REQUIRES_RESOLUTION to requiresResolution,
     FirestoreVocabularyStore.IS_DONE to isDone,
+    FirestoreVocabularyStore.UNBLOCKS to unblocks,
     FirestoreVocabularyStore.COMPLETED_AT to null,
 )
 
@@ -187,4 +191,7 @@ internal fun DocumentSnapshot.toStatusRecord(): StatusRecord = StatusRecord(
     position = getLong(FirestoreVocabularyStore.POSITION) ?: 0L,
     requiresResolution = getBoolean(FirestoreVocabularyStore.REQUIRES_RESOLUTION) ?: false,
     isDone = getBoolean(FirestoreVocabularyStore.IS_DONE) ?: false,
+    // Absent on every status written before the flag existed, and absent reads as
+    // false — the behaviour those columns had — so no Firestore back-fill is needed.
+    unblocks = getBoolean(FirestoreVocabularyStore.UNBLOCKS) ?: false,
 )

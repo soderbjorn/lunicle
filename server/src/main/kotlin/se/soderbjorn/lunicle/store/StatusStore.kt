@@ -10,8 +10,10 @@
  * Two things set a status apart from a label. Its rows
  * ([se.soderbjorn.lunicle.StatusRecord]) carry `requiresResolution` — the "magic"
  * in "Closed is a magic status", read from data rather than the column's name so a
- * renamed column keeps its meaning — which [insert] and [update] write. And
- * [firstForProject] answers the leftmost column, where a new issue lands, read
+ * renamed column keeps its meaning — and `unblocks`, whether its issues have
+ * stopped blocking their dependents (see
+ * [se.soderbjorn.lunicle.StatusRecord.stopsBlocking]); [insert] and [update] write
+ * both. And [firstForProject] answers the leftmost column, where a new issue lands, read
  * rather than hardcoded to "New". The trimming, uniqueness and delete rules live
  * one layer up in `VocabularyRepository` and are backend-agnostic.
  *
@@ -22,15 +24,27 @@ package se.soderbjorn.lunicle.store
 import se.soderbjorn.lunicle.StatusRecord
 
 interface StatusStore {
-    /** Add a column at [position], optionally one that demands a resolution to enter. */
-    suspend fun insert(projectId: Long, name: String, position: Long, requiresResolution: Boolean = false)
+    /**
+     * Add a column at [position], optionally one that demands a resolution to enter
+     * or one whose issues no longer block their dependents. Both default off; see
+     * Statuses.sq for why neither is ever armed by accident.
+     */
+    suspend fun insert(
+        projectId: Long,
+        name: String,
+        position: Long,
+        requiresResolution: Boolean = false,
+        unblocks: Boolean = false,
+    )
 
     /**
-     * Rename, and set the closing flag — both in one write, because they are one
-     * decision. [requiresResolution] is what lets an admin move the "Closed is
-     * magic" behaviour to a column of their own naming.
+     * Rename, and set the closing and unblocking flags — all in one write, because
+     * they are one decision. [requiresResolution] is what lets an admin move the
+     * "Closed is magic" behaviour to a column of their own naming; [unblocks] is
+     * what lets a column before Closed stop blocking dependents. Required rather
+     * than defaulted, so no caller can clear a flag by forgetting it.
      */
-    suspend fun update(id: Long, name: String, requiresResolution: Boolean)
+    suspend fun update(id: Long, name: String, requiresResolution: Boolean, unblocks: Boolean)
 
     /** Move one row — only ever from inside the repository's whole-list reorder transaction. */
     suspend fun setPosition(id: Long, position: Long)

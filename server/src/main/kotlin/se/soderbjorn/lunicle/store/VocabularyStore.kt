@@ -48,12 +48,14 @@ interface VocabularyStore {
         name: String,
         inverseName: String? = null,
         marksBlocked: Boolean = false,
+        unblocks: Boolean = false,
     ): VocabularyRow
 
     /**
      * Rename a row, and set its per-kind extras: a status's closing flag
-     * ([requiresResolution]), a resolution's done flag ([isDone]), or a relation
-     * kind's opposite label and blocking flag ([inverseName], [marksBlocked]). Each is
+     * ([requiresResolution]) and unblocking flag ([unblocks]), a resolution's done
+     * flag ([isDone]), or a relation kind's opposite label and blocking flag
+     * ([inverseName], [marksBlocked]). Each is
      * ignored for the kinds it does not belong to, rather than refused — the dialog
      * sends back the row it is rendering, and this layer owns knowing which extras a
      * kind carries.
@@ -73,6 +75,7 @@ interface VocabularyStore {
         isDone: Boolean,
         inverseName: String? = null,
         marksBlocked: Boolean = false,
+        unblocks: Boolean = false,
     )
 
     /**

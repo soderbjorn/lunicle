@@ -200,6 +200,10 @@ class ProjectRepository(
                         status,
                         index.toLong(),
                         if (status == CLOSING_STATUS) 1L else 0L,
+                        // No seeded column unblocks: the seed cannot know which of a
+                        // project's columns mean "done enough for the dependents", and
+                        // Closed already does by being closing. See Statuses.sq.
+                        0L,
                     )
                 }
                 DEFAULT_PRIORITIES.forEachIndexed { index, priority ->

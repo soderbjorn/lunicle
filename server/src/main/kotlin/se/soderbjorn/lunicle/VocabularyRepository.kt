@@ -79,6 +79,12 @@ data class VocabularyRow(
      * and rendered as the same kind of checkbox.
      */
     val marksBlocked: Boolean = false,
+    /**
+     * A status's "issues here no longer block their dependents" flag; always false
+     * for other kinds. Last in the list so positional constructions above it keep
+     * compiling. See [StatusRecord.unblocks].
+     */
+    val unblocks: Boolean = false,
 )
 
 /**
@@ -196,6 +202,7 @@ class VocabularyRepository(
         name: String,
         inverseName: String?,
         marksBlocked: Boolean,
+        unblocks: Boolean,
     ): VocabularyRow {
         val clean = name.trim()
         val cleanInverse = inverseName?.trim()?.takeIf { it.isNotBlank() }
@@ -210,7 +217,11 @@ class VocabularyRepository(
             // most consequential switch — it decides which columns cannot be
             // entered without a reason — and defaulting it on would arm it by
             // accident. The admin turns it on deliberately, in the same dialog.
-            VocabularyKind.STATUS -> statuses.insert(projectId, clean, next, requiresResolution = false)
+            // `unblocks` IS accepted here, because the MCP tool can create a column
+            // in one call; it still defaults off at every entry point. It is the
+            // gentler of the two — a new column is empty, so nothing un-greys yet.
+            VocabularyKind.STATUS ->
+                statuses.insert(projectId, clean, next, requiresResolution = false, unblocks = unblocks)
             VocabularyKind.PRIORITY -> priorities.insert(projectId, clean, next)
             VocabularyKind.RESOLUTION -> resolutions.insert(projectId, clean, next)
             // Not activated. Creating next quarter's sprints in advance must not
@@ -261,6 +272,7 @@ class VocabularyRepository(
         isDone: Boolean,
         inverseName: String?,
         marksBlocked: Boolean,
+        unblocks: Boolean,
     ) {
         val clean = name.trim()
         // Blank normalises to null rather than being stored, so "I cleared the field"
@@ -271,7 +283,7 @@ class VocabularyRepository(
         when (kind) {
             VocabularyKind.LABEL -> labels.update(row.id, clean)
             VocabularyKind.COMPONENT -> components.update(row.id, clean)
-            VocabularyKind.STATUS -> statuses.update(row.id, clean, requiresResolution)
+            VocabularyKind.STATUS -> statuses.update(row.id, clean, requiresResolution, unblocks)
             VocabularyKind.PRIORITY -> priorities.update(row.id, clean)
             VocabularyKind.RESOLUTION -> resolutions.update(row.id, clean, isDone)
             VocabularyKind.SPRINT -> sprints.update(row.id, clean)
@@ -534,7 +546,7 @@ class VocabularyRepository(
         VocabularyRow(id, projectId, name, position, usageCount = uses[id] ?: 0)
 
     private fun StatusRecord.toRow(uses: Map<Long, Long>) =
-        VocabularyRow(id, projectId, name, position, requiresResolution, isDone, uses[id] ?: 0)
+        VocabularyRow(id, projectId, name, position, requiresResolution, isDone, uses[id] ?: 0, unblocks = unblocks)
 
     /**
      * A relation kind as a vocabulary row, carrying both of its labels and its flag.

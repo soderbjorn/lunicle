@@ -1088,15 +1088,17 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
     // that can drift. One extra read is the right side of that trade.
     val relationKindRows = issueRelationKinds.forProject(project.id)
     val statusRows = statuses.forProject(project.id)
-    // "Open" is read off the STATUS's requires_resolution, and NOT off a resolution's
-    // isDone. The names invite the mistake: `StatusItem` is one wire type shared by
-    // statuses, priorities and resolutions, and its `isDone` is only ever populated for
-    // resolutions — there is no such flag on a status at all. Any closure stops the
-    // blocking, including "Will not fix" and "Duplicate": a blocker nobody will ever do
-    // is not blocking anything.
-    val closingStatusIds = statusRows.filter { it.requiresResolution }.map { it.id }.toSet()
+    // "Open" is read off the STATUS — its requires_resolution OR its unblocks, combined
+    // once in StatusRecord.stopsBlocking — and NOT off a resolution's isDone. The names
+    // invite the mistake: `StatusItem` is one wire type shared by statuses, priorities
+    // and resolutions, and its `isDone` is only ever populated for resolutions — there
+    // is no such flag on a status at all. Any closure stops the blocking, including
+    // "Will not fix" and "Duplicate": a blocker nobody will ever do is not blocking
+    // anything. And so does a column the admin marked `unblocks`, like "Ready for
+    // test": the work the dependents waited on is done, whatever is left to sign off.
+    val unblockingStatusIds = statusRows.filter { it.stopsBlocking }.map { it.id }.toSet()
     val blockingKindIds = relationKindRows.filter { it.marksBlocked }.map { it.id }.toSet()
-    val openById: Map<Long, Boolean> = issueRows.associate { it.id to (it.statusId !in closingStatusIds) }
+    val openById: Map<Long, Boolean> = issueRows.associate { it.id to (it.statusId !in unblockingStatusIds) }
     // Issue id → the numbers of the open issues blocking it. Empty for every card on a
     // project that has never made a blocking link, which is most of them — and the
     // filter runs over the kinds rather than in SQL for the reason IssueRelations.sq's
@@ -1118,7 +1120,9 @@ internal suspend fun BoardDependencies.buildBoard(project: ProjectRecord, user: 
         // The rung is in hand: `permissionsFor` above derived it, and the board is
         // only built for a caller who reached one.
         project = project.toSummary(permissions.rung),
-        statuses = statusRows.map { StatusItem(it.id, it.name, it.position.toInt(), it.requiresResolution) },
+        statuses = statusRows.map {
+            StatusItem(it.id, it.name, it.position.toInt(), it.requiresResolution, unblocks = it.unblocks)
+        },
         priorities = priorities.forProject(project.id).map { StatusItem(it.id, it.name, it.position.toInt()) },
         resolutions = resolutions.forProject(project.id)
             .map { StatusItem(it.id, it.name, it.position.toInt(), isDone = it.isDone) },

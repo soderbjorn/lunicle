@@ -6,7 +6,8 @@
  * [findByIdInProject], insert / setPosition / delete round-trip) plus the two
  * things a status has that a label does not: `requiresResolution` — the "magic" in
  * "Closed is a magic status", which [StatusStore.insert] carries and
- * [StatusStore.update] flips alongside the name — and [StatusStore.firstForProject],
+ * [StatusStore.update] flips alongside the name, with `unblocks` beside it — and
+ * [StatusStore.firstForProject],
  * the leftmost column where a new issue lands. The trimming, uniqueness and delete
  * refusals are the repository's, not this seam's.
  *
@@ -58,10 +59,51 @@ abstract class StatusStoreContract {
         store.insert(p, "Closed", 0, requiresResolution = true)
         val closed = store.forProject(p).single()
 
-        store.update(closed.id, "Done", requiresResolution = false)
+        store.update(closed.id, "Done", requiresResolution = false, unblocks = false)
         val updated = store.findByIdInProject(closed.id, p)
         assertEquals("Done", updated?.name, "renamed")
         assertEquals(false, updated?.requiresResolution, "and no longer demands a resolution")
+    }
+
+    /**
+     * The unblocking flag round-trips on both writes and every read, and is off unless
+     * asked for — a column that silently un-greyed its dependents' cards would be the
+     * one default nobody chose. Read back through all three readers, since the board
+     * uses [StatusStore.forProject] and the routes [StatusStore.findByIdInProject].
+     */
+    @Test
+    fun `unblocks is off by default, carried by insert and flipped by update`(): Unit = runBlocking {
+        val p = newProject()
+        store.insert(p, "New", 0)
+        store.insert(p, "Ready for test", 1, unblocks = true)
+
+        val rows = store.forProject(p)
+        val new = rows.first { it.name == "New" }
+        val test = rows.first { it.name == "Ready for test" }
+        assertFalse(new.unblocks, "a column does not unblock unless asked to")
+        assertTrue(test.unblocks, "insert carries the flag")
+        assertFalse(test.requiresResolution, "and it is not the closing flag")
+        assertTrue(store.firstForProject(p)?.unblocks == false)
+
+        store.update(new.id, "New", requiresResolution = false, unblocks = true)
+        assertEquals(true, store.findByIdInProject(new.id, p)?.unblocks, "update arms it")
+        store.update(test.id, "Ready for QA", requiresResolution = false, unblocks = false)
+        val renamed = store.findByIdInProject(test.id, p)
+        assertEquals("Ready for QA", renamed?.name)
+        assertEquals(false, renamed?.unblocks, "and disarms it, in the same write as the name")
+    }
+
+    @Test
+    fun `stopsBlocking is the closing flag or the unblocking flag`(): Unit = runBlocking {
+        val p = newProject()
+        store.insert(p, "In progress", 0)
+        store.insert(p, "Ready for test", 1, unblocks = true)
+        store.insert(p, "Closed", 2, requiresResolution = true)
+
+        val byName = store.forProject(p).associateBy { it.name }
+        assertFalse(byName.getValue("In progress").stopsBlocking)
+        assertTrue(byName.getValue("Ready for test").stopsBlocking, "an unblocking column stops blocking")
+        assertTrue(byName.getValue("Closed").stopsBlocking, "and a closing one does without the flag")
     }
 
     @Test

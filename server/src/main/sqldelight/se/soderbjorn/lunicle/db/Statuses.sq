@@ -25,6 +25,29 @@ CREATE TABLE statuses (
     -- status has this flag") and SQLite's CHECK may only see its own row.
     requires_resolution INTEGER NOT NULL DEFAULT 0,
 
+    -- Whether an issue in this column has stopped BLOCKING the issues that wait on
+    -- it — the to-side of a `marks_blocked` relation. See IssueRelationKinds.sq.
+    --
+    -- A blocker used to count as open until it was closed, which reads a board as
+    -- "work is finished when it is Closed". Many boards finish work earlier than
+    -- that from the dependents' point of view: an issue sitting in "Ready for test"
+    -- has done everything the issues behind it were waiting for, and keeping every
+    -- one of them greyed out until a human signs the test off is noise that teaches
+    -- people to ignore the marker. So the column says so, as data — for the reason
+    -- requires_resolution above is data and not a name: the seed does not know what
+    -- a project calls its late columns, and a rename must not switch the rule off.
+    --
+    -- A closing column unblocks implicitly. The rule is "requires_resolution OR
+    -- unblocks", never "both": a project should not have to tick a second box on
+    -- Closed to keep the behaviour it always had, and a Closed column whose
+    -- dependents stayed blocked would be a state nobody could want.
+    --
+    -- Defaults to 0 for new columns and for every column that existed before 38.sqm,
+    -- which is exactly the behaviour boards had before the flag: nothing un-greys a
+    -- card until somebody arms this deliberately, the same philosophy as
+    -- requires_resolution and marks_blocked.
+    unblocks INTEGER NOT NULL DEFAULT 0,
+
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     UNIQUE (project_id, name),
     -- The target of issues' composite foreign key. See Issues.sq.
@@ -32,16 +55,17 @@ CREATE TABLE statuses (
 );
 
 insert:
-INSERT INTO statuses (project_id, name, position, requires_resolution) VALUES (?, ?, ?, ?);
+INSERT INTO statuses (project_id, name, position, requires_resolution, unblocks) VALUES (?, ?, ?, ?, ?);
 
--- Name and flag together, because the settings dialog edits them together and a
+-- Name and both flags together, because the settings dialog edits them together and a
 -- separate setRequiresResolution would be a second write that can fail on its
 -- own — leaving a column renamed but still demanding a resolution nobody asked
--- for. Position is not here on purpose: it is set by `setPosition` over a whole
+-- for. `unblocks` rides along for the same reason: it is the same row's switch
+-- in the same dialog. Position is not here on purpose: it is set by `setPosition` over a whole
 -- project at once (see VocabularyRepository.reorder), and a rename that also
 -- carried a position would let the two disagree.
 update:
-UPDATE statuses SET name = ?, requires_resolution = ? WHERE id = ?;
+UPDATE statuses SET name = ?, requires_resolution = ?, unblocks = ? WHERE id = ?;
 
 -- One row's place in the order. Only ever called from inside the transaction
 -- that rewrites all of a project's positions: `position` has no UNIQUE
@@ -59,16 +83,16 @@ delete:
 DELETE FROM statuses WHERE id = ?;
 
 findByIdInProject:
-SELECT id, project_id, name, position, requires_resolution FROM statuses
+SELECT id, project_id, name, position, requires_resolution, unblocks FROM statuses
 WHERE id = ? AND project_id = ?;
 
 forProject:
-SELECT id, project_id, name, position, requires_resolution FROM statuses
+SELECT id, project_id, name, position, requires_resolution, unblocks FROM statuses
 WHERE project_id = ? ORDER BY position;
 
 -- The board's leftmost column, which is where a new issue lands. Read rather
 -- than hardcoded to "New": the seed names it, and a project whose statuses were
 -- renamed should still be able to take an issue.
 firstForProject:
-SELECT id, project_id, name, position, requires_resolution FROM statuses
+SELECT id, project_id, name, position, requires_resolution, unblocks FROM statuses
 WHERE project_id = ? ORDER BY position LIMIT 1;
