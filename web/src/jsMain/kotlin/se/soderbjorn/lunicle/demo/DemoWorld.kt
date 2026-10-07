@@ -427,7 +427,7 @@ internal class DemoUser(
 /**
  * A status, priority or resolution — all three are an id, a name and an order, so
  * all three ride on this, mirroring the wire's [StatusItem]. [requiresResolution]
- * is meaningful only for a status, [isDone] only for a resolution.
+ * and [unblocks] are meaningful only for a status, [isDone] only for a resolution.
  */
 internal class DemoStatus(
     val id: Long,
@@ -435,7 +435,11 @@ internal class DemoStatus(
     var position: Int,
     var requiresResolution: Boolean = false,
     var isDone: Boolean = false,
-)
+    var unblocks: Boolean = false,
+) {
+    /** Mirrors the server's `StatusRecord.stopsBlocking`: closing, or armed to unblock. */
+    val stopsBlocking: Boolean get() = requiresResolution || unblocks
+}
 
 /** A label, component or version: an id, a name and an order. */
 internal class DemoNamed(
@@ -930,7 +934,7 @@ internal class DemoWorld {
     }
 
     private fun statusItem(s: DemoStatus): StatusItem =
-        StatusItem(s.id, s.name, s.position, s.requiresResolution, s.isDone)
+        StatusItem(s.id, s.name, s.position, s.requiresResolution, s.isDone, s.unblocks)
 
     private fun vocabItem(v: DemoNamed): VocabularyItem = VocabularyItem(v.id, v.name)
 
@@ -995,8 +999,8 @@ internal class DemoWorld {
      *    is the card that dims; B, which reads "Blocks A" from its own side, is working
      *    normally. A demo that dimmed both ends would make the whole one-row design look
      *    like a bug.
-     *  - **"Open" is read off the blocker's STATUS**, via `requiresResolution`, and NOT
-     *    off a resolution's `isDone`. Any closure stops the blocking, "Will not fix" and
+     *  - **"Open" is read off the blocker's STATUS**, via `requiresResolution` or
+     *    `unblocks` ([DemoStatus.stopsBlocking]), and NOT off a resolution's `isDone`. Any closure stops the blocking, "Will not fix" and
      *    "Duplicate" included: a blocker nobody will ever do is not blocking anything.
      *    The invitation to the mistake is that [DemoStatus] is one class shared by
      *    statuses, priorities and resolutions, and its `isDone` is only ever populated
@@ -1008,10 +1012,10 @@ internal class DemoWorld {
     private fun blockersByIssue(p: DemoProject): Map<Long, List<Long>> {
         val blockingKindIds = p.relationKinds.filter { it.marksBlocked }.map { it.id }.toSet()
         if (blockingKindIds.isEmpty()) return emptyMap()
-        val closingStatusIds = p.statuses.filter { it.requiresResolution }.map { it.id }.toSet()
+        val unblockingStatusIds = p.statuses.filter { it.stopsBlocking }.map { it.id }.toSet()
         val published = p.issues.filter { !it.isDraft }
         val numberById = published.associate { it.id to it.number }
-        val openById = published.associate { it.id to (it.statusId !in closingStatusIds) }
+        val openById = published.associate { it.id to (it.statusId !in unblockingStatusIds) }
         return p.relations
             .filter { it.kindId in blockingKindIds && openById[it.toIssueId] == true }
             .groupBy({ it.fromIssueId }, { numberById[it.toIssueId] })
@@ -1220,7 +1224,7 @@ internal class DemoWorld {
     private val DemoProject.published: List<DemoIssue> get() = issues.filter { !it.isDraft }
 
     private fun statusEntry(p: DemoProject, s: DemoStatus, usage: Int) =
-        VocabularyEntry(s.id, s.name, s.position, s.requiresResolution, s.isDone, usage)
+        VocabularyEntry(s.id, s.name, s.position, s.requiresResolution, s.isDone, usage, unblocks = s.unblocks)
 
     private fun namedEntry(v: DemoNamed, usage: Int) =
         VocabularyEntry(v.id, v.name, v.position, usageCount = usage)

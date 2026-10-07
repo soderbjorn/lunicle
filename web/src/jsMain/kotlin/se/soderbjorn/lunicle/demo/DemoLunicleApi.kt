@@ -395,9 +395,10 @@ internal class DemoLunicleApi(
         isDone: Boolean,
         inverseName: String?,
         marksBlocked: Boolean,
+        unblocks: Boolean,
     ): ProjectSettingsState {
         val p = requireProject(projectId)
-        editVocabularyRow(p, kind, itemId, name.trim(), requiresResolution, isDone, inverseName, marksBlocked)
+        editVocabularyRow(p, kind, itemId, name.trim(), requiresResolution, isDone, inverseName, marksBlocked, unblocks)
         return world.projectSettingsState(p)
     }
 

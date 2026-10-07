@@ -132,8 +132,8 @@ internal fun addVocabularyRow(
 }
 
 /**
- * Rename a row, and set whichever extra its kind carries — a status's closing flag, a
- * resolution's done flag, or a relation kind's inverse name and blocking flag.
+ * Rename a row, and set whichever extra its kind carries — a status's closing and
+ * unblocking flags, a resolution's done flag, or a relation kind's inverse name and blocking flag.
  *
  * The extras are per-kind and every caller sends all of them, so each branch reads only
  * the ones its own kind has and lets the rest fall on the floor. That is the shape the
@@ -149,6 +149,7 @@ internal fun editVocabularyRow(
     isDone: Boolean,
     inverseName: String? = null,
     marksBlocked: Boolean = false,
+    unblocks: Boolean = false,
 ) {
     when (kind) {
         VocabularyKind.LABEL -> p.labels.firstOrNull { it.id == itemId }?.name = name
@@ -157,6 +158,7 @@ internal fun editVocabularyRow(
         VocabularyKind.STATUS -> p.statuses.firstOrNull { it.id == itemId }?.let {
             it.name = name
             it.requiresResolution = requiresResolution
+            it.unblocks = unblocks
         }
         VocabularyKind.PRIORITY -> p.priorities.firstOrNull { it.id == itemId }?.name = name
         VocabularyKind.RESOLUTION -> p.resolutions.firstOrNull { it.id == itemId }?.let {

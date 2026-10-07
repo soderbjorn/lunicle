@@ -539,8 +539,10 @@ class StorageRepository(
         inverseName: String? = null,
         /** A relation kind's blocking flag. See [addVocabulary]. */
         marksBlocked: Boolean = false,
+        /** A status's "no longer blocks its dependents" flag; ignored for other kinds. */
+        unblocks: Boolean = false,
     ): ProjectSettingsState =
-        api.editVocabulary(projectId, kind, itemId, name, requiresResolution, isDone, inverseName, marksBlocked)
+        api.editVocabulary(projectId, kind, itemId, name, requiresResolution, isDone, inverseName, marksBlocked, unblocks)
 
     suspend fun deleteVocabulary(projectId: Long, kind: VocabularyKind, itemId: Long): ProjectSettingsState =
         api.deleteVocabulary(projectId, kind, itemId)

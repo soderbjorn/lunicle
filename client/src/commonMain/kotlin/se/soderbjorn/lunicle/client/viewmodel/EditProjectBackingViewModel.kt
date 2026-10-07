@@ -191,6 +191,12 @@ data class VocabularyRowState(
      * [PendingSprintCompletion].
      */
     val completionActionLabel: String?,
+    /**
+     * Whether an issue in this column has stopped blocking the issues waiting on it.
+     * Statuses only, rendered beside the closing flag under [showsClosingFlag] — the
+     * same row, the same kind of switch, written with the name in the same edit.
+     */
+    val unblocks: Boolean = false,
 )
 
 /**
@@ -1027,7 +1033,9 @@ class EditProjectBackingViewModel(
                     title = "Board columns",
                     hint = "Left to right, as the board shows them. A new issue lands in the " +
                         "first one. Tick \"needs a resolution\" on a column that closes an " +
-                        "issue — that is what makes the board ask why.",
+                        "issue — that is what makes the board ask why. Tick \"unblocks " +
+                        "dependents\" on a column like Ready for test, whose issues should " +
+                        "stop holding up the issues waiting on them before they are closed.",
                 ),
                 section(
                     loaded,
@@ -1253,6 +1261,7 @@ class EditProjectBackingViewModel(
                 showsDoneFlag = kind == VocabularyKind.RESOLUTION,
                 inverseName = inverseName,
                 marksBlocked = marksBlocked,
+                unblocks = unblocks,
                 showsRelationFields = kind == VocabularyKind.RELATION_KIND,
                 isEditable = isEditable,
                 // Sprints only, and both states worded (LNL-196). "Open" is not a
@@ -1659,6 +1668,8 @@ class EditProjectBackingViewModel(
         inverseName: String? = null,
         /** A relation kind's blocking flag (LNL-215). Same whole-row rule as above. */
         marksBlocked: Boolean = false,
+        /** A status's "no longer blocks its dependents" flag. Same whole-row rule as above. */
+        unblocks: Boolean = false,
     ) {
         val project = existing ?: return
         val current = _stateFlow.value.settings?.entriesFor(kind)?.firstOrNull { it.id == id } ?: return
@@ -1667,7 +1678,8 @@ class EditProjectBackingViewModel(
             current.requiresResolution == requiresResolution &&
             current.isDone == isDone &&
             current.inverseName == inverseName &&
-            current.marksBlocked == marksBlocked
+            current.marksBlocked == marksBlocked &&
+            current.unblocks == unblocks
         ) {
             return
         }
@@ -1681,7 +1693,9 @@ class EditProjectBackingViewModel(
             return
         }
         write("Could not save that ${kind.noun}.") {
-            storage.editVocabulary(project.id, kind, id, name, requiresResolution, isDone, inverseName, marksBlocked)
+            storage.editVocabulary(
+                project.id, kind, id, name, requiresResolution, isDone, inverseName, marksBlocked, unblocks,
+            )
         }
     }
 

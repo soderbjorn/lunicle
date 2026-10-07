@@ -153,7 +153,10 @@ internal fun seedDemoWorld(): DemoWorld {
     val stTriage = status("Triage", 0)
     val stReady = status("Ready for development", 1)
     val stProgress = status("In progress", 2)
-    val stTest = status("Ready for test", 3)
+    // Ready for test unblocks (the per-status flag): what is waiting on an issue here
+    // needed the code, not the sign-off, so a visitor opening Structure finds the
+    // switch armed on the column it was made for.
+    val stTest = status("Ready for test", 3).also { it.unblocks = true }
     val stClosed = status("Closed", 4, req = true)
 
     // Priorities — highest first.

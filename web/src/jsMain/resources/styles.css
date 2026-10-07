@@ -3703,7 +3703,11 @@ body.app-impersonating::after {
    `contents` is what lets the grid see through the wrappers to the cells. */
 .vocab-list {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /* The name keeps a floor. The second column is `auto` and sizes to its widest
+     cluster, so without one a status row — which carries two switches — took
+     every pixel and left the name field zero wide. With the floor, the flags
+     wrap under each other instead (see .vocab-status-flags). */
+  grid-template-columns: minmax(min(9rem, 40%), 1fr) auto;
   align-items: center;
   gap: 6px 8px;
   margin-top: 10px;
@@ -3738,6 +3742,20 @@ body.app-impersonating::after {
    buttons rather than spanning the dialog, so the label sizes to its text and
    the pair follows it directly. */
 .vocab-flag .toggle-label { flex: none; }
+
+/* A status's two switches — "needs a resolution" and "unblocks dependents" — as
+   one group allowed to wrap, for .vocab-relation's reason below: the arrows and
+   Delete stay at the trailing edge, and it is the flags that fold onto a second
+   line when the dialog is narrow, rather than the name field being squeezed out.
+   Right-aligned so a wrapped second switch lines up under the first one's toggle. */
+.vocab-status-flags {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+}
 
 /* A relation kind's extra controls: the opposite name and the two switches
    (LNL-215).

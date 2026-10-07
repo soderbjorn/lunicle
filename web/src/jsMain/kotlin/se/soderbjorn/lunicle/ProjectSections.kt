@@ -1304,7 +1304,7 @@ class ProjectSections(
                     // everything else the row draws, so making a kind symmetric — which
                     // changes the inverse field from live-with-text to empty-and-dead —
                     // rebuilds the row rather than leaving the old field on screen.
-                    "${row.inverseName}/${row.marksBlocked}"
+                    "${row.inverseName}/${row.marksBlocked}:${row.unblocks}"
             }
             if (next == signature) return
             signature = next
@@ -1335,6 +1335,7 @@ class ProjectSections(
                     isDone = row.isDone,
                     inverseName = row.inverseName,
                     marksBlocked = row.marksBlocked,
+                    unblocks = row.unblocks,
                 )
             }
             nameField.value = row.name
@@ -1363,11 +1364,37 @@ class ProjectSections(
                     // flipping the toggle does not silently revert an edit the admin
                     // typed and has not blurred out of yet. One row, one write —
                     // the server takes the name and the flag together.
-                    viewModel.onVocabularyEdited(section.kind, row.id, nameField.value, it, row.isDone)
+                    viewModel.onVocabularyEdited(
+                        section.kind, row.id, nameField.value, it, row.isDone, unblocks = row.unblocks,
+                    )
                 }
                 flag.checked = row.requiresResolution
                 flag.disabled = !row.isEditable
-                actions.appendChild(toggleRow(flag, "needs a resolution", "vocab-flag"))
+                // The two status flags share a wrapping group, so a narrow dialog folds
+                // them onto two lines instead of squeezing the name. See
+                // .vocab-status-flags.
+                val statusFlags = element("div", "vocab-status-flags")
+                statusFlags.appendChild(toggleRow(flag, "needs a resolution", "vocab-flag"))
+
+                // Beside the closing flag, because it is the same question asked one
+                // step earlier: "is the work here finished, as far as the issues
+                // waiting on it are concerned?" Rendered on a closing column too, where
+                // it changes nothing — a closing column unblocks regardless — rather
+                // than hidden there, so ticking "needs a resolution" does not make a
+                // control vanish from under the pointer. The hint rides on the title,
+                // like a disabled Delete's sentence, since the row has no room for it.
+                val unblocksFlag = Toggle {
+                    viewModel.onVocabularyEdited(
+                        section.kind, row.id, nameField.value, row.requiresResolution, row.isDone,
+                        unblocks = it,
+                    )
+                }
+                unblocksFlag.checked = row.unblocks
+                unblocksFlag.disabled = !row.isEditable
+                val unblocksRow = toggleRow(unblocksFlag, "unblocks dependents", "vocab-flag")
+                unblocksRow.title = "Issues in this column no longer block the issues waiting on them."
+                statusFlags.appendChild(unblocksRow)
+                actions.appendChild(statusFlags)
             }
 
             // A resolution's "means done" flag (LNL-134), the mirror of the closing
