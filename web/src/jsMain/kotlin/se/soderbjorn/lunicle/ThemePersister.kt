@@ -12,11 +12,11 @@
  *
  * Only [UiSettingKeys.persisted] travels: the theme selection, the user's own
  * themes, the ones they starred, where the panes sit, how wide they dragged the
- * sidebar, and the fonts they picked. Everything else the shell writes —
- * collapsed sidebar sections, hotkeys, the shell's corner radius and density —
- * stays in memory and dies with the tab, deliberately: a key reaches this list
- * when some part of the app would be *wrong* without it across a reload, not
- * merely different.
+ * sidebar, the fonts they picked, and the shape of the shell (corner radius,
+ * density, surfaces, selection). Everything else the shell writes — collapsed
+ * sidebar sections, hotkeys — stays in memory and dies with the tab,
+ * deliberately: a key reaches this list when some part of the app would be
+ * *wrong* without it across a reload, not merely different.
  *
  * The fonts key is the clearest case of that bar being met: the Appearance
  * sidebar offers the choice unconditionally, every brand font seam this file's
@@ -25,11 +25,11 @@
  * the same shape of failure with a shorter argument — the ☆ on every theme card
  * filled in and emptied again on reload.
  *
- * The corner radius and density are the deliberate holdout among the shell's
- * remaining keys: they are the same class of preference, and keeping them out is
- * a standing call about how much of a signed-in browser this app stores rather
- * than an oversight. Nothing about them is harder than the two above if that call
- * changes.
+ * The shape was the deliberate holdout for a while (88ead88, 1bfeed4): the same
+ * class of preference, kept out as a standing call about how much of a signed-in
+ * browser this app stores. The call changed (LNA-26). What it costs beyond one
+ * allowlist entry is the identity-change guard described at [heldBackShape] —
+ * the one way a shape key is harder than the fonts and the stars after all.
  *
  * That the *custom themes* key is on the list is not a bonus. The toolkit's
  * theme manager lets a user build and edit themes, and the selection names the
@@ -55,6 +55,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import se.soderbjorn.lunula.core.Appearance
+import se.soderbjorn.lunula.core.AppearanceShape
 import se.soderbjorn.lunula.core.DEFAULT_DARK_THEME
 import se.soderbjorn.lunula.core.DEFAULT_LIGHT_THEME
 import se.soderbjorn.lunula.core.Persister
@@ -99,6 +100,55 @@ class ThemePersister(
      */
     var loadedFor: Long? = null
         private set
+
+    // ── The shape across a change of identity (LNA-26) ──────────────────────
+    //
+    // The shell reads [UiSettingKeys.APPEARANCE_SHAPE] once, as it mounts, and
+    // has no way to be told a different one afterwards: `setThemeSnapshot` carries
+    // the selection, the custom themes and the stars, not the shape. So when the
+    // person in front of the browser changes under a mounted shell, the shape on
+    // screen stays the *previous* identity's — and the toolkit re-writes that shape
+    // on every theme change (its `persistUi` writes the shape key alongside the
+    // selection, every time). Stored as it arrives, the first flick of the sun/moon
+    // control after signing in would overwrite the account's own shape with
+    // whoever's was on screen a moment before: an admin stopping an impersonation
+    // would hand the impersonated user their shape, and vice versa.
+    //
+    // Fixed by remembering what is actually on screen, and holding that one value
+    // back after an identity change until the user picks something else. The
+    // account's stored shape then stays the account's, and applies on the next
+    // load; the screen keeps the stale one until then, which is the toolkit's
+    // limit rather than a choice made here.
+
+    /**
+     * The shape the shell is currently painting, as far as this store can know:
+     * what it read at mount, then every shape it has written since. Survives an
+     * identity change on purpose — [memory] does not, and the screen does.
+     */
+    private var shapeOnScreen: AppearanceShape = AppearanceShape()
+
+    /**
+     * Who [shapeOnScreen] was chosen by: the [loadedFor] in force when it last
+     * *changed*, null for a signed-out visitor.
+     *
+     * Last changed rather than last written, because the toolkit re-writes the
+     * shape on every theme change — a visitor flicking to light mode after someone
+     * signed out has not thereby chosen the shape that person left on screen. This
+     * is what lets [onIdentityChanged] adopt a visitor's own pick into an empty
+     * account, as it adopts their theme, without adopting a stranger's.
+     */
+    private var shapeChosenBy: Long? = null
+
+    /**
+     * A shape on screen that belongs to a previous identity, and so must not be
+     * written to the current one; null when there is none.
+     *
+     * Set by [onIdentityChanged] when the new account's stored shape differs from
+     * the one on screen. A write carrying exactly this shape is the toolkit
+     * re-persisting stale state, and is kept local; the first write carrying any
+     * other shape is the user choosing, and clears it.
+     */
+    private var heldBackShape: AppearanceShape? = null
 
     // ── Deploy-time brand themes (LNL-110) ──────────────────────────────────
     //
@@ -215,6 +265,9 @@ class ThemePersister(
      */
     suspend fun start() {
         if (!load()) seedDefault()
+        // What the shell is about to read, and so what it will paint.
+        shapeOnScreen = AppearanceShape.fromJson(memory[UiSettingKeys.APPEARANCE_SHAPE])
+        shapeChosenBy = loadedFor
     }
 
     /**
@@ -237,6 +290,22 @@ class ThemePersister(
         // definition must not be. See the brand-themes note above.
         val stored = if (key == UiSettingKeys.THEME_CUSTOM) stripBrandThemes(value) else value
         memory[key] = stored
+        // The shape carries only what the user picked — the brand's shape is a
+        // fallback the toolkit paints beneath it, never written into it — so it is
+        // stored verbatim, except for a previous identity's shape being re-written
+        // by the toolkit after an identity change. See [heldBackShape].
+        if (key == UiSettingKeys.APPEARANCE_SHAPE) {
+            val shape = AppearanceShape.fromJson(stored)
+            if (shape != shapeOnScreen) {
+                shapeOnScreen = shape
+                shapeChosenBy = loadedFor
+            }
+            val held = heldBackShape
+            if (held != null) {
+                if (shape == held) return
+                heldBackShape = null
+            }
+        }
         if (key !in UiSettingKeys.persisted) return
         if (loadedFor == null) return
         scope.launch { runCatching { storage.setUiSetting(key, stored) } }
@@ -290,11 +359,29 @@ class ThemePersister(
      *    on wearing the theme of whoever used it last; that is a shared machine
      *    showing one person's choices to the next.
      *
+     * The shape follows the same three outcomes on the server, but not on screen:
+     * the shell cannot be handed a new one after mounting, so the previous
+     * identity's stays painted until the next load and is kept from being written
+     * to this one — see [heldBackShape]. A signed-out visitor's own pick is the
+     * exception, and is adopted into an empty account like the rest.
+     *
      * @return the snapshot the caller should apply to the live shell.
      */
     suspend fun onIdentityChanged(): ThemeSnapshotV2 {
         val adopted = memory.filterKeys { it in UiSettingKeys.persisted }
         val hadStored = load()
+        heldBackShape = null
+        // The shape cannot be pushed to the live shell (see [heldBackShape]), so
+        // the one on screen stays. When it is not the new account's, hold it back
+        // before anything below — the adoption included — can write it. The one
+        // exception is the adoption's own case: an empty account taking on what a
+        // signed-out visitor picked, which is theirs to keep. Signed out there is
+        // nothing to protect: nothing is sent.
+        if (loadedFor != null) {
+            val accountShape = AppearanceShape.fromJson(memory[UiSettingKeys.APPEARANCE_SHAPE])
+            val adoptingOwnPick = !hadStored && shapeChosenBy == null
+            if (accountShape != shapeOnScreen && !adoptingOwnPick) heldBackShape = shapeOnScreen
+        }
         if (loadedFor == null) {
             memory.clear()
             seedDefault()

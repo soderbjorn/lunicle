@@ -170,6 +170,54 @@ class UiSettingsTest {
         }
     }
 
+    /**
+     * The shell's shape (LNA-26) is allowlisted and comes back verbatim.
+     *
+     * Corner radius, density, surfaces and selection, as the toolkit's
+     * `AppearanceShape.toJson()` writes them. Opaque here like every other blob;
+     * what this pins is that the route accepts the key rather than 400ing it, and
+     * that the second session — the next machine — gets the same shape back.
+     */
+    @Test
+    fun `the shell's shape round-trips through the settings route`(): Unit = runBlocking {
+        val user = user("gh-shape", "Shape")
+        val first = sessions.create(user.id)
+        val second = sessions.create(user.id)
+        val shape = """{"cornerRadiusPx":0,"uiDensity":"comfortable","selectionStyle":"fill","surfaceStyle":"flat"}"""
+
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.NoContent,
+                client.post(ApiRoutes.USER_UI_SETTINGS) {
+                    cookie(SESSION_COOKIE, first)
+                    contentType(ContentType.Application.Json)
+                    setBody(SetUiSettingRequest(UiSettingKeys.APPEARANCE_SHAPE, shape))
+                }.status,
+            )
+
+            val state: UiSettingsState =
+                client.get(ApiRoutes.USER_UI_SETTINGS) { cookie(SESSION_COOKIE, second) }.body()
+            assertEquals(shape, state.settings[UiSettingKeys.APPEARANCE_SHAPE])
+        }
+    }
+
+    /**
+     * Signed out, the shape is refused like every other key — a visitor's shape
+     * lives for the tab and nowhere else.
+     */
+    @Test
+    fun `a signed-out shape is refused`(): Unit = runBlocking {
+        withRoutes { client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.post(ApiRoutes.USER_UI_SETTINGS) {
+                    contentType(ContentType.Application.Json)
+                    setBody(SetUiSettingRequest(UiSettingKeys.APPEARANCE_SHAPE, """{"cornerRadiusPx":4}"""))
+                }.status,
+            )
+        }
+    }
+
     /** Last write wins, and does not accumulate rows. */
     @Test
     fun `writing the same key twice replaces it`(): Unit = runBlocking {

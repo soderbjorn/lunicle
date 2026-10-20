@@ -181,15 +181,40 @@ object UiSettingKeys {
      * ThemePersister), so the list this hoists from is as long as the instance
      * makes it.
      *
-     * `darkness.appearance.shape` — corner radius, density, selection style — is
-     * the one neighbour still deliberately left off this list. It is the same class
-     * of preference and the toolkit writes it, so this is an omission on purpose
-     * rather than one nobody noticed; see the note in ThemePersister's header.
-     *
      * Signed out, nothing is stored and a visitor's stars live for the tab, as with
      * every key here.
      */
     const val THEME_FAVORITES: String = "darkness.theme.v2.favorites"
+
+    /**
+     * `darkness.appearance.shape` — how the user likes their windows: corner
+     * radius, spacing density, surfaces (depth or flat) and selection (tinted or
+     * filled).
+     *
+     * A toolkit key like [APPEARANCE_FONTS], and opaque here: the toolkit's
+     * `AppearanceShape.toJson()`, one JSON object with any field absent meaning
+     * "this user picked nothing for it". One object for the same reason the fonts
+     * are one: a shape setting the toolkit grows later (the shell style and the
+     * navigation mode are on their way) becomes a field in this blob rather than
+     * another entry here.
+     *
+     * This was the deliberate holdout when the fonts and the stars started
+     * travelling (88ead88, 1bfeed4): the same class of preference, kept off the
+     * list as a standing call about how much of a signed-in browser this app
+     * stores, not because anything about it was harder. That call changed (LNA-26):
+     * a shape the Appearance sidebar offers unconditionally is a choice the user
+     * made, and it should be the same choice on the next machine.
+     *
+     * Only the user's own picks reach it. A deployment's brand.json shape is a
+     * fallback the toolkit paints *beneath* the stored value and never writes into
+     * it, so a branded instance stores nothing on anyone's behalf — and a re-brand
+     * still reaches everyone who never stated a preference. ThemePersister has the
+     * one wrinkle, which is a shell that outlives a change of identity.
+     *
+     * Signed out, nothing is stored and the shape lives for the tab, as with every
+     * key here.
+     */
+    const val APPEARANCE_SHAPE: String = "darkness.appearance.shape"
 
     /** Every key the server will store. Anything else is refused. */
     val persisted: Set<String> = setOf(
@@ -201,6 +226,7 @@ object UiSettingKeys {
         SIDEBAR_WIDTH,
         APPEARANCE_FONTS,
         THEME_FAVORITES,
+        APPEARANCE_SHAPE,
     )
 }
 
