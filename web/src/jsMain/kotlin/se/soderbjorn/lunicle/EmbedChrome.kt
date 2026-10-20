@@ -1,17 +1,26 @@
 /**
- * How much of the app's chrome an embed asked for: `?chrome=full|minimal|none`.
+ * How much of the app's chrome an embed asked for: `?chrome=full|minimal|none|bare`.
  *
  * For a host that wants ONE board in a block on its own page — a Notion page, say —
  * rather than the whole tracker in a frame. The default is the full app, exactly as
- * before; `minimal` and `none` strip the navigation a small block has no room for
- * and no use for:
+ * before; the other three strip the navigation a small block has no room for and no
+ * use for, and then progressively the board window's own frame:
  *
  *  - `full` (or absent, or anything unrecognised): sidebar, tab strip and top bar.
  *  - `minimal`: no sidebar and no tab strip. The top bar stays, with the account
  *    menu and the notifications bell in it.
  *  - `none`: `minimal`, and the top bar goes too once somebody is signed in. A
  *    signed-out visitor keeps it, because the sign-in button lives there and a
- *    frame with no way to sign in would be a dead end for a private board.
+ *    frame with no way to sign in would be a dead end for a private board. The
+ *    board window also fills the frame edge to edge — no app background around it —
+ *    and loses its window controls (the "more" menu with Rename, minimise, maximise
+ *    and close): in a host's block there is nothing to arrange it against.
+ *  - `bare`: `none`, and the board window loses its title bar and border as well,
+ *    leaving only the board itself.
+ *
+ * The window rules apply to the BOARD pane only (`data-pane-id="board-…"`): an
+ * issue opened from the board is still a window of its own, and without its close
+ * button it could not be put away again.
  *
  * Paired with a board (`?projectId=` or `?project=`), anything short of `full` also
  * pins the workspace to that board and stops it being read or saved — see
@@ -19,14 +28,14 @@
  * the reader's workspace.
  *
  * Read once at boot by `main.kt`, which also sets [ATTRIBUTE] on the body so
- * `styles.css` can hide the top bar.
+ * `styles.css` can do the rest.
  */
 package se.soderbjorn.lunicle
 
 import se.soderbjorn.lunicle.client.viewmodel.PinnedBoard
 
 /**
- * The three chrome levels, in the order they strip things away.
+ * The chrome levels, in the order they strip things away.
  *
  * @property key the spelling on the URL and in [ATTRIBUTE].
  * @property showsNavigation whether the sidebar and tab strip are rendered. Passed
@@ -36,12 +45,13 @@ internal enum class EmbedChrome(val key: String, val showsNavigation: Boolean) {
     Full("full", showsNavigation = true),
     Minimal("minimal", showsNavigation = false),
     None("none", showsNavigation = false),
+    Bare("bare", showsNavigation = false),
     ;
 
     companion object {
         /**
-         * The body attribute carrying [key], read by `styles.css`. Set only for
-         * [Minimal] and [None]; the full app carries no attribute at all.
+         * The body attribute carrying [key], read by `styles.css`. Set for every
+         * level but [Full]; the full app carries no attribute at all.
          */
         const val ATTRIBUTE: String = "data-lnl-chrome"
     }

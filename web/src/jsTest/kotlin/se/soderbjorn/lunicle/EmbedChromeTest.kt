@@ -22,6 +22,7 @@ class EmbedChromeTest {
         assertEquals(EmbedChrome.Full, embedChromeFromParam("full"))
         assertEquals(EmbedChrome.Minimal, embedChromeFromParam("minimal"))
         assertEquals(EmbedChrome.None, embedChromeFromParam("none"))
+        assertEquals(EmbedChrome.Bare, embedChromeFromParam("bare"))
         assertEquals(EmbedChrome.None, embedChromeFromParam(" NONE "), "typed by hand into an embed dialog")
     }
 
@@ -33,12 +34,14 @@ class EmbedChromeTest {
         assertTrue(EmbedChrome.Full.showsNavigation)
         assertFalse(EmbedChrome.Minimal.showsNavigation)
         assertFalse(EmbedChrome.None.showsNavigation)
+        assertFalse(EmbedChrome.Bare.showsNavigation)
     }
 
     @Test
     fun a_board_is_pinned_only_with_reduced_chrome() {
         assertEquals(PinnedBoard(projectId = 3), pinnedBoardFor(EmbedChrome.Minimal, 3, null))
         assertEquals(PinnedBoard(projectName = "Ops"), pinnedBoardFor(EmbedChrome.None, null, "Ops"))
+        assertEquals(PinnedBoard(projectId = 3), pinnedBoardFor(EmbedChrome.Bare, 3, null))
         assertNull(pinnedBoardFor(EmbedChrome.Full, 3, null), "a board link on the full app is the ordinary deep link")
         assertNull(pinnedBoardFor(EmbedChrome.None, null, null), "chrome alone has no board to pin")
         assertNull(pinnedBoardFor(EmbedChrome.Minimal, null, "  "))

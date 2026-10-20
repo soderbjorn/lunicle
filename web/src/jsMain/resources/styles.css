@@ -6500,12 +6500,67 @@ body[data-lnl-notif="1"] .lnl-notif-bell {
 .issue-remote-note-sep { color: var(--green-dim); }
 
 /* ============================================================
-   Chromeless embed: ?chrome=none (see EmbedChrome.kt).
-   The sidebar and tab strip are switched off in the shell spec; the top
-   bar has no switch, so it goes here, and only once somebody is signed
-   in. A signed-out visitor keeps it: the sign-in button lives in it, and
-   a frame with no way in would be a dead end for a private board.
+   Chromeless embed: ?chrome=none|bare (see EmbedChrome.kt).
+   The sidebar and tab strip are switched off in the shell spec; the rest
+   is here, keyed off the body attribute main.kt sets.
+
+   The window rules target the BOARD pane only, by its pane id: an issue
+   opened from the board is a window of its own, and without its close
+   button it could not be put away again.
    ============================================================ */
-body[data-lnl-chrome="none"][data-lnl-signed-in="1"] .dt-topbar {
+
+/* The top bar has no switch of its own, so it goes here, and only once
+   somebody is signed in. A signed-out visitor keeps it: the sign-in
+   button lives in it, and a frame with no way in would be a dead end for
+   a private board. */
+body[data-lnl-chrome="none"][data-lnl-signed-in="1"] .dt-topbar,
+body[data-lnl-chrome="bare"][data-lnl-signed-in="1"] .dt-topbar {
   display: none;
+}
+
+/* No app background around the board: the frame's padding is what let it
+   show, and the window then fills the frame edge to edge. Important
+   because the toolkit lays panes out with inline geometry. */
+body[data-lnl-chrome="none"] .dt-app-frame,
+body[data-lnl-chrome="bare"] .dt-app-frame {
+  background-image: none;
+}
+body[data-lnl-chrome="none"] .dt-app-frame-main,
+body[data-lnl-chrome="bare"] .dt-app-frame-main {
+  padding: 0;
+}
+body[data-lnl-chrome="none"] .dt-pane-root,
+body[data-lnl-chrome="bare"] .dt-pane-root {
+  border-radius: 0;
+}
+body[data-lnl-chrome="none"] .dt-pane[data-pane-id^="board-"],
+body[data-lnl-chrome="bare"] .dt-pane[data-pane-id^="board-"] {
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* ...and no window controls on it: the "more" menu (Rename window),
+   minimise, maximise/restore and close, nor the corner resize grips.
+   There is nothing in a host's block to arrange the window against. */
+body[data-lnl-chrome="none"] .dt-pane[data-pane-id^="board-"] .dt-pane-actions,
+body[data-lnl-chrome="bare"] .dt-pane[data-pane-id^="board-"] .dt-pane-actions,
+body[data-lnl-chrome="none"] .dt-pane[data-pane-id^="board-"] .dt-pane-corner-resize,
+body[data-lnl-chrome="bare"] .dt-pane[data-pane-id^="board-"] .dt-pane-corner-resize {
+  display: none;
+}
+
+/* bare: no title bar and no border either, just the board. */
+body[data-lnl-chrome="bare"] .dt-pane[data-pane-id^="board-"] .dt-pane-header,
+body[data-lnl-chrome="bare"] .dt-pane[data-pane-id^="board-"] .dt-pane-header-proximity {
+  display: none;
+}
+body[data-lnl-chrome="bare"] .dt-pane[data-pane-id^="board-"] {
+  border: 0;
+  outline: 0;
 }
