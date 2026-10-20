@@ -2085,11 +2085,6 @@ body > .dt-pane-menu {
   :root[data-dt-style="clean"] .card-remote-changed { animation: none; border-color: var(--green-hi); }
 }
 
-/* Title, labels, the blocked chip and the assignee only. Who filed the issue is
-   not lost: the issue window's byline names the author, with the agent badge under
-   it when an agent filed it, in every style. */
-:root[data-dt-style="clean"] .card-author { display: none; }
-
 /* ============================================================
    Modals
    ============================================================ */
