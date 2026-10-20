@@ -6498,3 +6498,14 @@ body[data-lnl-notif="1"] .lnl-notif-bell {
 .issue-remote-note-field { font-weight: 600; color: var(--head); }
 .issue-remote-note-text { color: var(--yellow-text); }
 .issue-remote-note-sep { color: var(--green-dim); }
+
+/* ============================================================
+   Chromeless embed: ?chrome=none (see EmbedChrome.kt).
+   The sidebar and tab strip are switched off in the shell spec; the top
+   bar has no switch, so it goes here, and only once somebody is signed
+   in. A signed-out visitor keeps it: the sign-in button lives in it, and
+   a frame with no way in would be a dead end for a private board.
+   ============================================================ */
+body[data-lnl-chrome="none"][data-lnl-signed-in="1"] .dt-topbar {
+  display: none;
+}

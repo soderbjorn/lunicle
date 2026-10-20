@@ -365,6 +365,12 @@ private fun start() {
     val bootProjectName = preferredProjectName()
     val bootTicket = preferredTicket()
     val bootSettingsRoute = preferredSettingsRoute()
+    // How much chrome the embed asked for, and the board that pins (see EmbedChrome).
+    // Read here with the deep links for their reason: it is a fact about this page
+    // load, and the address bar is about to be rewritten under it.
+    val bootChrome = embedChromeFromParam(queryValue(window.location.search, "chrome"))
+    val pinnedBoard = pinnedBoardFor(bootChrome, bootProjectId, bootProjectName)
+    if (!bootChrome.showsNavigation) document.body?.setAttribute(EmbedChrome.ATTRIBUTE, bootChrome.key)
 
     // One repository, shared. The view models each get the same instance rather
     // than building their own, so there is exactly one HTTP client and one place
@@ -383,8 +389,9 @@ private fun start() {
     // The tabs and what is in them (LNL-160). Its own view model because a
     // workspace is a different question from a board: it says *where* things are,
     // never *what* they contain, and it is the half that is stored under the
-    // account. See WorkspaceBackingViewModel.
-    val workspaceViewModel = WorkspaceBackingViewModel(storage, scope)
+    // account. See WorkspaceBackingViewModel. A pinned embed's workspace is the one
+    // board and is never stored — see PinnedBoard.
+    val workspaceViewModel = WorkspaceBackingViewModel(storage, scope, pinnedBoard)
 
     // Creating a project should leave you looking at it. Where a board goes is the
     // workspace's decision, so the board view model asks rather than acts — see
@@ -1428,14 +1435,18 @@ private fun start() {
         // and the active row takes the chrome accent. None of it is Lunicle's
         // code — that is the whole point of adopting the toolkit's tree instead
         // of inventing one.
-        showSidebar = true,
+        //
+        // Both off for `?chrome=minimal|none` (see EmbedChrome): a board in a block
+        // on somebody else's page has no room for a navigation tree and nowhere to
+        // navigate to.
+        showSidebar = bootChrome.showsNavigation,
         // Embedded, the sidebar opens narrower than the toolkit's own 240px —
         // see [EMBEDDED_SIDEBAR_WIDTH_PX]. A seed, not a rule: the toolkit
         // reads the width the user last dragged to and that always wins, so
         // nobody who has set a width of their own is moved by this. Null on
         // the full site, which keeps the toolkit's default.
         defaultSidebarWidthPx = if (isEmbedded()) EMBEDDED_SIDEBAR_WIDTH_PX else null,
-        showTabStrip = true,
+        showTabStrip = bootChrome.showsNavigation,
         // No bottom bar; the identity line rides the topbar's leading edge.
         showBottomBar = false,
         // The product identity sits at the top of the SIDEBAR, above the tabs

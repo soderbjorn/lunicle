@@ -47,13 +47,58 @@ import se.soderbjorn.lunicle.clientserver.UiSettingKeys
 private const val SAVE_DEBOUNCE_MS = 600L
 
 /**
+ * The one board a chromeless embed is pinned to: `?chrome=minimal|none` together
+ * with `?projectId=` or `?project=`.
+ *
+ * Such an embed is a window onto ONE board on somebody else's page (a Notion page,
+ * say), with no tab strip and no sidebar to navigate by. What it must not be is the
+ * reader's workspace: loading the stored layout would put every tab they own behind
+ * a frame that cannot show them, and saving would write the embed's one-board
+ * arrangement over the layout they use on the full site. So a pinned workspace
+ * never reads the stored layout and never writes one — see
+ * [WorkspaceBackingViewModel]'s `pinnedBoard`.
+ *
+ * Built by the web bootstrap (`main.kt`) from the page's own query string.
+ *
+ * @property projectId the board's project id, the form that survives a rename.
+ * @property projectName the board's project name, matched case-insensitively as
+ *   `?project=` always has been. Consulted only when [projectId] names nothing
+ *   this reader can see.
+ * @see WorkspaceBackingViewModel
+ */
+data class PinnedBoard(
+    val projectId: Long? = null,
+    val projectName: String? = null,
+) {
+    /**
+     * The project this pin names among [projects], or null when it names none of them.
+     *
+     * Called each time the workspace is seeded, because the list is per identity: a
+     * visitor may not see a private board that the same person sees once signed in.
+     *
+     * @param projects the projects the current reader can see.
+     * @return the pinned project, or null.
+     */
+    fun resolve(projects: List<ProjectSummary>): ProjectSummary? {
+        val wanted = projectName?.trim()?.takeIf { it.isNotEmpty() }
+        return projectId?.let { id -> projects.firstOrNull { it.id == id } }
+            ?: wanted?.let { name -> projects.firstOrNull { it.name.equals(name, ignoreCase = true) } }
+    }
+}
+
+/**
  * @param storage the shared repository; the only collaborator.
  * @param scope the app scope. The debounced save runs in it, so it dies with
  *   the page rather than outliving it.
+ * @param pinnedBoard the board a chromeless embed shows, or null for the full app.
+ *   When set, the workspace is that one board and nothing else: the stored layout
+ *   is never fetched, nothing is ever saved, and the "default" every seeding path
+ *   falls back on is a single tab holding the pinned board. See [PinnedBoard].
  */
 class WorkspaceBackingViewModel(
     private val storage: StorageRepository,
     private val scope: CoroutineScope,
+    private val pinnedBoard: PinnedBoard? = null,
 ) {
     private val _stateFlow = MutableStateFlow(State())
 
@@ -172,10 +217,17 @@ class WorkspaceBackingViewModel(
         // there is none to make — the default the list seeds is already the last
         // word. Signed in it stays false until [restore] answers, however the
         // default gets seeded in the meantime.
+        //
+        // Pinned, there is no stored layout in play at all (see [PinnedBoard]), so the
+        // seeded one-board workspace is the last word for every identity, not just for
+        // nobody — and there is nothing to restore.
         projects = emptyList()
         awaitingProjects = true
-        _stateFlow.value = _stateFlow.value.copy(isRestored = false, isSettled = identity == null)
-        restore(identity)
+        _stateFlow.value = _stateFlow.value.copy(
+            isRestored = false,
+            isSettled = identity == null || pinnedBoard != null,
+        )
+        if (pinnedBoard == null) restore(identity)
     }
 
     /**
@@ -754,8 +806,25 @@ class WorkspaceBackingViewModel(
      * So the first thing anyone meets is the familiar one-project-per-view model.
      * Working sets are something they discover by dragging a second board into a
      * tab, not something they must build before the app is usable.
+     *
+     * Pinned (see [PinnedBoard]) the default is the pinned board alone, in one tab
+     * named after it — or the empty workspace when this reader cannot see that
+     * board, which is the honest answer for a visitor looking at a private one.
      */
     private fun defaultWorkspace(): Workspace {
+        pinnedBoard?.let { pin ->
+            val tabs = listOfNotNull(
+                pin.resolve(projects)?.let { project ->
+                    WorkspaceTab(
+                        id = freshTabId(),
+                        name = project.name,
+                        panes = listOf(PaneRef.Board(project.id)),
+                        activePaneId = PaneRef.Board(project.id).paneId,
+                    )
+                },
+            )
+            return ensureNotEmpty(Workspace(tabs = tabs, activeTabId = tabs.firstOrNull()?.id))
+        }
         // Fresh ids, never reused ones. The toolkit's geometry, layout preset and
         // pane order are all keyed by tab id, and none of it is Lunicle's to
         // delete — so a "default" workspace that handed back tab-1 would inherit
@@ -845,7 +914,11 @@ class WorkspaceBackingViewModel(
         // Signed out, there is nowhere to put it. Not an error and not worth a
         // request: the visitor keeps their arrangement for as long as the page
         // lives, which is the whole of what a signed-out session is.
-        if (loadedFor == null) return
+        //
+        // Pinned, the same holds signed in: the embed's one-board arrangement is not
+        // the reader's layout, and storing it would overwrite the one they use on the
+        // full site. See [PinnedBoard].
+        if (loadedFor == null || pinnedBoard != null) return
         saveJob?.cancel()
         val blob = WorkspaceCodec.encode(_stateFlow.value.workspace)
         saveJob = scope.launch {
