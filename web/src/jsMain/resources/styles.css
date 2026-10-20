@@ -1995,6 +1995,97 @@ body > .dt-pane-menu {
 .board-empty { color: var(--green-dim); font-size: 13px; }
 
 /* ============================================================
+   Board under the Clean shell style (LNA-27)
+
+   The toolkit stamps `data-dt-style="clean"` on <html> when the
+   calm shell is chosen. Everything here is scoped under that
+   attribute, so Classic — no attribute, or any other value — is
+   exactly the board above, untouched.
+
+   The calm board is two materials and one line: lanes are wells
+   of the ground tone (`bg`) set into the window's surface, cards
+   are surface planes with a permanent `border` hairline on them,
+   and the lanes are told apart by the gap between them rather
+   than by a rule down each one's edge.
+   ============================================================ */
+
+/* A gutter instead of the hairline: with every lane painted as a well, the space
+   between two wells is what separates them, and a rule as well would say it twice
+   — the same argument .board makes the other way round. */
+:root[data-dt-style="clean"] .board { gap: 14px; }
+
+/* The lane as a ground-toned well with soft corners, and no divider. Padding is
+   even on both sides now that there is no trailing line to keep clear of. */
+:root[data-dt-style="clean"] .column {
+  background: var(--bg);
+  box-shadow: none;
+  border-radius: 12px;
+  padding: 10px 8px 12px;
+}
+
+/* The drop wash, re-stated: the selector above outranks a bare `.column-drop`,
+   so without this the well would hide which lane a dragged card will land in.
+   Mixed into the well's own ground rather than into transparent, so it tints
+   the lane instead of punching through it. */
+:root[data-dt-style="clean"] .column-drop {
+  background: color-mix(in srgb, var(--green-hi) 10%, var(--bg));
+}
+
+/* The head as an ordinary heading: the name in sentence case and normal text,
+   the count in the muted tone. No rule under it — the well already says where
+   the lane begins. Still a fixed two-line box, bottom-aligned, for the reason
+   .column-head gives: a long name must not drop its own lane's cards out of line
+   with the neighbours'. 38px is two lines of the 14px name below. */
+:root[data-dt-style="clean"] .column-head {
+  height: 38px;
+  padding: 0 4px 2px;
+  border-bottom: 0;
+  margin-bottom: 8px;
+}
+:root[data-dt-style="clean"] .column-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+:root[data-dt-style="clean"] .column-count {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+/* The card: the surface plane, outlined all the time by one `border` hairline,
+   with the calm shell's 12px corner. Classic leaves the edge off and draws it
+   only on hover because its card is a tone against the pane; here the card is
+   the same tone as the window around the lane, so the hairline is what makes it
+   a card at all. */
+:root[data-dt-style="clean"] .card {
+  background: var(--panel);
+  border-color: var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+/* Hover stays, but quietly: the permanent hairline steps up to the stronger
+   border token. Re-stated because the rule above outranks the bare `.card:hover`. */
+:root[data-dt-style="clean"] .card:hover { border-color: var(--border-hi); }
+
+/* The "somebody else changed this" flash, ending on Clean's own card rather than
+   on Classic's — the shared keyframes fade to a transparent edge on `panel-2`,
+   which would leave the card blinking to the wrong material at the end. */
+:root[data-dt-style="clean"] .card-remote-changed { animation-name: card-remote-flash-clean; }
+@keyframes card-remote-flash-clean {
+  0%, 20% {
+    border-color: var(--green-hi);
+    background: color-mix(in srgb, var(--green-hi) 14%, var(--panel));
+  }
+  100% { border-color: var(--border); background: var(--panel); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-dt-style="clean"] .card-remote-changed { animation: none; border-color: var(--green-hi); }
+}
+
+/* ============================================================
    Modals
    ============================================================ */
 
