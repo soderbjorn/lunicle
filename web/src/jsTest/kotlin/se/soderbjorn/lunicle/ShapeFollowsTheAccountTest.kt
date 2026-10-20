@@ -44,8 +44,11 @@ import kotlin.test.assertTrue
  * `by HttpLunicleApi(...)` supplies the members these tests never call, as
  * :client's own fakes do; the delegate points at a host that does not resolve, so
  * anything not modelled here fails loudly rather than reaching the network.
+ *
+ * Internal rather than private because FontsFollowTheAccountTest drives the same
+ * account through the same persister.
  */
-private class AccountSettingsApi(
+internal class AccountSettingsApi(
     var userId: Long?,
     var stored: Map<String, String> = emptyMap(),
 ) : LunicleApi by HttpLunicleApi(baseUrl = "http://shape-follows.invalid") {
