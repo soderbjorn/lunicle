@@ -23,7 +23,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import org.w3c.fetch.Response
 import se.soderbjorn.lunula.core.AppearanceShape
+import se.soderbjorn.lunula.core.NavigationMode
 import se.soderbjorn.lunula.core.SelectionStyle
+import se.soderbjorn.lunula.core.ShellStyle
 import se.soderbjorn.lunula.core.Theme
 import se.soderbjorn.lunula.core.UiDensity
 import kotlin.js.Promise
@@ -42,11 +44,14 @@ import kotlin.js.Promise
  * @property title             optional document-title override (applied server-side;
  *   carried here only for completeness).
  * @property appearanceShape  the deployment's default corner roundness, spacing
- *   density and selection language, from `defaultCornerRadiusPx` /
- *   `defaultUiDensity` / `defaultSelectionStyle`. Handed to the toolkit as
+ *   density, selection language, shell style and navigation, from
+ *   `defaultCornerRadiusPx` / `defaultUiDensity` / `defaultSelectionStyle` /
+ *   `defaultStyle` / `defaultNavigation` (see [brandAppearanceShape]). Handed to
+ *   the toolkit through [ThemePersister.defaultAppearanceShape] as
  *   [AppShellSpec.defaultAppearanceShape], so each field sits *beneath* the
  *   user's own pick and above the toolkit default — the same precedence the
- *   brand fonts and the brand theme defaults already use. Every field is
+ *   brand fonts and the brand theme defaults already use. Style and navigation
+ *   also sit beneath a `?style=` / `?nav=` hint on the URL. Every field is
  *   independently optional; an empty shape means "toolkit defaults throughout".
  * @property chromeFontSizePx  default chrome (sidebar/tab bar/window title) font
  *   size in px, or null. Like the families, each size sits beneath the user's
@@ -239,17 +244,7 @@ suspend fun loadBrand(): Brand? {
         // characters — the same rule landingNote above already follows.
         landingHeadline = manifest.stringOrNull("landingHeadline")?.takeIf { it.isNotBlank() },
         landingDetail = manifest.stringOrNull("landingDetail")?.takeIf { it.isNotBlank() },
-        // Parsed leniently, field by field: a manifest naming a density this
-        // build doesn't know must not also cost the deployment its selection
-        // style. Both enums ignore anything unrecognised, and the radius is
-        // range-checked, so a typo degrades to "toolkit default" for that one
-        // setting rather than failing the brand.
-        appearanceShape = AppearanceShape(
-            cornerRadiusPx = (manifest["defaultCornerRadiusPx"] as? JsonPrimitive)
-                ?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..64 },
-            uiDensity = UiDensity.fromRaw(manifest.stringOrNull("defaultUiDensity")),
-            selectionStyle = SelectionStyle.fromRaw(manifest.stringOrNull("defaultSelectionStyle")),
-        ),
+        appearanceShape = brandAppearanceShape(manifest),
         chromeFontSizePx = manifest.fontSizeOrNull("defaultChromeFontSizePx"),
         monoFontSizePx = manifest.fontSizeOrNull("defaultMonoFontSizePx"),
         proseFontSizePx = manifest.fontSizeOrNull("defaultProseFontSizePx"),
@@ -279,6 +274,32 @@ private fun parseBrandFonts(manifest: JsonObject): List<BrandFont> {
         BrandFont(family, surfaces, fallback)
     }
 }
+
+/**
+ * The manifest's shape defaults: `defaultCornerRadiusPx`, `defaultUiDensity`,
+ * `defaultSelectionStyle`, and the shell's `defaultStyle` (`classic` / `clean`) and
+ * `defaultNavigation` (`sidebar` / `tabstrip` / `both`) from LNA-26.
+ *
+ * Parsed leniently, field by field: a manifest naming a density this build doesn't
+ * know must not also cost the deployment its selection style. Every enum goes
+ * through the toolkit's own `fromRaw`, which ignores anything unrecognised, and the
+ * radius is range-checked, so a typo degrades to "toolkit default" for that one
+ * setting rather than failing the brand. Unset style and navigation leave Lunicle on
+ * the toolkit's Classic and Both; a `?style=` / `?nav=` on the URL outranks them
+ * (see [ThemePersister.defaultAppearanceShape]), and the user's own pick outranks
+ * both. Pure, so it is tested without fetching a brand dir.
+ *
+ * @param manifest the parsed `brand.json`.
+ * @return the brand's default shape; empty when it names none of these keys.
+ */
+internal fun brandAppearanceShape(manifest: JsonObject): AppearanceShape = AppearanceShape(
+    cornerRadiusPx = (manifest["defaultCornerRadiusPx"] as? JsonPrimitive)
+        ?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..64 },
+    uiDensity = UiDensity.fromRaw(manifest.stringOrNull("defaultUiDensity")),
+    selectionStyle = SelectionStyle.fromRaw(manifest.stringOrNull("defaultSelectionStyle")),
+    shellStyle = ShellStyle.fromRaw(manifest.stringOrNull("defaultStyle")),
+    navigationMode = NavigationMode.fromRaw(manifest.stringOrNull("defaultNavigation")),
+)
 
 private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull(): JsonObject =
     this as? JsonObject ?: JsonObject(emptyMap())

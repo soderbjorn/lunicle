@@ -47,7 +47,6 @@ import org.w3c.dom.HTMLAnchorElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.url.URLSearchParams
 import se.soderbjorn.lunula.core.Appearance
-import se.soderbjorn.lunula.core.AppearanceShape
 import se.soderbjorn.lunula.web.layout.LayoutPreset
 import se.soderbjorn.lunula.web.layout.PaneAction
 import se.soderbjorn.lunula.web.themeeditor.FontKind
@@ -371,6 +370,12 @@ private fun start() {
     val bootChrome = embedChromeFromParam(queryValue(window.location.search, "chrome"))
     val pinnedBoard = pinnedBoardFor(bootChrome, bootProjectId, bootProjectName)
     if (!bootChrome.showsNavigation) document.body?.setAttribute(EmbedChrome.ATTRIBUTE, bootChrome.key)
+    // The shell style and navigation the URL hints at (`?style=`, `?nav=`; see
+    // EmbedShape), read here for the same reason. Hints only: they land beneath the
+    // user's stored shape and are never written to the account. `?nav=` is dropped
+    // when the chrome above has already taken the navigation away.
+    val bootStyle = shellStyleFromParam(queryValue(window.location.search, "style"))
+    val bootNavigation = navigationFromParam(queryValue(window.location.search, "nav"), bootChrome)
 
     // One repository, shared. The view models each get the same instance rather
     // than building their own, so there is exactly one HTTP client and one place
@@ -1124,15 +1129,17 @@ private fun start() {
         // — e.g. a serif for headlines while prose/chrome stay sans. Yields to any
         // font the user picks in Appearance; null on an unbranded instance.
         defaultDisplayFontFamily = { brandConfig?.displayFont?.presetKey },
-        // The deployment's shape defaults — corner roundness, spacing density
-        // and selection language — from `defaultCornerRadiusPx` /
-        // `defaultUiDensity` / `defaultSelectionStyle` in brand.json. Exactly
-        // the font seams above in a different medium: each field lands beneath
-        // whatever the user picked in Appearance and above the toolkit default,
-        // so a branded instance opens looking like itself without ever
-        // overriding someone who has stated a preference. Empty (all toolkit
-        // defaults) on an unbranded instance.
-        defaultAppearanceShape = { brandConfig?.appearanceShape ?: AppearanceShape() },
+        // The deployment's shape defaults — corner roundness, spacing density,
+        // selection language, shell style and navigation — from brand.json
+        // (`defaultCornerRadiusPx`, `defaultUiDensity`, `defaultSelectionStyle`,
+        // `defaultStyle`, `defaultNavigation`), with the URL's `?style=` / `?nav=`
+        // hints over the last two. Exactly the font seams above in a different
+        // medium: each field lands beneath whatever the user picked in Appearance
+        // and above the toolkit default (Classic, Both), so a branded instance or
+        // a hinted link opens looking like itself without ever overriding someone
+        // who has stated a preference. The persister layers it; nothing in it is
+        // ever stored. Empty on an unbranded instance with no hints.
+        defaultAppearanceShape = { persister.defaultAppearanceShape() },
         // ...and the size half of the same seams. Null on an unbranded
         // instance, so the toolkit's own sizes stand.
         defaultChromeFontSizePx = { brandConfig?.chromeFontSizePx },
@@ -1438,7 +1445,9 @@ private fun start() {
         //
         // Both off for `?chrome=minimal|none` (see EmbedChrome): a board in a block
         // on somebody else's page has no room for a navigation tree and nowhere to
-        // navigate to.
+        // navigate to. A hard opt-out, so the toolkit lets no navigation mode — the
+        // user's, a `?nav=` hint or the brand's — put either surface back. Otherwise
+        // both are allowed and the mode (user > `?nav=` > brand > Both) decides.
         showSidebar = bootChrome.showsNavigation,
         // Embedded, the sidebar opens narrower than the toolkit's own 240px —
         // see [EMBEDDED_SIDEBAR_WIDTH_PX]. A seed, not a rule: the toolkit
@@ -1601,7 +1610,7 @@ private fun start() {
         // this runs. Never fatal: a broken brand degrades the look, not the boot.
         brandConfig = runCatching { loadBrand() }.getOrNull()
         brandConfig?.let { brand ->
-            persister.setBrand(brand.themes, brand.defaultDarkTheme, brand.defaultLightTheme)
+            persister.setBrand(brand.themes, brand.defaultDarkTheme, brand.defaultLightTheme, brand.appearanceShape)
             signInView.brandLogoSvg = brand.logoSvg
             // Pre-filter the Google chooser to the deployment's domain (LNL-125).
             signInView.googleHostedDomain = brand.googleHostedDomain
@@ -1614,14 +1623,21 @@ private fun start() {
         // A host embedding the tracker can name both the appearance an unchosen
         // browser seeds on (?theme=) and the themes its slots default to
         // (?darkTheme=/?lightTheme=), so the frame matches the surrounding chrome
-        // rather than clashing with it. Set after the brand above, which it outranks,
-        // and before start(), which is where the seed happens — and beneath any stored
-        // user choice, which still wins.
+        // rather than clashing with it. A link can likewise hint the shell's style and
+        // navigation (?style=/?nav=, read at the top of start()). Set after the brand
+        // above, which it outranks, and before start(), which is where the seed
+        // happens — and beneath any stored user choice, which still wins.
         //
         // The demo needs nothing of its own here any more: `?demo=1` used to name the
         // Classic pair itself, and now inherits it from Lunicle's own default
         // (LUNICLE_DEFAULT_*), which is the same look. One default, one place.
-        persister.setEmbedDefaults(preferredAppearance(), preferredDarkTheme(), preferredLightTheme())
+        persister.setEmbedDefaults(
+            appearance = preferredAppearance(),
+            darkTheme = preferredDarkTheme(),
+            lightTheme = preferredLightTheme(),
+            style = bootStyle,
+            navigation = bootNavigation,
+        )
 
         // The caller's stored theme and layout — or Lunicle's defaults — fetched
         // *before* the shell mounts, because the shell reads the persister as part

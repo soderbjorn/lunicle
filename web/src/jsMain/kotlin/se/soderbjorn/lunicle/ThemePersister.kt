@@ -59,7 +59,9 @@ import se.soderbjorn.lunula.core.AppearanceFonts
 import se.soderbjorn.lunula.core.AppearanceShape
 import se.soderbjorn.lunula.core.DEFAULT_DARK_THEME
 import se.soderbjorn.lunula.core.DEFAULT_LIGHT_THEME
+import se.soderbjorn.lunula.core.NavigationMode
 import se.soderbjorn.lunula.core.Persister
+import se.soderbjorn.lunula.core.ShellStyle
 import se.soderbjorn.lunula.core.Theme
 import se.soderbjorn.lunula.core.ThemeSnapshotV2
 import se.soderbjorn.lunicle.client.StorageRepository
@@ -151,27 +153,38 @@ class ThemePersister(
     private var brandThemes: List<Theme> = emptyList()
     private var brandDefaultDark: String? = null
     private var brandDefaultLight: String? = null
+    private var brandShape: AppearanceShape = AppearanceShape()
 
     /**
-     * Install the deployment's brand themes and default slot names. Call once at
-     * boot, before [start], with what the brand dir yielded (empty ⇒ no-op, so an
-     * unbranded instance behaves exactly as before).
+     * Install the deployment's brand themes, default slot names and default shape.
+     * Call once at boot, before [start], with what the brand dir yielded (empty ⇒
+     * no-op, so an unbranded instance behaves exactly as before).
      *
      * @param themes       the brand's selectable themes, layered onto the user's.
      * @param defaultDark  brand default for the dark slot, or null to leave it.
      * @param defaultLight brand default for the light slot, or null to leave it.
+     * @param shape        the brand's default shape (radius, density, selection,
+     *   style, navigation), handed out beneath the URL's hints by
+     *   [defaultAppearanceShape]. Never written to the account.
      */
-    fun setBrand(themes: List<Theme>, defaultDark: String?, defaultLight: String?) {
+    fun setBrand(
+        themes: List<Theme>,
+        defaultDark: String?,
+        defaultLight: String?,
+        shape: AppearanceShape = AppearanceShape(),
+    ) {
         brandThemes = themes
         brandDefaultDark = defaultDark?.takeIf { it.isNotBlank() }
         brandDefaultLight = defaultLight?.takeIf { it.isNotBlank() }
+        brandShape = shape
     }
 
-    // ── Embed defaults (?theme=, ?darkTheme=, ?lightTheme=) ─────────────────
+    // ── Embed defaults (?theme=, ?darkTheme=, ?lightTheme=, ?style=, ?nav=) ─
     //
     // What a host page embedding the tracker in an iframe asks an *unchosen*
     // browser to land on, so the frame matches the surrounding chrome instead of
-    // clashing with it. Three parameters, because the mismatch has two halves:
+    // clashing with it. Three colour parameters, because the mismatch has two
+    // halves:
     //
     //   - `?theme=dark|light|auto` → [defaultAppearance]: which slot is active. A
     //     *light* host embedding the tracker gets a dark frame otherwise, Lunicle's
@@ -198,9 +211,17 @@ class ThemePersister(
     // Held as fields rather than threaded through [start] because a sign-*out*
     // while embedded reseeds ([onIdentityChanged] also calls [seedDefault]) and must
     // land back on the host's look, not on Lunicle's.
+    //
+    // `?style=` and `?nav=` (LNA-26) are the same tier for the shell's shape: they
+    // fill [defaultAppearanceShape], which the toolkit paints beneath the user's
+    // stored shape and never writes back, above brand.json's `defaultStyle` /
+    // `defaultNavigation`. Unlike the theme hints they need no seed: the shape's
+    // fallback is read live, so nothing about them reaches [memory] or the server.
     private var defaultAppearance: Appearance = LUNICLE_DEFAULT_APPEARANCE
     private var embedDefaultDark: String? = null
     private var embedDefaultLight: String? = null
+    private var embedStyle: ShellStyle? = null
+    private var embedNavigation: NavigationMode? = null
 
     /**
      * Install the host page's embed defaults. Call once at boot, before [start].
@@ -212,12 +233,38 @@ class ThemePersister(
      * @param darkTheme  name for the dark slot when it was never chosen, or null to
      *   fall through to the brand/Lunicle default. Blank is treated as null.
      * @param lightTheme the same for the light slot.
+     * @param style      the `?style=` hint ([shellStyleFromParam]), or null.
+     * @param navigation the `?nav=` hint ([navigationFromParam]), or null — which it
+     *   already is whenever `?chrome=` hides the navigation.
      */
-    fun setEmbedDefaults(appearance: Appearance?, darkTheme: String?, lightTheme: String?) {
+    fun setEmbedDefaults(
+        appearance: Appearance?,
+        darkTheme: String?,
+        lightTheme: String?,
+        style: ShellStyle? = null,
+        navigation: NavigationMode? = null,
+    ) {
         appearance?.let { defaultAppearance = it }
         embedDefaultDark = darkTheme?.takeIf { it.isNotBlank() }
         embedDefaultLight = lightTheme?.takeIf { it.isNotBlank() }
+        embedStyle = style
+        embedNavigation = navigation
     }
+
+    /**
+     * The shape the shell falls back to where the user has picked nothing: the
+     * URL's style and navigation hints over the brand's shape, then the toolkit's
+     * own defaults (Classic, Both) for anything neither names.
+     *
+     * Handed to the toolkit as `AppShellSpec.defaultAppearanceShape`, read live on
+     * every repaint, and never written: what the toolkit persists under
+     * [UiSettingKeys.APPEARANCE_SHAPE] is its theme-manager state, which only the
+     * Appearance controls set. So neither tier here can reach the account.
+     *
+     * @return the layered default; empty on an unbranded instance with no hints.
+     */
+    fun defaultAppearanceShape(): AppearanceShape =
+        layeredDefaultShape(brandShape, embedStyle, embedNavigation)
 
     /**
      * The theme keys are answered from the brand-merged view; everything else is
