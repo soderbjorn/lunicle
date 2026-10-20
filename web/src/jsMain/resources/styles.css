@@ -2085,6 +2085,27 @@ body > .dt-pane-menu {
   :root[data-dt-style="clean"] .card-remote-changed { animation: none; border-color: var(--green-hi); }
 }
 
+/* The window colour is the toolkit's to say. Clean tells the focused window from
+   the rest by its body alone — `--t-surface` on the one in focus, `--t-window-idle`
+   on every other — and leaves `.dt-pane-content` transparent so that tone reaches
+   the content. Each pane root below paints `--panel` over it for Classic's sake
+   (see .board-pane), which under Clean kept every window white whichever one had
+   focus. So under Clean they paint nothing, and only the surfaces inside that are
+   objects of their own keep a fill: cards on `--panel`, lanes on `--bg`, inputs,
+   chips and dialogs as they are.
+
+   The list is every element a pane is handed as its content (see `paneContent`
+   in main.kt) that paints, plus the issue window inside its host and the forum
+   post window's host. A new pane kind with a background of its own belongs here
+   too. */
+:root[data-dt-style="clean"] .board-pane,
+:root[data-dt-style="clean"] .issue-window,
+:root[data-dt-style="clean"] .settings-pane-host,
+:root[data-dt-style="clean"] .analytics-pane-host,
+:root[data-dt-style="clean"] .forum-post-host {
+  background: transparent;
+}
+
 /* ============================================================
    Modals
    ============================================================ */
