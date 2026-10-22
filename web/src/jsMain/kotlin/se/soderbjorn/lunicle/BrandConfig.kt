@@ -23,6 +23,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import org.w3c.fetch.Response
 import se.soderbjorn.lunula.core.AppearanceShape
+import se.soderbjorn.lunula.core.ChromeStyle
+import se.soderbjorn.lunula.core.FocusStyle
+import se.soderbjorn.lunula.core.LabelCase
+import se.soderbjorn.lunula.core.SurfaceStyle
+import se.soderbjorn.lunula.core.WindowLayout
 import se.soderbjorn.lunula.core.NavigationMode
 import se.soderbjorn.lunula.core.SelectionStyle
 import se.soderbjorn.lunula.core.ShellStyle
@@ -43,10 +48,12 @@ import kotlin.js.Promise
  *   serif for headings); [fontForSurface] resolves which face owns a surface.
  * @property title             optional document-title override (applied server-side;
  *   carried here only for completeness).
- * @property appearanceShape  the deployment's default corner roundness, spacing
- *   density, selection language, shell style and navigation, from
- *   `defaultCornerRadiusPx` / `defaultUiDensity` / `defaultSelectionStyle` /
- *   `defaultStyle` / `defaultNavigation` (see [brandAppearanceShape]). Handed to
+ * @property appearanceShape  the deployment's default style settings, look and
+ *   navigation, from `defaultCornerRadiusPx` / `defaultUiDensity` /
+ *   `defaultSelectionStyle` / `defaultSurfaceStyle` / `defaultChromeStyle` /
+ *   `defaultWindowLayout` / `defaultFocusStyle` / `defaultLabelCase` /
+ *   `defaultStyle` / `defaultNavigation` (see [brandAppearanceShape]). The same
+ *   defaults apply to dark and light mode. Handed to
  *   the toolkit through [ThemePersister.defaultAppearanceShape] as
  *   [AppShellSpec.defaultAppearanceShape], so each field sits *beneath* the
  *   user's own pick and above the toolkit default — the same precedence the
@@ -277,8 +284,19 @@ private fun parseBrandFonts(manifest: JsonObject): List<BrandFont> {
 
 /**
  * The manifest's shape defaults: `defaultCornerRadiusPx`, `defaultUiDensity`,
- * `defaultSelectionStyle`, and the shell's `defaultStyle` (`classic` / `clean`) and
+ * `defaultSelectionStyle` (`tint` / `fill` / `soft`), `defaultSurfaceStyle`
+ * (`depth` / `flat` / `soft`), the four style settings `defaultChromeStyle`
+ * (`themed` / `blended`), `defaultWindowLayout` (`cards` / `sheet`),
+ * `defaultFocusStyle` (`accent` / `tone`) and `defaultLabelCase` (`uppercase` /
+ * `sentence`), the look shorthand `defaultStyle` (`classic` / `calm`; the old `clean` still
+ * reads as Calm) and
  * `defaultNavigation` (`sidebar` / `tabstrip` / `both`) from LNA-26.
+ *
+ * `defaultStyle` names a whole look; the toolkit expands it beneath the brand's
+ * individual fields, so a brand can take the Calm look and still name, say, a
+ * different corner radius. A field set beside `defaultStyle` therefore wins over
+ * the look's value for it — which is why a brand that wants the Calm look as it
+ * is should name only `defaultStyle`.
  *
  * Parsed leniently, field by field: a manifest naming a density this build doesn't
  * know must not also cost the deployment its selection style. Every enum goes
@@ -297,8 +315,13 @@ internal fun brandAppearanceShape(manifest: JsonObject): AppearanceShape = Appea
         ?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..64 },
     uiDensity = UiDensity.fromRaw(manifest.stringOrNull("defaultUiDensity")),
     selectionStyle = SelectionStyle.fromRaw(manifest.stringOrNull("defaultSelectionStyle")),
+    surfaceStyle = SurfaceStyle.fromRaw(manifest.stringOrNull("defaultSurfaceStyle")),
     shellStyle = ShellStyle.fromRaw(manifest.stringOrNull("defaultStyle")),
     navigationMode = NavigationMode.fromRaw(manifest.stringOrNull("defaultNavigation")),
+    chromeStyle = ChromeStyle.fromRaw(manifest.stringOrNull("defaultChromeStyle")),
+    windowLayout = WindowLayout.fromRaw(manifest.stringOrNull("defaultWindowLayout")),
+    focusStyle = FocusStyle.fromRaw(manifest.stringOrNull("defaultFocusStyle")),
+    labelCase = LabelCase.fromRaw(manifest.stringOrNull("defaultLabelCase")),
 )
 
 private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull(): JsonObject =

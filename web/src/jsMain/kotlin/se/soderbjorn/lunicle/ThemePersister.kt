@@ -59,6 +59,7 @@ import se.soderbjorn.lunula.core.AppearanceFonts
 import se.soderbjorn.lunula.core.AppearanceShape
 import se.soderbjorn.lunula.core.DEFAULT_DARK_THEME
 import se.soderbjorn.lunula.core.DEFAULT_LIGHT_THEME
+import se.soderbjorn.lunula.core.ModeStyles
 import se.soderbjorn.lunula.core.NavigationMode
 import se.soderbjorn.lunula.core.Persister
 import se.soderbjorn.lunula.core.ShellStyle
@@ -126,9 +127,13 @@ class ThemePersister(
     // than a choice made here. One [MountOnlyPreference] per key, so the rule is
     // written once.
 
-    /** The keys that need that guard, each parsed with the toolkit's own codec. */
+    /**
+     * The keys that need that guard, each parsed with the toolkit's own codec.
+     * The shape is compared whole: the shared fields and the per-mode style
+     * entries both (see [parseShapeBlob]).
+     */
     private val mountOnly: Map<String, MountOnlyPreference<*>> = listOf(
-        MountOnlyPreference(UiSettingKeys.APPEARANCE_SHAPE, AppearanceShape::fromJson),
+        MountOnlyPreference(UiSettingKeys.APPEARANCE_SHAPE, ::parseShapeBlob),
         MountOnlyPreference(UiSettingKeys.APPEARANCE_FONTS, AppearanceFonts::fromJson),
     ).associateBy { it.key }
 
@@ -233,7 +238,8 @@ class ThemePersister(
      * @param darkTheme  name for the dark slot when it was never chosen, or null to
      *   fall through to the brand/Lunicle default. Blank is treated as null.
      * @param lightTheme the same for the light slot.
-     * @param style      the `?style=` hint ([shellStyleFromParam]), or null.
+     * @param style      the `?style=` hint ([shellStyleFromParam]), or null: the
+     *   look (Classic or Calm) a link asks an unchosen browser to land on.
      * @param navigation the `?nav=` hint ([navigationFromParam]), or null — which it
      *   already is whenever `?chrome=` hides the navigation.
      */
@@ -463,6 +469,24 @@ class ThemePersister(
             embedDefaultLight ?: brandDefaultLight,
         )
 }
+
+/**
+ * Parses the shape blob the toolkit writes under
+ * [UiSettingKeys.APPEARANCE_SHAPE] into everything it carries: the top-level
+ * fields (navigation, and the single-mode values from before the style
+ * settings were per mode) and the per-mode style entries
+ * ([ModeStyles], `dark` / `light`).
+ *
+ * The guard in [MountOnlyPreference] compares parsed values to tell the
+ * toolkit re-writing stale state from the user choosing; parsing with
+ * `AppearanceShape.fromJson` alone would see a change made only to one mode's
+ * style as no change at all, and hold it back from the account.
+ *
+ * @param raw the stored JSON, or null.
+ * @return the top-level shape and the per-mode pair (null when never edited).
+ */
+private fun parseShapeBlob(raw: String?): Pair<AppearanceShape, ModeStyles?> =
+    AppearanceShape.fromJson(raw) to ModeStyles.fromJson(raw)
 
 /**
  * One toolkit preference the shell reads only at mount, and what [ThemePersister]

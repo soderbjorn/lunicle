@@ -402,22 +402,22 @@ class AppUrlTest {
     /**
      * The shell hints `?style=` and `?nav=` (LNA-26) are read once at boot and
      * never written, so the address bar must carry them across every rewrite: a
-     * reload of a `?style=clean` link that came back Classic would look like the
+     * reload of a `?style=calm` link that came back Classic would look like the
      * parameter had never worked.
      */
     @Test
     fun `the style and nav hints survive the url being rewritten`() {
         assertEquals(
-            "style=clean&nav=tabstrip&chrome=full&issue=LNA-26&projectId=7",
-            nextSearch("?style=clean&nav=tabstrip&chrome=full", ticket = "LNA-26", projectId = 7, tab = null),
+            "style=calm&nav=tabstrip&chrome=full&issue=LNA-26&projectId=7",
+            nextSearch("?style=calm&nav=tabstrip&chrome=full", ticket = "LNA-26", projectId = 7, tab = null),
         )
         assertEquals(
-            "style=clean&nav=tabstrip&projectId=7",
-            nextSearch("?style=clean&nav=tabstrip&projectId=7&issue=LNA-26", ticket = null, projectId = 7, tab = null),
+            "style=calm&nav=tabstrip&projectId=7",
+            nextSearch("?style=calm&nav=tabstrip&projectId=7&issue=LNA-26", ticket = null, projectId = 7, tab = null),
         )
         assertEquals(
-            "style=clean&nav=sidebar&settings=you",
-            nextSearch("?style=clean&nav=sidebar", ticket = null, projectId = null, tab = null, settings = "you"),
+            "style=calm&nav=sidebar&settings=you",
+            nextSearch("?style=calm&nav=sidebar", ticket = null, projectId = null, tab = null, settings = "you"),
         )
     }
 

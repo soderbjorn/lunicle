@@ -9,7 +9,8 @@
  *  - **Chrome wins over nav.** With `?chrome=minimal|none|bare` the navigation is
  *    gone, and a `?nav=` hint must not bring it back.
  *  - **Precedence.** The user's stored pick > the URL hint > the brand default >
- *    the toolkit's Classic / Both.
+ *    the toolkit's Classic / Both. A `?style=` hint names a whole look, whose
+ *    values replace the brand's style fields.
  *  - **Hints are not choices.** Neither the URL's nor the brand's style and
  *    navigation ever reach the account; only what the user picks does.
  */
@@ -24,6 +25,14 @@ import kotlinx.serialization.json.JsonObject
 import se.soderbjorn.lunicle.client.StorageRepository
 import se.soderbjorn.lunicle.clientserver.UiSettingKeys
 import se.soderbjorn.lunula.core.AppearanceShape
+import se.soderbjorn.lunula.core.ChromeStyle
+import se.soderbjorn.lunula.core.FocusStyle
+import se.soderbjorn.lunula.core.LabelCase
+import se.soderbjorn.lunula.core.Looks
+import se.soderbjorn.lunula.core.SurfaceStyle
+import se.soderbjorn.lunula.core.WindowLayout
+import se.soderbjorn.lunula.core.appearanceLadder
+import se.soderbjorn.lunula.core.resolveAppearance
 import se.soderbjorn.lunula.core.NavigationMode
 import se.soderbjorn.lunula.core.SelectionStyle
 import se.soderbjorn.lunula.core.ShellStyle
@@ -40,16 +49,17 @@ class EmbedShapeTest {
 
     @Test
     fun the_style_parameter_parses_both_styles_leniently() {
-        assertEquals(ShellStyle.Clean, shellStyleFromParam("clean"))
+        assertEquals(ShellStyle.Calm, shellStyleFromParam("calm"))
+        assertEquals(ShellStyle.Calm, shellStyleFromParam("clean"), "the look's old name, from links made before the rename")
         assertEquals(ShellStyle.Classic, shellStyleFromParam("classic"))
-        assertEquals(ShellStyle.Clean, shellStyleFromParam(" Clean "), "typed by hand into a link")
+        assertEquals(ShellStyle.Calm, shellStyleFromParam(" Calm "), "typed by hand into a link")
     }
 
     @Test
     fun an_absent_or_unknown_style_is_no_hint() {
         assertNull(shellStyleFromParam(null))
         assertNull(shellStyleFromParam(""))
-        assertNull(shellStyleFromParam("calm"))
+        assertNull(shellStyleFromParam("brutalist"))
     }
 
     @Test
@@ -103,9 +113,19 @@ class EmbedShapeTest {
 
     // ── Precedence: user > URL > brand > toolkit ─────────────────────────────
 
-    /** What the toolkit paints for a field: its own resolution, re-stated. */
-    private fun ThemePersister.paintedStyle(user: AppearanceShape) =
-        user.shellStyle ?: defaultAppearanceShape().shellStyle ?: ShellStyle.Default
+    /**
+     * The look the toolkit paints for [user]'s values over this persister's
+     * default shape, through the toolkit's own resolution ladder: Classic or
+     * Calm, or null for a combination that is neither.
+     */
+    private fun ThemePersister.paintedStyle(user: AppearanceShape): ShellStyle? {
+        val resolved = resolveAppearance(*appearanceLadder(user, defaultAppearanceShape()))
+        return when {
+            Looks.Calm.matches(resolved) -> ShellStyle.Calm
+            Looks.Classic.matches(resolved) -> ShellStyle.Classic
+            else -> null
+        }
+    }
 
     private fun ThemePersister.paintedNav(user: AppearanceShape) =
         user.navigationMode ?: defaultAppearanceShape().navigationMode ?: NavigationMode.Default
@@ -125,32 +145,45 @@ class EmbedShapeTest {
         val persister = AccountSettingsApi(userId = null).persister()
         persister.setBrand(
             emptyList(), null, null,
-            AppearanceShape(shellStyle = ShellStyle.Clean, navigationMode = NavigationMode.Sidebar),
+            AppearanceShape(shellStyle = ShellStyle.Calm, navigationMode = NavigationMode.Sidebar),
         )
 
-        assertEquals(ShellStyle.Clean, persister.paintedStyle(AppearanceShape()))
+        assertEquals(ShellStyle.Calm, persister.paintedStyle(AppearanceShape()))
         assertEquals(NavigationMode.Sidebar, persister.paintedNav(AppearanceShape()))
     }
 
     @Test
-    fun the_url_beats_the_brand_and_keeps_the_brands_other_fields() = scope.promise {
+    fun the_urls_look_replaces_the_brands_style_and_its_nav_replaces_the_brands() = scope.promise {
         val persister = AccountSettingsApi(userId = null).persister()
         persister.setBrand(
             emptyList(), null, null,
             AppearanceShape(
                 cornerRadiusPx = 2,
                 uiDensity = UiDensity.Compact,
-                shellStyle = ShellStyle.Clean,
+                shellStyle = ShellStyle.Calm,
                 navigationMode = NavigationMode.Sidebar,
             ),
         )
         persister.setEmbedDefaults(null, null, null, ShellStyle.Classic, NavigationMode.TabStrip)
 
         val shape = persister.defaultAppearanceShape()
-        assertEquals(ShellStyle.Classic, shape.shellStyle)
         assertEquals(NavigationMode.TabStrip, shape.navigationMode)
-        assertEquals(2, shape.cornerRadiusPx, "the URL has no say over the brand's radius")
-        assertEquals(UiDensity.Compact, shape.uiDensity)
+        // The link asked for the Classic look as a whole, the more specific claim:
+        // the brand's own radius does not survive under it.
+        assertEquals(Looks.Classic.shape.cornerRadiusPx, shape.cornerRadiusPx)
+        assertEquals(ShellStyle.Classic, persister.paintedStyle(AppearanceShape()))
+    }
+
+    @Test
+    fun without_a_url_hint_the_brands_fields_win_over_its_own_look() = scope.promise {
+        val persister = AccountSettingsApi(userId = null).persister()
+        persister.setBrand(
+            emptyList(), null, null,
+            AppearanceShape(cornerRadiusPx = 2, shellStyle = ShellStyle.Calm),
+        )
+        val resolved = resolveAppearance(*appearanceLadder(AppearanceShape(), persister.defaultAppearanceShape()))
+        assertEquals(2, resolved.cornerRadiusPx, "a field named beside defaultStyle wins")
+        assertEquals(Looks.Calm.shape.windowLayout, resolved.windowLayout, "the rest is the look's")
     }
 
     @Test
@@ -161,8 +194,8 @@ class EmbedShapeTest {
             stored = mapOf(UiSettingKeys.APPEARANCE_SHAPE to stored.toJson()),
         )
         val persister = api.persister()
-        persister.setBrand(emptyList(), null, null, AppearanceShape(shellStyle = ShellStyle.Clean))
-        persister.setEmbedDefaults(null, null, null, ShellStyle.Clean, NavigationMode.TabStrip)
+        persister.setBrand(emptyList(), null, null, AppearanceShape(shellStyle = ShellStyle.Calm))
+        persister.setEmbedDefaults(null, null, null, ShellStyle.Calm, NavigationMode.TabStrip)
         persister.start()
 
         val user = AppearanceShape.fromJson(persister.read(UiSettingKeys.APPEARANCE_SHAPE))
@@ -178,9 +211,9 @@ class EmbedShapeTest {
         val persister = api.persister()
         persister.setBrand(
             emptyList(), null, null,
-            AppearanceShape(shellStyle = ShellStyle.Clean, navigationMode = NavigationMode.Sidebar),
+            AppearanceShape(shellStyle = ShellStyle.Calm, navigationMode = NavigationMode.Sidebar),
         )
-        persister.setEmbedDefaults(null, null, null, ShellStyle.Clean, NavigationMode.TabStrip)
+        persister.setEmbedDefaults(null, null, null, ShellStyle.Calm, NavigationMode.TabStrip)
         persister.start()
 
         // The shell boots on what it read (nothing) and re-persists its own state —
@@ -197,7 +230,7 @@ class EmbedShapeTest {
             "A hint was stored as if it were a choice: $shapes",
         )
         assertTrue(
-            api.sent.none { "clean" in it.second || "tabstrip" in it.second || "sidebar" in it.second },
+            api.sent.none { "calm" in it.second || "tabstrip" in it.second || "sidebar" in it.second },
             "A hint leaked into a stored setting: ${api.sent}",
         )
     }
@@ -206,7 +239,7 @@ class EmbedShapeTest {
     fun the_users_own_pick_is_sent() = scope.promise {
         val api = AccountSettingsApi(userId = 7, stored = mapOf(UiSettingKeys.THEME_SELECTION to "{}"))
         val persister = api.persister()
-        persister.setEmbedDefaults(null, null, null, ShellStyle.Clean, null)
+        persister.setEmbedDefaults(null, null, null, ShellStyle.Calm, null)
         persister.start()
 
         val picked = AppearanceShape(shellStyle = ShellStyle.Classic, navigationMode = NavigationMode.TabStrip).toJson()
@@ -226,11 +259,31 @@ class EmbedShapeTest {
     @Test
     fun the_brand_names_its_style_and_navigation() {
         val shape = brandAppearanceShape(
-            manifest("""{"defaultStyle": "clean", "defaultNavigation": "tabstrip", "defaultSelectionStyle": "fill"}"""),
+            manifest("""{"defaultStyle": "calm", "defaultNavigation": "tabstrip", "defaultSelectionStyle": "fill"}"""),
         )
-        assertEquals(ShellStyle.Clean, shape.shellStyle)
+        assertEquals(ShellStyle.Calm, shape.shellStyle)
         assertEquals(NavigationMode.TabStrip, shape.navigationMode)
         assertEquals(SelectionStyle.Fill, shape.selectionStyle, "the existing keys still parse beside them")
+    }
+
+    @Test
+    fun the_brand_names_each_style_setting() {
+        val shape = brandAppearanceShape(
+            manifest(
+                """{"defaultSurfaceStyle": "soft", "defaultChromeStyle": "blended",
+                   "defaultWindowLayout": "sheet", "defaultFocusStyle": "tone",
+                   "defaultLabelCase": "sentence", "defaultSelectionStyle": "soft"}""",
+            ),
+        )
+        assertEquals(SurfaceStyle.Soft, shape.surfaceStyle)
+        assertEquals(ChromeStyle.Blended, shape.chromeStyle)
+        assertEquals(WindowLayout.Sheet, shape.windowLayout)
+        assertEquals(FocusStyle.Tone, shape.focusStyle)
+        assertEquals(LabelCase.Sentence, shape.labelCase)
+        assertEquals(SelectionStyle.Soft, shape.selectionStyle)
+        val unknown = brandAppearanceShape(manifest("""{"defaultChromeStyle": "glass", "defaultFocusStyle": ""}"""))
+        assertNull(unknown.chromeStyle)
+        assertNull(unknown.focusStyle)
     }
 
     @Test
@@ -239,7 +292,7 @@ class EmbedShapeTest {
         assertTrue(unset.isEmpty)
 
         val typos = brandAppearanceShape(
-            manifest("""{"defaultStyle": "calm", "defaultNavigation": "tabs", "defaultUiDensity": "compact"}"""),
+            manifest("""{"defaultStyle": "brutalist", "defaultNavigation": "tabs", "defaultUiDensity": "compact"}"""),
         )
         assertNull(typos.shellStyle)
         assertNull(typos.navigationMode)

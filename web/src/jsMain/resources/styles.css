@@ -224,7 +224,7 @@ code, pre, kbd, samp { font-family: var(--mono); }
      this the board interior kept the window-chrome tone and the columns
      supplied the surface one — the same two colours, inverted, which read
      as off against every lunamux pane. See the :root token note. */
-  background: var(--panel);
+  background: var(--dt-window-bg, var(--panel));
 }
 
 /* The board's toolbar: one row under the pane header (LNL-160).
@@ -389,7 +389,7 @@ code, pre, kbd, samp { font-family: var(--mono); }
   display: flex;
   flex-direction: column;
   padding: 14px 16px;
-  background: var(--panel);
+  background: var(--dt-window-bg, var(--panel));
 }
 
 /* The settings pane's top gap, which was being paid twice: the host above pads
@@ -425,7 +425,7 @@ code, pre, kbd, samp { font-family: var(--mono); }
   min-width: 0;
   /* Surface interior, same reasoning as .board-pane: an issue window is a
      document being read, and documents live on the content surface. */
-  background: var(--panel);
+  background: var(--dt-window-bg, var(--panel));
 }
 
 /* The body reuses the modal-large band layout (.modal-body /
@@ -1995,28 +1995,32 @@ body > .dt-pane-menu {
 .board-empty { color: var(--green-dim); font-size: 13px; }
 
 /* ============================================================
-   Board under the Clean shell style (LNA-27)
+   The calm board (LNA-27), keyed by the toolkit's style settings
 
-   The toolkit stamps `data-dt-style="clean"` on <html> when the
-   calm shell is chosen. Everything here is scoped under that
-   attribute, so Classic — no attribute, or any other value — is
-   exactly the board above, untouched.
+   The board follows two of Lunula's style settings, each stamped on
+   <html> by the toolkit for the active appearance mode:
 
-   The calm board is two materials and one line: lanes are wells
-   of the ground tone (`bg`) set into the window's surface, cards
-   are surface planes with a permanent `border` hairline on them,
-   and the lanes are told apart by the gap between them rather
-   than by a rule down each one's edge.
+   - Surfaces: Soft (`data-dt-surface="soft"`) — calm cards. The
+     calm board is two materials and one line: lanes are wells of
+     the ground tone (`bg`) set into the window's surface, cards are
+     surface planes with a permanent `border` hairline on them, and
+     the lanes are told apart by the gap between them rather than by
+     a rule down each one's edge.
+   - Labels: Sentence case (`data-dt-labels="sentence"`) — the lane
+     name as an ordinary heading in sentence case.
+
+   With neither, nothing here matches and the board above renders
+   exactly as before. The Calm look sets both.
    ============================================================ */
 
 /* A gutter instead of the hairline: with every lane painted as a well, the space
    between two wells is what separates them, and a rule as well would say it twice
    — the same argument .board makes the other way round. */
-:root[data-dt-style="clean"] .board { gap: 14px; }
+:root[data-dt-surface="soft"] .board { gap: 14px; }
 
 /* The lane as a ground-toned well with soft corners, and no divider. Padding is
    even on both sides now that there is no trailing line to keep clear of. */
-:root[data-dt-style="clean"] .column {
+:root[data-dt-surface="soft"] .column {
   background: var(--bg);
   box-shadow: none;
   border-radius: 12px;
@@ -2027,39 +2031,40 @@ body > .dt-pane-menu {
    so without this the well would hide which lane a dragged card will land in.
    Mixed into the well's own ground rather than into transparent, so it tints
    the lane instead of punching through it. */
-:root[data-dt-style="clean"] .column-drop {
+:root[data-dt-surface="soft"] .column-drop {
   background: color-mix(in srgb, var(--green-hi) 10%, var(--bg));
 }
 
-/* The head as an ordinary heading: the name in sentence case and normal text,
-   the count in the muted tone. No rule under it — the well already says where
-   the lane begins. Still a fixed two-line box, bottom-aligned, for the reason
+/* The head over a well: no rule under it — the well already says where the lane
+   begins. Still a fixed two-line box, bottom-aligned, for the reason
    .column-head gives: a long name must not drop its own lane's cards out of line
-   with the neighbours'. 38px is two lines of the 14px name below. */
-:root[data-dt-style="clean"] .column-head {
+   with the neighbours'. 38px is two lines of the 14px sentence-case name. */
+:root[data-dt-surface="soft"] .column-head {
   height: 38px;
   padding: 0 4px 2px;
   border-bottom: 0;
   margin-bottom: 8px;
 }
-:root[data-dt-style="clean"] .column-name {
+/* Sentence-case labels: the lane name as an ordinary heading in normal text,
+   the count in the muted tone. */
+:root[data-dt-labels="sentence"] .column-name {
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0;
   text-transform: none;
 }
-:root[data-dt-style="clean"] .column-count {
+:root[data-dt-labels="sentence"] .column-count {
   font-family: inherit;
   font-size: 13px;
   line-height: 1.35;
 }
 
 /* The card: the surface plane, outlined all the time by one `border` hairline,
-   with the calm shell's 12px corner. Classic leaves the edge off and draws it
+   with a 12px corner. The base card leaves the edge off and draws it
    only on hover because its card is a tone against the pane; here the card is
    the same tone as the window around the lane, so the hairline is what makes it
    a card at all. */
-:root[data-dt-style="clean"] .card {
+:root[data-dt-surface="soft"] .card {
   background: var(--panel);
   border-color: var(--border);
   border-radius: 12px;
@@ -2068,13 +2073,13 @@ body > .dt-pane-menu {
 
 /* Hover stays, but quietly: the permanent hairline steps up to the stronger
    border token. Re-stated because the rule above outranks the bare `.card:hover`. */
-:root[data-dt-style="clean"] .card:hover { border-color: var(--border-hi); }
+:root[data-dt-surface="soft"] .card:hover { border-color: var(--border-hi); }
 
-/* The "somebody else changed this" flash, ending on Clean's own card rather than
-   on Classic's — the shared keyframes fade to a transparent edge on `panel-2`,
+/* The "somebody else changed this" flash, ending on the calm card rather than
+   on the base one — the shared keyframes fade to a transparent edge on `panel-2`,
    which would leave the card blinking to the wrong material at the end. */
-:root[data-dt-style="clean"] .card-remote-changed { animation-name: card-remote-flash-clean; }
-@keyframes card-remote-flash-clean {
+:root[data-dt-surface="soft"] .card-remote-changed { animation-name: card-remote-flash-calm; }
+@keyframes card-remote-flash-calm {
   0%, 20% {
     border-color: var(--green-hi);
     background: color-mix(in srgb, var(--green-hi) 14%, var(--panel));
@@ -2082,29 +2087,19 @@ body > .dt-pane-menu {
   100% { border-color: var(--border); background: var(--panel); }
 }
 @media (prefers-reduced-motion: reduce) {
-  :root[data-dt-style="clean"] .card-remote-changed { animation: none; border-color: var(--green-hi); }
+  :root[data-dt-surface="soft"] .card-remote-changed { animation: none; border-color: var(--green-hi); }
 }
 
-/* The window colour is the toolkit's to say. Clean tells the focused window from
-   the rest by its body alone — `--t-surface` on the one in focus, `--t-window-idle`
-   on every other — and leaves `.dt-pane-content` transparent so that tone reaches
-   the content. Each pane root below paints `--panel` over it for Classic's sake
-   (see .board-pane), which under Clean kept every window white whichever one had
-   focus. So under Clean they paint nothing, and only the surfaces inside that are
-   objects of their own keep a fill: cards on `--panel`, lanes on `--bg`, inputs,
-   chips and dialogs as they are.
-
-   The list is every element a pane is handed as its content (see `paneContent`
-   in main.kt) that paints, plus the issue window inside its host and the forum
-   post window's host. A new pane kind with a background of its own belongs here
-   too. */
-:root[data-dt-style="clean"] .board-pane,
-:root[data-dt-style="clean"] .issue-window,
-:root[data-dt-style="clean"] .settings-pane-host,
-:root[data-dt-style="clean"] .analytics-pane-host,
-:root[data-dt-style="clean"] .forum-post-host {
-  background: transparent;
-}
+/* The window colour is the toolkit's to say. Under Lunula's Active window:
+   Tone setting the focused window is painted `--t-window-active` and every
+   other `--t-window-idle`, and the toolkit publishes that colour on each window
+   as `--dt-window-bg`. Each pane root (.board-pane, .issue-window, the settings
+   and analytics hosts, the forum post host) paints `var(--dt-window-bg,
+   var(--panel))` for that reason: under Tone it follows the window, and with
+   any other setting the variable is unset and the root keeps `--panel`. Only
+   the surfaces inside that are objects of their own keep a fill: cards on
+   `--panel`, lanes on `--bg`, inputs, chips and dialogs as they are. A new
+   pane kind with a background of its own should do the same. */
 
 /* ============================================================
    Modals
@@ -5241,7 +5236,7 @@ body.app-impersonating::after {
 .forum-post-host {
   height: 100%;
   min-height: 0;
-  background: var(--panel);
+  background: var(--dt-window-bg, var(--panel));
 }
 
 .forum-post {

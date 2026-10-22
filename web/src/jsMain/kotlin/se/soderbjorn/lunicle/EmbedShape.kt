@@ -1,8 +1,9 @@
 /**
- * The shell's style and navigation a page's URL asked for: `?style=classic|clean`
- * and `?nav=sidebar|tabstrip|both` (LNA-26).
+ * The shell's style and navigation a page's URL asked for: `?style=classic|calm`
+ * (`clean`, the Calm look's old name, still works) and
+ * `?nav=sidebar|tabstrip|both` (LNA-26).
  *
- * For a link or an embed that wants the tracker to open in the Clean shell, or with
+ * For a link or an embed that wants the tracker to open in the Calm look, or with
  * only a tab strip, without anybody having picked that in Appearance. Both are
  * HINTS, in the same tier as `?theme=` / `?darkTheme=` / `?lightTheme=`:
  *
@@ -29,6 +30,7 @@
 package se.soderbjorn.lunicle
 
 import se.soderbjorn.lunula.core.AppearanceShape
+import se.soderbjorn.lunula.core.Looks
 import se.soderbjorn.lunula.core.NavigationMode
 import se.soderbjorn.lunula.core.ShellStyle
 
@@ -60,12 +62,18 @@ internal fun navigationFromParam(value: String?, chrome: EmbedChrome): Navigatio
 
 /**
  * The shape handed to the toolkit as its app default: the URL's hints over the
- * brand's, field by field.
+ * brand's.
  *
- * Only style and navigation have a URL hint; corner radius, density, selection and
- * surfaces are the brand's alone. A field neither names stays null, which the
- * toolkit reads as its own default (Classic, Both). The user's stored shape is not
- * an input here: the toolkit layers it above whatever this returns.
+ * A `?style=` hint names a whole look (Lunula's `Looks`: Classic or Calm), and
+ * it is the more specific claim — this frame on this site — so the look's
+ * values replace every style field the brand names (corner radius, spacing,
+ * selection, surfaces, chrome, windows, active window, labels) rather than
+ * sitting beneath them. Without a hint the brand's shape is handed on as it
+ * is, including its own `defaultStyle` shorthand, which the toolkit expands
+ * beneath the brand's individual fields. `?nav=` replaces the brand's
+ * navigation alone. A field nobody names stays null, which the toolkit reads
+ * as its own default. The user's stored values are not an input here: the
+ * toolkit layers them, per appearance mode, above whatever this returns.
  *
  * @param brand    the deployment's brand.json shape; empty when unbranded.
  * @param urlStyle the `?style=` hint, or null.
@@ -76,7 +84,7 @@ internal fun layeredDefaultShape(
     brand: AppearanceShape,
     urlStyle: ShellStyle?,
     urlNav: NavigationMode?,
-): AppearanceShape = brand.copy(
-    shellStyle = urlStyle ?: brand.shellStyle,
-    navigationMode = urlNav ?: brand.navigationMode,
-)
+): AppearanceShape {
+    val styled = if (urlStyle == null) brand else Looks.forShellStyle(urlStyle).shape
+    return styled.copy(navigationMode = urlNav ?: brand.navigationMode)
+}

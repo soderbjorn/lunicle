@@ -30,6 +30,8 @@ import se.soderbjorn.lunicle.clientserver.LunicleApi
 import se.soderbjorn.lunicle.clientserver.UiSettingKeys
 import se.soderbjorn.lunicle.clientserver.UiSettingsState
 import se.soderbjorn.lunula.core.AppearanceShape
+import se.soderbjorn.lunula.core.Looks
+import se.soderbjorn.lunula.core.ModeStyles
 import se.soderbjorn.lunula.core.SelectionStyle
 import se.soderbjorn.lunula.core.SurfaceStyle
 import se.soderbjorn.lunula.core.UiDensity
@@ -186,5 +188,43 @@ class ShapeFollowsTheAccountTest {
         persister.onIdentityChanged()
 
         assertEquals(listOf(squareAndRoomy), api.sentShapes())
+    }
+
+    /**
+     * The guard compares the whole blob, per-mode entries included: after an
+     * identity change, a write that changes only one appearance mode's style is
+     * the user choosing, not the toolkit re-writing stale state, and reaches the
+     * account. Parsing the blob as a plain [AppearanceShape] would see no change
+     * at all and hold it back.
+     */
+    @Test
+    fun a_change_to_one_modes_style_after_an_identity_change_is_sent() = scope.promise {
+        val api = AccountSettingsApi(
+            userId = 7,
+            stored = mapOf(
+                UiSettingKeys.THEME_SELECTION to "{}",
+                UiSettingKeys.APPEARANCE_SHAPE to squareAndRoomy,
+            ),
+        )
+        val persister = api.persister()
+        persister.start()
+
+        api.userId = 8
+        api.stored = mapOf(UiSettingKeys.THEME_SELECTION to "{}", UiSettingKeys.APPEARANCE_SHAPE to roundish)
+        persister.onIdentityChanged()
+        settle()
+        api.sent.clear()
+
+        // The stale blob, re-written: held back.
+        persister.write(UiSettingKeys.APPEARANCE_SHAPE, squareAndRoomy)
+        assertTrue(api.sentShapes().isEmpty())
+
+        // The same top-level fields, plus a dark-mode style the user just picked.
+        val darkPicked = ModeStyles.shapeBlob(
+            AppearanceShape.fromJson(squareAndRoomy),
+            ModeStyles(dark = Looks.Calm.shape),
+        )
+        persister.write(UiSettingKeys.APPEARANCE_SHAPE, darkPicked)
+        assertEquals(listOf(darkPicked), api.sentShapes())
     }
 }
